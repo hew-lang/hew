@@ -1,0 +1,39 @@
+// MIR-corpus fixture: bounded channel send/recv/try_recv/close + select.
+//
+// Pins the element-layout-witness recv entries
+// (`hew_channel_recv_layout` / `hew_channel_try_recv_layout`), the
+// send path (`hew_channel_send_layout`), the sender/receiver close
+// releases, and the select winner-picker (`hew_select_first`).
+import std::channel::channel;
+
+actor Inbox {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        tx.send("ready");
+        tx.close();
+        match await rx.recv() {
+            Some(msg) => println(msg),
+            None => println("closed"),
+        }
+        match rx.try_recv() {
+            Some(msg) => println(msg),
+            None => println("empty"),
+        }
+        select {
+            again from rx.recv() => {
+                match again {
+                    Some(msg) => println(msg),
+                    None => println("closed"),
+                }
+            },
+            after 1s => println("timeout"),
+        };
+        rx.close();
+    }
+}
+
+fn main() {
+    let i = spawn Inbox;
+    i.run(0);
+    sleep_ms(200);
+}

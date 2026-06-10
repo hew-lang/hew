@@ -1,0 +1,16 @@
+// MIR-corpus fixture: string runtime helpers.
+//
+// Pins `hew_string_concat` (binary `+`), `hew_string_index`
+// (codepoint indexing `s[i]`), `hew_string_slice_codepoints`
+// (`s[a..b]`), and the scope-exit string drops.
+fn main() -> i64 {
+    let s: string = "hello";
+    let c: char = s[1];
+    let slice: string = s[1..4];
+    println(slice);
+    let joined = s + ", " + "world";
+    println(joined);
+    println(joined.len());
+    let _keep = c;
+    slice.len()
+}

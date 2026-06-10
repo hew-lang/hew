@@ -1,0 +1,4373 @@
+RawMirFunction {
+    name: "Inbox__recv__run",
+    return_ty: Unit,
+    call_conv: ActorHandler,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        I64,
+        Tuple(
+            [
+                Named {
+                    name: "Sender",
+                    args: [
+                        String,
+                    ],
+                    builtin: Some(
+                        Sender,
+                    ),
+                    is_opaque: false,
+                },
+                Named {
+                    name: "Receiver",
+                    args: [
+                        String,
+                    ],
+                    builtin: Some(
+                        Receiver,
+                    ),
+                    is_opaque: false,
+                },
+            ],
+        ),
+        Tuple(
+            [
+                Named {
+                    name: "Sender",
+                    args: [
+                        String,
+                    ],
+                    builtin: Some(
+                        Sender,
+                    ),
+                    is_opaque: false,
+                },
+                Named {
+                    name: "Receiver",
+                    args: [
+                        String,
+                    ],
+                    builtin: Some(
+                        Receiver,
+                    ),
+                    is_opaque: false,
+                },
+            ],
+        ),
+        Named {
+            name: "Sender",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Sender",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Receiver",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Receiver",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+        String,
+        Unit,
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        String,
+        String,
+        Unit,
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        String,
+        String,
+        Unit,
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: None,
+            is_opaque: false,
+        },
+        Duration,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        String,
+        String,
+        Unit,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [],
+            instructions: [
+                EnterContext,
+                ConstI64 {
+                    dest: Local(
+                        1,
+                    ),
+                    value: 4,
+                },
+            ],
+            terminator: Call {
+                callee: "channel$new",
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        2,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "__tuple_1",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Tuple(
+                        [
+                            Named {
+                                name: "Sender",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Sender,
+                                ),
+                                is_opaque: false,
+                            },
+                            Named {
+                                name: "Receiver",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Receiver,
+                                ),
+                                is_opaque: false,
+                            },
+                        ],
+                    ),
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "__tuple_1",
+                    site: SiteId(
+                        3,
+                    ),
+                    ty: Tuple(
+                        [
+                            Named {
+                                name: "Sender",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Sender,
+                                ),
+                                is_opaque: false,
+                            },
+                            Named {
+                                name: "Receiver",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Receiver,
+                                ),
+                                is_opaque: false,
+                            },
+                        ],
+                    ),
+                    intent: Read,
+                },
+                Bind {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        4,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "__tuple_1",
+                    site: SiteId(
+                        5,
+                    ),
+                    ty: Tuple(
+                        [
+                            Named {
+                                name: "Sender",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Sender,
+                                ),
+                                is_opaque: false,
+                            },
+                            Named {
+                                name: "Receiver",
+                                args: [
+                                    String,
+                                ],
+                                builtin: Some(
+                                    Receiver,
+                                ),
+                                is_opaque: false,
+                            },
+                        ],
+                    ),
+                    intent: Read,
+                },
+                Bind {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        6,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        8,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        3,
+                    ),
+                    src: Local(
+                        2,
+                    ),
+                },
+                TupleFieldLoad {
+                    tuple: Local(
+                        3,
+                    ),
+                    field_index: 0,
+                    dest: Local(
+                        4,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        5,
+                    ),
+                    src: Local(
+                        4,
+                    ),
+                },
+                TupleFieldLoad {
+                    tuple: Local(
+                        3,
+                    ),
+                    field_index: 1,
+                    dest: Local(
+                        6,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        7,
+                    ),
+                    src: Local(
+                        6,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        114,
+                        101,
+                        97,
+                        100,
+                        121,
+                    ],
+                    dest: Local(
+                        8,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_channel_send_layout",
+                args: [
+                    Local(
+                        5,
+                    ),
+                    Local(
+                        8,
+                    ),
+                ],
+                dest: None,
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        7,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        12,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_sender_close",
+                args: [
+                    Local(
+                        5,
+                    ),
+                ],
+                dest: None,
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        16,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: SuspendingChannelRecv {
+                receiver: Local(
+                    7,
+                ),
+                result_dest: Local(
+                    10,
+                ),
+                elem_ty: String,
+                resume: 4,
+                cleanup: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        11,
+                    ),
+                    src: EnumTag(
+                        10,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        12,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        13,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        11,
+                    ),
+                    rhs: Local(
+                        12,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    13,
+                ),
+                then_target: 6,
+                else_target: 9,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        24,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        26,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_try_recv_layout",
+                args: [
+                    Local(
+                        7,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        19,
+                    ),
+                ),
+                next: 12,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        18,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        19,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        16,
+                    ),
+                    src: MachineVariant {
+                        local: 10,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        16,
+                    ),
+                ],
+                dest: None,
+                next: 10,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        99,
+                        108,
+                        111,
+                        115,
+                        101,
+                        100,
+                    ],
+                    dest: Local(
+                        17,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        17,
+                    ),
+                ],
+                dest: None,
+                next: 11,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [],
+            instructions: [
+                ExitContext,
+            ],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        14,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        15,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        11,
+                    ),
+                    rhs: Local(
+                        14,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    15,
+                ),
+                then_target: 7,
+                else_target: 8,
+            },
+        },
+        BasicBlock {
+            id: 10,
+            statements: [],
+            instructions: [
+                Drop {
+                    place: Local(
+                        16,
+                    ),
+                    ty: String,
+                    drop_fn: Some(
+                        "hew_string_drop",
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 11,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 12,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        20,
+                    ),
+                    src: EnumTag(
+                        19,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        21,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        22,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        20,
+                    ),
+                    rhs: Local(
+                        21,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    22,
+                ),
+                then_target: 14,
+                else_target: 17,
+            },
+        },
+        BasicBlock {
+            id: 13,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        34,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        36,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                DurationLit {
+                    nanos: 1000000000,
+                    dest: Local(
+                        29,
+                    ),
+                },
+            ],
+            terminator: Select {
+                arms: [
+                    SelectArm {
+                        kind: ChannelRecv {
+                            receiver: Local(
+                                7,
+                            ),
+                            elem_ty: String,
+                        },
+                        body_block: 20,
+                        binding: Some(
+                            Local(
+                                28,
+                            ),
+                        ),
+                    },
+                    SelectArm {
+                        kind: AfterTimer {
+                            duration: Local(
+                                29,
+                            ),
+                        },
+                        body_block: 21,
+                        binding: None,
+                    },
+                ],
+                next: 22,
+            },
+        },
+        BasicBlock {
+            id: 14,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        28,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        29,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        25,
+                    ),
+                    src: MachineVariant {
+                        local: 19,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        25,
+                    ),
+                ],
+                dest: None,
+                next: 18,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        101,
+                        109,
+                        112,
+                        116,
+                        121,
+                    ],
+                    dest: Local(
+                        26,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        26,
+                    ),
+                ],
+                dest: None,
+                next: 19,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [],
+            instructions: [
+                ExitContext,
+            ],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 17,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        23,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        24,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        20,
+                    ),
+                    rhs: Local(
+                        23,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    24,
+                ),
+                then_target: 15,
+                else_target: 16,
+            },
+        },
+        BasicBlock {
+            id: 18,
+            statements: [],
+            instructions: [
+                Drop {
+                    place: Local(
+                        25,
+                    ),
+                    ty: String,
+                    drop_fn: Some(
+                        "hew_string_drop",
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 13,
+            },
+        },
+        BasicBlock {
+            id: 19,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 13,
+            },
+        },
+        BasicBlock {
+            id: 20,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "again",
+                    site: SiteId(
+                        37,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            String,
+                        ],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "again",
+                    site: SiteId(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            String,
+                        ],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        31,
+                    ),
+                    src: EnumTag(
+                        28,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        32,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        33,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        31,
+                    ),
+                    rhs: Local(
+                        32,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    33,
+                ),
+                then_target: 24,
+                else_target: 27,
+            },
+        },
+        BasicBlock {
+            id: 21,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        116,
+                        105,
+                        109,
+                        101,
+                        111,
+                        117,
+                        116,
+                    ],
+                    dest: Local(
+                        39,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        39,
+                    ),
+                ],
+                dest: None,
+                next: 30,
+            },
+        },
+        BasicBlock {
+            id: 22,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        35,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        51,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_receiver_close",
+                args: [
+                    Local(
+                        7,
+                    ),
+                ],
+                dest: None,
+                next: 31,
+            },
+        },
+        BasicBlock {
+            id: 23,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        38,
+                    ),
+                    src: Local(
+                        30,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        27,
+                    ),
+                    src: Local(
+                        38,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 22,
+            },
+        },
+        BasicBlock {
+            id: 24,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        40,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "msg",
+                    site: SiteId(
+                        41,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        36,
+                    ),
+                    src: MachineVariant {
+                        local: 28,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        36,
+                    ),
+                ],
+                dest: None,
+                next: 28,
+            },
+        },
+        BasicBlock {
+            id: 25,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        99,
+                        108,
+                        111,
+                        115,
+                        101,
+                        100,
+                    ],
+                    dest: Local(
+                        37,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        37,
+                    ),
+                ],
+                dest: None,
+                next: 29,
+            },
+        },
+        BasicBlock {
+            id: 26,
+            statements: [],
+            instructions: [
+                ExitContext,
+            ],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        34,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        35,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        31,
+                    ),
+                    rhs: Local(
+                        34,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    35,
+                ),
+                then_target: 25,
+                else_target: 26,
+            },
+        },
+        BasicBlock {
+            id: 28,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 23,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 23,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 22,
+            },
+        },
+        BasicBlock {
+            id: 31,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        50,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [
+                ExitContext,
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Tuple(
+                [
+                    Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+            ),
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                1,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Tuple(
+                [
+                    Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+            ),
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: Tuple(
+                [
+                    Named {
+                        name: "Sender",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    Named {
+                        name: "Receiver",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+            ),
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                35,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: Duration,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                40,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                48,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                50,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "main",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [],
+    locals: [
+        Named {
+            name: "LocalPid",
+            args: [
+                Named {
+                    name: "Inbox",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                LocalPid,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        9,
+                    ),
+                    name: "i",
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: Named {
+                        name: "LocalPid",
+                        args: [
+                            Named {
+                                name: "Inbox",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            LocalPid,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        9,
+                    ),
+                    name: "i",
+                    site: SiteId(
+                        55,
+                    ),
+                    ty: Named {
+                        name: "LocalPid",
+                        args: [
+                            Named {
+                                name: "Inbox",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            LocalPid,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                SpawnActor {
+                    actor_name: "Inbox",
+                    state: None,
+                    init_args: [],
+                    dest: ActorHandle(
+                        0,
+                    ),
+                    max_heap_bytes: None,
+                    cycle_capable: false,
+                },
+                ConstI64 {
+                    dest: Local(
+                        1,
+                    ),
+                    value: 0,
+                },
+            ],
+            terminator: Send {
+                actor: ActorHandle(
+                    0,
+                ),
+                msg_type: 625133102,
+                value: Local(
+                    1,
+                ),
+                next: 1,
+                alias_mode: Copy,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        54,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        2,
+                    ),
+                    value: 200,
+                },
+            ],
+            terminator: Call {
+                callee: "sleep_ms",
+                args: [
+                    Local(
+                        2,
+                    ),
+                ],
+                dest: None,
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        57,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: Named {
+                name: "LocalPid",
+                args: [
+                    Named {
+                        name: "Inbox",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    LocalPid,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                54,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "LocalPid",
+                args: [
+                    Named {
+                        name: "Inbox",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    LocalPid,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Sender::send",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+        String,
+    ],
+    locals: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        10,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        62,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+                Use {
+                    binding: BindingId(
+                        11,
+                    ),
+                    name: "data",
+                    site: SiteId(
+                        63,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_send_layout",
+                args: [
+                    Local(
+                        0,
+                    ),
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: None,
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        60,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Sender::clone",
+    return_ty: Named {
+        name: "Sender",
+        args: [],
+        builtin: Some(
+            Sender,
+        ),
+        is_opaque: false,
+    },
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+    ],
+    locals: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        67,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_sender_clone",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            65,
+                        ),
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        2,
+                    ),
+                    src: Local(
+                        1,
+                    ),
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        2,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Sender::close",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+    ],
+    locals: [
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: Some(
+                Sender,
+            ),
+            is_opaque: false,
+        },
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        71,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: Some(
+                            Sender,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_sender_close",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: None,
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        69,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Receiver::recv",
+    return_ty: Named {
+        name: "Option",
+        args: [
+            String,
+        ],
+        builtin: Some(
+            Option,
+        ),
+        is_opaque: false,
+    },
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+    ],
+    locals: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        75,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_recv_layout",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            73,
+                        ),
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        2,
+                    ),
+                    src: Local(
+                        1,
+                    ),
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        2,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Receiver::try_recv",
+    return_ty: Named {
+        name: "Option",
+        args: [
+            String,
+        ],
+        builtin: Some(
+            Option,
+        ),
+        is_opaque: false,
+    },
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+    ],
+    locals: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        79,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_try_recv_layout",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            77,
+                        ),
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        2,
+                    ),
+                    src: Local(
+                        1,
+                    ),
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        2,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "Receiver::close",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+    ],
+    locals: [
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: Some(
+                Receiver,
+            ),
+            is_opaque: false,
+        },
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        83,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: Some(
+                            Receiver,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_channel_receiver_close",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: None,
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        81,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "channel$new",
+    return_ty: Tuple(
+        [
+            Named {
+                name: "Sender",
+                args: [],
+                builtin: Some(
+                    Sender,
+                ),
+                is_opaque: false,
+            },
+            Named {
+                name: "Receiver",
+                args: [],
+                builtin: Some(
+                    Receiver,
+                ),
+                is_opaque: false,
+            },
+        ],
+    ),
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        I64,
+        Named {
+            name: "ChannelPair",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "ChannelPair",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Sender",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Receiver",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Tuple(
+            [
+                Named {
+                    name: "Sender",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+                Named {
+                    name: "Receiver",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+        ),
+        Tuple(
+            [
+                Named {
+                    name: "Sender",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+                Named {
+                    name: "Receiver",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+        ),
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "capacity",
+                    site: SiteId(
+                        88,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                NumericCast {
+                    dest: Local(
+                        1,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                    from_ty: I64,
+                    to_ty: I64,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_channel_new",
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        2,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "pair",
+                    site: SiteId(
+                        86,
+                    ),
+                    ty: Named {
+                        name: "ChannelPair",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "pair",
+                    site: SiteId(
+                        91,
+                    ),
+                    ty: Named {
+                        name: "ChannelPair",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        3,
+                    ),
+                    src: Local(
+                        2,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_channel_pair_sender",
+                args: [
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        4,
+                    ),
+                ),
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        19,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        90,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "pair",
+                    site: SiteId(
+                        94,
+                    ),
+                    ty: Named {
+                        name: "ChannelPair",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        5,
+                    ),
+                    src: Local(
+                        4,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_channel_pair_receiver",
+                args: [
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        6,
+                    ),
+                ),
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        20,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        93,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "pair",
+                    site: SiteId(
+                        97,
+                    ),
+                    ty: Named {
+                        name: "ChannelPair",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        7,
+                    ),
+                    src: Local(
+                        6,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_channel_pair_free",
+                args: [
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: None,
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        96,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        19,
+                    ),
+                    name: "tx",
+                    site: SiteId(
+                        100,
+                    ),
+                    ty: Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+                Use {
+                    binding: BindingId(
+                        20,
+                    ),
+                    name: "rx",
+                    site: SiteId(
+                        101,
+                    ),
+                    ty: Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            85,
+                        ),
+                    ),
+                    ty: Tuple(
+                        [
+                            Named {
+                                name: "Sender",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                            Named {
+                                name: "Receiver",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                    ),
+                },
+            ],
+            instructions: [
+                TupleConstruct {
+                    elements: [
+                        Local(
+                            5,
+                        ),
+                        Local(
+                            7,
+                        ),
+                    ],
+                    dest: Local(
+                        8,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        9,
+                    ),
+                    src: Local(
+                        8,
+                    ),
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        9,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                85,
+            ),
+            ty: Tuple(
+                [
+                    Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+            ),
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Named {
+                name: "ChannelPair",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                87,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                88,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                90,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                91,
+            ),
+            ty: Named {
+                name: "ChannelPair",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                93,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                94,
+            ),
+            ty: Named {
+                name: "ChannelPair",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                96,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                97,
+            ),
+            ty: Named {
+                name: "ChannelPair",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                99,
+            ),
+            ty: Tuple(
+                [
+                    Named {
+                        name: "Sender",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    Named {
+                        name: "Receiver",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+            ),
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                100,
+            ),
+            ty: Named {
+                name: "Sender",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                101,
+            ),
+            ty: Named {
+                name: "Receiver",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I32,
+    ],
+    locals: [
+        I32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        24,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        131,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i32",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            130,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                130,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                131,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        25,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        134,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            133,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                133,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                134,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U32,
+    ],
+    locals: [
+        U32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        26,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        137,
+                    ),
+                    ty: U32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u32",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            136,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                136,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                137,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U64,
+    ],
+    locals: [
+        U64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        27,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        140,
+                    ),
+                    ty: U64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            139,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                139,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                140,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Bool,
+    ],
+    locals: [
+        Bool,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        28,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        143,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            142,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                142,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                143,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Char,
+    ],
+    locals: [
+        Char,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        29,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        146,
+                    ),
+                    ty: Char,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_char",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            145,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                145,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                146,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        F64,
+    ],
+    locals: [
+        F64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        30,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        149,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_f64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            148,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                148,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                149,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        String,
+    ],
+    locals: [
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        31,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        151,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            151,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        0,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                151,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}

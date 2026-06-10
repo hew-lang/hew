@@ -1,0 +1,16 @@
+// MIR-corpus fixture: bytes value runtime surface.
+//
+// Pins `hew_bytes_len`, `hew_bytes_index` (`b[i]`), `hew_bytes_slice`
+// (`b[a..b]`), `hew_bytes_push`, and the bytes drop elaboration.
+fn main() -> i64 {
+    let b: bytes = "abcd".to_bytes();
+    println(b.len());
+    let first = b[0];
+    let fi = first as i64;
+    println(fi);
+    b.push(33);
+    let slice: bytes = b[1..3];
+    println(slice.len());
+    println(slice.to_string());
+    0
+}

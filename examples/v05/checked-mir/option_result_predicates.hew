@@ -1,0 +1,35 @@
+// MIR-corpus fixture: builtin Option predicate helpers + Result match.
+//
+// Pins `hew_option_is_some` / `hew_option_is_none` tag reads for i64
+// and string payloads, plus the structural Ok/Err match lowering.
+fn main() -> i64 {
+    let a: Option<i64> = Some(5);
+    let b: Option<i64> = None;
+    if a.is_some() == false {
+        return 1;
+    }
+    if a.is_none() == true {
+        return 2;
+    }
+    if b.is_none() == false {
+        return 3;
+    }
+    if b.is_some() == true {
+        return 4;
+    }
+    let s: Option<string> = Some("hello");
+    let n: Option<string> = None;
+    if s.is_some() == false {
+        return 5;
+    }
+    if n.is_none() == false {
+        return 7;
+    }
+    let r: Result<i64, string> = Ok(7);
+    let w = match r {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    println(w);
+    0
+}

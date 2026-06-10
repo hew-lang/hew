@@ -1,0 +1,1977 @@
+ElaboratedMirFunction {
+    name: "main",
+    return_ty: Unit,
+    statements: [
+        Bind {
+            binding: BindingId(
+                0,
+            ),
+            name: "doubler",
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    Unit,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "doubler",
+            site: SiteId(
+                8,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    Unit,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    Unit,
+                    Named {
+                        name: "SendError",
+                        args: [],
+                        builtin: Some(
+                            SendError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Bind {
+            binding: BindingId(
+                2,
+            ),
+            name: "factor",
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "scale",
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    I64,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "scale",
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    I64,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                5,
+            ),
+            name: "a",
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    Named {
+                        name: "AskError",
+                        args: [],
+                        builtin: Some(
+                            AskError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "a",
+            site: SiteId(
+                21,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    Named {
+                        name: "AskError",
+                        args: [],
+                        builtin: Some(
+                            AskError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    20,
+                ),
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                6,
+            ),
+            name: "v",
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                6,
+            ),
+            name: "v",
+            site: SiteId(
+                23,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Drop {
+            binding: BindingId(
+                5,
+            ),
+            name: "a",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    Named {
+                        name: "AskError",
+                        args: [],
+                        builtin: Some(
+                            AskError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                3,
+            ),
+            name: "scale",
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    I64,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                0,
+            ),
+            name: "doubler",
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    Unit,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    Unit,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    Unit,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    I64,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    Named {
+                        name: "AskError",
+                        args: [],
+                        builtin: Some(
+                            AskError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Duplex",
+                args: [
+                    I64,
+                    I64,
+                ],
+                builtin: Some(
+                    Duplex,
+                ),
+                is_opaque: false,
+            },
+            value_class: AffineResource,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    Named {
+                        name: "AskError",
+                        args: [],
+                        builtin: Some(
+                            AskError,
+                        ),
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 9,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 10,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 11,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 12,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: LambdaActorHandle(
+                        5,
+                    ),
+                    ty: Named {
+                        name: "Duplex",
+                        args: [
+                            I64,
+                            I64,
+                        ],
+                        builtin: Some(
+                            Duplex,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: Some(
+                        "LambdaActorHandle::close",
+                    ),
+                    kind: LambdaActorRelease,
+                },
+                ElabDrop {
+                    place: LambdaActorHandle(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "Duplex",
+                        args: [
+                            I64,
+                            Unit,
+                        ],
+                        builtin: Some(
+                            Duplex,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: Some(
+                        "LambdaActorHandle::close",
+                    ),
+                    kind: LambdaActorRelease,
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 13,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: LambdaActorHandle(
+                        5,
+                    ),
+                    ty: Named {
+                        name: "Duplex",
+                        args: [
+                            I64,
+                            I64,
+                        ],
+                        builtin: Some(
+                            Duplex,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: Some(
+                        "LambdaActorHandle::close",
+                    ),
+                    kind: LambdaActorRelease,
+                },
+                ElabDrop {
+                    place: LambdaActorHandle(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "Duplex",
+                        args: [
+                            I64,
+                            Unit,
+                        ],
+                        builtin: Some(
+                            Duplex,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: Some(
+                        "LambdaActorHandle::close",
+                    ),
+                    kind: LambdaActorRelease,
+                },
+            ],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "hew_lambda_actor_new",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 1,
+                callee: "hew_lambda_actor_new",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 2,
+                then_target: 4,
+                else_target: 7,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 3,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                I64,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            0,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                Unit,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 4,
+                callee: "println_i64",
+                next: 8,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 5,
+                then_target: 9,
+                else_target: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 6,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                I64,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            0,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                Unit,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 7,
+                then_target: 5,
+                else_target: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 8,
+                target: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 8,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                I64,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            0,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                Unit,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                ],
+            },
+        ),
+        (
+            Panic {
+                block: 9,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                I64,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            0,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                Unit,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 10,
+                callee: "println_i64",
+                next: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 11,
+                target: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 11,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                I64,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                    ElabDrop {
+                        place: LambdaActorHandle(
+                            0,
+                        ),
+                        ty: Named {
+                            name: "Duplex",
+                            args: [
+                                I64,
+                                Unit,
+                            ],
+                            builtin: Some(
+                                Duplex,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: Some(
+                            "LambdaActorHandle::close",
+                        ),
+                        kind: LambdaActorRelease,
+                    },
+                ],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [
+        LambdaCapture {
+            actor_handle: LambdaActorHandle(
+                5,
+            ),
+            captured: BindingId(
+                2,
+            ),
+            name: "factor",
+            capture_kind: Strong,
+        },
+    ],
+}
+ElaboratedMirFunction {
+    name: "__hew_lambda_body_main_0",
+    return_ty: Unit,
+    statements: [
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "x",
+            site: SiteId(
+                4,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                1,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Branch {
+                block: 0,
+                then_target: 1,
+                else_target: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 2,
+                callee: "println_i64",
+                next: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "__hew_lambda_body_main_1",
+    return_ty: I64,
+    statements: [
+        Use {
+            binding: BindingId(
+                4,
+            ),
+            name: "n",
+            site: SiteId(
+                15,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Branch {
+                block: 0,
+                then_target: 1,
+                else_target: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                10,
+            ),
+            name: "val",
+            site: SiteId(
+                58,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    57,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                11,
+            ),
+            name: "val",
+            site: SiteId(
+                61,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    60,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "val",
+            site: SiteId(
+                64,
+            ),
+            ty: U32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    63,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                13,
+            ),
+            name: "val",
+            site: SiteId(
+                67,
+            ),
+            ty: U64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    66,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                14,
+            ),
+            name: "val",
+            site: SiteId(
+                70,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    69,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_bool",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "val",
+            site: SiteId(
+                73,
+            ),
+            ty: Char,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    72,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_char",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                16,
+            ),
+            name: "val",
+            site: SiteId(
+                76,
+            ),
+            ty: F64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    75,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_f64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                17,
+            ),
+            name: "val",
+            site: SiteId(
+                78,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    78,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Return {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}

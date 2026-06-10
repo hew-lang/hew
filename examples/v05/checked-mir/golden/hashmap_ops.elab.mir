@@ -1,0 +1,3410 @@
+ElaboratedMirFunction {
+    name: "main",
+    return_ty: Unit,
+    statements: [
+        Bind {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                6,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                20,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                22,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                1,
+            ),
+            name: "v",
+            site: SiteId(
+                13,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "v",
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                2,
+            ),
+            name: "has",
+            site: SiteId(
+                21,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                25,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "removed",
+            site: SiteId(
+                24,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                2,
+            ),
+            name: "has",
+            site: SiteId(
+                30,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "removed",
+            site: SiteId(
+                34,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            site: SiteId(
+                39,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                27,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                4,
+            ),
+            name: "flags",
+            site: SiteId(
+                53,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                4,
+            ),
+            name: "flags",
+            site: SiteId(
+                56,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                55,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                4,
+            ),
+            name: "flags",
+            site: SiteId(
+                61,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                59,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                5,
+            ),
+            name: "ratios",
+            site: SiteId(
+                63,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "ratios",
+            site: SiteId(
+                66,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                65,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "ratios",
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                6,
+            ),
+            name: "labels",
+            site: SiteId(
+                73,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                6,
+            ),
+            name: "labels",
+            site: SiteId(
+                76,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                75,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                6,
+            ),
+            name: "labels",
+            site: SiteId(
+                81,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    79,
+                ),
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                7,
+            ),
+            name: "s",
+            site: SiteId(
+                83,
+            ),
+            ty: String,
+        },
+        Use {
+            binding: BindingId(
+                7,
+            ),
+            name: "s",
+            site: SiteId(
+                84,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Drop {
+            binding: BindingId(
+                7,
+            ),
+            name: "s",
+            ty: String,
+        },
+        Drop {
+            binding: BindingId(
+                6,
+            ),
+            name: "labels",
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                5,
+            ),
+            name: "ratios",
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                4,
+            ),
+            name: "flags",
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                0,
+            ),
+            name: "m",
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                87,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 9,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 10,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 11,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 12,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 13,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 14,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 15,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 16,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 17,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 18,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 19,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 20,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 21,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 22,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 23,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 24,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 25,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 26,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 27,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 28,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 29,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 30,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 31,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 32,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 33,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 34,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 35,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 36,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 37,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 38,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 39,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 40,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 41,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 42,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 43,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 44,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        1,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 45,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        1,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 46,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        47,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            String,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+                ElabDrop {
+                    place: Local(
+                        42,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            F64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+                ElabDrop {
+                    place: Local(
+                        37,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            Bool,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+                ElabDrop {
+                    place: Local(
+                        1,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_hashmap_free_layout",
+                    },
+                },
+            ],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "HashMap::new",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 1,
+                callee: "hew_hashmap_insert_layout",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 2,
+                callee: "hew_hashmap_insert_layout",
+                next: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "hew_hashmap_get_layout",
+                next: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 4,
+                then_target: 6,
+                else_target: 9,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 5,
+                callee: "hew_hashmap_contains_key_layout",
+                next: 14,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 6,
+                callee: "println_i64",
+                next: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 7,
+                then_target: 11,
+                else_target: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 8,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 9,
+                then_target: 7,
+                else_target: 8,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 10,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 10,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Panic {
+                block: 11,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 12,
+                callee: "println_i64",
+                next: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 13,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 13,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 14,
+                callee: "hew_hashmap_remove_layout",
+                next: 15,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 15,
+                callee: "to_string_bool",
+                next: 16,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 16,
+                callee: "string_concat",
+                next: 17,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 17,
+                callee: "string_concat",
+                next: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 18,
+                callee: "to_string_bool",
+                next: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 19,
+                callee: "string_concat",
+                next: 20,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 20,
+                callee: "string_concat",
+                next: 21,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 21,
+                callee: "hew_hashmap_len_layout",
+                next: 22,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 22,
+                callee: "to_string_i64",
+                next: 23,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 23,
+                callee: "string_concat",
+                next: 24,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 24,
+                callee: "println_str",
+                next: 25,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 25,
+                callee: "HashMap::new",
+                next: 26,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 26,
+                callee: "hew_hashmap_insert_layout",
+                next: 27,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 27,
+                callee: "hew_hashmap_len_layout",
+                next: 28,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 28,
+                callee: "println_i64",
+                next: 29,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 29,
+                callee: "HashMap::new",
+                next: 30,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 30,
+                callee: "hew_hashmap_insert_layout",
+                next: 31,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 31,
+                callee: "hew_hashmap_len_layout",
+                next: 32,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 32,
+                callee: "println_i64",
+                next: 33,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 33,
+                callee: "HashMap::new",
+                next: 34,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 34,
+                callee: "hew_hashmap_insert_layout",
+                next: 35,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 35,
+                callee: "hew_hashmap_get_layout",
+                next: 36,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 36,
+                then_target: 38,
+                else_target: 41,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 37,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            47,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                String,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            42,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                F64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            37,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                Bool,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 38,
+                callee: "println_str",
+                next: 42,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 39,
+                callee: "println_str",
+                next: 43,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 40,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            47,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                String,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            42,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                F64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            37,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                Bool,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 41,
+                then_target: 39,
+                else_target: 40,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 42,
+                target: 37,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 42,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            47,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                String,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            42,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                F64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            37,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                Bool,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+        (
+            Goto {
+                block: 43,
+                target: 37,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 43,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            47,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                String,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            42,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                F64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            37,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                Bool,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashMap",
+                            args: [
+                                String,
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashMap,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashmap_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                11,
+            ),
+            name: "val",
+            site: SiteId(
+                118,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    117,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                117,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                118,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "val",
+            site: SiteId(
+                121,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    120,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                120,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                121,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                13,
+            ),
+            name: "val",
+            site: SiteId(
+                124,
+            ),
+            ty: U32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    123,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                123,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                124,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                14,
+            ),
+            name: "val",
+            site: SiteId(
+                127,
+            ),
+            ty: U64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    126,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                126,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                127,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "val",
+            site: SiteId(
+                130,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    129,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                129,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                130,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_bool",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                16,
+            ),
+            name: "val",
+            site: SiteId(
+                133,
+            ),
+            ty: Char,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    132,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                132,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                133,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_char",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                17,
+            ),
+            name: "val",
+            site: SiteId(
+                136,
+            ),
+            ty: F64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    135,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                135,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                136,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_f64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                18,
+            ),
+            name: "val",
+            site: SiteId(
+                138,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    138,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                138,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Return {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}

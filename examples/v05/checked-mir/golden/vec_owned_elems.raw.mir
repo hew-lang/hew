@@ -1,0 +1,3331 @@
+RawMirFunction {
+    name: "main",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [],
+    locals: [
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        String,
+        String,
+        String,
+        I64,
+        I64,
+        Bool,
+        String,
+        String,
+        I64,
+        String,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        I64,
+        I64,
+        Bool,
+        String,
+        String,
+        I64,
+        Bool,
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Point",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Point",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Tag",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Tag",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        String,
+        I64,
+        Named {
+            name: "Tag",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        Named {
+            name: "Tag",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Tag",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                args: [],
+                dest: Some(
+                    Local(
+                        0,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        3,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        1,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        97,
+                        100,
+                        97,
+                    ],
+                    dest: Local(
+                        2,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_str",
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        2,
+                    ),
+                ],
+                dest: None,
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        2,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        6,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        97,
+                        108,
+                        97,
+                        110,
+                    ],
+                    dest: Local(
+                        3,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_str",
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: None,
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        5,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        9,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        103,
+                        114,
+                        97,
+                        99,
+                        101,
+                    ],
+                    dest: Local(
+                        4,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_str",
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        4,
+                    ),
+                ],
+                dest: None,
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        8,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        12,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        5,
+                    ),
+                    value: 1,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        symbol: "hew_vec_len",
+                        args: [
+                            Local(
+                                1,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                6,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        7,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        5,
+                    ),
+                    rhs: Local(
+                        6,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    7,
+                ),
+                then_target: 5,
+                else_target: 6,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "who",
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "who",
+                    site: SiteId(
+                        15,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        symbol: "hew_vec_get_str",
+                        args: [
+                            Local(
+                                1,
+                            ),
+                            Local(
+                                5,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                8,
+                            ),
+                        ),
+                    },
+                ),
+                Move {
+                    dest: Local(
+                        9,
+                    ),
+                    src: Local(
+                        8,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        9,
+                    ),
+                ],
+                dest: None,
+                next: 7,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        14,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        10,
+                    ),
+                    value: 0,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_get_str",
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        10,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        11,
+                    ),
+                ),
+                next: 8,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        11,
+                    ),
+                ],
+                dest: None,
+                next: 9,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        17,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        23,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Drop {
+                    place: Local(
+                        11,
+                    ),
+                    ty: String,
+                    drop_fn: Some(
+                        "hew_string_drop",
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        12,
+                    ),
+                    value: 1,
+                },
+                ConstI64 {
+                    dest: Local(
+                        13,
+                    ),
+                    value: 3,
+                },
+                IntCmp {
+                    dest: Local(
+                        14,
+                    ),
+                    pred: SignedGreater,
+                    lhs: Local(
+                        12,
+                    ),
+                    rhs: Local(
+                        13,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    14,
+                ),
+                then_target: 10,
+                else_target: 11,
+            },
+        },
+        BasicBlock {
+            id: 10,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 11,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        symbol: "hew_vec_len",
+                        args: [
+                            Local(
+                                1,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                15,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        16,
+                    ),
+                    pred: SignedGreater,
+                    lhs: Local(
+                        13,
+                    ),
+                    rhs: Local(
+                        15,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    16,
+                ),
+                then_target: 10,
+                else_target: 12,
+            },
+        },
+        BasicBlock {
+            id: 12,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "tail",
+                    site: SiteId(
+                        22,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "tail",
+                    site: SiteId(
+                        28,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        symbol: "hew_vec_slice_range_str",
+                        args: [
+                            Local(
+                                1,
+                            ),
+                            Local(
+                                12,
+                            ),
+                            Local(
+                                13,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                17,
+                            ),
+                        ),
+                    },
+                ),
+                Move {
+                    dest: Local(
+                        18,
+                    ),
+                    src: Local(
+                        17,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_len",
+                args: [
+                    Local(
+                        18,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        19,
+                    ),
+                ),
+                next: 13,
+            },
+        },
+        BasicBlock {
+            id: 13,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                args: [
+                    Local(
+                        19,
+                    ),
+                ],
+                dest: None,
+                next: 14,
+            },
+        },
+        BasicBlock {
+            id: 14,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        26,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        32,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        22,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        20,
+                    ),
+                    src: Local(
+                        22,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_len",
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        23,
+                    ),
+                ),
+                next: 15,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        21,
+                    ),
+                    src: Local(
+                        23,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 16,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [],
+            instructions: [
+                IntCmp {
+                    dest: Local(
+                        24,
+                    ),
+                    pred: SignedLess,
+                    lhs: Local(
+                        20,
+                    ),
+                    rhs: Local(
+                        21,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    24,
+                ),
+                then_target: 17,
+                else_target: 19,
+            },
+        },
+        BasicBlock {
+            id: 17,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "i",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "names",
+                    site: SiteId(
+                        34,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "i",
+                    site: SiteId(
+                        35,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_vec_get_str",
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        20,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        25,
+                    ),
+                ),
+                next: 20,
+            },
+        },
+        BasicBlock {
+            id: 18,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        27,
+                    ),
+                    value: 1,
+                },
+                IntArithChecked {
+                    op: Add,
+                    signed: Signed,
+                    dest: Local(
+                        20,
+                    ),
+                    lhs: Local(
+                        20,
+                    ),
+                    rhs: Local(
+                        27,
+                    ),
+                    overflow_flag: Local(
+                        28,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    28,
+                ),
+                then_target: 22,
+                else_target: 16,
+            },
+        },
+        BasicBlock {
+            id: 19,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        39,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                args: [],
+                dest: Some(
+                    Local(
+                        29,
+                    ),
+                ),
+                next: 23,
+            },
+        },
+        BasicBlock {
+            id: 20,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "n",
+                    site: SiteId(
+                        33,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "n",
+                    site: SiteId(
+                        37,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        26,
+                    ),
+                    src: Local(
+                        25,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                args: [
+                    Local(
+                        26,
+                    ),
+                ],
+                dest: None,
+                next: 21,
+            },
+        },
+        BasicBlock {
+            id: 21,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        36,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Goto {
+                target: 18,
+            },
+        },
+        BasicBlock {
+            id: 22,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 23,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "pts",
+                    site: SiteId(
+                        40,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "pts",
+                    site: SiteId(
+                        43,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        30,
+                    ),
+                    src: Local(
+                        29,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        31,
+                    ),
+                    value: 1,
+                },
+                ConstI64 {
+                    dest: Local(
+                        32,
+                    ),
+                    value: 2,
+                },
+                RecordInit {
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: [
+                        (
+                            FieldOffset(
+                                0,
+                            ),
+                            Local(
+                                31,
+                            ),
+                        ),
+                        (
+                            FieldOffset(
+                                1,
+                            ),
+                            Local(
+                                32,
+                            ),
+                        ),
+                    ],
+                    dest: Local(
+                        33,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_layout",
+                args: [
+                    Local(
+                        30,
+                    ),
+                    Local(
+                        33,
+                    ),
+                ],
+                dest: None,
+                next: 24,
+            },
+        },
+        BasicBlock {
+            id: 24,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        42,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "pts",
+                    site: SiteId(
+                        48,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        34,
+                    ),
+                    value: 3,
+                },
+                ConstI64 {
+                    dest: Local(
+                        35,
+                    ),
+                    value: 4,
+                },
+                RecordInit {
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: [
+                        (
+                            FieldOffset(
+                                0,
+                            ),
+                            Local(
+                                34,
+                            ),
+                        ),
+                        (
+                            FieldOffset(
+                                1,
+                            ),
+                            Local(
+                                35,
+                            ),
+                        ),
+                    ],
+                    dest: Local(
+                        36,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_layout",
+                args: [
+                    Local(
+                        30,
+                    ),
+                    Local(
+                        36,
+                    ),
+                ],
+                dest: None,
+                next: 25,
+            },
+        },
+        BasicBlock {
+            id: 25,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        47,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "pts",
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        37,
+                    ),
+                    value: 1,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_get_layout",
+                args: [
+                    Local(
+                        30,
+                    ),
+                    Local(
+                        37,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        38,
+                    ),
+                ),
+                next: 26,
+            },
+        },
+        BasicBlock {
+            id: 26,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        52,
+                    ),
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        57,
+                    ),
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        39,
+                    ),
+                    src: Local(
+                        38,
+                    ),
+                },
+                RecordFieldLoad {
+                    record: Local(
+                        39,
+                    ),
+                    field_offset: FieldOffset(
+                        0,
+                    ),
+                    dest: Local(
+                        40,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_i64",
+                args: [
+                    Local(
+                        40,
+                    ),
+                ],
+                dest: None,
+                next: 27,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        55,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                args: [],
+                dest: Some(
+                    Local(
+                        41,
+                    ),
+                ),
+                next: 28,
+            },
+        },
+        BasicBlock {
+            id: 28,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "tags",
+                    site: SiteId(
+                        59,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Tag",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "tags",
+                    site: SiteId(
+                        62,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Tag",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        42,
+                    ),
+                    src: Local(
+                        41,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        97,
+                    ],
+                    dest: Local(
+                        43,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        44,
+                    ),
+                    value: 1,
+                },
+                RecordInit {
+                    ty: Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: [
+                        (
+                            FieldOffset(
+                                0,
+                            ),
+                            Local(
+                                43,
+                            ),
+                        ),
+                        (
+                            FieldOffset(
+                                1,
+                            ),
+                            Local(
+                                44,
+                            ),
+                        ),
+                    ],
+                    dest: Local(
+                        45,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_owned",
+                args: [
+                    Local(
+                        42,
+                    ),
+                    Local(
+                        45,
+                    ),
+                ],
+                dest: None,
+                next: 29,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        61,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "tags",
+                    site: SiteId(
+                        67,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Tag",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        46,
+                    ),
+                    value: 0,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_get_owned",
+                args: [
+                    Local(
+                        42,
+                    ),
+                    Local(
+                        46,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        47,
+                    ),
+                ),
+                next: 30,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "t",
+                    site: SiteId(
+                        66,
+                    ),
+                    ty: Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "t",
+                    site: SiteId(
+                        71,
+                    ),
+                    ty: Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        48,
+                    ),
+                    src: Local(
+                        47,
+                    ),
+                },
+                RecordFieldLoad {
+                    record: Local(
+                        48,
+                    ),
+                    field_offset: FieldOffset(
+                        1,
+                    ),
+                    dest: Local(
+                        49,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_i64",
+                args: [
+                    Local(
+                        49,
+                    ),
+                ],
+                dest: None,
+                next: 31,
+            },
+        },
+        BasicBlock {
+            id: 31,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        69,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                35,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                40,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                42,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                48,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                50,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                54,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: Named {
+                name: "Tag",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: Named {
+                name: "Tag",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Tag",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "Tag",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I32,
+    ],
+    locals: [
+        I32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        102,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i32",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            101,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                101,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                102,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        105,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            104,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                104,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                105,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U32,
+    ],
+    locals: [
+        U32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        108,
+                    ),
+                    ty: U32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u32",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            107,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                107,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                108,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U64,
+    ],
+    locals: [
+        U64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        111,
+                    ),
+                    ty: U64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            110,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                110,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                111,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Bool,
+    ],
+    locals: [
+        Bool,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        114,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            113,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                113,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                114,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Char,
+    ],
+    locals: [
+        Char,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        117,
+                    ),
+                    ty: Char,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_char",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            116,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                116,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                117,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        F64,
+    ],
+    locals: [
+        F64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        120,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_f64",
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            119,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                119,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                120,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        String,
+    ],
+    locals: [
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        19,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        122,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            122,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        0,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                122,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}

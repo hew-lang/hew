@@ -1,0 +1,25 @@
+// MIR-corpus fixture: structured-concurrency scope + fork inside an
+// actor handler.
+//
+// Pins the task ABI lifecycle: `hew_task_scope_new`,
+// `hew_task_scope_set_current`, `hew_task_new`, `hew_task_scope_spawn`,
+// `hew_task_scope_join_all`, `hew_task_scope_destroy`.
+fn worker() {
+    // No-arg, unit-returning callee — the shape lower_spawned_fn_task accepts.
+}
+
+actor Driver {
+    receive fn drive() {
+        scope {
+            fork {
+                worker();
+            };
+        };
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    d.drive();
+    0
+}

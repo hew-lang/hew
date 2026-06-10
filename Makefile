@@ -733,7 +733,9 @@ check-sanitizer-gate:
 # that match by function name (e.g. leak:hew_sched_init) fire correctly.
 # Falls back gracefully to the empty string if none is found (suppressions
 # may not apply without a symbolizer, but the build will still run).
-ASAN_SYMBOLIZER ?= $(lastword $(sort $(wildcard /usr/lib/llvm-*/bin/llvm-symbolizer)))
+# NOTE: GNU make $(sort) is lexicographic, so llvm-9 would rank after llvm-17.
+# Use a shell pipeline with sort -V (version-aware) to find the newest copy.
+ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | sort -V | tail -1)
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \

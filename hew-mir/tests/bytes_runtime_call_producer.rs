@@ -341,9 +341,11 @@ fn bytes_get_discarded_emits_call_runtime_abi() {
     );
 }
 
-/// `bytes.get(i)` in value-needed context must allocate an `i32` dest local.
+/// `bytes.get(i)` in value-needed context allocates a `u8` dest local: the
+/// typed runtime-call catalog carries `hew_bytes_index`'s real C return type
+/// (`u8`), and the dest follows the catalog rather than a pre-widened `i32`.
 #[test]
-fn bytes_get_value_needed_emits_i32_dest() {
+fn bytes_get_value_needed_emits_u8_dest() {
     let mut ids = IdGen::default();
     let callee = runtime_callee(&mut ids, "hew_bytes_index", ResolvedTy::I32);
     let buf = bytes_lit(&mut ids);
@@ -419,7 +421,7 @@ fn bytes_get_value_needed_emits_i32_dest() {
         .expect("dest local must be in locals table");
     assert_eq!(
         *dest_ty,
-        ResolvedTy::I32,
-        "bytes.get() dest local must be typed i32; got {dest_ty:?}"
+        ResolvedTy::U8,
+        "bytes.get() dest local must follow the catalog return type u8; got {dest_ty:?}"
     );
 }

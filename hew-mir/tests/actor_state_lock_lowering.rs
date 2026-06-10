@@ -116,6 +116,7 @@ fn minimal_actor(
         id: ids.item(),
         node: ids.node(),
         name: name.to_string(),
+        defining_module: None,
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,
@@ -270,6 +271,7 @@ fn generator_handler_is_absent_from_actor_handler_layout() {
         id: ids.item(),
         node: ids.node(),
         name: "Counter".to_string(),
+        defining_module: None,
         state_fields: vec![],
         init: None,
         receive_handlers: vec![normal, generator],

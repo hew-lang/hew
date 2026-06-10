@@ -3111,6 +3111,19 @@ impl Checker {
     }
 
     pub(super) fn register_actor_decl(&mut self, ad: &ActorDecl) {
+        let identity = ad.name.clone();
+        self.register_actor_decl_as(ad, &identity);
+    }
+
+    /// Register an actor declaration under an explicit identity key.
+    ///
+    /// `identity` is the bare name for root/flat actors and the dotted
+    /// `{module_short}.{name}` form for module actors (see
+    /// [`Self::actor_identity`]). Every per-actor side table — `type_defs`,
+    /// the Send registry, type-param bounds, init params — is keyed by this
+    /// identity so two same-named actors from different modules occupy
+    /// distinct entries instead of last-write-wins clobbering.
+    pub(super) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
         let mut fields = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
         let mut hole_vars = Vec::new();
@@ -3129,7 +3142,7 @@ impl Checker {
 
         let type_def = TypeDef {
             kind: TypeDefKind::Actor,
-            name: ad.name.clone(),
+            name: identity.to_string(),
             type_params: type_param_names,
             fields,
             field_order,
@@ -3146,15 +3159,19 @@ impl Checker {
         let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
         if !type_param_bounds.is_empty() {
             self.actor_type_param_bounds
-                .insert(ad.name.clone(), type_param_bounds);
+                .insert(identity.to_string(), type_param_bounds);
         }
 
         // Actors are always Send
-        self.registry.register_actor(ad.name.clone());
-        self.register_rcfree_members_for_type(&ad.name, &type_def);
+        self.registry.register_actor(identity.to_string());
+        self.register_rcfree_members_for_type(identity, &type_def);
 
-        self.type_defs.insert(ad.name.clone(), type_def);
-        self.record_type_def_inference_holes(&ad.name, hole_vars);
+        self.type_defs.insert(identity.to_string(), type_def);
+        self.record_type_def_inference_holes(identity, hole_vars);
+        // A new handle-bearing candidate entered `type_defs`; invalidate the
+        // cached handle-bearing classification the same way the qualified
+        // type-alias path does.
+        self.handle_bearing_dirty = true;
 
         // Collect init() parameter shapes for supervisor wired_to type-compatibility checks.
         // Stores (param_name, outer_type, first_type_arg) for each init param.
@@ -3189,7 +3206,7 @@ impl Checker {
         } else {
             vec![]
         };
-        self.actor_init_params.insert(ad.name.clone(), params);
+        self.actor_init_params.insert(identity.to_string(), params);
     }
 
     pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {
@@ -3755,11 +3772,22 @@ impl Checker {
                 self.register_fn_sig(fd);
             }
             Item::Actor(ad) => {
+                // Module actors are identified by the dotted
+                // `{module_short}.{name}` key throughout the checker; root
+                // actors stay bare. Registering the full declaration here
+                // (not only the signatures) covers PRIVATE module actors,
+                // which never pass through the pub-only import paths but
+                // still need a type def for in-module spawn checking.
+                let module_short = self.current_module_short().map(str::to_owned);
+                let identity = Self::actor_identity(module_short.as_deref(), &ad.name);
+                if module_short.is_some() {
+                    self.register_actor_decl_as(ad, &identity);
+                }
                 for rf in &ad.receive_fns {
-                    self.register_receive_fn(&ad.name, rf);
+                    self.register_receive_fn(&identity, rf);
                 }
                 for method in &ad.methods {
-                    let method_name = format!("{}::{}", ad.name, method.name);
+                    let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method);
                 }
             }
@@ -5821,7 +5849,7 @@ impl Checker {
                     if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
-                    self.register_actor_base(ad);
+                    self.register_actor_base(ad, Some(module_short));
                 }
                 // Register pub consts from C-backed stdlib modules that also
                 // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
@@ -5919,7 +5947,9 @@ impl Checker {
                     self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
                 }
                 Item::Actor(ad) => {
-                    self.register_qualified_type_alias(module_short, &ad.name);
+                    // The dotted `{module_short}.{name}` entry is authored
+                    // directly by `register_actor_base`; only the export
+                    // record is added here.
                     self.record_module_type_export(module_short, &ad.name);
                 }
                 _ => {}
@@ -6035,7 +6065,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    self.register_actor_base(ad);
+                    self.register_actor_base(ad, None);
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
@@ -6379,8 +6409,10 @@ impl Checker {
                     if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
-                    self.register_actor_base(ad);
-                    self.register_qualified_type_alias(module_short, &ad.name);
+                    // `register_actor_base` authors the dotted
+                    // `{module_short}.{name}` identity directly; no bare key
+                    // and no copy-based qualified alias.
+                    self.register_actor_base(ad, Some(module_short));
                     self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
@@ -6451,24 +6483,49 @@ impl Checker {
         (sig, assoc_bindings)
     }
 
+    /// Compute the checker identity for an actor declared in `module_short`.
+    ///
+    /// Module actors are identified by the dotted `{module_short}.{name}` key
+    /// (the same authoritative form `resolve_module_type` reads); root and
+    /// flat-file actors keep the bare name. This is the single authority for
+    /// the actor-identity key shape — every registration and lookup site
+    /// derives the key through here so producer and consumer cannot drift.
+    pub(super) fn actor_identity(module_short: Option<&str>, name: &str) -> String {
+        match module_short {
+            Some(m) => format!("{m}.{name}"),
+            None => name.to_string(),
+        }
+    }
+
     /// Register an actor's core items: the type declaration, receive functions,
     /// and inline methods.  This block is identical across all three import
-    /// registration paths; only the qualified-alias and unqualified-binding
+    /// registration paths; only the export-record and unqualified-binding
     /// steps differ and are therefore kept in each caller.
-    pub(super) fn register_actor_base(&mut self, ad: &ActorDecl) {
-        self.register_actor_decl(ad);
-        self.known_types.insert(ad.name.clone());
+    ///
+    /// Actor identity is the dotted `{module_short}.{name}` key for module
+    /// actors (authored directly here — NOT copied from a bare entry, which
+    /// is last-write-wins across modules) and the bare name for root and
+    /// flat-file actors. The bare key is never written for module actors, so
+    /// a second same-named import cannot clobber another module's actor.
+    pub(super) fn register_actor_base(&mut self, ad: &ActorDecl, module_short: Option<&str>) {
+        let identity = Self::actor_identity(module_short, &ad.name);
+        self.register_actor_decl_as(ad, &identity);
+        self.known_types.insert(identity.clone());
         for rf in &ad.receive_fns {
-            self.register_receive_fn(&ad.name, rf);
+            self.register_receive_fn(&identity, rf);
         }
         for method in &ad.methods {
-            let method_name = format!("{}::{}", ad.name, method.name);
+            let method_name = format!("{identity}::{}", method.name);
             self.register_fn_sig_with_name(&method_name, method);
         }
     }
 
     /// Insert a qualified alias (`module_short.Name`) for a type that has
     /// already been registered under its bare name.
+    ///
+    /// Actors do NOT use this copy-based alias: their dotted key is authored
+    /// directly by [`Self::register_actor_base`], so the qualified entry is
+    /// always the module's own actor rather than whichever bare entry won.
     pub(super) fn register_qualified_type_alias(&mut self, module_short: &str, name: &str) {
         let qualified = format!("{module_short}.{name}");
         if let Some(def) = self.type_defs.get(name).cloned() {

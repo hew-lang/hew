@@ -968,8 +968,12 @@ pub fn lower_hir_module_with_facts(
             }
             HirItem::Actor(actor) => {
                 if !actor.state_fields.is_empty() {
+                    // State-record key = the actor's qualified identity, the
+                    // same key the spawn-site `RecordInit` type and the
+                    // actor-layout registry use, so two same-named module
+                    // actors get distinct state structs.
                     record_layouts.push(crate::model::RecordLayout {
-                        name: actor.name.clone(),
+                        name: actor.qualified_name(),
                         field_tys: actor
                             .state_fields
                             .iter()
@@ -1200,8 +1204,12 @@ pub fn lower_hir_module_with_facts(
         } else {
             match classification {
                 Ok(kinds) => (
-                    Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
-                    Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
+                    Some(crate::state_clone::mangle_actor_state_clone_fn(
+                        &actor_symbol_base(actor),
+                    )),
+                    Some(crate::state_clone::mangle_actor_state_drop_fn(
+                        &actor_symbol_base(actor),
+                    )),
                     Some(kinds),
                 ),
                 Err(err) => {
@@ -1263,7 +1271,13 @@ pub fn lower_hir_module_with_facts(
             }
         };
         actor_layouts.push(crate::model::ActorLayout {
-            name: actor.name.clone(),
+            // The registry key is the actor's qualified identity: dotted
+            // `module.Name` for module actors, bare for root actors. It
+            // matches the checker's `LocalPid<T>` inner name, so ask-site
+            // dispatch (`actor_method_info`) and spawn resolution read the
+            // right layout even when two modules export the same bare name.
+            name: actor.qualified_name(),
+            defining_module: actor.defining_module.clone(),
             state_field_names: actor
                 .state_fields
                 .iter()
@@ -1292,24 +1306,24 @@ pub fn lower_hir_module_with_facts(
             init_symbol: actor
                 .init
                 .as_ref()
-                .map(|_| mangle_actor_init_handler(&actor.name)),
+                .map(|_| mangle_actor_init_handler(&actor_symbol_base(actor))),
             on_start_symbol: actor
                 .lifecycle_hooks
                 .iter()
                 .find(|hook| hook.kind == HirLifecycleHookKind::Start)
-                .map(|_| mangle_actor_start_handler(&actor.name)),
+                .map(|_| mangle_actor_start_handler(&actor_symbol_base(actor))),
             on_stop_symbols: actor
                 .lifecycle_hooks
                 .iter()
                 .enumerate()
                 .filter(|(_, hook)| hook.kind == HirLifecycleHookKind::Stop)
-                .map(|(idx, _)| mangle_actor_stop_handler_indexed(&actor.name, idx))
+                .map(|(idx, _)| mangle_actor_stop_handler_indexed(&actor_symbol_base(actor), idx))
                 .collect(),
             on_crash_symbol: actor
                 .lifecycle_hooks
                 .iter()
                 .find(|hook| hook.kind == HirLifecycleHookKind::Crash)
-                .map(|_| mangle_actor_crash_handler(&actor.name)),
+                .map(|_| mangle_actor_crash_handler(&actor_symbol_base(actor))),
             max_heap_bytes: actor.max_heap_bytes,
             cycle_capable: actor.cycle_capable,
             handlers: lower_actor_handler_layouts(actor),
@@ -1319,11 +1333,38 @@ pub fn lower_hir_module_with_facts(
         });
     }
 
-    let actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
+    let mut actor_layout_map: HashMap<String, ActorLayout> = actor_layouts
         .iter()
         .cloned()
         .map(|layout| (layout.name.clone(), layout))
         .collect();
+    // Bare short-name aliases for UNAMBIGUOUS module actors. An annotation-
+    // derived handle type written inside the defining module
+    // (`fn use(p: LocalPid<Account>)`) carries the bare inner name; alias it
+    // to the module actor's layout when exactly one actor of that short name
+    // exists. Root actors own the bare key outright (local-first, never
+    // overwritten), and an ambiguous short name gets NO alias — a bare
+    // lookup on it fails closed with the existing unknown-actor diagnostic
+    // rather than silently picking a module.
+    let mut module_short_name_counts: HashMap<&str, usize> = HashMap::new();
+    for layout in &actor_layouts {
+        if layout.defining_module.is_some() {
+            *module_short_name_counts
+                .entry(crate::model::short_name(&layout.name))
+                .or_insert(0) += 1;
+        }
+    }
+    for layout in &actor_layouts {
+        if layout.defining_module.is_none() {
+            continue;
+        }
+        let short = crate::model::short_name(&layout.name);
+        if module_short_name_counts.get(short) == Some(&1) && !actor_layout_map.contains_key(short)
+        {
+            actor_layout_map.insert(short.to_string(), layout.clone());
+        }
+    }
+    let actor_layout_map = actor_layout_map;
 
     // Post-loop pass: populate on_crash_symbol, max_heap_bytes, cycle_capable,
     // and init_state_fields on each SupervisorChildLayout using the now-complete
@@ -2221,7 +2262,7 @@ fn lower_actor_receive_handlers(
             continue;
         }
 
-        let emit_name = mangle_actor_receive_handler(&actor.name, &handler.name);
+        let emit_name = mangle_actor_receive_handler(&actor_symbol_base(actor), &handler.name);
         let duplicate_label = format!("actor `{}` receive fn `{}`", actor.name, handler.name);
         if let Some(existing) = emitted_symbols.get(&emit_name) {
             diagnostics.push(MirDiagnostic {
@@ -2261,7 +2302,7 @@ fn lower_actor_receive_handlers(
             machine_layout_names,
             enum_layouts,
             opaque_handle_names,
-            Some(&actor.name),
+            Some(actor.qualified_name().as_str()),
             module_fn_names,
             module_generic_fn_names,
             &HashMap::new(),
@@ -2379,7 +2420,7 @@ fn lower_actor_init_handler(
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
 ) -> Option<LoweredFunction> {
-    let emit_name = mangle_actor_init_handler(&actor.name);
+    let emit_name = mangle_actor_init_handler(&actor_symbol_base(actor));
     let duplicate_label = format!("actor `{}` init", actor.name);
     if let Some(existing) = emitted_symbols.get(&emit_name) {
         diagnostics.push(MirDiagnostic {
@@ -2459,7 +2500,7 @@ fn lower_actor_lifecycle_handlers(
     for (hook_idx, hook) in actor.lifecycle_hooks.iter().enumerate() {
         match hook.kind {
             HirLifecycleHookKind::Start => {
-                let emit_name = mangle_actor_start_handler(&actor.name);
+                let emit_name = mangle_actor_start_handler(&actor_symbol_base(actor));
                 let duplicate_label =
                     format!("actor `{}` #[on(start)] hook `{}`", actor.name, hook.name);
                 if let Some(existing) = emitted_symbols.get(&emit_name) {
@@ -2499,7 +2540,7 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     enum_layouts,
                     opaque_handle_names,
-                    Some(&actor.name),
+                    Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
                     &HashMap::new(),
@@ -2517,7 +2558,8 @@ fn lower_actor_lifecycle_handlers(
                 // the index used when populating ActorLayout.on_stop_symbols.
                 // This guarantees no collisions even when multiple #[on(stop)]
                 // hooks are declared on the same actor.
-                let emit_name = mangle_actor_stop_handler_indexed(&actor.name, hook_idx);
+                let emit_name =
+                    mangle_actor_stop_handler_indexed(&actor_symbol_base(actor), hook_idx);
                 let label = format!("actor `{}` #[on(stop)] hook `{}`", actor.name, hook.name);
                 emitted_symbols.insert(emit_name.clone(), label);
 
@@ -2544,7 +2586,7 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     enum_layouts,
                     opaque_handle_names,
-                    Some(&actor.name),
+                    Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
                     &HashMap::new(),
@@ -2556,7 +2598,7 @@ fn lower_actor_lifecycle_handlers(
                 ));
             }
             HirLifecycleHookKind::Crash => {
-                let emit_name = mangle_actor_crash_handler(&actor.name);
+                let emit_name = mangle_actor_crash_handler(&actor_symbol_base(actor));
                 let duplicate_label =
                     format!("actor `{}` #[on(crash)] hook `{}`", actor.name, hook.name);
                 if let Some(existing) = emitted_symbols.get(&emit_name) {
@@ -2728,7 +2770,7 @@ fn lower_actor_lifecycle_handlers(
                     machine_layout_names,
                     enum_layouts,
                     opaque_handle_names,
-                    Some(&actor.name),
+                    Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
                     &HashMap::new(),
@@ -2768,6 +2810,18 @@ fn push_lifecycle_not_wired_diagnostic(
             "`#[on({hook_kind})]` hook `{actor_name}::{hook_name}` would silently never run; {reason}"
         ),
     });
+}
+
+/// The `$`-mangled symbol base for an actor's native symbols.
+///
+/// `bank.Account` → `bank$Account` via the shared `mangle_dotted_name`
+/// authority (the imported-fn `greeting$hello` scheme); root actors
+/// (`defining_module == None`) map to their bare name, so single-module
+/// programs keep byte-identical symbols. EVERY `mangle_actor_*` call site
+/// feeds this base — never `actor.name` directly — so the MIR producer and
+/// the codegen `get_function` consumer cannot drift.
+fn actor_symbol_base(actor: &HirActorDecl) -> String {
+    hew_hir::mangle_dotted_name(&actor.qualified_name())
 }
 
 /// Deterministic actor receive-handler symbol mangling.
@@ -3969,7 +4023,7 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
             .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
         layouts.push(ActorHandlerLayout {
             name: handler.name.clone(),
-            symbol: mangle_actor_receive_handler(&actor.name, &handler.name),
+            symbol: mangle_actor_receive_handler(&actor_symbol_base(actor), &handler.name),
             msg_type,
             param_tys: handler
                 .params

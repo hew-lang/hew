@@ -300,6 +300,22 @@ pub struct HirActorDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Defining-module identity of this actor declaration.
+    ///
+    /// `None` means the actor's identity is the root program namespace: actors
+    /// declared in the root file, and actors spliced into the root item list
+    /// by a file-path import (`import "x.hew";`) — file-import splicing keeps
+    /// those root-identical, mirroring the module-origin provenance discipline
+    /// used for file-import impl dedup. `Some(module_short)` means the actor
+    /// is exported by a package module (`import bank;` → `Some("bank")`),
+    /// extending the `(defining-module, name)` identity model that
+    /// per-module type identity established for `pub type`s to actors.
+    ///
+    /// Carried so MIR layout keys and codegen symbol synthesis can tell two
+    /// same-named actors from different modules apart. [`Self::qualified_name`]
+    /// derives the dotted registry key; root actors qualify to their bare
+    /// name, so single-module programs see byte-identical symbols.
+    pub defining_module: Option<String>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
     pub state_fields: Vec<HirField>,
@@ -354,6 +370,24 @@ pub struct HirActorDecl {
     /// source order.
     pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
     pub span: Span,
+}
+
+impl HirActorDecl {
+    /// Dotted qualified identity key for this actor: `bank.Account` for an
+    /// actor exported by package module `bank`, the bare `Account` for a
+    /// root-program actor (`defining_module == None`).
+    ///
+    /// This is the registry-key form (matching the checker's qualified
+    /// `type_defs` keys); native symbols derive from it through
+    /// [`crate::mangle_dotted_name`], which maps the root/bare form to itself
+    /// — so qualifying is a no-op for single-module programs by construction.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        match &self.defining_module {
+            Some(module_short) => format!("{module_short}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// Lowered `init` block on an actor.

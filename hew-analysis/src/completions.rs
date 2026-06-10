@@ -31,7 +31,7 @@ pub fn complete(
         return items;
     }
 
-    if let Some(items) = try_spawn_completions(source, parse_result, offset) {
+    if let Some(items) = try_spawn_completions(source, parse_result, type_output, offset) {
         return items;
     }
 
@@ -341,9 +341,16 @@ fn variant_completion_detail(variant_def: &VariantDef) -> Option<String> {
 
 /// If the cursor is right after `spawn `, offer only actor and supervisor names.
 /// Returns `None` if no actors/supervisors are found, falling through to general completions.
+///
+/// File-local actors keep their bare labels. Imported module actors surface
+/// under their qualified `module.Actor` label — the dotted key IS the actor's
+/// identity and the spawn spelling (`spawn bank.Account(...)`), so two
+/// same-named actors from different modules appear as two distinct,
+/// unambiguous entries instead of one bare name.
 fn try_spawn_completions(
     source: &str,
     parse_result: &hew_parser::ParseResult,
+    type_output: Option<&TypeCheckOutput>,
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
     let before = &source[..offset];
@@ -378,6 +385,31 @@ fn try_spawn_completions(
                 });
             }
             _ => {}
+        }
+    }
+
+    // Imported module actors live in the checker's `type_defs` under their
+    // dotted identity keys (`bank.Account`); the file's AST does not carry
+    // them. Surfacing the dotted label keeps two same-named module actors
+    // distinguishable and inserts the exact qualified spawn spelling.
+    if let Some(output) = type_output {
+        let mut imported: Vec<&String> = output
+            .type_defs
+            .iter()
+            .filter(|(name, def)| def.kind == TypeDefKind::Actor && name.contains('.'))
+            .map(|(name, _)| name)
+            .collect();
+        imported.sort_unstable();
+        for name in imported {
+            items.push(CompletionItem {
+                label: name.clone(),
+                kind: CompletionKind::Actor,
+                detail: Some("actor".to_string()),
+                documentation: None,
+                insert_text: None,
+                insert_text_is_snippet: false,
+                sort_text: None,
+            });
         }
     }
 
@@ -975,6 +1007,91 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut checker = hew_types::Checker::new(registry);
         checker.check_program(&parse_result.program)
+    }
+
+    /// Type-check `root_source` together with pre-resolved module imports
+    /// (`(path, module_source)` pairs), mirroring the resolved-import shape
+    /// `hew-compile` hands the checker for package imports.
+    fn type_check_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> TypeCheckOutput {
+        use hew_parser::ast::{ImportDecl, Program};
+        let mut items: Vec<Spanned<Item>> = modules
+            .iter()
+            .map(|(path, module_source)| {
+                let parsed = hew_parser::parse(module_source);
+                assert!(
+                    parsed.errors.is_empty(),
+                    "module parse errors: {:?}",
+                    parsed.errors
+                );
+                (
+                    Item::Import(ImportDecl {
+                        path: path.iter().map(ToString::to_string).collect(),
+                        spec: None,
+                        file_path: None,
+                        resolved_items: Some(parsed.program.items),
+                        resolved_item_source_paths: Vec::new(),
+                        resolved_source_paths: Vec::new(),
+                    }),
+                    0..0,
+                )
+            })
+            .collect();
+        let root = hew_parser::parse(root_source);
+        assert!(
+            root.errors.is_empty(),
+            "root parse errors: {:?}",
+            root.errors
+        );
+        items.extend(root.program.items);
+        let program = Program {
+            items,
+            module_doc: None,
+            module_graph: None,
+        };
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        checker.check_program(&program)
+    }
+
+    /// Two same-named imported actors surface as two distinct
+    /// module-qualified spawn completions (`bank.Account`, `store.Account`);
+    /// the file-local actor keeps its bare label.
+    #[test]
+    fn spawn_completions_disambiguate_same_named_module_actors() {
+        let actor_src = "pub actor Account {\n\
+                         \x20   var n: i64 = 0;\n\
+                         \x20   receive fn who() -> i64 { 1 }\n\
+                         }\n";
+        // Checked program (parsable shape) supplies the imported actors.
+        let output = type_check_with_modules(
+            "actor Local {}\nfn main() { }\n",
+            &[
+                (&["hew", "bank"], actor_src),
+                (&["hew", "store"], actor_src),
+            ],
+        );
+        // Editor buffer mid-keystroke (parse errors tolerated, as in the
+        // LSP's own spawn completion test).
+        let cursor_src = "actor Local {}\nfn main() { let h = spawn  }\n";
+        let offset = cursor_src.find("spawn ").unwrap() + 6;
+        let parse_result = hew_parser::parse(cursor_src);
+        let labels: Vec<String> = complete(cursor_src, &parse_result, Some(&output), offset)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(
+            labels.contains(&"bank.Account".to_string())
+                && labels.contains(&"store.Account".to_string()),
+            "both module-qualified actors must surface: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Local".to_string()),
+            "the file-local actor keeps its bare label: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Account".to_string()),
+            "no ambiguous bare entry for module actors: {labels:?}"
+        );
     }
 
     /// Dot-completion must surface `impl`-block methods on a named type with

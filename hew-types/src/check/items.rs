@@ -54,6 +54,21 @@ impl Checker {
     ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // A dotted child type (`child a: bank.Account`) references the
+        // module's actor; mark the import used so the program does not get a
+        // spurious unused-import warning when the supervisor is the only
+        // reference.
+        for child in &sd.children {
+            if let Some((module, _)) = child.actor_type.split_once('.') {
+                if self.modules.contains(module) {
+                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                        self.current_module.clone(),
+                        module.to_string(),
+                    ));
+                }
+            }
+        }
+
         // ── 1. Duplicate child names ─────────────────────────────────────────
         self.check_supervisor_duplicate_children(sd, span);
 
@@ -709,9 +724,17 @@ impl Checker {
     }
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
+        // The actor's checker identity: dotted `{module_short}.{name}` for a
+        // module actor (the body is checked with `current_module` set), bare
+        // for root/flat actors. All signature lookups during body checking
+        // (`fn_sigs["{identity}::{rf}"]`), the `this` receiver type, and the
+        // max-heap table key must use the same identity the registration
+        // pass authored, or a same-named actor from another module would be
+        // consulted instead.
+        let identity = Self::actor_identity(self.current_module_short(), &ad.name);
         let actor_ty = Ty::Named {
             builtin: None,
-            name: ad.name.clone(),
+            name: identity.clone(),
             args: vec![],
         };
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
@@ -726,18 +749,18 @@ impl Checker {
         // caller-supplied cap. Codegen reads `actor_max_heap` to decide between
         // `hew_arena_new` (unbounded) and `hew_arena_new_with_cap(cap)` (bounded).
         if let Some(cap) = ad.max_heap_bytes {
-            self.actor_max_heap.insert(ad.name.clone(), cap);
+            self.actor_max_heap.insert(identity.clone(), cap);
         }
 
         self.check_actor_field_defaults(ad);
 
         // Type-check init body if present
         if let Some(init) = &ad.init {
-            self.check_actor_init(&ad.name, init, &ad.fields);
+            self.check_actor_init(&identity, init, &ad.fields);
         }
 
         for rf in &ad.receive_fns {
-            self.check_receive_fn(&ad.name, rf, &ad.fields);
+            self.check_receive_fn(&identity, rf, &ad.fields);
         }
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
@@ -749,7 +772,7 @@ impl Checker {
         // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
         // appear multiple times (lexical declaration order is the
         // run order — see HEW-SPEC-2026 §9.1.2).
-        self.check_actor_methods(ad);
+        self.check_actor_methods(ad, &identity);
 
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
@@ -769,7 +792,7 @@ impl Checker {
     /// lifecycle-hook validator or the regular-method validator based on
     /// its `#[on(<event>)]` annotation. Tracks `#[on(start)]` uniqueness
     /// across the loop.
-    fn check_actor_methods(&mut self, ad: &ActorDecl) {
+    fn check_actor_methods(&mut self, ad: &ActorDecl, identity: &str) {
         let mut on_start_seen: Option<Span> = None;
         for method in &ad.methods {
             let hook_attrs: Vec<_> = method
@@ -781,7 +804,7 @@ impl Checker {
             if hook_attrs.is_empty() {
                 self.env.push_scope();
                 self.bind_actor_fields(&ad.fields);
-                let qualified = format!("{}::{}", ad.name, method.name);
+                let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
                 self.env.pop_scope();
                 continue;

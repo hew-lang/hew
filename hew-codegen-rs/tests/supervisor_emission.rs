@@ -52,6 +52,7 @@ fn supervisor_pipeline() -> IrPipeline {
     // `.dispatch` field references by name).
     let worker_layout = ActorLayout {
         name: "Worker".to_string(),
+        defining_module: None,
         state_field_names: vec![],
         state_field_tys: vec![],
         state_field_defaults: vec![],
@@ -272,6 +273,7 @@ fn on_crash_pipeline() -> IrPipeline {
 
     let crasher_layout = ActorLayout {
         name: "CrasherActor".to_string(),
+        defining_module: None,
         state_field_names: vec![],
         state_field_tys: vec![],
         state_field_defaults: vec![],

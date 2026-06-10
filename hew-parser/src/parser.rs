@@ -3710,7 +3710,17 @@ impl<'src> Parser<'src> {
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
-                    let actor_type = self.expect_ident()?;
+                    // Child type position accepts the module-qualified dotted
+                    // form (`child a: bank.Account(...)`), matching spawn and
+                    // method-call qualification. The dotted string is the
+                    // actor's qualified identity downstream (checker
+                    // `type_defs["bank.Account"]`, MIR layout key); a bare
+                    // name stays the root/local identity.
+                    let mut actor_type = self.expect_ident()?;
+                    if self.eat(&Token::Dot) {
+                        let type_name = self.expect_ident()?;
+                        actor_type = format!("{actor_type}.{type_name}");
+                    }
 
                     // Parse named init args: `child w: Worker(field: expr, ...)`.
                     // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
@@ -8017,6 +8027,28 @@ mod tests {
         let result = parse(source);
         assert!(result.errors.is_empty());
         assert_eq!(result.program.items.len(), 1);
+    }
+
+    /// Supervisor child declarations accept the module-qualified dotted type
+    /// (`child a: bank.Account`), carrying the qualified actor identity
+    /// verbatim; bare child types stay the root/local spelling.
+    #[test]
+    fn parse_supervisor_child_dotted_module_qualified_type() {
+        let source = "supervisor S {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   intensity: 1 within 60s;\n\
+                      \n\
+                      \x20   child a: bank.Account(n: 1);\n\
+                      \x20   child b: Local;\n\
+                      }\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Supervisor(sd) = &result.program.items[0].0 else {
+            panic!("expected supervisor, got {:?}", result.program.items[0].0);
+        };
+        assert_eq!(sd.children[0].actor_type, "bank.Account");
+        assert_eq!(sd.children[0].args.len(), 1);
+        assert_eq!(sd.children[1].actor_type, "Local");
     }
 
     #[test]

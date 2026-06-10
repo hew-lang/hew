@@ -52,7 +52,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage, BuiltinTy, PrintKind};
-use hew_hir::{mangle, HirRestartPolicy, HirSupervisorStrategy, ItemId};
+use hew_hir::{mangle, mangle_dotted_name, HirRestartPolicy, HirSupervisorStrategy, ItemId};
 use hew_mir::{
     instr_source_places, terminator_source_places, validate_context_markers, ActorLayout,
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
@@ -5863,7 +5863,7 @@ fn emit_spawn_actor(
     } else {
         (ptr_ty.const_null(), i64_ty.const_zero())
     };
-    let dispatch_name = format!("__hew_actor_dispatch_{actor_name}");
+    let dispatch_name = format!("__hew_actor_dispatch_{}", mangle_dotted_name(actor_name));
     let dispatch = fn_ctx
         .llvm_mod
         .get_function(&dispatch_name)
@@ -6347,7 +6347,10 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     let i64_ty = ctx.i64_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
 
-    let dispatch_name = format!("__hew_actor_dispatch_{}", child.actor_name);
+    let dispatch_name = format!(
+        "__hew_actor_dispatch_{}",
+        mangle_dotted_name(&child.actor_name)
+    );
     let dispatch_fn = llvm_mod.get_function(&dispatch_name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "supervisor `{sup_name}` child `{}` requires dispatch trampoline `{dispatch_name}`",
@@ -9606,9 +9609,13 @@ fn emit_actor_spawn_lifecycle<'ctx>(
     spawned: PointerValue<'ctx>,
     init_args: &[Place],
 ) -> CodegenResult<()> {
-    let init_name = format!("{actor_name}__init");
-    let start_name = format!("{actor_name}__on_start");
-    let terminate_name = format!("__terminate_{actor_name}");
+    // `actor_name` is the registry key (dotted for module actors); native
+    // symbols use the `$`-mangled base, the same authority MIR's
+    // `actor_symbol_base` feeds.
+    let symbol_base = mangle_dotted_name(actor_name);
+    let init_name = format!("{symbol_base}__init");
+    let start_name = format!("{symbol_base}__on_start");
+    let terminate_name = format!("__terminate_{symbol_base}");
     let init_fn = fn_ctx.llvm_mod.get_function(&init_name);
     let start_fn = fn_ctx.llvm_mod.get_function(&start_name);
     let terminate_fn = fn_ctx.llvm_mod.get_function(&terminate_name);
@@ -33609,8 +33616,8 @@ fn lower_function<'ctx>(
     }
 
     let actor_state_ty = if func.call_conv == FunctionCallConv::ActorHandler {
-        actor_name_from_handler_symbol(&func.name)
-            .and_then(|actor_name| record_layouts.get(actor_name).copied())
+        actor_layout_key_from_handler_symbol(&func.name)
+            .and_then(|actor_key| record_layouts.get(&actor_key).copied())
     } else {
         None
     };
@@ -33619,10 +33626,10 @@ fn lower_function<'ctx>(
     // release on the MIR-level field classification (the single authority
     // the state clone/drop synthesis also consumes).
     let actor_state_field_kinds = if func.call_conv == FunctionCallConv::ActorHandler {
-        actor_name_from_handler_symbol(&func.name).and_then(|actor_name| {
+        actor_layout_key_from_handler_symbol(&func.name).and_then(|actor_key| {
             actor_layouts
                 .iter()
-                .find(|a| a.name == actor_name)
+                .find(|a| a.name == actor_key)
                 .and_then(|a| a.state_field_clone_kinds.as_deref())
         })
     } else {
@@ -34004,7 +34011,7 @@ fn emit_actor_terminate_trampoline<'ctx>(
     }
 
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let trampoline_name = format!("__terminate_{}", layout.name);
+    let trampoline_name = format!("__terminate_{}", mangle_dotted_name(&layout.name));
     let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
     let trampoline_fn = llvm_mod.add_function(&trampoline_name, fn_ty, Some(Linkage::Internal));
     let builder = ctx.create_builder();
@@ -34121,7 +34128,7 @@ fn emit_actor_dispatch_trampoline<'ctx>(
     // here surfaces as a wasm `indirect call type mismatch` trap. Match the
     // runtime ABI width. See `runtime_size_ty`.
     let size_ty = runtime_size_ty(ctx, llvm_mod);
-    let dispatch_name = format!("__hew_actor_dispatch_{}", layout.name);
+    let dispatch_name = format!("__hew_actor_dispatch_{}", mangle_dotted_name(&layout.name));
     // D-A.2 (R326/R327): the trampoline returns the dispatch suspend outcome as
     // a nullable continuation handle (`ptr`). Run-to-completion handlers — every
     // handler today, since no source construct produces a `coro.suspend` yet —
@@ -34691,6 +34698,20 @@ fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
             after_on_stop.1.parse::<usize>().ok()?;
             Some(after_on_stop.0)
         })
+}
+
+/// Map an actor handler symbol back to the actor's REGISTRY key (the dotted
+/// qualified identity that `ActorLayout.name` and the state-record layout
+/// use).
+///
+/// Handler symbols carry the `$`-mangled base (`bank$Account__recv__deposit`,
+/// from MIR's `actor_symbol_base` / `mangle_dotted_name`). The base is either
+/// a bare root-actor name or `{module_short}${name}` with single-segment
+/// components — Hew identifiers cannot contain `$`, and generic-instantiation
+/// mangles (`Result$$i32$…`) never reach actor handler symbols — so replacing
+/// `$` with `.` is the exact inverse of `mangle_dotted_name` here.
+fn actor_layout_key_from_handler_symbol(symbol: &str) -> Option<String> {
+    actor_name_from_handler_symbol(symbol).map(|base| base.replace('$', "."))
 }
 
 // ---------------------------------------------------------------------------
@@ -43475,6 +43496,7 @@ mod tests {
         let actor_layouts = if with_actor {
             vec![ActorLayout {
                 name: "StubActor".to_string(),
+                defining_module: None,
                 state_field_names: vec![],
                 state_field_tys: vec![],
                 state_field_defaults: vec![],
@@ -43575,6 +43597,7 @@ mod tests {
         let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
         let actor = ActorLayout {
             name: "ConnActor".to_string(),
+            defining_module: None,
             state_field_names: vec!["conn".to_string()],
             state_field_tys: vec![conn_ty.clone()],
             state_field_defaults: vec![None],
@@ -44212,6 +44235,7 @@ mod tests {
         }
         let actor = ActorLayout {
             name: actor_name.to_string(),
+            defining_module: None,
             state_field_names: vec![],
             state_field_tys: vec![],
             state_field_defaults: vec![],
@@ -44367,6 +44391,42 @@ mod tests {
         module
             .verify()
             .unwrap_or_else(|e| panic!("plain dispatch module failed verify: {e}"));
+    }
+
+    /// Module-actor symbol qualification: a layout keyed by the dotted
+    /// identity (`bank.Account`) emits its dispatch trampoline under the
+    /// `$`-mangled symbol (`__hew_actor_dispatch_bank$Account`) — never the
+    /// raw dotted spelling — and the handler symbols carry the same mangled
+    /// base. The bare-name probe above
+    /// (`__hew_actor_dispatch_PlainActor`) pins the root-actor zero-churn
+    /// half of the contract.
+    #[test]
+    fn dispatch_trampoline_module_actor_uses_mangled_qualified_symbol() {
+        let ctx = Context::create();
+        let symbol = "bank$Account__recv__ping";
+        let mut pipeline = pipeline_with_actor_handlers(
+            "bank.Account",
+            vec![(
+                unit_suspendable_layout(symbol, 3),
+                run_to_completion_handler_fn(symbol),
+            )],
+        );
+        pipeline.actor_layouts[0].defining_module = Some("bank".to_string());
+        let module = build_module(&ctx, &pipeline, "qualified_dispatch_test")
+            .expect("module-actor dispatch module must build");
+        let ir = module.print_to_string().to_string();
+
+        assert!(
+            ir.contains("__hew_actor_dispatch_bank$Account"),
+            "module-actor dispatch trampoline must use the $-mangled qualified symbol:\n{ir}"
+        );
+        assert!(
+            !ir.contains("__hew_actor_dispatch_bank.Account"),
+            "the raw dotted identity must never appear as a symbol:\n{ir}"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("qualified dispatch module failed verify: {e}"));
     }
 
     /// R2 predicate==emission probe: the trampoline's `is_suspendable` predicate
@@ -44678,6 +44738,7 @@ mod tests {
 
         let actor = ActorLayout {
             name: "GapActor".to_string(),
+            defining_module: None,
             state_field_names: vec![],
             state_field_tys: vec![],
             state_field_defaults: vec![],

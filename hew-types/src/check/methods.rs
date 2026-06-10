@@ -7,6 +7,7 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::check::admissibility::compute_copy_record_layout;
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
+use crate::check::types::BareActorResolution;
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
@@ -1801,6 +1802,56 @@ impl Checker {
         self.current_module
             .as_deref()
             .map(|m| m.rsplit('.').next().unwrap_or(m))
+    }
+
+    /// Resolve a bare actor reference to its registered checker identity.
+    ///
+    /// Resolution order (local-first, mirroring `per-module-type-identity`):
+    /// 1. the current module's own actor (`{current_short}.{name}`)
+    /// 2. a root/flat actor registered under the bare name
+    /// 3. a named-import binding (`unqualified_to_module`)
+    /// 4. the modules exporting an actor of that name: exactly one resolves
+    ///    to it; two or more is `Ambiguous` (never silent first-wins).
+    pub(super) fn resolve_bare_actor_identity(&self, name: &str) -> BareActorResolution {
+        let is_actor = |key: &str| {
+            self.type_defs
+                .get(key)
+                .is_some_and(|td| td.kind == TypeDefKind::Actor)
+        };
+        if let Some(short) = self.current_module_short() {
+            let dotted = format!("{short}.{name}");
+            if is_actor(&dotted) {
+                return BareActorResolution::Resolved(dotted);
+            }
+        }
+        if is_actor(name) {
+            return BareActorResolution::Resolved(name.to_string());
+        }
+        if let Some(module) = self
+            .unqualified_to_module
+            .get(&(self.current_module.clone(), name.to_string()))
+        {
+            let dotted = format!("{module}.{name}");
+            if is_actor(&dotted) {
+                return BareActorResolution::Resolved(dotted);
+            }
+        }
+        let mut candidates: Vec<&str> = self
+            .module_type_exports
+            .iter()
+            .filter(|(module, exports)| {
+                exports.contains(name) && is_actor(&format!("{module}.{name}"))
+            })
+            .map(|(module, _)| module.as_str())
+            .collect();
+        candidates.sort_unstable();
+        match candidates.as_slice() {
+            [] => BareActorResolution::Unknown,
+            [module] => BareActorResolution::Resolved(format!("{module}.{name}")),
+            _ => {
+                BareActorResolution::Ambiguous(candidates.iter().map(ToString::to_string).collect())
+            }
+        }
     }
 
     /// Resolve a method signature against the *module-local* type definition.
@@ -4998,7 +5049,24 @@ impl Checker {
                     name: actor_name, ..
                 } = inner
                 {
-                    let method_key = format!("{actor_name}::{method}");
+                    // An annotation-derived `LocalPid<Account>` carries the
+                    // bare inner name; resolve it to the registered actor
+                    // identity (current module's actor, root actor, or a
+                    // unique module export) before keying `fn_sigs`. Spawn-
+                    // derived handles already carry the dotted identity.
+                    let actor_identity = if self
+                        .fn_sigs
+                        .contains_key(&format!("{actor_name}::{method}"))
+                    {
+                        actor_name.clone()
+                    } else if let BareActorResolution::Resolved(identity) =
+                        self.resolve_bare_actor_identity(actor_name)
+                    {
+                        identity
+                    } else {
+                        actor_name.clone()
+                    };
+                    let method_key = format!("{actor_identity}::{method}");
                     if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
                         for (i, arg) in args.iter().enumerate() {
                             let (expr, sp) = arg.expr();
@@ -5012,7 +5080,7 @@ impl Checker {
                         self.record_method_call_receiver_kind(
                             span,
                             MethodCallReceiverKind::ActorInstance {
-                                actor_name: actor_name.clone(),
+                                actor_name: actor_identity.clone(),
                             },
                         );
                         // Ask-without-await guard: ask-shaped receive fn must be
@@ -5027,7 +5095,7 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "actor ask `{actor_name}::{method}` requires `await`; \
+                                    "actor ask `{actor_identity}::{method}` requires `await`; \
                                      write `let v? = await ref.{method}(...)` \
                                      or `match await ref.{method}(...) {{ Ok(v) => ..., Err(e) => ... }}`",
                                 ),

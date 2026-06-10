@@ -5346,15 +5346,34 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_spawn(
+    /// Resolve a `spawn` target expression to the registered actor identity.
+    ///
+    /// `Ok(Some(identity))` carries the identity key (bare for root/flat
+    /// actors, dotted `{module}.{name}` for module actors); `Ok(None)` is an
+    /// unsupported target shape; `Err(())` means a diagnostic was already
+    /// emitted and the spawn must type to bare `Ty::Error`.
+    fn resolve_spawn_target(
         &mut self,
         target: &Spanned<Expr>,
-        type_args: &[Spanned<TypeExpr>],
-        args: &[(String, Spanned<Expr>)],
         span: &Span,
-    ) -> Ty {
-        let actor_name = match &target.0 {
-            Expr::Identifier(name) => Some(name.clone()),
+    ) -> Result<Option<String>, ()> {
+        Ok(match &target.0 {
+            // Bare spawn target: resolve local-first to the registered
+            // actor identity (the current module's own actor, then a
+            // root/flat actor, then a named-import binding, then a unique
+            // module export). A bare name exported by 2+ modules with no
+            // local actor is a typed error naming the candidates — never
+            // silent first-wins.
+            Expr::Identifier(name) => match self.resolve_bare_actor_identity(name) {
+                super::types::BareActorResolution::Resolved(identity) => Some(identity),
+                super::types::BareActorResolution::Ambiguous(candidate_modules) => {
+                    self.report_ambiguous_actor_reference(name, &candidate_modules, span);
+                    return Err(());
+                }
+                // Unknown actor: keep the bare name so the pre-existing
+                // unknown-actor diagnostics downstream fire unchanged.
+                super::types::BareActorResolution::Unknown => Some(name.clone()),
+            },
             // Handle module-qualified actor: spawn module.ActorName(args)
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
@@ -5394,16 +5413,24 @@ impl Checker {
                                 format!("module `{module}` has no exported actor `{field}`"),
                                 similar,
                             );
-                            // Return bare `Ty::Error` (not `LocalPid<Error>`) so a
-                            // subsequent `await handle.method()` is suppressed
-                            // (method calls on a `Ty::Error` receiver short-
-                            // circuit), keeping a single clear diagnostic.
-                            return Ty::Error;
+                            // The caller types the spawn as bare `Ty::Error`
+                            // (not `LocalPid<Error>`) so a subsequent
+                            // `await handle.method()` is suppressed (method
+                            // calls on a `Ty::Error` receiver short-circuit),
+                            // keeping a single clear diagnostic.
+                            return Err(());
                         }
                         self.used_modules
                             .borrow_mut()
                             .insert(ImportKey::new(self.current_module.clone(), module.clone()));
-                        Some(field.clone())
+                        // Keep the module qualifier: the dotted
+                        // `{module}.{field}` key IS the actor's identity in
+                        // `type_defs`/`fn_sigs`, and the spawn result type
+                        // (`LocalPid<bank.Account>`) is what every ask site
+                        // and the MIR layout lookup key on. Stripping it to
+                        // the bare name made two same-named module actors
+                        // indistinguishable below the checker.
+                        Some(format!("{module}.{field}"))
                     } else {
                         None
                     }
@@ -5412,6 +5439,18 @@ impl Checker {
                 }
             }
             _ => None,
+        })
+    }
+
+    pub(super) fn check_spawn(
+        &mut self,
+        target: &Spanned<Expr>,
+        type_args: &[Spanned<TypeExpr>],
+        args: &[(String, Spanned<Expr>)],
+        span: &Span,
+    ) -> Ty {
+        let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
+            return Ty::Error;
         };
 
         if let Some(name) = actor_name {
@@ -5492,6 +5531,43 @@ impl Checker {
         } else {
             Ty::local_pid(Ty::Error)
         }
+    }
+
+    /// Report the typed ambiguity error for a bare actor reference that is
+    /// exported by two or more modules with no local actor to win the
+    /// local-first resolution. Names every candidate and suggests the
+    /// qualified spawn spelling — never silent first-wins.
+    fn report_ambiguous_actor_reference(
+        &mut self,
+        name: &str,
+        candidate_modules: &[String],
+        span: &Span,
+    ) {
+        let candidates_list = candidate_modules
+            .iter()
+            .map(|m| format!("`{m}.{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let qualified_examples = candidate_modules
+            .iter()
+            .map(|m| format!("`spawn {m}.{name}(...)`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousActorReference {
+                actor_name: name.to_string(),
+                candidate_modules: candidate_modules.to_vec(),
+            },
+            span,
+            format!(
+                "actor `{name}` is ambiguous: it is exported by multiple \
+                 modules ({candidates_list}) and no local actor `{name}` \
+                 exists to take precedence"
+            ),
+            vec![format!(
+                "qualify the spawn target with its module: {qualified_examples}"
+            )],
+        );
     }
 
     /// Record a generic actor spawn instantiation.

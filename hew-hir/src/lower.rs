@@ -2523,33 +2523,6 @@ pub fn lower_program_with_mono_cap(
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
-        // Actor names already emitted from the root program — root-local actors
-        // plus any FILE-import actors that `flatten_file_import_items` spliced
-        // into `program.items` (file imports register their items flat, under
-        // bare names, and emit a `HirItem::Actor` in the source-order pass
-        // above). The imported-module walk below ALSO sees those file-import
-        // modules in the graph; without this guard it would emit a second
-        // `HirItem::Actor` for the same actor, and because actor layouts are
-        // keyed by the actor's bare name the duplicate collides at MIR with
-        // `ActorHandlerSymbolCollision`. Package imports (`import hew::pkg;`)
-        // are NOT flattened, so their actors are absent here and are emitted by
-        // the walk exactly once.
-        //
-        // This dedup is by BARE NAME, which is only sound because
-        // `check_duplicate_actor_layout_names` (hew-compile, at graph-build
-        // time) has already failed the compile closed if two DISTINCT modules
-        // contribute a same-named actor. So a name shared between a graph
-        // module and `program.items` here is always the SAME actor reached via
-        // a file import — never a genuine cross-module collision that this skip
-        // could misroute.
-        let root_actor_names: HashSet<String> = program
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Actor(actor) => Some(actor.name.clone()),
-                _ => None,
-            })
-            .collect();
         // Impl blocks already emitted by the source-order third pass — both
         // root-program impls and FILE-import impls that `flatten_file_import_items`
         // spliced into `program.items`. The module-graph walk below ALSO visits
@@ -2985,19 +2958,18 @@ pub fn lower_program_with_mono_cap(
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
                         Item::Actor(actor) if actor.visibility.is_pub() => {
-                            // Skip actors already emitted from the root program
-                            // (a file import flattened this actor under its bare
-                            // name in the source-order pass). Re-emitting it here
-                            // would duplicate the bare-name-keyed layout and
-                            // collide at MIR. A bare-name match is safe to skip
-                            // because `check_duplicate_actor_layout_names`
-                            // (hew-compile) has already rejected any genuine
-                            // cross-module same-name collision — so this is only
-                            // ever the same file-imported actor, never a package
-                            // actor being silently suppressed. Package-import
-                            // actors are not in `root_actor_names`, so they still
-                            // emit here.
-                            if root_actor_names.contains(&actor.name) {
+                            // Skip actors of FILE-import modules: their items
+                            // were spliced into `program.items` and already
+                            // emitted (under the flat/root identity) by the
+                            // source-order pass; re-emitting here would
+                            // duplicate the layout. The guard is by module
+                            // PROVENANCE (`file_import_module_ids`), not bare
+                            // name: actor identity is the qualified
+                            // (module, name) pair, so a package actor that
+                            // merely shares a bare name with a root or
+                            // file-imported actor is a DISTINCT actor and must
+                            // still emit its own qualified layout here.
+                            if file_import_modules.contains(mod_id) {
                                 continue;
                             }
                             // Fail-closed target gate: actors require the actor
@@ -3021,6 +2993,7 @@ pub fn lower_program_with_mono_cap(
                             let lowered = ctx.lower_imported_actor(
                                 actor,
                                 span.clone(),
+                                module_short,
                                 &same_module_fn_rewrites,
                             );
                             items.push(HirItem::Actor(lowered));
@@ -7357,17 +7330,32 @@ impl LowerCtx {
     /// reachable private) function inside the actor body resolves to that
     /// function's qualified, native-symbol-safe name — the same contract the
     /// imported free-fn and impl-method paths use. State-field defaults and
-    /// types lower the same way as a local actor; the resulting `HirActorDecl`
-    /// is keyed by the actor's bare name so MIR's layout pass treats it exactly
-    /// like a locally-declared actor.
+    /// types lower the same way as a local actor.
+    ///
+    /// The resulting `HirActorDecl` carries `defining_module =
+    /// Some(module_short)` — the `(defining-module, name)` identity that lets
+    /// MIR layout keys and codegen symbols distinguish two same-named actors
+    /// from different modules. The decl's `name` stays bare and all symbol
+    /// mangling still derives from the bare name; switching keys/symbols to
+    /// `qualified_name()` is the downstream re-key that this carrier enables.
     fn lower_imported_actor(
         &mut self,
         decl: &ActorDecl,
         span: Span,
+        module_short: &str,
         rewrites: &HashMap<String, String>,
     ) -> HirActorDecl {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let lowered = self.lower_actor(decl, span);
+        let mut lowered = self.lower_actor(decl, span);
+        lowered.defining_module = Some(module_short.to_string());
+        // `lower_actor` attached checker side-tables under the bare name
+        // (the root-actor identity). A module actor's checker identity is
+        // the dotted `qualified_name()`; re-attach the descriptor and the
+        // cycle-capability flag from the qualified keys so two same-named
+        // actors carry their own protocol (distinct msg_ids) and cycle flag.
+        let qualified = lowered.qualified_name();
+        lowered.protocol_descriptor = self.actor_protocol_descriptors.get(&qualified).cloned();
+        lowered.cycle_capable = self.cycle_capable_actors.contains(&qualified);
         self.imported_fn_rewrites = previous_rewrites;
         lowered
     }
@@ -8626,6 +8614,10 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root-program identity. Package-module actors get their
+            // defining module stamped by `lower_imported_actor`; file-import
+            // spliced actors lower through this path and stay root-identical.
+            defining_module: None,
             state_fields,
             init,
             receive_handlers,
@@ -12307,32 +12299,23 @@ impl LowerCtx {
         args: &[(String, Spanned<Expr>)],
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
+        // Syntactic fallback only. The checker's spawn result type
+        // (`LocalPid<bank.Account>`) is the identity authority below; the
+        // dotted `{module}.{field}` spelling here mirrors the checker's
+        // qualified-spawn resolution for the diagnostic-recovery paths where
+        // no expr_types entry exists.
         let actor_name = match &target.0 {
             Expr::Identifier(name) => Some(name.clone()),
             Expr::FieldAccess { object, field } => {
-                if let Expr::Identifier(_module) = &object.0 {
-                    // Module-qualified actor spawn (`spawn module.Actor(...)`).
-                    // The actor's MIR layout, the checker-authoritative spawn
-                    // result type (`LocalPid<Actor>`), and the receive-fn call
-                    // path (`actor_name_from_handle_ty`) are ALL keyed by the
-                    // actor's bare name. Use the bare field name so a
-                    // cross-module spawn lowers identically to a local one. The
-                    // checker has already verified `module` names an imported
-                    // module — a non-module receiver makes `spawn` fail type
-                    // resolution before MIR — so this branch only fires for a
-                    // resolved module-qualified actor. Dropping the module
-                    // qualifier is sound because
-                    // `check_duplicate_actor_layout_names` (hew-compile) fails
-                    // the compile closed when two modules export a same-named
-                    // actor, so the bare name resolves to exactly one layout.
-                    Some(field.clone())
+                if let Expr::Identifier(module) = &object.0 {
+                    Some(format!("{module}.{field}"))
                 } else {
                     None
                 }
             }
             _ => None,
         };
-        let Some(actor_name) = actor_name else {
+        let Some(mut actor_name) = actor_name else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::NotYetImplemented {
                     construct: "spawn target expression".to_string(),
@@ -12377,6 +12360,19 @@ impl LowerCtx {
             ));
             ResolvedTy::Unit
         };
+        // The checker's `LocalPid<T>` inner name is the actor's resolved
+        // identity: dotted (`bank.Account`) for module actors, bare for
+        // root/flat actors. It already encodes the local-first bare-name
+        // resolution (a bare `spawn Account()` inside module `bank` resolves
+        // to `bank.Account`), so it overrides the syntactic spelling. MIR
+        // actor layouts key on the same identity (`qualified_name()`).
+        if let ResolvedTy::Named { name, args, .. } = &ty {
+            if name == "LocalPid" && args.len() == 1 {
+                if let ResolvedTy::Named { name: inner, .. } = &args[0] {
+                    actor_name.clone_from(inner);
+                }
+            }
+        }
         (
             HirExprKind::Spawn {
                 actor_name,

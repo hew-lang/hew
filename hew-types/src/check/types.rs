@@ -1908,6 +1908,21 @@ pub(super) struct DeferredBoundCheck {
     pub(super) span: Span,
 }
 
+/// Result of resolving a bare actor reference (`spawn Account(...)`, a bare
+/// `LocalPid<Account>` inner name) against the local-first identity policy.
+///
+/// Produced by `Checker::resolve_bare_actor_identity`. `Resolved` carries the
+/// registered identity key — bare for root/flat actors, dotted
+/// `{module_short}.{name}` for module actors. `Ambiguous` carries the sorted
+/// candidate module list for the typed diagnostic; resolution is never
+/// silent first-wins.
+#[derive(Debug, Clone)]
+pub(super) enum BareActorResolution {
+    Resolved(String),
+    Ambiguous(Vec<String>),
+    Unknown,
+}
+
 /// The main type checker.
 #[derive(Debug)]
 #[expect(

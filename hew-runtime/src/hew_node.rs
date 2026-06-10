@@ -1361,7 +1361,29 @@ extern "C" fn node_registry_gossip_callback(
         .into_owned();
     let mut map = registry.remote_names.lock_or_recover();
     if is_add {
-        map.insert(key, actor_id);
+        // Fail-closed registration-string boundary (gossip side): an inbound
+        // ADD for a name that is already mapped to a DIFFERENT actor is a
+        // cluster-wide ambiguity — two distinct actors (possibly two distinct
+        // qualified actor types) chose the same registration string. Keep the
+        // existing mapping and RECORD the refusal rather than silently
+        // re-pointing routing at whichever gossip arrived last. Qualified
+        // registration keys on the gossip wire (a CDDL/CBOR RegistryEvent
+        // change) are the tracked full fix.
+        match map.get(&key) {
+            Some(existing) if *existing != actor_id => {
+                set_last_error(format!(
+                    "registry gossip: name `{key}` is already registered to \
+                     actor {existing}; refusing gossiped re-registration to \
+                     actor {actor_id} — registration strings carry no \
+                     actor-type qualifier on the wire, so the conflict cannot \
+                     be disambiguated (qualified registration keys are a \
+                     tracked follow-up)"
+                ));
+            }
+            _ => {
+                map.insert(key, actor_id);
+            }
+        }
     } else {
         map.remove(&key);
     }
@@ -1931,6 +1953,42 @@ pub unsafe extern "C" fn hew_node_register(
         return -1;
     }
 
+    // SAFETY: name was checked non-null and is a valid C string by caller contract.
+    let key = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
+    let reg = unsafe { &*node.registry };
+
+    // Fail-closed registration-string boundary: the user-chosen string is the
+    // cluster-wide routing key, and it carries NO actor-type qualifier on the
+    // wire — two DISTINCT actors (possibly two distinct qualified actor
+    // types, e.g. `bank.Account` and `store.Account`) registering the same
+    // string would silently re-point cluster routing. Refuse the second
+    // registration with a recorded diagnostic instead of clobbering the
+    // mapping. Re-registering the SAME actor under its existing name is
+    // idempotent. Full fix — qualified registration keys on the gossip wire
+    // (a CDDL/CBOR RegistryEvent change) — is a tracked follow-up; this
+    // boundary only refuses the ambiguity, it cannot disambiguate it.
+    {
+        let map = reg.remote_names.lock_or_recover();
+        if let Some(existing) = map.get(&key).copied() {
+            if existing != actor {
+                drop(map);
+                set_last_error(format!(
+                    "hew_node_register: name `{key}` is already registered to \
+                     actor {existing}; refusing to re-point it to actor {actor} \
+                     — registration strings are cluster-wide routing keys and \
+                     carry no actor-type qualifier, so the conflict cannot be \
+                     disambiguated (qualified registration keys on the gossip \
+                     wire are a tracked follow-up). Unregister the existing \
+                     name first or choose a distinct string"
+                ));
+                return -1;
+            }
+        }
+    }
+
     // SAFETY: registry API expects a stable C string pointer.
     let rc =
         unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) };
@@ -1938,12 +1996,6 @@ pub unsafe extern "C" fn hew_node_register(
         return -1;
     }
 
-    // SAFETY: name was checked non-null and is a valid C string by caller contract.
-    let key = unsafe { CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned();
-    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
-    let reg = unsafe { &*node.registry };
     {
         let mut map = reg.remote_names.lock_or_recover();
         map.insert(key.clone(), actor);
@@ -4157,6 +4209,108 @@ mod tests {
 
         // SAFETY: node was allocated by hew_node_new above.
         unsafe { hew_node_free(node) };
+    }
+
+    /// Two distinct actors registering the same user-chosen string must be
+    /// refused with a recorded diagnostic — the registration string is a
+    /// cluster-wide routing key with no actor-type qualifier on the wire, so
+    /// the conflict cannot be disambiguated. Re-registering a DIFFERENT
+    /// string for the second actor succeeds (the refusal is per-name).
+    #[test]
+    fn register_same_name_different_actor_fails_closed_with_diagnostic() {
+        // SAFETY: bind_addr is a valid NUL-terminated C string literal.
+        let node = unsafe { hew_node_new(51, c"127.0.0.1:0".as_ptr()) };
+        assert!(!node.is_null());
+        let name = c"l18_primary";
+
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
+        unsafe {
+            assert_eq!(hew_node_register(node, name.as_ptr(), 7001), 0);
+            crate::hew_clear_error();
+            assert_eq!(
+                hew_node_register(node, name.as_ptr(), 7002),
+                -1,
+                "a second actor must not take over an existing name"
+            );
+            // The original mapping is intact (refuse, not clobber).
+            assert_eq!(hew_node_lookup(node, name.as_ptr()), 7001);
+        }
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "conflicting registration must record a diagnostic"
+        );
+        // SAFETY: hew_last_error returns a valid C string when non-null.
+        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
+        assert!(
+            err.contains("l18_primary") && err.contains("7001") && err.contains("7002"),
+            "diagnostic must name the string and both actors: {err}"
+        );
+        crate::hew_clear_error();
+
+        // Distinct string still registers fine.
+        let other = c"l18_secondary";
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
+        unsafe {
+            assert_eq!(hew_node_register(node, other.as_ptr(), 7002), 0);
+            let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+            let _ = crate::registry::hew_registry_unregister(other.as_ptr());
+            hew_node_free(node);
+        }
+    }
+
+    /// A gossiped registry ADD whose name is already mapped to a different
+    /// actor keeps the existing mapping and records the refusal — never a
+    /// silent last-write-wins re-pointing of cluster routing. Idempotent
+    /// re-adds of the same mapping stay silent.
+    #[test]
+    fn gossip_conflicting_registration_refused_and_recorded() {
+        let _guard = crate::runtime_test_guard();
+
+        let registry = HewRegistry::default();
+        registry
+            .remote_names
+            .lock_or_recover()
+            .insert("l18_gossip".to_owned(), 9001);
+        let user_data = (&raw const registry).cast_mut().cast::<c_void>();
+        let name = c"l18_gossip";
+
+        // Idempotent re-add: same mapping, no diagnostic.
+        crate::hew_clear_error();
+        node_registry_gossip_callback(name.as_ptr(), 9001, true, user_data);
+        assert!(
+            crate::hew_last_error().is_null(),
+            "same-mapping gossip re-add must stay silent"
+        );
+
+        // Conflicting add: mapping kept, refusal recorded.
+        node_registry_gossip_callback(name.as_ptr(), 9002, true, user_data);
+        let map = registry.remote_names.lock_or_recover();
+        assert_eq!(
+            map.get("l18_gossip").copied(),
+            Some(9001),
+            "conflicting gossip must not re-point the existing mapping"
+        );
+        drop(map);
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "conflicting gossip must record a diagnostic"
+        );
+        // SAFETY: hew_last_error returns a valid C string when non-null.
+        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
+        assert!(
+            err.contains("l18_gossip") && err.contains("9001") && err.contains("9002"),
+            "diagnostic must name the string and both actors: {err}"
+        );
+        crate::hew_clear_error();
+
+        // Removal still applies.
+        node_registry_gossip_callback(name.as_ptr(), 0, false, user_data);
+        assert!(!registry
+            .remote_names
+            .lock_or_recover()
+            .contains_key("l18_gossip"));
     }
 
     // ── Reply routing table unit tests ─────────────────────────────────

@@ -175,11 +175,26 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     match fs.try_read_bytes(file_path) {
         Ok(data) => {
             testing.assert_eq(data.len(), expected_len);
+<<<<<<< HEAD
             testing.assert_eq_u8(data.get(0), b0);
             testing.assert_eq_u8(data.get(1), b1);
             testing.assert_eq_u8(data.get(2), b2);
             testing.assert_eq_u8(data.get(3), b3);
             testing.assert_eq_u8(data.get(4), b4);
+||||||| parent of d4e7f4c7 (fix(runtime,codegen): migrate file I/O ABI from HewVec pointer to BytesTriple)
+            testing.assert_eq(data.len(), expected.len());
+            testing.assert_eq(data.get(0), expected.get(0));
+            testing.assert_eq(data.get(1), expected.get(1));
+            testing.assert_eq(data.get(2), expected.get(2));
+            testing.assert_eq(data.get(3), expected.get(3));
+            testing.assert_eq(data.get(4), expected.get(4));
+=======
+            testing.assert_eq(data.get(0) as i64, b0);
+            testing.assert_eq(data.get(1) as i64, b1);
+            testing.assert_eq(data.get(2) as i64, b2);
+            testing.assert_eq(data.get(3) as i64, b3);
+            testing.assert_eq(data.get(4) as i64, b4);
+>>>>>>> d4e7f4c7 (fix(runtime,codegen): migrate file I/O ABI from HewVec pointer to BytesTriple)
         },
         Err(_) => panic("expected try_read_bytes to preserve bytes"),
     }
@@ -216,11 +231,12 @@ fn test_stream_try_from_file_and_try_to_file_use_ioerror() {
     cleanup_file(file_path);
     match stream.try_to_file(file_path) {
         Ok(sink) => {
-            sink.write("stream");
+            sink.send("stream");
             sink.close();
         },
         Err(_) => panic("expected try_to_file to succeed"),
     }
+<<<<<<< HEAD
     match stream.try_from_file(file_path) {
         Ok(file) => {
             let content = file.collect();
@@ -228,6 +244,17 @@ fn test_stream_try_from_file_and_try_to_file_use_ioerror() {
             testing.assert_eq_str(content, "stream");
         },
         Err(_) => panic("expected try_from_file to succeed"),
+||||||| parent of d4e7f4c7 (fix(runtime,codegen): migrate file I/O ABI from HewVec pointer to BytesTriple)
+
+    match stream.try_from_file(file_path) {
+        Ok(file) => testing.assert_eq_str(file.collect(), "stream"),
+        Err(_) => panic("expected try_from_file to succeed"),
+=======
+
+    match fs.try_read(file_path) {
+        Ok(content) => testing.assert_eq_str(content, "stream"),
+        Err(_) => panic("expected try_read after try_to_file to succeed"),
+>>>>>>> d4e7f4c7 (fix(runtime,codegen): migrate file I/O ABI from HewVec pointer to BytesTriple)
     }
     cleanup_file(file_path);
 }

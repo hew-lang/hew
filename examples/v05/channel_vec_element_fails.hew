@@ -1,0 +1,27 @@
+// Channel element rejection fixture: a builtin container element
+// (`Channel<Vec<i64>>`) cannot ride the element-layout queue witness — its
+// ownership lives in a runtime context the queue cannot clone or drop. It
+// must fail closed at check time with a diagnostic that names the container,
+// never silently accept then corrupt ownership at runtime.
+//
+// NOTE: primitives, `string`, `bytes`, and value records/enums/tuples ARE
+// admitted — the witness describes them (see
+// examples/v05/surfaces/channel_record_elements.hew). Only container/handle
+// elements and types without a clone/drop thunk path remain fail-closed.
+import std::channel::channel;
+
+fn relay(items: Vec<i64>) {
+    let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) = channel.new(2);
+    tx.send(items);
+    tx.close();
+    match rx.try_recv() {
+        Some(v) => println(v.len()),
+        None => println("drained"),
+    }
+}
+
+fn main() {
+    let items: Vec<i64> = Vec::new();
+    items.push(1);
+    relay(items);
+}

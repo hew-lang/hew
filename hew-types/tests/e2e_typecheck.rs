@@ -271,7 +271,7 @@ fn consume(s: Stream<string>) {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_stream_next"
+                if c_symbol == "hew_stream_next_layout"
         )),
         "expected checker-owned builtin rewrite metadata, got: {:?}",
         output.method_call_rewrites
@@ -694,7 +694,9 @@ fn stream_dot_sink_annotation_typechecks() {
 }
 
 #[test]
-fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
+fn stream_dot_stream_int_element_now_admitted() {
+    // The element-layout witness widened Stream<T> beyond string/bytes:
+    // i64 elements ride the Plain envelope and must typecheck cleanly.
     let output = typecheck_inline(
         r"
         import std::stream;
@@ -705,11 +707,31 @@ fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
         ",
     );
     assert!(
+        output.errors.is_empty(),
+        "Stream<i64> must be admitted by the layout witness, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn stream_dot_stream_container_element_reports_user_facing_type() {
+    // Container elements have no clone/drop thunk path — the fail-closed
+    // diagnostic must name the user-facing element type.
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        fn close_rows(s: stream.Stream<Vec<i64>>) {
+            s.close();
+        }
+        ",
+    );
+    assert!(
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("`Stream<i64>` is not supported")),
-        "expected Stream<i64> diagnostic, got: {:#?}",
+            .any(|e| e.message.contains("`Stream<Vec<i64>>` is not supported")),
+        "expected Stream<Vec<i64>> fail-closed diagnostic, got: {:#?}",
         output.errors
     );
 }
@@ -869,9 +891,10 @@ fn for_await_receiver_missing_element_type_errors() {
     );
 }
 
-/// `for await item in rx` over `Receiver<Foo>` (unsupported struct) must error.
+/// `for await item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
+/// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_receiver_unsupported_type_errors() {
+fn for_await_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
@@ -889,19 +912,43 @@ fn for_await_receiver_unsupported_type_errors() {
         ",
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("not supported in `for await`")
-        ),
-        "expected InvalidOperation for Receiver<Foo> in for await, got: {:#?}",
+        output.errors.is_empty(),
+        "Receiver<Foo> for-await must be admitted by the layout witness, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over `Stream<Row>` must reuse the stream element
-/// validation boundary instead of lowering through the text ABI.
+/// `for await item in rx` over a container element (`Receiver<Vec<i64>>`)
+/// must fail closed — the witness cannot clone or drop a container element.
 #[test]
-fn for_await_stream_unsupported_type_errors() {
+fn for_await_receiver_container_element_errors() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
+                channel.new(4);
+            for await item in rx {
+                println(item.len());
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("not supported")
+        ),
+        "expected InvalidOperation for Receiver<Vec<i64>> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in input` over `Stream<Row>` (a `BitCopy` record) rides the
+/// element-layout witness and must typecheck cleanly.
+#[test]
+fn for_await_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
         import std::stream;
@@ -921,11 +968,38 @@ fn for_await_stream_unsupported_type_errors() {
         "#,
     );
     assert!(
+        output.errors.is_empty(),
+        "Stream<Row> for-await must be admitted by the layout witness, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in input` over a container element (`Stream<Vec<i64>>`)
+/// must fail closed at the stream element validation boundary.
+#[test]
+fn for_await_stream_container_element_errors() {
+    let output = typecheck_inline(
+        r#"
+        import std::stream;
+
+        extern "C" {
+            fn fake_stream() -> Stream<Vec<i64>>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await rows in input {
+                println("seen");
+            }
+        }
+        "#,
+    );
+    assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Row>` is not supported")
+                && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
         output.errors
     );
 }
@@ -936,16 +1010,14 @@ fn for_await_stream_unsupported_type_errors() {
 fn for_await_stream_unsupported_type_does_not_cascade() {
     let output = typecheck_inline(
         r#"
-        type Row { value: i64 }
-
         extern "C" {
-            fn fake_stream() -> Stream<Row>;
+            fn fake_stream() -> Stream<Vec<i64>>;
         }
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await row in input {
-                println(row.missing);
+            for await rows in input {
+                println(rows.missing);
             }
         }
         "#,
@@ -953,15 +1025,15 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
     assert_eq!(
         output.errors.len(),
         1,
-        "expected only the fail-closed Stream<Row> error, got: {:#?}",
+        "expected only the fail-closed Stream<Vec<i64>> error, got: {:#?}",
         output.errors
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Row>` is not supported")
+                && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
         output.errors
     );
 }
@@ -4801,8 +4873,9 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 // ===========================================================================
 
 /// `recv()` on a `Receiver<i64>` channel where the element type is inferred
-/// from a downstream `let v: i64 = rx.recv()` annotation must emit the i64-
-/// specific symbol (`hew_channel_recv_int`) rather than the string variant.
+/// from a downstream `let v: i64 = rx.recv()` annotation must still record
+/// the layout-witness rewrite (`hew_channel_recv_layout`) once deferred
+/// resolution completes — the element kind rides the witness, not the symbol.
 #[test]
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
@@ -4826,25 +4899,25 @@ fn deferred_channel_recv_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv_int"
+                if c_symbol == "hew_channel_recv_layout"
         )),
-        "expected hew_channel_recv_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
-    // The string variant must NOT be recorded for this call site.
+    // The retired per-type symbols must never be recorded.
     assert!(
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv"
+                if c_symbol == "hew_channel_recv" || c_symbol == "hew_channel_recv_int"
         )),
-        "hew_channel_recv (string variant) must not be recorded for i64 channel: {:?}",
+        "retired per-type recv symbols must not be recorded: {:?}",
         output.method_call_rewrites
     );
 }
 
 /// `recv()` on a `Receiver<string>` channel where the element type is inferred
-/// from the usage of the received value must emit `hew_channel_recv`.
+/// from the usage of the received value must emit `hew_channel_recv_layout`.
 #[test]
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
@@ -4868,15 +4941,15 @@ fn deferred_channel_recv_string_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_recv"
+                if c_symbol == "hew_channel_recv_layout"
         )),
-        "expected hew_channel_recv rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 /// `try_recv()` on a `Receiver<i64>` where the element type is constrained
-/// after the call site must resolve to the i64-specific symbol.
+/// after the call site must resolve to the layout-witness `try_recv` entry.
 #[test]
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
@@ -4900,16 +4973,16 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_try_recv_int"
+                if c_symbol == "hew_channel_try_recv_layout"
         )),
-        "expected hew_channel_try_recv_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_try_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 /// `send()` must defer when both the channel inner type and the sent value are
-/// still `Ty::Var` at the call site, then pick the i64-specific symbol once a
-/// later `recv()` annotation constrains the shared channel type.
+/// still `Ty::Var` at the call site, then record the layout-witness send
+/// rewrite once a later `recv()` annotation constrains the shared channel type.
 #[test]
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
@@ -4934,9 +5007,9 @@ fn deferred_channel_send_int_constrained_after_call() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_channel_send_int"
+                if c_symbol == "hew_channel_send_layout"
         )),
-        "expected hew_channel_send_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_send_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -5057,11 +5130,11 @@ fn await_stream_recv_bytes_typechecks() {
     );
 }
 
-/// NEW-7: a non-ABI element type (`Stream<i64>`) fails closed at the checker
-/// gate with a named diagnostic and no cascade — the suspend lowering is bound
-/// to string/bytes (S7).
+/// NEW-7 widened: an `i64` element rides the element-layout witness — the
+/// suspend lowering is no longer bound to string/bytes, so
+/// `await stream.recv()` over `Stream<i64>` typechecks cleanly.
 #[test]
-fn await_stream_recv_non_abi_element_rejected() {
+fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
         "import std::stream;\n\
          #[opaque]\n\
@@ -5083,12 +5156,9 @@ fn await_stream_recv_non_abi_element_rejected() {
          fn main() { let r = spawn Runner(); r.go(0); }\n",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("string and bytes")),
-        "Stream<i64> recv must fail closed with the named string/bytes-only \
-         diagnostic, got: {:#?}",
+        output.errors.is_empty(),
+        "await stream.recv() over Stream<i64> must be admitted by the \
+         element-layout witness, got: {:#?}",
         output.errors
     );
 }

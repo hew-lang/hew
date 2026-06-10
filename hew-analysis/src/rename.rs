@@ -516,11 +516,15 @@ mod tests {
             // Supervisor
             "supervisor_child",
             "supervisor_stop",
-            // Channel receive builtins (added for issue #1277 completeness)
-            "hew_channel_recv",
-            "hew_channel_recv_int",
-            "hew_channel_try_recv",
-            "hew_channel_try_recv_int",
+            // Channel/stream layout-witness builtins (issue #1277 lineage;
+            // the table-driven method symbols from builtin_named_types —
+            // hew_stream_send_layout is checker-hardcoded, not table-driven,
+            // so it does not enter builtin_function_names)
+            "hew_channel_recv_layout",
+            "hew_channel_try_recv_layout",
+            "hew_channel_send_layout",
+            "hew_stream_next_layout",
+            "hew_stream_try_next_layout",
         ];
 
         for name in newly_added {

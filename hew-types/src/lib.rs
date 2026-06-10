@@ -64,7 +64,7 @@ pub use lowering_facts::{
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use runtime_call::{
-    AsyncSuspendKind, ChannelElementKind, DescriptorError, IntegerElem, MathIntrinsic, NumericElem,
+    AsyncSuspendKind, DescriptorError, IntegerElem, MathIntrinsic, NumericElem,
     RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, StreamElementKind, VecGetElem,
     VecSliceElem,
 };

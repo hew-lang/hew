@@ -987,17 +987,16 @@ impl Checker {
                 continue;
             }
 
-            // Reject unsupported concrete types (guard against deferred entries
-            // that escaped the inline validation because T was Var at visit time
-            // but resolved to something unsupported, e.g. a user struct).
-            if !matches!(resolved, Ty::String) && !resolved.is_integer() {
+            // Reject element types the layout witness cannot describe (guard
+            // against deferred entries that escaped the inline validation
+            // because T was Var at visit time but resolved to something the
+            // queue cannot clone or drop, e.g. a Vec element).
+            if !self.queue_elem_admissible(&resolved) {
+                let reason = self.queue_elem_rejection_reason(&resolved);
                 let mut err = crate::error::TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     span_key.start..span_key.end,
-                    format!(
-                        "Channel<{resolved}> is not supported; \
-                         only Channel<string> and Channel<i64> are currently supported"
-                    ),
+                    format!("Channel<{resolved}> is not supported: {reason}"),
                 );
                 if let Some(module) = &entry.source_module {
                     err = err.with_source_module(module.clone());
@@ -2184,18 +2183,20 @@ impl Checker {
                 span,
             );
         }
-        // Gate 2: lowering-capability check.  Only string and bytes have a
-        // runtime symbol; other Wire-capable types pass gate 1 but cannot be
-        // lowered yet.  Emit a user-facing diagnostic rather than the ICE-
-        // flavoured "missing runtime rewrite metadata" from require_builtin_runtime_symbol.
+        // Gate 2: lowering-capability check. The element-layout witness
+        // carries every describable element type through the layout recv
+        // entries; only elements the witness provably cannot describe
+        // (containers, handles, closures) fail closed here. Emit a
+        // user-facing diagnostic rather than the ICE-flavoured "missing
+        // runtime rewrite metadata" from require_builtin_runtime_symbol.
         let resolved_inner = self.subst.resolve(&inner);
-        if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+        if !matches!(resolved_inner, Ty::Var(_)) && !self.queue_elem_admissible(&resolved_inner) {
+            let reason = self.queue_elem_rejection_reason(&resolved_inner);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`Stream<{}>` is not supported; \
-                     runtime lowering is currently implemented only for string and bytes",
+                    "`Stream<{}>` is not supported: {reason}",
                     inner.user_facing()
                 ),
             );
@@ -2218,9 +2219,9 @@ impl Checker {
         let resolved_inner = self.subst.resolve(&inner);
         match method {
             // Channel-family naming: .recv() replaced .next() as the fundamental
-            // recv surface (routes to `hew_stream_next_bytes` /
-            // `hew_stream_next` runtime symbols per element type).
-            // .try_recv() routes to hew_stream_try_next (non-blocking variant).
+            // recv surface (routes to the layout-witness `hew_stream_next_layout`
+            // entry for every describable element type).
+            // .try_recv() routes to hew_stream_try_next_layout (non-blocking).
             // .lines() and .collect() are iterator-style ops removed from the
             // fundamental surface; they will land via trait impls in stdlib work.
             "recv" | "try_recv" | "close" => {
@@ -3478,6 +3479,59 @@ impl Checker {
             }
         }
         "it has no clone/drop thunk path for the owned-element Vec runtime".to_string()
+    }
+
+    /// Channel/stream element admission for the layout-witness queue path
+    /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
+    /// admissible when the codegen element witness can describe it:
+    ///
+    /// - `string` / `bytes` — content-encoded queue envelopes;
+    /// - Copy-eligible primitives and `BitCopy` records ([`primitive_copy_layout`]
+    ///   resolves a fixed width) — Plain raw-representation envelopes;
+    /// - heap-owning record/enum/tuple value types the owned-element Vec
+    ///   thunk path admits ([`Self::vec_owned_element_admissible`] — the SAME
+    ///   authority codegen's witness synthesis delegates to, so the checker
+    ///   and the witness can never disagree about one element type).
+    ///
+    /// Everything else fails closed: builtin container/handle nominals
+    /// (`Vec`/`HashMap`/streams/channels/pids), closures, and any type
+    /// without a clone/drop thunk path. `BitCopy` enums ride the
+    /// owned-element authority's record/enum admission and are lowered
+    /// Plain by the witness (no heap leaf → no thunks), which is the
+    /// correct Copy semantics.
+    pub(super) fn queue_elem_admissible(&self, elem_ty: &Ty) -> bool {
+        match elem_ty {
+            // String/bytes are content-encoded envelopes; unconstrained
+            // numeric literals default to i64/f64 (Plain 8-byte envelopes)
+            // at literal-defaulting time, so a queue element constrained
+            // only by a literal (`tx.send(42)`) must not be rejected
+            // before defaulting runs.
+            Ty::String | Ty::Bytes | Ty::IntLiteral | Ty::FloatLiteral => true,
+            _ => {
+                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
+                    .is_some()
+                    || self.vec_owned_element_admissible(elem_ty)
+            }
+        }
+    }
+
+    /// Explain why a channel/stream element type was rejected by
+    /// [`Self::queue_elem_admissible`], for the fail-closed diagnostic.
+    /// Completes "`{Container}<X>` is not supported: {clause}".
+    pub(super) fn queue_elem_rejection_reason(&self, elem_ty: &Ty) -> String {
+        if let Ty::Named {
+            builtin: Some(_), ..
+        } = elem_ty
+        {
+            return "builtin container and handle types cannot ride the \
+                    element-layout queue witness; their ownership lives in a \
+                    runtime context the queue cannot clone or drop"
+                .to_string();
+        }
+        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+            return "function values cannot be queue elements".to_string();
+        }
+        self.vec_element_rejection_reason(elem_ty)
     }
 
     pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
@@ -5113,26 +5167,30 @@ impl Checker {
                 // ICE-flavoured "missing runtime rewrite metadata" from
                 // require_builtin_runtime_symbol.
                 let resolved_inner = self.subst.resolve(&inner);
-                if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+                if !matches!(resolved_inner, Ty::Var(_))
+                    && !self.queue_elem_admissible(&resolved_inner)
+                {
+                    let reason = self.queue_elem_rejection_reason(&resolved_inner);
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!(
-                            "`Sink<{}>` is not supported; \
-                             runtime lowering is currently implemented only for string and bytes",
-                            inner.user_facing()
-                        ),
+                        format!("`Sink<{}>` is not supported: {reason}", inner.user_facing()),
                     );
                     return Ty::Error;
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
                     // Channel-family naming: .send() replaced .write() as the
-                    // fundamental send surface (routes to the same
-                    // hew_sink_write_* runtime symbols). .try_send() routes to
-                    // hew_sink_try_write_* (non-blocking variant). .flush() is
-                    // removed from the fundamental surface; it may re-surface
-                    // via an I/O-sink trait in stdlib work.
+                    // fundamental send surface. string/bytes elements keep the
+                    // platform byte-sink writes (`hew_sink_write_*` — the bytes
+                    // form carries the suspendable backpressure ramp); every
+                    // other describable element rides the typed-serialise
+                    // layout entry `hew_stream_send_layout`, which the runtime
+                    // accepts on in-memory channel sinks (fail-closed on byte
+                    // sinks for owned elements). .try_send() keeps the
+                    // non-blocking string/bytes writes; a non-blocking typed
+                    // send entry does not exist yet, so widened-element
+                    // try_send fails closed with a specific diagnostic.
                     "send" | "try_send" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
@@ -5148,16 +5206,35 @@ impl Checker {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
-                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                            span,
-                            BuiltinNamedType::Sink.canonical_name(),
-                            method,
-                            crate::stdlib::resolve_stream_method(
+                        let resolved_inner = self.subst.resolve(&inner);
+                        let element_name = Self::runtime_stream_element_name(&resolved_inner);
+                        let c_symbol = if element_name.is_some() {
+                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                                span,
                                 BuiltinNamedType::Sink.canonical_name(),
                                 method,
-                                Self::runtime_stream_element_name(&self.subst.resolve(&inner)),
-                            ),
-                        ) else {
+                                crate::stdlib::resolve_stream_method(
+                                    BuiltinNamedType::Sink.canonical_name(),
+                                    method,
+                                    element_name,
+                                ),
+                            ) else {
+                                return Ty::Error;
+                            };
+                            c_symbol
+                        } else if method == "send" {
+                            "hew_stream_send_layout"
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`try_send` is not available on `Sink<{}>` yet: the \
+                                     typed element path has no non-blocking send runtime \
+                                     entry — use `send` (blocking, backpressure-aware)",
+                                    inner.user_facing()
+                                ),
+                            );
                             return Ty::Error;
                         };
                         self.record_runtime_method_call_rewrite(span, c_symbol);
@@ -5235,16 +5312,14 @@ impl Checker {
                         }
                         // Validate after unification so the concrete type is known.
                         let resolved_inner = self.subst.resolve(&inner);
-                        if !matches!(resolved_inner, Ty::Var(_) | Ty::String)
-                            && !resolved_inner.is_integer()
+                        if !matches!(resolved_inner, Ty::Var(_))
+                            && !self.queue_elem_admissible(&resolved_inner)
                         {
+                            let reason = self.queue_elem_rejection_reason(&resolved_inner);
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 span,
-                                format!(
-                                    "Channel<{resolved_inner}> is not supported; \
-                                     only Channel<string> and Channel<i64> are currently supported"
-                                ),
+                                format!("Channel<{resolved_inner}> is not supported: {reason}"),
                             );
                             return Ty::Error;
                         }
@@ -5322,16 +5397,14 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 let receiver_ty = Ty::receiver(inner.clone());
                 let resolved_inner = self.subst.resolve(&inner);
-                if !matches!(resolved_inner, Ty::Var(_) | Ty::String)
-                    && !resolved_inner.is_integer()
+                if !matches!(resolved_inner, Ty::Var(_))
+                    && !self.queue_elem_admissible(&resolved_inner)
                 {
+                    let reason = self.queue_elem_rejection_reason(&resolved_inner);
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        format!(
-                            "Channel<{resolved_inner}> is not supported; \
-                             only Channel<string> and Channel<i64> are currently supported"
-                        ),
+                        format!("Channel<{resolved_inner}> is not supported: {reason}"),
                     );
                     return Ty::Error;
                 }

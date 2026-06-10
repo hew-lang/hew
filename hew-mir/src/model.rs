@@ -2322,13 +2322,13 @@ pub enum Terminator {
     },
     /// Non-blocking `await stream.recv()` from a SUSPENDABLE caller (NEW-7). The
     /// channel-readiness analogue of [`Terminator::SuspendingRead`]: instead of
-    /// blocking an OS worker in `hew_stream_next_bytes` / `hew_stream_next`,
+    /// blocking an OS worker in the layout-witness `hew_stream_next_layout`,
     /// codegen lowers this as a `coro.suspend` source — it creates a read slot,
     /// registers the parked continuation + the slot with the stream's channel
     /// core (`hew_stream_await_next`), suspends (freeing the worker), and on
-    /// the resume edge pops the now-available item from the queue
-    /// (`hew_stream_pop_bytes` / `hew_stream_pop_string`) and binds it as
-    /// `Option<bytes>` / `Option<string>` (EOF is the SOLE `None`; an empty
+    /// the resume edge pops the now-available item from the queue through the
+    /// element-layout witness (`hew_stream_pop_layout`) and binds it as
+    /// `Option<T>` (EOF is the SOLE `None`; an empty
     /// item — empty `bytes` / empty `string` — surfaces as `Some` of the empty
     /// value, mirroring the blocking-recv invariant).  The item travels
     /// through the channel queue held across the suspend (NOT a terminator
@@ -2342,7 +2342,7 @@ pub enum Terminator {
     /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
     /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
     /// runs on a foreign thread with no parkable continuation and keeps the
-    /// blocking `hew_stream_next_bytes` / `hew_stream_next` FFI call.
+    /// blocking `hew_stream_next_layout` FFI call.
     SuspendingStreamNext {
         /// The stream handle the recv is registered against (the receiver of
         /// `stream.recv()`). Read by codegen to register the parked continuation
@@ -2352,14 +2352,15 @@ pub enum Terminator {
         /// after the producer deposited an item (or closed → `None`). Identical
         /// role to [`Terminator::SuspendingRead::result_dest`].
         result_dest: Place,
-        /// `true` → `Option<string>` element (`hew_stream_next` /
-        /// `hew_stream_pop_string`, nullable-ptr / header-aware cstring ABI);
-        /// `false` → `Option<bytes>` element (`hew_stream_next_bytes` /
-        /// `hew_stream_pop_bytes`, `BytesTriple` empty-triple ABI). Mirrors
-        /// the `elem_is_int` discriminator on
-        /// [`Terminator::SuspendingChannelRecv`] — selects which runtime pop
-        /// the resume edge materialises into `result_dest`.
-        elem_is_string: bool,
+        /// The checker-resolved stream element type. The resume edge
+        /// synthesizes a `HewVecElemLayout` witness from it and pops the
+        /// queued item through `hew_stream_pop_layout` directly into
+        /// `result_dest`'s `Option<T>` Some payload slot — one mechanism for
+        /// every describable element type. Mirrors `elem_ty` on
+        /// [`Terminator::SuspendingChannelRecv`]. MIR derives it from the
+        /// recv's `Option<T>` binding type (checker-authoritative), never
+        /// from a runtime symbol name.
+        elem_ty: ResolvedTy,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the item is bound. This is the `next` block of the original recv.
@@ -2407,13 +2408,13 @@ pub enum Terminator {
     /// Non-blocking `await rx.recv()` over a `std::channel` `Receiver<T>` from a
     /// SUSPENDABLE caller (NEW-4). The std-channel analogue of
     /// [`Terminator::SuspendingStreamNext`]: instead of blocking an OS worker in
-    /// `hew_channel_recv` / `hew_channel_recv_int`, codegen lowers this as a
+    /// the layout-witness `hew_channel_recv_layout`, codegen lowers this as a
     /// `coro.suspend` source — it creates a read slot, registers the parked
     /// continuation with the channel core (`hew_channel_await_recv`), suspends
     /// (freeing the worker), and on the resume / immediate-ready edge pops the
     /// now-available item from the queue through the non-blocking
-    /// `hew_channel_try_recv` / `hew_channel_try_recv_int` and binds it as
-    /// `Option<T>` (`None` on close → null / out-valid 0). The item travels
+    /// element-layout-witness entry (`hew_channel_try_recv_layout`) and binds
+    /// it as `Option<T>` (`None` on close). The item travels
     /// through the channel queue held across the suspend (NOT a terminator
     /// operand), exactly as `SuspendingStreamNext`'s item travels through its
     /// channel core — which is why the resume binding lives ON the terminator.
@@ -2427,7 +2428,7 @@ pub enum Terminator {
     /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
     /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
     /// runs on a foreign thread with no parkable continuation and keeps the
-    /// blocking `hew_channel_recv` / `hew_channel_recv_int` FFI call.
+    /// blocking `hew_channel_recv_layout` FFI call.
     SuspendingChannelRecv {
         /// The channel receiver handle the recv is registered against (the
         /// receiver of `rx.recv()`). Read by codegen to register the parked
@@ -2437,11 +2438,15 @@ pub enum Terminator {
         /// a sender deposited an item (or the channel closed → `None`). Identical
         /// role to [`Terminator::SuspendingStreamNext::result_dest`].
         result_dest: Place,
-        /// `true` → `Option<i64>` element (`hew_channel_recv_int` /
-        /// `hew_channel_try_recv_int`, out-valid ABI); `false` → `Option<string>`
-        /// element (`hew_channel_recv` / `hew_channel_try_recv`, nullable-ptr
-        /// ABI). Selects which non-blocking pop the resume edge materialises.
-        elem_is_int: bool,
+        /// The checker-resolved channel element type. The resume /
+        /// immediate-ready edge synthesizes a `HewVecElemLayout` witness from
+        /// it and pops the queued item through the non-blocking
+        /// `hew_channel_try_recv_layout` directly into `result_dest`'s
+        /// `Option<T>` Some payload slot — one mechanism for every
+        /// describable element type. MIR derives it from the recv's
+        /// `Option<T>` binding type (checker-authoritative), never from a
+        /// runtime symbol name.
+        elem_ty: ResolvedTy,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the item is bound. This is the `next` block of the original recv.
@@ -2634,10 +2639,14 @@ pub enum SelectArmKind {
     /// `<rx>.recv()` — std/channel receive (NEW-4). The select-flavoured
     /// equivalent of an awaited `rx.recv()`: the arm registers a readiness
     /// poll on the channel core and, on winning, pops the queued item via the
-    /// non-blocking `try_recv` and binds `Option<T>`. `elem_is_int` selects the
-    /// string (nullable-ptr) vs int (out-valid) materialisation, mirroring
+    /// non-blocking `hew_channel_try_recv_layout` and binds `Option<T>`.
+    /// `elem_ty` is the checker-resolved element type the winner edge
+    /// synthesizes its layout witness from, mirroring
     /// [`Terminator::SuspendingChannelRecv`].
-    ChannelRecv { receiver: Place, elem_is_int: bool },
+    ChannelRecv {
+        receiver: Place,
+        elem_ty: ResolvedTy,
+    },
     /// `after <duration>` — timer.
     AfterTimer { duration: Place },
 }

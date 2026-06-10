@@ -504,6 +504,13 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         (*v).elem_kind = match descriptor.ownership_kind {
             HewTypeOwnershipKind::String => ElemKind::String,
             HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged => ElemKind::Plain,
+            HewTypeOwnershipKind::Bytes => {
+                // The Bytes kind belongs to the channel/stream element
+                // witness; Vec descriptors never carry it. Fail closed.
+                let msg = b"PANIC: HewTypeLayout ownership_kind=Bytes is not valid for Vec\n\0";
+                write_stderr(&msg[..msg.len() - 1]);
+                libc::abort();
+            }
         };
         // Copy the descriptor into the inline storage so the `layout` pointer
         // remains valid for the entire lifetime of the vec regardless of

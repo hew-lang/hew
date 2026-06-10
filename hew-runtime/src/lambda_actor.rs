@@ -2113,6 +2113,12 @@ mod tests {
     fn ask_body_panic_orphans_reply_channel() {
         use std::time::Duration;
 
+        // This test allocates (and deliberately orphans) a reply channel, so
+        // it must hold the crate-wide serialisation guard — a concurrent test
+        // measuring `active_channel_count()` deltas would observe the orphan
+        // inside its window (the documented `reply_channel::tests` convention).
+        let _guard = crate::runtime_test_guard();
+
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,

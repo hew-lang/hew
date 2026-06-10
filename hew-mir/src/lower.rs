@@ -1560,21 +1560,25 @@ pub fn lower_hir_module_with_facts(
     for mono in &module.monomorphisations {
         module_fn_names.insert(mono.mangled_name.clone());
     }
-    // Channel recv out-param-ABI symbols: registered by the checker
-    // (`registration.rs:5364`) and in `fn_registry` (via
-    // `seed_stdlib_fn_registry`) but absent from the stdlib catalog and
-    // from `extern "C"` blocks in `channel.hew`. Adding them here routes
-    // a `BindingRef { name: "hew_channel_recv*", resolved: Item(_) }` call
-    // through `lower_direct_call` → `Terminator::Call` (not through
+    // Channel/stream layout-witness recv/send symbols: registered by the
+    // checker (`registration.rs::register_channel_recv_builtins`) and in
+    // `fn_registry` (via `seed_stdlib_fn_registry`) but absent from the
+    // stdlib catalog and from `extern "C"` blocks in `.hew` source (their
+    // real ABI carries an out-parameter and/or an element-layout witness
+    // pointer). Adding them here routes a
+    // `BindingRef { name: "hew_channel_recv_layout", resolved: Item(_) }`
+    // call through `lower_direct_call` → `Terminator::Call` (not through
     // `lower_runtime_call` / `Instr::CallRuntimeAbi`, which would require
     // these to be in `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`).
     // Codegen intercepts the `Terminator::Call` by callee name and emits
-    // the null-ptr → `Option<T>` materialisation.
+    // the element-layout-witness ABI.
     for name in [
-        "hew_channel_recv",
-        "hew_channel_recv_int",
-        "hew_channel_try_recv",
-        "hew_channel_try_recv_int",
+        "hew_channel_recv_layout",
+        "hew_channel_try_recv_layout",
+        "hew_channel_send_layout",
+        "hew_stream_next_layout",
+        "hew_stream_try_next_layout",
+        "hew_stream_send_layout",
     ] {
         module_fn_names.insert(name.to_string());
     }
@@ -9971,7 +9975,7 @@ impl Builder {
     /// synthetic `match channel.recv(__hew_for_iter_X) { Some(item) => body,
     /// None => break }` and source-level `match await rx.recv() { ... }` /
     /// `match rx.try_recv() { ... }` whose scrutinee lowers to the same direct
-    /// `Call { callee: hew_channel_recv* / hew_stream_next_* }` shape.
+    /// `Call { callee: hew_channel_*_layout / hew_stream_*_layout }` shape.
     ///
     /// Each recv hands the consumer a FRESH, solely-owned heap value (the
     /// runtime allocates an `alloc_cstring_data` block per frame for `string`,
@@ -9998,30 +10002,22 @@ impl Builder {
             return false;
         };
         // Every recv-result-producing runtime symbol (returns `Option<T>` or
-        // a null-ptr-on-EOF that codegen wraps into `Option<T>`) that can
-        // appear as a match scrutinee in a `match recv()` / `match next()`
-        // shape. Kept in sync with `runtime_call.rs`:
-        //   * channel recv: `hew_channel_recv` (String), `hew_channel_recv_int`,
-        //     `hew_channel_try_recv`, `hew_channel_try_recv_int`.
-        //   * stream next: `hew_stream_next` (String) / `hew_stream_next_bytes`
-        //     (Bytes), plus the non-suspending `hew_stream_try_next` /
-        //     `hew_stream_try_next_bytes` siblings. The String-variant
-        //     symbols are no-suffix per `hew-types/builtin_names.rs`; matching
-        //     the `_string` invented spelling would silently miss the
-        //     for-await `Stream<string>` surface.
+        // a result codegen wraps into `Option<T>`) that can appear as a match
+        // scrutinee in a `match recv()` / `match next()` shape:
+        //   * channel recv: the layout-witness `hew_channel_recv_layout` /
+        //     `hew_channel_try_recv_layout` entries (one symbol per operation
+        //     for every describable element type).
+        //   * stream next: the layout-witness `hew_stream_next_layout` /
+        //     `hew_stream_try_next_layout` entries.
         //   * duplex recv: `hew_duplex_recv` / `hew_duplex_try_recv` and the
         //     half-duplex `hew_duplex_recv_half` — all produce an `Option<T>`
         //     payload in the same shape.
         matches!(
             name.as_str(),
-            "hew_channel_recv"
-                | "hew_channel_recv_int"
-                | "hew_channel_try_recv"
-                | "hew_channel_try_recv_int"
-                | "hew_stream_next"
-                | "hew_stream_next_bytes"
-                | "hew_stream_try_next"
-                | "hew_stream_try_next_bytes"
+            "hew_channel_recv_layout"
+                | "hew_channel_try_recv_layout"
+                | "hew_stream_next_layout"
+                | "hew_stream_try_next_layout"
                 | "hew_duplex_recv"
                 | "hew_duplex_recv_half"
                 | "hew_duplex_try_recv"
@@ -10154,7 +10150,7 @@ impl Builder {
             ResolvedTy::String => Some("hew_string_drop"),
             // Per-iteration release for a `for await frame in <Stream<bytes>>`
             // binding (and any analogous Some-arm `bytes` payload on a recv-call
-            // scrutinee). `hew_stream_pop_bytes` hands the consumer a fresh,
+            // scrutinee). The layout-witness pop hands the consumer a fresh,
             // refcounted `BytesTriple` per frame: a body that does not move the
             // value out is the sole owner and must release exactly one reference
             // on every exit edge. Without this arm the per-frame triple's data
@@ -14851,26 +14847,26 @@ impl Builder {
             Some(self.alloc_local(ret_ty.clone()))
         };
 
-        // Suspendable-caller flip (NEW-7): `await stream.recv()` over a
-        // `Stream<bytes>` resolves to the extern `hew_stream_next_bytes`; over
-        // a `Stream<string>` to `hew_stream_next` (the canonical name; the
-        // `_bytes` symbol is the bytes-element sibling, the unsuffixed name
-        // is the string-element variant). In a caller that carries the
+        // Suspendable-caller flip (NEW-7): `await stream.recv()` resolves to
+        // the extern stream-recv entries. In a caller that carries the
         // execution context (actor handler / closure / task entry) the recv
         // SUSPENDS over the channel-await substrate instead of blocking the
-        // worker — emit `Terminator::SuspendingStreamNext` with
-        // `elem_is_string` selecting which runtime pop the bind edge calls
-        // (mirror of the `elem_is_int` flag on `SuspendingChannelRecv`). A
+        // worker — emit `Terminator::SuspendingStreamNext` carrying the
+        // checker-resolved element type derived from the recv's `Option<T>`
+        // binding (the callee's declared return type) — never from the
+        // runtime symbol name, which is a presentation detail of the HIR
+        // symbol selection (`checker-authority`/`type-info-survival`). A
         // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
         // continuation and keeps the blocking `hew_stream_next_*` call (the
         // codegen `Terminator::Call` intercept materialises `Option<T>`).
         // This reuses the SAME `carries_execution_context` discriminator as
         // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
-        if matches!(callee_symbol, "hew_stream_next_bytes" | "hew_stream_next")
+        if callee_symbol == "hew_stream_next_layout"
             && self.current_function_call_conv.carries_execution_context()
         {
-            if let (Some(result_dest), [stream]) = (dest, arg_places.as_slice()) {
-                let elem_is_string = callee_symbol == "hew_stream_next";
+            if let (Some(result_dest), [stream], Some(elem_ty)) =
+                (dest, arg_places.as_slice(), option_payload_ty(ret_ty))
+            {
                 let next = self.alloc_block();
                 // `SuspendingStreamNext` carries no separate MIR cleanup block —
                 // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
@@ -14878,7 +14874,7 @@ impl Builder {
                 self.finish_current_block(Terminator::SuspendingStreamNext {
                     stream: *stream,
                     result_dest,
-                    elem_is_string,
+                    elem_ty: elem_ty.clone(),
                     resume: next,
                     cleanup: next,
                 });
@@ -14888,22 +14884,26 @@ impl Builder {
         }
 
         // Suspendable-caller flip (NEW-4): `await rx.recv()` over a
-        // `std::channel` `Receiver<T>` resolves to `hew_channel_recv`
-        // (string) / `hew_channel_recv_int` (int). In a caller that carries the
-        // execution context (actor handler / closure / task entry) the recv
-        // SUSPENDS over the channel-await substrate instead of blocking the
-        // worker — emit `Terminator::SuspendingChannelRecv`. A
+        // `std::channel` `Receiver<T>` resolves to the extern channel-recv
+        // entries. In a caller that carries the execution context (actor
+        // handler / closure / task entry) the recv SUSPENDS over the
+        // channel-await substrate instead of blocking the worker — emit
+        // `Terminator::SuspendingChannelRecv` carrying the checker-resolved
+        // element type derived from the recv's `Option<T>` binding (the
+        // callee's declared return type) — never from the runtime symbol
+        // name (`checker-authority`/`type-info-survival`). A
         // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
-        // continuation and keeps the blocking `hew_channel_recv*` call (codegen
+        // continuation and keeps the blocking `hew_channel_recv_layout` call (codegen
         // intercepts the `Terminator::Call` by name and materialises
         // `Option<T>`). `try_recv` never suspends and always keeps the blocking
         // (immediate) call. This reuses the SAME `carries_execution_context`
         // discriminator as the stream-recv flip above (DI-019/DI-020).
-        if matches!(callee_symbol, "hew_channel_recv" | "hew_channel_recv_int")
+        if callee_symbol == "hew_channel_recv_layout"
             && self.current_function_call_conv.carries_execution_context()
         {
-            if let (Some(result_dest), [receiver]) = (dest, arg_places.as_slice()) {
-                let elem_is_int = callee_symbol == "hew_channel_recv_int";
+            if let (Some(result_dest), [receiver], Some(elem_ty)) =
+                (dest, arg_places.as_slice(), option_payload_ty(ret_ty))
+            {
                 let next = self.alloc_block();
                 // `SuspendingChannelRecv` carries no separate MIR cleanup block —
                 // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
@@ -14911,7 +14911,7 @@ impl Builder {
                 self.finish_current_block(Terminator::SuspendingChannelRecv {
                     receiver: *receiver,
                     result_dest,
-                    elem_is_int,
+                    elem_ty: elem_ty.clone(),
                     resume: next,
                     cleanup: next,
                 });
@@ -16164,22 +16164,31 @@ impl Builder {
                         Some(await_dest),
                     )
                 }
-                HirSelectArmKind::ChannelRecv {
-                    receiver,
-                    elem_is_int,
-                } => {
+                HirSelectArmKind::ChannelRecv { receiver } => {
                     // The arm binds `Option<T>` — the same shape an awaited
                     // `rx.recv()` produces; the winner edge pops the queued item
-                    // via the non-blocking try_recv and materialises it.
+                    // via the non-blocking layout-witness try_recv and
+                    // materialises it. The element type comes from the
+                    // checker-resolved `Receiver<T>` handle type (mirror of the
+                    // `Stream<T>` extraction on the StreamNext arm above), never
+                    // from a runtime symbol name.
                     let recv_place = self.lower_value(receiver)?;
-                    let elem = if *elem_is_int {
-                        ResolvedTy::I64
-                    } else {
-                        ResolvedTy::String
+                    let receiver_ty = self.subst_ty(&receiver.ty);
+                    let elem = match receiver_ty {
+                        ResolvedTy::Named { name, mut args, .. }
+                            if name == "Receiver" && args.len() == 1 =>
+                        {
+                            args.remove(0)
+                        }
+                        // A malformed receiver type cannot supply a witness;
+                        // Unit produces a zero-size witness the runtime
+                        // aborts on fail-closed (mirrors the StreamNext arm's
+                        // Unit fallback).
+                        _ => ResolvedTy::Unit,
                     };
                     let option_ty = ResolvedTy::Named {
                         name: "Option".to_string(),
-                        args: vec![elem],
+                        args: vec![elem.clone()],
                         builtin: None,
                         is_opaque: false,
                     };
@@ -16190,7 +16199,7 @@ impl Builder {
                     (
                         SelectArmKind::ChannelRecv {
                             receiver: recv_place,
-                            elem_is_int: *elem_is_int,
+                            elem_ty: elem,
                         },
                         Some(item_dest),
                     )
@@ -24279,6 +24288,19 @@ fn instr_escape_places(instr: &Instr) -> Vec<Place> {
     }
 }
 
+/// The payload type of a checker-resolved `Option<T>` — the element type a
+/// channel/stream recv binds. The recv flip sites derive their terminator's
+/// `elem_ty` from the recv call's declared `Option<T>` return type so the
+/// element witness stays checker-authoritative end to end; a non-`Option`
+/// return shape (impossible from HIR's recv lowering) falls back to the
+/// blocking-call path, whose codegen intercept fails closed on its own.
+fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
 /// The *escape* operands of a terminator — the source reads that alias an owned
 /// handle out of the gate's tracked dataflow. A `Call` (a user function OR a
 /// runtime collection-push helper like `hew_vec_push_ptr`) takes every argument
@@ -24424,18 +24446,18 @@ fn is_borrowing_call_abi(callee: &str) -> bool {
 }
 
 /// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just
-/// the non-handle-leaf args of [`is_borrowing_call_abi`]). The stream recv /
-/// `try_recv` runtime entries — `hew_stream_next` / `hew_stream_try_next` for
-/// `Stream<string>::recv` / `try_recv` and `hew_stream_next_bytes` /
-/// `hew_stream_try_next_bytes` for `Stream<bytes>::recv` / `try_recv` — READ
-/// one item from the stream and return it as `Option<T>`; the stream handle
-/// itself is borrowed for the call and continues to live in the caller's slot
-/// afterwards (the caller's source drop is still the SOLE free of the stream's
-/// runtime context). Their suspending siblings ([`Terminator::SuspendingStreamNext`])
-/// are already exempt because they are not [`Terminator::Call`]s; listing
-/// the blocking / non-suspending entries here keeps the same
-/// borrow-not-consume semantics for the `let (sink, input) = stream.pipe(N);
-/// input.try_recv()` shape that goes through [`Terminator::Call`].
+/// the non-handle-leaf args of [`is_borrowing_call_abi`]). The layout-witness
+/// stream recv / `try_recv` runtime entries — `hew_stream_next_layout` /
+/// `hew_stream_try_next_layout` for `Stream<T>::recv` / `try_recv` — READ
+/// one item from the stream and decode it into the consumer's `Option<T>`
+/// slot; the stream handle itself is borrowed for the call and continues to
+/// live in the caller's slot afterwards (the caller's source drop is still
+/// the SOLE free of the stream's runtime context). Their suspending siblings
+/// ([`Terminator::SuspendingStreamNext`]) are already exempt because they are
+/// not [`Terminator::Call`]s; listing the blocking / non-suspending entries
+/// here keeps the same borrow-not-consume semantics for the
+/// `let (sink, input) = stream.pipe(N); input.try_recv()` shape that goes
+/// through [`Terminator::Call`].
 ///
 /// Kept narrow: each entry's Rust impl takes `*mut HewStream` and ONLY reads
 /// one queued item without mutating the handle's ownership; adding a callee
@@ -24444,10 +24466,7 @@ fn is_borrowing_call_abi(callee: &str) -> bool {
 fn is_handle_borrowing_call_abi(callee: &str) -> bool {
     matches!(
         callee,
-        "hew_stream_next"
-            | "hew_stream_try_next"
-            | "hew_stream_next_bytes"
-            | "hew_stream_try_next_bytes"
+        "hew_stream_next_layout" | "hew_stream_try_next_layout"
     )
 }
 
@@ -28957,7 +28976,7 @@ mod f1_suspending_escape_poison {
         let next = Terminator::SuspendingStreamNext {
             stream: Place::Local(1),
             result_dest: Place::Local(2),
-            elem_is_string: false,
+            elem_ty: ResolvedTy::Bytes,
             resume: 1,
             cleanup: 2,
         };

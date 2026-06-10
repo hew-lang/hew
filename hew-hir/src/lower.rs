@@ -168,23 +168,19 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
-    /// `for await x in rx` over `Receiver<string|integer>` — each iteration
-    /// borrows the loop's receiver binding and emits a direct runtime recv call.
-    /// MIR's existing `lower_direct_call` suspend flip turns this into
-    /// `Terminator::SuspendingChannelRecv` for execution-context callers.
-    ChannelRecv {
-        elem_is_int: bool,
-    },
-    /// `for await x in stream` over `Stream<bytes>` / `Stream<string>` — each
-    /// iteration borrows the stream binding and emits the matching runtime
-    /// recv symbol (`hew_stream_next_bytes` / `hew_stream_next`; the
-    /// unsuffixed name is the canonical string-element recv the checker
-    /// resolves `Stream<string>::recv` to), reusing MIR's existing
-    /// `Terminator::SuspendingStreamNext` flip with the `elem_is_string`
-    /// element-kind discriminator.
-    StreamRecv {
-        elem_is_string: bool,
-    },
+    /// `for await x in rx` over `Receiver<T>` — each iteration borrows the
+    /// loop's receiver binding and emits the layout-witness runtime recv
+    /// call (`hew_channel_recv_layout`, one symbol for every describable
+    /// element type). MIR's existing `lower_direct_call` suspend flip turns
+    /// this into `Terminator::SuspendingChannelRecv` for execution-context
+    /// callers, deriving the element type from the call's `Option<T>`
+    /// return type.
+    ChannelRecv,
+    /// `for await x in stream` over `Stream<T>` — each iteration borrows the
+    /// stream binding and emits the layout-witness runtime recv call
+    /// (`hew_stream_next_layout`), reusing MIR's existing
+    /// `Terminator::SuspendingStreamNext` flip.
+    StreamRecv,
     /// `for x in <generator>` — each iteration consumes one value via the
     /// generator `.next()` consumption seam (`HirExprKind::GeneratorNext`).
     /// The generator handle is the loop's `__hew_for_iter_*` binding; it is
@@ -277,17 +273,19 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// `pipe`/`bytes_pipe` (real `fn` items).
 const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 
-/// Synthetic-builtin sentinel `ItemId`s for the four channel recv out-param-ABI
-/// symbols (`hew_channel_recv`, `hew_channel_recv_int`, `hew_channel_try_recv`,
-/// `hew_channel_try_recv_int`).
+/// Synthetic-builtin sentinel `ItemId`s for the channel/stream layout-witness
+/// recv/send symbols (`hew_channel_recv_layout`, `hew_channel_try_recv_layout`,
+/// `hew_channel_send_layout`, `hew_stream_next_layout`,
+/// `hew_stream_try_next_layout`, `hew_stream_send_layout`).
 ///
-/// These symbols are registered by the checker (`registration.rs:5364`) but
-/// are NOT extern-declared in `std/channel/channel.hew` (they use an
-/// out-parameter ABI for `Option<T>` that cannot be expressed as a plain
-/// `extern "C"` declaration). Without a synthetic `fn_registry` entry the HIR
-/// import filter (`collect_all_bare_call_names`) would see these bare names as
-/// unresolvable and skip the `recv`/`try_recv` impl methods entirely, leaving
-/// the user with a "no method recv" error.
+/// These symbols are registered by the checker
+/// (`registration.rs::register_channel_recv_builtins` for the channel module)
+/// but are NOT extern-declared in `.hew` source (their real ABI carries an
+/// out-parameter and/or an element-layout witness pointer that cannot be
+/// expressed as a plain `extern "C"` declaration). Without a synthetic
+/// `fn_registry` entry the HIR import filter (`collect_all_bare_call_names`)
+/// would see these bare names as unresolvable and skip the `recv`/`try_recv`
+/// impl methods entirely, leaving the user with a "no method recv" error.
 ///
 /// By seeding them here:
 ///   1. The import filter admits `recv`/`try_recv` (the body calls are now
@@ -303,11 +301,15 @@ const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 ///      `None`, and MIR falls through to `module_fn_names` (which this lane
 ///      also populates) → `lower_direct_call` → `Terminator::Call`.
 ///   4. Codegen intercepts the `Terminator::Call` by callee name and emits the
-///      custom null-ptr → `Option<T>` materialisation sequence.
-const SYNTHETIC_CHANNEL_RECV_STR_ITEM: ItemId = ItemId(u32::MAX / 2 - 12);
-const SYNTHETIC_CHANNEL_RECV_INT_ITEM: ItemId = ItemId(u32::MAX / 2 - 13);
-const SYNTHETIC_CHANNEL_TRY_RECV_STR_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
-const SYNTHETIC_CHANNEL_TRY_RECV_INT_ITEM: ItemId = ItemId(u32::MAX / 2 - 15);
+///      layout-witness ABI (`i32 sym(handle, out, witness)` for recv;
+///      `void sym(handle, data_ptr, witness)` for send), deriving the element
+///      type from the dest/value local's checker-resolved type.
+const SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 12);
+const SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 13);
+const SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
+const SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 15);
+const SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
+const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 
 /// Inclusive floor of the synthetic-builtin sentinel `ItemId` band.
 ///
@@ -2591,7 +2593,7 @@ pub fn lower_program_with_mono_cap(
                                 //    same-module extern fn) — catches
                                 //    codegen-intercepted builtins that are not
                                 //    extern-declared, e.g. `std::channel`'s
-                                //    `recv` → `hew_channel_recv`; OR
+                                //    `recv` → `hew_channel_recv_layout`; OR
                                 //  - its signature names a user type that would
                                 //    not resolve at the MIR boundary — a
                                 //    cross-module dotted type (`fs.IoError`) or a
@@ -4869,8 +4871,9 @@ fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> V
 /// Used to decide whether an imported impl-method body is safe to lower: a body
 /// that calls a bare name resolvable in neither `fn_registry`, the same-module
 /// rewrite map, nor the runtime/stdlib catalog cannot be lowered cross-module
-/// (e.g. `std::channel`'s `recv` calls the codegen-intercepted `hew_channel_recv`,
-/// which is not extern-declared in the module and never reaches the imported
+/// (e.g. `std::channel`'s `recv` calls the codegen-intercepted
+/// `hew_channel_recv_layout`, which is not extern-declared in the module and
+/// never reaches the imported
 /// `fn_registry`). Such methods are skipped, matching the prior behaviour where
 /// every imported impl method was dropped.
 fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
@@ -5509,24 +5512,37 @@ impl LowerCtx {
         self.seed_channel_recv_fn_registry();
     }
 
-    /// Seeds `fn_registry` entries for the four channel receive out-param-ABI
-    /// symbols (`hew_channel_recv`, `hew_channel_recv_int`,
-    /// `hew_channel_try_recv`, `hew_channel_try_recv_int`).
+    /// Seeds `fn_registry` entries for the channel/stream layout-witness
+    /// recv/send symbols (`hew_channel_recv_layout`,
+    /// `hew_channel_try_recv_layout`, `hew_channel_send_layout`,
+    /// `hew_stream_next_layout`, `hew_stream_try_next_layout`,
+    /// `hew_stream_send_layout`).
     ///
-    /// These are registered by the checker (`registration.rs:5364`) but are
-    /// not extern-declared in `channel.hew`. Return types are placeholders
+    /// These carry an out-parameter and/or element-layout-witness ABI and are
+    /// not extern-declarable in `.hew` source. Return types are placeholders
     /// (MIR reads the actual `Option<T>` type from `expr_types` at the call
-    /// site); param types carry only arity. See `SYNTHETIC_CHANNEL_RECV_*_ITEM`
-    /// for the full rationale.
+    /// site); param types carry only arity. See
+    /// `SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM` for the full rationale.
     fn seed_channel_recv_fn_registry(&mut self) {
         for (name, id) in [
-            ("hew_channel_recv", SYNTHETIC_CHANNEL_RECV_STR_ITEM),
-            ("hew_channel_recv_int", SYNTHETIC_CHANNEL_RECV_INT_ITEM),
-            ("hew_channel_try_recv", SYNTHETIC_CHANNEL_TRY_RECV_STR_ITEM),
             (
-                "hew_channel_try_recv_int",
-                SYNTHETIC_CHANNEL_TRY_RECV_INT_ITEM,
+                "hew_channel_recv_layout",
+                SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM,
             ),
+            (
+                "hew_channel_try_recv_layout",
+                SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM,
+            ),
+            (
+                "hew_channel_send_layout",
+                SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM,
+            ),
+            ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
+            (
+                "hew_stream_try_next_layout",
+                SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM,
+            ),
+            ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
         ] {
             self.fn_registry.insert(
                 name.to_string(),
@@ -8576,25 +8592,24 @@ impl LowerCtx {
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
-    /// `recv()` over a `Stream<bytes>` or `Stream<string>` — i.e. the checker
-    /// wired the method call to the `hew_stream_next_bytes` (bytes element)
-    /// or `hew_stream_next` (string element — unsuffixed because string is the
-    /// canonical default) runtime symbol. `await stream.recv()` is a
-    /// bindable, value-producing await (NEW-7): it lowers to the inner recv
-    /// call whose `Option<{bytes,string}>` result the MIR `SuspendingStreamNext`
+    /// `recv()` over a `Stream<T>` — i.e. the checker wired the method call
+    /// to the layout-witness `hew_stream_next_layout` runtime entry (one
+    /// symbol for every describable element type). `await stream.recv()` is
+    /// a bindable, value-producing await (NEW-7): it lowers to the inner
+    /// recv call whose `Option<T>` result the MIR `SuspendingStreamNext`
     /// resume edge binds.
     fn is_stream_recv_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_stream_next_bytes" || c_symbol == "hew_stream_next"
+                if c_symbol == "hew_stream_next_layout"
         )
     }
 
     /// True when the `await`'s inner expression is a suspending `std::channel`
-    /// `recv()` over a `Receiver<T>` — i.e. the checker wired the method call to
-    /// the `hew_channel_recv` (string) / `hew_channel_recv_int` (int) runtime
-    /// symbol. `await rx.recv()` is a bindable, value-producing await (NEW-4):
+    /// `recv()` over a `Receiver<T>` — i.e. the checker wired the method call
+    /// to the layout-witness `hew_channel_recv_layout` runtime entry.
+    /// `await rx.recv()` is a bindable, value-producing await (NEW-4):
     /// it lowers to the inner recv call whose `Option<T>` result the MIR
     /// `SuspendingChannelRecv` resume edge binds (or the blocking call for a
     /// context-free caller). `try_recv` never suspends and is not awaitable here.
@@ -8602,27 +8617,20 @@ impl LowerCtx {
         matches!(
             self.method_call_rewrites.get(inner_key),
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_channel_recv" || c_symbol == "hew_channel_recv_int"
+                if c_symbol == "hew_channel_recv_layout"
         )
     }
 
-    /// `Some(true)` when the method call at `key` is a channel `recv` over an
-    /// int element (`hew_channel_recv_int`), `Some(false)` for the string
-    /// element (`hew_channel_recv`), `None` when it is not a channel recv.
-    fn channel_recv_elem_is_int(&self, key: &SpanKey) -> Option<bool> {
-        match self.method_call_rewrites.get(key) {
+    /// True when the method call at `key` is a channel `recv` (the checker
+    /// wired it to `hew_channel_recv_layout`). The element type is carried
+    /// by the checker-resolved `Receiver<T>` receiver type, not by the
+    /// symbol name.
+    fn is_channel_recv_rewrite(&self, key: &SpanKey) -> bool {
+        matches!(
+            self.method_call_rewrites.get(key),
             Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_channel_recv_int" =>
-            {
-                Some(true)
-            }
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_channel_recv" =>
-            {
-                Some(false)
-            }
-            _ => None,
-        }
+                if c_symbol == "hew_channel_recv_layout"
+        )
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
@@ -10257,24 +10265,21 @@ impl LowerCtx {
                         };
                     }
                 }
-                // NEW-7: `await stream.recv()` over a `Stream<bytes>` /
-                // `Stream<string>` — the checker wired the inner method call
-                // to `hew_stream_next_bytes` / `hew_stream_next` (the
-                // unsuffixed `hew_stream_next` is the canonical string-element
-                // recv the checker resolves `Stream<string>::recv` to).
-                // Strip the `await` and lower the inner recv directly; its
-                // `Option<{bytes,string}>` result is bound on the resume edge
-                // of the MIR `SuspendingStreamNext` (the suspendable-caller
-                // flip in `lower_direct_call`, parameterised by
-                // `elem_is_string`), or the blocking call for a context-free
-                // caller. Mirrors the actor-ask / conn-read bindable-await
-                // paths.
+                // NEW-7: `await stream.recv()` over a `Stream<T>` — the
+                // checker wired the inner method call to the layout-witness
+                // `hew_stream_next_layout` entry (one symbol for every
+                // describable element type). Strip the `await` and lower the
+                // inner recv directly; its `Option<T>` result is bound on the
+                // resume edge of the MIR `SuspendingStreamNext` (the
+                // suspendable-caller flip in `lower_direct_call`), or the
+                // blocking call for a context-free caller. Mirrors the
+                // actor-ask / conn-read bindable-await paths.
                 if self.is_stream_recv_await(&SpanKey::from(&inner.1)) {
                     return self.lower_expr(inner, intent);
                 }
                 // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
-                // the checker wired the inner method call to `hew_channel_recv`
-                // (string) / `hew_channel_recv_int` (int). Strip the `await` and
+                // the checker wired the inner method call to the layout-witness
+                // `hew_channel_recv_layout` entry. Strip the `await` and
                 // lower the inner recv directly; its `Option<T>` result is bound
                 // on the resume edge of the MIR `SuspendingChannelRecv` (the
                 // suspendable-caller flip in `lower_direct_call`), or the blocking
@@ -11162,13 +11167,18 @@ impl LowerCtx {
                     Some(ActorMethodKind::Fire(_)) | None => ResolvedTy::Unit,
                 }
             }
-            HirSelectArmKind::ChannelRecv { elem_is_int, .. } => {
+            HirSelectArmKind::ChannelRecv { receiver } => {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
-                let elem = if *elem_is_int {
-                    ResolvedTy::I64
-                } else {
-                    ResolvedTy::String
+                // The element type comes from the checker-resolved
+                // `Receiver<T>` handle type.
+                let elem = match &receiver.ty {
+                    ResolvedTy::Named { name, args, .. }
+                        if name == "Receiver" && args.len() == 1 =>
+                    {
+                        args[0].clone()
+                    }
+                    _ => ResolvedTy::Unit,
                 };
                 Self::resolved_option_ty(elem)
             }
@@ -12054,18 +12064,15 @@ impl LowerCtx {
                 args,
             } => {
                 // NEW-4: `pat from rx.recv()` — a std/channel receive arm. The
-                // checker recorded the runtime rewrite (hew_channel_recv*) on
-                // this method-call span; recognise it as a ChannelRecv arm
-                // before the generic actor-ask interpretation.
-                if method == "recv" {
-                    if let Some(elem_is_int) = self.channel_recv_elem_is_int(&SpanKey::from(&span))
-                    {
-                        let recv = self.lower_expr(receiver, IntentKind::Read);
-                        return HirSelectArmKind::ChannelRecv {
-                            receiver: Box::new(recv),
-                            elem_is_int,
-                        };
-                    }
+                // checker recorded the runtime rewrite (hew_channel_recv_layout)
+                // on this method-call span; recognise it as a ChannelRecv arm
+                // before the generic actor-ask interpretation. The element
+                // type rides the checker-resolved `Receiver<T>` receiver type.
+                if method == "recv" && self.is_channel_recv_rewrite(&SpanKey::from(&span)) {
+                    let recv = self.lower_expr(receiver, IntentKind::Read);
+                    return HirSelectArmKind::ChannelRecv {
+                        receiver: Box::new(recv),
+                    };
                 }
                 let actor = self.lower_expr(receiver, IntentKind::Read);
                 let lowered_args: Vec<HirExpr> = args
@@ -12319,6 +12326,49 @@ impl LowerCtx {
             }
             UnaryOp::BitNot => operand_ty == result_ty && Self::resolved_is_integer(operand_ty),
             UnaryOp::RawDeref => false,
+        }
+    }
+
+    /// `Some(reason)` when a channel/stream element type provably cannot ride
+    /// the element-layout queue witness; `None` for every describable class.
+    ///
+    /// This is defence-in-depth behind the checker's `queue_elem_admissible`
+    /// gate (which covers the `Receiver<T>`/`Stream<T>` method-call and
+    /// deferred-rewrite paths): the for-await desugar can reach a `Receiver<T>`
+    /// whose element no method call ever validated. The HIR layer rejects only
+    /// the classes the witness can NEVER describe — builtin container/handle
+    /// nominals, opaque handles, function values, and unit/never — and admits
+    /// the rest; codegen's witness synthesis stays the fail-closed authority
+    /// for anything that slips past both layers.
+    fn queue_elem_witness_unsupported(ty: &ResolvedTy) -> Option<&'static str> {
+        match ty {
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration
+            | ResolvedTy::Tuple(_) => None,
+            ResolvedTy::Named {
+                builtin: None,
+                is_opaque,
+                ..
+            } => {
+                if *is_opaque {
+                    Some("opaque handle types cannot be queue elements")
+                } else {
+                    None
+                }
+            }
+            ResolvedTy::Named {
+                builtin: Some(_), ..
+            } => Some(
+                "builtin container and handle types cannot ride the \
+                 element-layout queue witness",
+            ),
+            _ if Self::resolved_is_integer(ty) => None,
+            _ => Some("this type has no element-layout queue witness"),
         }
     }
 
@@ -13849,13 +13899,10 @@ impl LowerCtx {
                 ..
             } if is_await && !args.is_empty() => {
                 let elem_ty = args[0].clone();
-                if !matches!(elem_ty, ResolvedTy::String) && !Self::resolved_is_integer(&elem_ty) {
+                if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
                     self.unsupported(
                         iterable.1.clone(),
-                        format!(
-                            "for await over Receiver<{elem_ty}>; only Receiver<string> \
-                             and Receiver<i64> have a suspending recv runtime path"
-                        ),
+                        format!("for await over Receiver<{elem_ty}>: {reason}"),
                         "for-await-receiver-runtime-dispatch",
                     );
                     self.push_scope();
@@ -13866,13 +13913,12 @@ impl LowerCtx {
                         "for await over unsupported Receiver<T> element type".into(),
                     );
                 }
-                let elem_is_int = Self::resolved_is_integer(&elem_ty);
                 let iter_ty = lowered_iterable.ty.clone();
                 (
                     lowered_iterable,
                     iter_ty,
                     elem_ty,
-                    ForIterNextCall::ChannelRecv { elem_is_int },
+                    ForIterNextCall::ChannelRecv,
                 )
             }
             ResolvedTy::Named {
@@ -13881,63 +13927,33 @@ impl LowerCtx {
                 ..
             } if is_await && !args.is_empty() => {
                 let elem_ty = args[0].clone();
-                match elem_ty {
-                    ResolvedTy::Bytes => {
-                        let iter_ty = lowered_iterable.ty.clone();
-                        (
-                            lowered_iterable,
-                            iter_ty,
-                            ResolvedTy::Bytes,
-                            ForIterNextCall::StreamRecv {
-                                elem_is_string: false,
-                            },
-                        )
-                    }
-                    ResolvedTy::String => {
-                        // Stage 2 (Option B, slepp 2026-06-07): the
-                        // `Stream<string>` suspending-recv runtime path is now
-                        // wired end-to-end (`hew_stream_next` — the canonical
-                        // string-element recv the checker resolves
-                        // `Stream<string>::recv` to, header-aware via
-                        // `bytes_to_cstr` — plus `hew_stream_pop_string` and
-                        // the `elem_is_string` discriminator on
-                        // `Terminator::SuspendingStreamNext`), so the for-await
-                        // desugar emits the string recv symbol directly — no
-                        // fail-closed `NotYetImplemented` arm. MIR's
-                        // `lower_direct_call` suspendable-caller flip turns
-                        // this into `Terminator::SuspendingStreamNext` in
-                        // actor/task execution contexts; non-context callers
-                        // keep the blocking call via the `Terminator::Call`
-                        // intercept on `hew_stream_next`.
-                        let iter_ty = lowered_iterable.ty.clone();
-                        (
-                            lowered_iterable,
-                            iter_ty,
-                            ResolvedTy::String,
-                            ForIterNextCall::StreamRecv {
-                                elem_is_string: true,
-                            },
-                        )
-                    }
-                    other => {
-                        self.unsupported(
-                            iterable.1.clone(),
-                            format!(
-                                "for await over Stream<{other}>; only Stream<bytes> and \
-                                 Stream<string> have a suspending recv runtime path"
-                            ),
-                            "for-await-stream-runtime-dispatch",
-                        );
-                        self.push_scope();
-                        let _ =
-                            self.bind(var_name.clone(), other.clone(), false, pattern.1.clone());
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        return HirExprKind::Unsupported(
-                            "for await over unsupported Stream<T> element type".into(),
-                        );
-                    }
+                if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
+                    self.unsupported(
+                        iterable.1.clone(),
+                        format!("for await over Stream<{elem_ty}>: {reason}"),
+                        "for-await-stream-runtime-dispatch",
+                    );
+                    self.push_scope();
+                    let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    return HirExprKind::Unsupported(
+                        "for await over unsupported Stream<T> element type".into(),
+                    );
                 }
+                // The layout-witness recv (`hew_stream_next_layout`) carries
+                // every describable element type; MIR's `lower_direct_call`
+                // suspendable-caller flip turns it into
+                // `Terminator::SuspendingStreamNext` in actor/task execution
+                // contexts, non-context callers keep the blocking call via
+                // the codegen `Terminator::Call` intercept.
+                let iter_ty = lowered_iterable.ty.clone();
+                (
+                    lowered_iterable,
+                    iter_ty,
+                    elem_ty,
+                    ForIterNextCall::StreamRecv,
+                )
             }
             // `for x in <generator>`: the generator value IS the iterator. The
             // loop binds it to `__hew_for_iter_*` (consuming it) and drives one
@@ -14028,12 +14044,14 @@ impl LowerCtx {
                     iterable.1.clone(),
                 )
             }
-            ForIterNextCall::ChannelRecv { elem_is_int } => {
+            ForIterNextCall::ChannelRecv => {
                 // Borrow the receiver binding (Read) so the loop binding remains
                 // the single owner and its scope-exit drop closes the handle once.
                 // This is a direct runtime-call HIR shape: no synthesized AST
                 // `await rx.recv()` exists, so checker method side-tables are not
-                // required for this post-check desugar.
+                // required for this post-check desugar. The layout-witness
+                // entry carries every describable element type; MIR derives
+                // the element from the call's `Option<T>` return type.
                 let receiver = self.make_binding_ref(
                     iter_binding.name.clone(),
                     iter_binding.id,
@@ -14043,27 +14061,20 @@ impl LowerCtx {
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for await)");
-                let symbol = if elem_is_int {
-                    "hew_channel_recv_int"
-                } else {
-                    "hew_channel_recv"
-                };
                 self.make_direct_method_call(
-                    symbol.to_string(),
+                    "hew_channel_recv_layout".to_string(),
                     receiver,
                     &option_ty,
                     iterable.1.clone(),
                 )
             }
-            ForIterNextCall::StreamRecv { elem_is_string } => {
-                // Borrow the stream binding (Read) and emit the matching recv
-                // runtime call directly. MIR's `lower_direct_call` flips
-                // either symbol to `Terminator::SuspendingStreamNext` (with
-                // `elem_is_string` selecting the bind-edge pop) in actor/task
+            ForIterNextCall::StreamRecv => {
+                // Borrow the stream binding (Read) and emit the layout-witness
+                // recv runtime call directly. MIR's `lower_direct_call` flips
+                // it to `Terminator::SuspendingStreamNext` in actor/task
                 // execution contexts; non-context callers keep the blocking
                 // call routed through the codegen `Terminator::Call` intercept
-                // on `hew_stream_next_bytes` / `hew_stream_next` (the
-                // unsuffixed name is the canonical string-element recv).
+                // on `hew_stream_next_layout`.
                 let stream = self.make_binding_ref(
                     iter_binding.name.clone(),
                     iter_binding.id,
@@ -14073,13 +14084,8 @@ impl LowerCtx {
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for await)");
-                let symbol = if elem_is_string {
-                    "hew_stream_next"
-                } else {
-                    "hew_stream_next_bytes"
-                };
                 self.make_direct_method_call(
-                    symbol.to_string(),
+                    "hew_stream_next_layout".to_string(),
                     stream,
                     &option_ty,
                     iterable.1.clone(),
@@ -18726,8 +18732,8 @@ fn check_supervisor_child_accessor_gates(
 
 /// Check for blocking channel recv usage on wasm32 (P0.3 + P0.4).
 ///
-/// `hew_channel_recv` and `hew_channel_recv_int` in `hew-runtime/src/lib.rs:378`
-/// and `:391` are `unreachable!()` stubs on wasm32 — the underlying coroutine
+/// `hew_channel_recv_layout` in `hew-runtime/src/lib.rs` is an
+/// `unreachable!()` stub on wasm32 — the underlying coroutine
 /// suspension primitives aren't available. Detect `.recv()` method calls at
 /// HIR-lower time and emit `BlockingChannelRecvUnsupportedOnWasm` so the
 /// program fails to compile instead of trapping at runtime.
@@ -20861,16 +20867,18 @@ fn build_callable_set(
     ] {
         set.insert(name.to_string());
     }
-    // Channel recv out-param-ABI symbols — seeded into `fn_registry` by
-    // `seed_stdlib_fn_registry` and lowered as `Terminator::Call` by MIR
-    // (not `CallRuntimeAbi`; they are not in the runtime-symbol allowlist).
-    // Codegen intercepts the `Terminator::Call` by name and emits the
-    // null-ptr → `Option<T>` materialisation.
+    // Channel/stream layout-witness recv/send symbols — seeded into
+    // `fn_registry` by `seed_stdlib_fn_registry` and lowered as
+    // `Terminator::Call` by MIR (not `CallRuntimeAbi`; they are not in the
+    // runtime-symbol allowlist). Codegen intercepts the `Terminator::Call`
+    // by name and emits the element-layout-witness ABI.
     for name in [
-        "hew_channel_recv",
-        "hew_channel_recv_int",
-        "hew_channel_try_recv",
-        "hew_channel_try_recv_int",
+        "hew_channel_recv_layout",
+        "hew_channel_try_recv_layout",
+        "hew_channel_send_layout",
+        "hew_stream_next_layout",
+        "hew_stream_try_next_layout",
+        "hew_stream_send_layout",
     ] {
         set.insert(name.to_string());
     }

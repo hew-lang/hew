@@ -262,9 +262,11 @@ mod tests {
 
     #[test]
     fn channel_sender_methods_resolve() {
+        // send routes through the element-layout witness entry — one symbol
+        // for every describable element type.
         assert_eq!(
             resolve_channel_method(SENDER, "send", None),
-            Some("hew_channel_send")
+            Some("hew_channel_send_layout")
         );
         assert_eq!(
             resolve_channel_method(SENDER, "clone", None),
@@ -278,13 +280,15 @@ mod tests {
 
     #[test]
     fn channel_receiver_methods_resolve() {
+        // recv/try_recv route through the element-layout witness entries —
+        // one symbol per operation for every describable element type.
         assert_eq!(
             resolve_channel_method(RECEIVER, "recv", None),
-            Some("hew_channel_recv")
+            Some("hew_channel_recv_layout")
         );
         assert_eq!(
             resolve_channel_method(RECEIVER, "try_recv", None),
-            Some("hew_channel_try_recv")
+            Some("hew_channel_try_recv_layout")
         );
         assert_eq!(
             resolve_channel_method(RECEIVER, "close", None),
@@ -303,13 +307,19 @@ mod tests {
     #[test]
     fn stream_methods_resolve() {
         // Channel-family naming: .recv() is the fundamental recv surface.
+        // It routes through the element-layout witness entry regardless of
+        // the element type (the witness, not the symbol, carries the kind).
         assert_eq!(
             resolve_stream_method(STREAM, "recv", Some("string")),
-            Some("hew_stream_next")
+            Some("hew_stream_next_layout")
         );
         assert_eq!(
             resolve_stream_method(STREAM, "recv", Some("bytes")),
-            Some("hew_stream_next_bytes")
+            Some("hew_stream_next_layout")
+        );
+        assert_eq!(
+            resolve_stream_method(STREAM, "try_recv", None),
+            Some("hew_stream_try_next_layout")
         );
         assert_eq!(
             resolve_stream_method(STREAM, "close", None),
@@ -358,15 +368,20 @@ mod tests {
 
     #[test]
     fn stream_element_sensitive_methods_require_lowerable_metadata() {
-        // Element-sensitive methods return None for non-lowerable types.
-        assert_eq!(resolve_stream_method(STREAM, "recv", None), None);
-        assert_eq!(resolve_stream_method(STREAM, "recv", Some("Row")), None);
-        // "string" is now canonical (Q57/R14) and must resolve.
+        // Stream recv is element-INSENSITIVE now (the layout witness carries
+        // the element kind); the checker's queue_elem_admissible gate owns
+        // element rejection, not the symbol resolver.
         assert_eq!(
-            resolve_stream_method(STREAM, "recv", Some("string")),
-            Some("hew_stream_next")
+            resolve_stream_method(STREAM, "recv", None),
+            Some("hew_stream_next_layout")
         );
-        assert_eq!(resolve_stream_method(STREAM, "recv", Some("str")), None);
+        assert_eq!(
+            resolve_stream_method(STREAM, "recv", Some("Row")),
+            Some("hew_stream_next_layout")
+        );
+        // Sink send stays element-sensitive for the string/bytes platform
+        // byte-sink writes; non-{string,bytes} elements route to
+        // `hew_stream_send_layout` in `check_sink_method`, not here.
         assert_eq!(resolve_stream_method(SINK, "send", None), None);
         assert_eq!(resolve_stream_method(SINK, "send", Some("Row")), None);
         // "string" is now canonical and must resolve.

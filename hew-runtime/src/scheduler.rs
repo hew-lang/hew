@@ -4134,6 +4134,13 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn catch_unwind_err_edge_unwinds_open_swap_and_frees_driver_channel() {
+        // This test measures `active_channel_count()` deltas, so it must hold
+        // the crate-wide serialisation guard for its entire body (the
+        // documented convention in `reply_channel::tests`) — a concurrent
+        // test allocating or freeing a reply channel corrupts the deltas.
+        // Acquired outermost, before the scheduler install, matching the
+        // crate's global lock order.
+        let _rt = crate::runtime_test_guard();
         let _sched = NoWorkerSchedulerForTest::install();
 
         let baseline = crate::reply_channel::active_channel_count();

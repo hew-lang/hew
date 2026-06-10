@@ -372,10 +372,10 @@ pub mod wasm_stubs {
     //!   `wasm32-wasip1`.
     //!
     //! - **Channels**: the bounded non-blocking slice is implemented in
-    //!   [`crate::channel_wasm`] (`channel.new`, `send`, `send_int`,
-    //!   `try_recv`, `try_recv_int`, clone/close helpers). Blocking
-    //!   `hew_channel_recv*` remains an explicit trap until cooperative
-    //!   scheduler yield/resume parity exists.
+    //!   [`crate::channel_wasm`] (`channel.new`, the layout-witness
+    //!   `hew_channel_send_layout` / `hew_channel_try_recv_layout` entries,
+    //!   clone/close helpers). Blocking `hew_channel_recv_layout` remains an
+    //!   explicit trap until cooperative scheduler yield/resume parity exists.
 
     use std::ffi::{c_char, c_void};
 
@@ -449,21 +449,12 @@ pub mod wasm_stubs {
     ///
     /// Never returns — traps unconditionally.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_recv(_receiver: *mut c_void) -> *mut c_char {
-        unreachable!("hew_channel_recv: not supported on wasm32")
-    }
-
-    /// WASM stub: blocking integer channel recv is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_recv_int(
+    pub unsafe extern "C" fn hew_channel_recv_layout(
         _receiver: *mut c_void,
-        _out_valid: *mut i32,
-    ) -> i64 {
-        unreachable!("hew_channel_recv_int: not supported on wasm32")
+        _out: *mut c_void,
+        _layout: *const c_void,
+    ) -> i32 {
+        unreachable!("hew_channel_recv_layout: not supported on wasm32")
     }
 }
 

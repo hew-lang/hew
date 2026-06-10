@@ -14,12 +14,12 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::channel_common::{bytes_to_cstr, free_channel_pair};
+use crate::channel_common::free_channel_pair;
 use crate::channel_core::ChannelCore;
 
 // ── Handle types ────────────────────────────────────────────────────────────
@@ -106,16 +106,6 @@ static NEXT_CHANNEL_POLL_ID: AtomicU64 = AtomicU64::new(1);
 pub struct HewChannelPair {
     sender: *mut HewChannelSender,
     receiver: *mut HewChannelReceiver,
-}
-
-fn decode_i64_payload(payload: &[u8], context: &str) -> Result<i64, ()> {
-    let bytes: [u8; 8] = payload.try_into().map_err(|_| {
-        crate::set_last_error(format!(
-            "{context}: expected 8-byte int payload, got {} bytes",
-            payload.len()
-        ));
-    })?;
-    Ok(i64::from_le_bytes(bytes))
 }
 
 impl std::fmt::Debug for HewChannelPair {
@@ -217,145 +207,115 @@ pub unsafe extern "C" fn hew_channel_pair_free(pair: *mut HewChannelPair) {
     unsafe { free_channel_pair(pair, |pair| (&mut pair.sender, &mut pair.receiver)) };
 }
 
-// ── Send ────────────────────────────────────────────────────────────────────
+// ── Layout-witness element path (generic Sender<T> / Receiver<T> width) ─────
+//
+// The `*_layout` entries carry ANY element type the compiler can describe
+// through one mechanism: a `HewVecElemLayout` witness (the W5.016 descriptor)
+// selects the envelope encoding and the ownership discipline. See the table in
+// `crate::channel_common` for the per-kind envelope contract.
+//
+// Ownership (FFI contract):
+// - `hew_channel_send_layout` — the element is deep-copied INTO the envelope
+//   (`clone_fn` for layout-managed elements); the caller keeps its value and
+//   the queue owns the envelope.
+// - `hew_channel_recv_layout` / `hew_channel_try_recv_layout` — the decoded
+//   element MOVES to the consumer's out slot; the consumer drops it (the MIR
+//   drop spine / `drop_fn`). The queue performs no clone and no drop.
+// - Envelopes never consumed (receiver dropped with items queued, post-close
+//   sends) are released by `ChannelCore` via the stamped witness exactly once.
 
-/// Send a NUL-terminated string through the channel. Blocks if the channel
-/// is full (backpressure).
+/// Send one element of any witness-describable type through the channel.
+/// Blocks if the channel is full (backpressure).
 ///
 /// # Safety
 ///
-/// `sender` must be a valid pointer. `data` must be a valid NUL-terminated
-/// C string.
+/// `sender` must be a valid pointer. `data` must point to one live element of
+/// the witness's type (see [`crate::channel_common::encode_elem_envelope`]).
+/// `layout` must point to a valid `HewVecElemLayout` for the duration of the
+/// call (in practice a codegen static).
 #[no_mangle]
-pub unsafe extern "C" fn hew_channel_send(sender: *mut HewChannelSender, data: *const c_char) {
+pub unsafe extern "C" fn hew_channel_send_layout(
+    sender: *mut HewChannelSender,
+    data: *const c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) {
     cabi_guard!(sender.is_null() || data.is_null());
-    // SAFETY: data is a valid C string per caller contract.
-    let s = unsafe { CStr::from_ptr(data) };
-    let bytes = s.to_bytes().to_vec();
-    // SAFETY: sender is valid per caller contract.
-    unsafe { (*sender).core.blocking_send(bytes) };
-}
-
-/// Send a 64-bit integer through the channel. Blocks if the channel is full.
-///
-/// The integer is serialised as 8 little-endian bytes for the internal
-/// `Vec<u8>` transport.
-///
-/// # Safety
-///
-/// `sender` must be a valid pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_channel_send_int(sender: *mut HewChannelSender, value: i64) {
-    cabi_guard!(sender.is_null());
-    let bytes = value.to_le_bytes().to_vec();
-    // SAFETY: sender is valid per caller contract.
-    unsafe { (*sender).core.blocking_send(bytes) };
-}
-
-// ── Receive ─────────────────────────────────────────────────────────────────
-
-/// Block until a message is available and return it as a malloc-allocated
-/// NUL-terminated string. Returns NULL when the channel is closed (all
-/// senders dropped), letting codegen wrap the result as `Option<String>`.
-///
-/// The caller must free the returned pointer with `hew_string_drop` when non-NULL.
-///
-/// # Safety
-///
-/// `receiver` must be a valid pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_channel_recv(receiver: *mut HewChannelReceiver) -> *mut c_char {
-    cabi_guard!(receiver.is_null(), ptr::null_mut());
-    // SAFETY: receiver is valid per caller contract.
-    match unsafe { (*receiver).core.blocking_recv() } {
-        Some(item) => bytes_to_cstr(&item),
-        // Channel closed — return NULL so codegen wraps as None.
-        None => ptr::null_mut(),
-    }
-}
-
-/// Try to receive a message without blocking.
-///
-/// Returns a malloc-allocated NUL-terminated string if a message was
-/// available, or NULL if the channel is empty or closed. This lets the
-/// caller distinguish "received empty string" (`Some("")`) from
-/// "nothing available" (`None`).
-///
-/// The caller must free the returned pointer with `hew_string_drop` when non-NULL.
-///
-/// # Safety
-///
-/// `receiver` must be a valid pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_channel_try_recv(receiver: *mut HewChannelReceiver) -> *mut c_char {
-    cabi_guard!(receiver.is_null(), ptr::null_mut());
-    // SAFETY: receiver is valid per caller contract.
-    match unsafe { (*receiver).core.try_recv() } {
-        Some(item) => bytes_to_cstr(&item),
-        None => ptr::null_mut(),
-    }
-}
-
-/// Block until an integer message is available.
-///
-/// Returns the integer value and sets `*out_valid` to 1 if a message was
-/// received. Sets `*out_valid` to 0 and returns 0 when the channel is
-/// closed (all senders dropped), letting codegen wrap as `Option<int>`.
-///
-/// # Safety
-///
-/// `receiver` and `out_valid` must be valid pointers.
-#[no_mangle]
-pub unsafe extern "C" fn hew_channel_recv_int(
-    receiver: *mut HewChannelReceiver,
-    out_valid: *mut i32,
-) -> i64 {
-    cabi_guard!(receiver.is_null() || out_valid.is_null(), 0);
-    // SAFETY: receiver is valid per caller contract.
-    if let Some(item) = unsafe { (*receiver).core.blocking_recv() } {
-        if let Ok(value) = decode_i64_payload(&item, "hew_channel_recv_int") {
-            // SAFETY: out_valid is valid per caller contract.
-            unsafe { *out_valid = 1 };
-            return value;
-        }
-        // SAFETY: out_valid is valid per caller contract.
-        unsafe { *out_valid = 0 };
-        return 0;
-    }
-    // SAFETY: out_valid is valid per caller contract.
-    unsafe { *out_valid = 0 };
-    0
-}
-
-/// Try to receive an integer without blocking.
-///
-/// Returns the integer value and sets `*out_valid` to 1 if a message was
-/// available. Sets `*out_valid` to 0 and returns 0 if the channel is
-/// empty or closed.
-///
-/// # Safety
-///
-/// `receiver` and `out_valid` must be valid pointers.
-#[no_mangle]
-pub unsafe extern "C" fn hew_channel_try_recv_int(
-    receiver: *mut HewChannelReceiver,
-    out_valid: *mut i32,
-) -> i64 {
-    cabi_guard!(receiver.is_null() || out_valid.is_null(), 0);
-    // SAFETY: receiver is valid per caller contract.
-    let Some(item) = (unsafe { (*receiver).core.try_recv() }) else {
-        // SAFETY: out_valid is valid per caller contract.
-        unsafe { *out_valid = 0 };
-        return 0;
+    // SAFETY: layout validity is the caller's contract; the helper aborts
+    // fail-closed on a malformed witness.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_channel_send_layout") };
+    // SAFETY: data points to one live element per caller contract.
+    let env = unsafe {
+        crate::channel_common::encode_elem_envelope(data, layout, "hew_channel_send_layout")
     };
-    if let Ok(value) = decode_i64_payload(&item, "hew_channel_try_recv_int") {
-        // SAFETY: out_valid is valid per caller contract.
-        unsafe { *out_valid = 1 };
-        value
-    } else {
-        // SAFETY: out_valid is valid per caller contract.
-        unsafe { *out_valid = 0 };
-        0
+    // SAFETY: sender is valid per caller contract.
+    let core = unsafe { &(*sender).core };
+    if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+        // Stamp BEFORE enqueue so every later discard exit can release the
+        // envelope's owned heap.
+        core.stamp_elem_layout(layout);
+    }
+    core.blocking_send(env);
+}
+
+/// Block until an element is available and decode it into `out`.
+///
+/// Returns 1 when an element was written to `out` (ownership transfers to the
+/// caller), or 0 when the channel is closed (all senders dropped), letting
+/// codegen wrap the result as `Option<T>`.
+///
+/// # Safety
+///
+/// `receiver` must be a valid pointer. `out` must point to one writable
+/// element slot of the witness's type. `layout` must be a valid witness.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_recv_layout(
+    receiver: *mut HewChannelReceiver,
+    out: *mut c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    cabi_guard!(receiver.is_null() || out.is_null(), 0);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_channel_recv_layout") };
+    // SAFETY: receiver is valid per caller contract.
+    let item = unsafe { (*receiver).core.blocking_recv() };
+    // SAFETY: out points to one writable element slot per caller contract.
+    unsafe {
+        crate::channel_common::decode_elem_envelope(item, out, layout, "hew_channel_recv_layout")
+    }
+}
+
+/// Try to receive an element without blocking.
+///
+/// Returns 1 when an element was written to `out` (ownership transfers to the
+/// caller), or 0 when the channel is empty or closed.
+///
+/// # Safety
+///
+/// `receiver` must be a valid pointer. `out` must point to one writable
+/// element slot of the witness's type. `layout` must be a valid witness.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_try_recv_layout(
+    receiver: *mut HewChannelReceiver,
+    out: *mut c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    cabi_guard!(receiver.is_null() || out.is_null(), 0);
+    // SAFETY: layout validity is the caller's contract.
+    let layout = unsafe {
+        crate::channel_common::elem_layout_witness(layout, "hew_channel_try_recv_layout")
+    };
+    // SAFETY: receiver is valid per caller contract.
+    let item = unsafe { (*receiver).core.try_recv() };
+    // SAFETY: out points to one writable element slot per caller contract.
+    unsafe {
+        crate::channel_common::decode_elem_envelope(
+            item,
+            out,
+            layout,
+            "hew_channel_try_recv_layout",
+        )
     }
 }
 
@@ -431,9 +391,9 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewChannelRec
 // context (actor handler / closure / task entry). The codegen suspend ramp
 // calls `hew_channel_await_recv` to register, suspends on
 // `STREAM_AWAIT_SUSPEND`, and on the resume / immediate-ready edge binds the
-// `Option<T>` by popping through the existing non-blocking `hew_channel_try_recv`
-// / `hew_channel_try_recv_int` (the single consumer pops the queued item exactly
-// once, or `None` on close). The receiver handle is BORROWED across the suspend
+// `Option<T>` by popping through the non-blocking layout-witness
+// `hew_channel_try_recv_layout` (the single consumer pops the queued item
+// exactly once, or `None` on close). The receiver handle is BORROWED across the suspend
 // — never consumed or double-closed. See `crate::channel_core` for the wake
 // discipline.
 
@@ -443,7 +403,7 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewChannelRec
 /// immediately (an item is queued or the channel is closed), or
 /// [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after parking the consumer's
 /// continuation on `slot`. The caller MUST `coro.suspend` on SUSPEND and bind
-/// via `hew_channel_try_recv*` on READY / resume.
+/// via `hew_channel_try_recv_layout` on READY / resume.
 ///
 /// # Safety
 ///
@@ -492,7 +452,7 @@ pub unsafe extern "C" fn hew_channel_detach_recv(
 // channel poll is SIGNAL-ONLY: it waits for readiness WITHOUT consuming and
 // fires the readiness callback (`hew_reply_channel_signal_ready`) so
 // `hew_select_first` returns this arm as the winner; the winning codegen edge
-// then pops the item itself via the non-blocking `hew_channel_try_recv*`. A
+// then pops the item itself via the non-blocking `hew_channel_try_recv_layout`. A
 // losing arm is withdrawn by `hew_channel_cancel_pending_read`, leaving its
 // queued item intact for the next consumer (no item loss, no Option<string>
 // ownership crossing the park thread → no leak on a non-winning arm).
@@ -675,7 +635,50 @@ pub unsafe extern "C" fn hew_channel_cancel_pending_read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{c_char, CStr};
     use std::thread;
+
+    /// Send a NUL-terminated string element through the layout-witness entry
+    /// (the single send mechanism; the per-type symbols are retired). The
+    /// slot address of the caller's string pointer is what the ABI carries.
+    unsafe fn send_str(tx: *mut HewChannelSender, s: &CStr) {
+        let layout = string_layout();
+        let slot: *const c_char = s.as_ptr();
+        // SAFETY: forwarded from caller; slot/layout are live locals.
+        unsafe { hew_channel_send_layout(tx, std::ptr::addr_of!(slot).cast(), &raw const layout) };
+    }
+
+    /// Blocking recv of one string element via the layout witness; returns the
+    /// owned header-aware cstring, or null when the channel is closed.
+    unsafe fn recv_str(rx: *mut HewChannelReceiver) -> *mut c_char {
+        let layout = string_layout();
+        let mut out: *mut c_char = ptr::null_mut();
+        // SAFETY: forwarded from caller; out/layout are live locals.
+        let rc = unsafe {
+            hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout)
+        };
+        if rc == 1 {
+            out
+        } else {
+            ptr::null_mut()
+        }
+    }
+
+    /// Non-blocking recv of one string element via the layout witness; null
+    /// when the queue is empty or closed.
+    unsafe fn try_recv_str(rx: *mut HewChannelReceiver) -> *mut c_char {
+        let layout = string_layout();
+        let mut out: *mut c_char = ptr::null_mut();
+        // SAFETY: forwarded from caller; out/layout are live locals.
+        let rc = unsafe {
+            hew_channel_try_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout)
+        };
+        if rc == 1 {
+            out
+        } else {
+            ptr::null_mut()
+        }
+    }
 
     #[test]
     fn create_and_free() {
@@ -688,153 +691,6 @@ mod tests {
             assert!(!tx.is_null());
             assert!(!rx.is_null());
             hew_channel_pair_free(pair);
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    /// Regression: `hew_channel_send`'s contract requires a NUL-terminated
-    /// C string, and its `CStr::from_ptr` will scan past any caller buffer
-    /// that omits the terminator.  This guards the in-crate test surface
-    /// against re-introducing the pattern (the previous offender lived in
-    /// `recv_int_rejects_non_i64_payloads` and was caught by `ASan` as a
-    /// global-buffer-overflow).  We round-trip a short, properly NUL-
-    /// terminated payload to keep the sanitizer lane green.
-    #[test]
-    fn send_requires_nul_terminated_payload() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            // Exactly the shape that previously triggered the overflow:
-            // a 3-byte payload — but here we include the terminator so
-            // `CStr::from_ptr` stays inside the allocation.
-            let payload = b"bad\0";
-            hew_channel_send(tx, payload.as_ptr().cast());
-
-            let result = hew_channel_recv(rx);
-            assert!(!result.is_null());
-            let received = CStr::from_ptr(result);
-            assert_eq!(received.to_bytes(), b"bad");
-            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn send_recv_basic() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            let msg = b"hello\0";
-            hew_channel_send(tx, msg.as_ptr().cast());
-
-            let result = hew_channel_recv(rx);
-            assert!(!result.is_null());
-            let received = CStr::from_ptr(result);
-            assert_eq!(received.to_str().unwrap(), "hello");
-            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn recv_returns_null_on_closed() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            hew_channel_sender_close(tx);
-            let result = hew_channel_recv(rx);
-            // Closed channel returns NULL so codegen can wrap as None.
-            assert!(result.is_null());
-
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_returns_null_when_empty() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            let result = hew_channel_try_recv(rx);
-            assert!(result.is_null(), "empty channel should return NULL");
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_distinguishes_empty_string_from_no_message() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            // Send an actual empty string.
-            let empty = b"\0";
-            hew_channel_send(tx, empty.as_ptr().cast());
-
-            // try_recv should return a valid (non-NULL) pointer to a NUL byte.
-            let result = hew_channel_try_recv(rx);
-            assert!(!result.is_null(), "empty string message should be non-NULL");
-            let received = CStr::from_ptr(result);
-            assert_eq!(received.to_str().unwrap(), "");
-            crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
-
-            // Now the channel is empty — try_recv should return NULL.
-            let result2 = hew_channel_try_recv(rx);
-            assert!(result2.is_null(), "drained channel should return NULL");
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_int_distinguishes_zero_from_no_message() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            // Send the value 0.
-            hew_channel_send_int(tx, 0);
-
-            let mut valid: i32 = -1;
-            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 1, "received 0 should set valid=1");
-            assert_eq!(val, 0);
-
-            // Now the channel is empty.
-            let val2 = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 0, "drained channel should set valid=0");
-            assert_eq!(val2, 0);
-
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
         }
@@ -855,17 +711,15 @@ mod tests {
 
             let t1 = thread::spawn(move || {
                 let tx = tx_addr as *mut HewChannelSender;
-                let msg = b"from-1\0";
                 // SAFETY: tx is valid for the lifetime of this test.
-                hew_channel_send(tx, msg.as_ptr().cast());
+                send_str(tx, c"from-1");
                 hew_channel_sender_close(tx);
             });
 
             let t2 = thread::spawn(move || {
                 let tx2 = tx2_addr as *mut HewChannelSender;
-                let msg = b"from-2\0";
                 // SAFETY: tx2 is valid for the lifetime of this test.
-                hew_channel_send(tx2, msg.as_ptr().cast());
+                send_str(tx2, c"from-2");
                 hew_channel_sender_close(tx2);
             });
 
@@ -874,210 +728,17 @@ mod tests {
 
             let mut messages = Vec::new();
             loop {
-                let result = hew_channel_recv(rx);
+                let result = recv_str(rx);
                 if result.is_null() {
                     break;
                 }
                 let s = CStr::from_ptr(result).to_str().unwrap().to_owned();
-                crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees hew_channel_recv string output; header-aware in S1)
+                crate::cabi::free_cstring(result); // CSTRING-FREE: str-open (test frees layout recv string output; header-aware)
                 messages.push(s);
             }
 
             messages.sort();
             assert_eq!(messages, vec!["from-1", "from-2"]);
-
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn send_recv_int_basic() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            hew_channel_send_int(tx, 42);
-            hew_channel_send_int(tx, -7);
-
-            let mut valid: i32 = 0;
-            let v1 = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 1);
-            assert_eq!(v1, 42);
-            let v2 = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 1);
-            assert_eq!(v2, -7);
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn recv_int_returns_invalid_on_closed() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            hew_channel_sender_close(tx);
-            let mut valid: i32 = -1;
-            let val = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 0, "closed channel should set out_valid to 0");
-            assert_eq!(val, 0);
-
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_int_returns_invalid_when_empty() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            let mut valid: i32 = -1;
-            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 0, "empty channel should set valid=0");
-            assert_eq!(val, 0);
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_int_returns_value_when_available() {
-        let pair = hew_channel_new(4);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            hew_channel_send_int(tx, 99);
-            let mut valid: i32 = 0;
-            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 1, "message available should set valid=1");
-            assert_eq!(val, 99);
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn try_recv_int_rejects_non_i64_payloads() {
-        crate::hew_clear_error();
-        let pair = hew_channel_new(4);
-        // SAFETY: test owns both channel handles and only sends stack-backed test payloads.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            let payload = b"oops\0";
-            hew_channel_send(tx, payload.as_ptr().cast());
-
-            let mut valid = -1;
-            let value = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 0);
-            assert_eq!(value, 0);
-            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
-                .to_str()
-                .unwrap()
-                .to_string();
-            assert!(
-                err.contains("expected 8-byte int payload"),
-                "unexpected error: {err}"
-            );
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn recv_int_rejects_non_i64_payloads() {
-        crate::hew_clear_error();
-        let pair = hew_channel_new(4);
-        // SAFETY: test owns both channel handles and only sends stack-backed test payloads.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            // NUL-terminated so `hew_channel_send`'s `CStr::from_ptr` does
-            // not read past the global; the transmitted payload is still
-            // the 3-byte "bad", which is rejected as a non-i64 message.
-            let payload = b"bad\0";
-            hew_channel_send(tx, payload.as_ptr().cast());
-
-            let mut valid = -1;
-            let value = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
-            assert_eq!(valid, 0);
-            assert_eq!(value, 0);
-            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
-                .to_str()
-                .unwrap()
-                .to_string();
-            assert!(
-                err.contains("expected 8-byte int payload"),
-                "unexpected error: {err}"
-            );
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
-    }
-
-    #[test]
-    fn int_multi_producer() {
-        let pair = hew_channel_new(8);
-        // SAFETY: pair was just created above.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
-
-            let tx2 = hew_channel_sender_clone(tx);
-            let tx_addr = tx as usize;
-            let tx2_addr = tx2 as usize;
-
-            let t1 = thread::spawn(move || {
-                let tx = tx_addr as *mut HewChannelSender;
-                hew_channel_send_int(tx, 100);
-                hew_channel_sender_close(tx);
-            });
-
-            let t2 = thread::spawn(move || {
-                let tx2 = tx2_addr as *mut HewChannelSender;
-                hew_channel_send_int(tx2, 200);
-                hew_channel_sender_close(tx2);
-            });
-
-            t1.join().unwrap();
-            t2.join().unwrap();
-
-            let mut values = Vec::new();
-            let mut valid: i32 = 0;
-            loop {
-                let v = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
-                if valid == 0 {
-                    break;
-                }
-                values.push(v);
-            }
-
-            values.sort_unstable();
-            assert_eq!(values, vec![100, 200]);
 
             hew_channel_receiver_close(rx);
         }
@@ -1099,7 +760,7 @@ mod tests {
             let rx = hew_channel_pair_receiver(pair);
             hew_channel_pair_free(pair);
 
-            hew_channel_send(tx, c"hi".as_ptr());
+            send_str(tx, c"hi");
             let slot = hew_read_slot_new();
             let rc = hew_channel_await_recv(rx, std::ptr::null_mut(), slot);
             assert_eq!(rc, crate::channel_core::STREAM_AWAIT_READY);
@@ -1107,7 +768,7 @@ mod tests {
             hew_read_slot_free(slot);
 
             // The bind edge pops the queued item via try_recv.
-            let got = hew_channel_try_recv(rx);
+            let got = try_recv_str(rx);
             assert_eq!(CStr::from_ptr(got).to_bytes(), b"hi");
             crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
 
@@ -1138,11 +799,11 @@ mod tests {
             );
 
             // A producer deposit signals readiness on the parked slot.
-            hew_channel_send(tx, c"woke".as_ptr());
+            send_str(tx, c"woke");
             assert_eq!(hew_read_slot_status(slot), ReadStatus::Data as i32);
 
             // Resume edge pops the actual item.
-            let got = hew_channel_try_recv(rx);
+            let got = try_recv_str(rx);
             assert_eq!(CStr::from_ptr(got).to_bytes(), b"woke");
             crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
 
@@ -1170,7 +831,7 @@ mod tests {
             hew_channel_sender_close(tx); // last sender → close_sink wakes consumer
             assert_eq!(hew_read_slot_status(slot), ReadStatus::Data as i32);
 
-            let got = hew_channel_try_recv(rx);
+            let got = try_recv_str(rx);
             assert!(got.is_null(), "closed + empty must bind None");
 
             hew_read_slot_free(slot);
@@ -1228,7 +889,7 @@ mod tests {
             );
             assert_ne!(id, 0);
 
-            hew_channel_send(tx, c"item".as_ptr());
+            send_str(tx, c"item");
 
             // Spin-wait for the poll thread to fire the callback.
             let mut spins = 0;
@@ -1248,7 +909,7 @@ mod tests {
             );
 
             // Not consumed by the poll: the item is still queued for the winner.
-            let got = hew_channel_try_recv(rx);
+            let got = try_recv_str(rx);
             assert_eq!(CStr::from_ptr(got).to_bytes(), b"item");
             crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
 
@@ -1295,7 +956,7 @@ mod tests {
             );
 
             // A later send must not fire the cancelled callback.
-            hew_channel_send(tx, c"late".as_ptr());
+            send_str(tx, c"late");
             std::thread::sleep(std::time::Duration::from_millis(50));
             assert_eq!(
                 obs.fired.load(Ordering::SeqCst),
@@ -1309,12 +970,334 @@ mod tests {
             );
 
             // The item is left intact for the next consumer.
-            let got = hew_channel_try_recv(rx);
+            let got = try_recv_str(rx);
             assert_eq!(CStr::from_ptr(got).to_bytes(), b"late");
             crate::cabi::free_cstring(got); // CSTRING-FREE: str-open (test)
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
         }
+    }
+
+    // ── Layout-witness element path (generic element width) ─────────────────
+
+    use crate::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+
+    fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
+        HewVecElemLayout {
+            size,
+            align,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        }
+    }
+
+    fn string_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<*const c_char>(),
+            align: align_of::<*const c_char>(),
+            ownership_kind: HewTypeOwnershipKind::String,
+            clone_fn: None,
+            drop_fn: None,
+        }
+    }
+
+    /// Round-trip an i64 element through the witness path: the envelope is the
+    /// raw 8-byte representation and decode moves it into the out slot.
+    #[test]
+    fn layout_roundtrip_plain_i64() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = plain_layout(8, 8);
+            let value: i64 = -40_204;
+            hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+
+            let mut out: i64 = 0;
+            let rc =
+                hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
+            assert_eq!(rc, 1);
+            assert_eq!(out, -40_204);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    /// A 4-byte element (i32) rides the same mechanism — the witness width,
+    /// not a fixed 8-byte wire, decides the envelope size.
+    #[test]
+    fn layout_roundtrip_plain_i32() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = plain_layout(4, 4);
+            let value: i32 = 7;
+            hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+
+            let mut out: i32 = 0;
+            let rc = hew_channel_try_recv_layout(
+                rx,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1);
+            assert_eq!(out, 7);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    /// String elements stay content-encoded: send reads the caller's string
+    /// slot, recv materialises a fresh header-aware cstring the consumer owns.
+    /// An empty string is `Some("")` (rc 1), never `None`.
+    #[test]
+    fn layout_roundtrip_string_preserves_empty() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = string_layout();
+            let hello: *const c_char = c"hello".as_ptr();
+            hew_channel_send_layout(tx, std::ptr::addr_of!(hello).cast(), &raw const layout);
+            let empty: *const c_char = c"".as_ptr();
+            hew_channel_send_layout(tx, std::ptr::addr_of!(empty).cast(), &raw const layout);
+
+            let mut out: *mut c_char = ptr::null_mut();
+            let rc =
+                hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
+            assert_eq!(rc, 1);
+            assert_eq!(CStr::from_ptr(out).to_bytes(), b"hello");
+            crate::cabi::free_cstring(out); // CSTRING-FREE: str-open (test)
+
+            let rc =
+                hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
+            assert_eq!(rc, 1, "empty string element is Some(\"\"), not None");
+            assert_eq!(CStr::from_ptr(out).to_bytes(), b"");
+            crate::cabi::free_cstring(out); // CSTRING-FREE: str-open (test)
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    /// Closed + empty binds no value (rc 0) so codegen wraps `None`; the same
+    /// holds for `try_recv` on an empty-but-open channel.
+    #[test]
+    fn layout_recv_closed_and_try_recv_empty_return_zero() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = plain_layout(8, 8);
+            let mut out: i64 = -1;
+            let rc = hew_channel_try_recv_layout(
+                rx,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 0, "empty channel must bind no value");
+
+            hew_channel_sender_close(tx);
+            let rc =
+                hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
+            assert_eq!(rc, 0, "closed channel must bind no value");
+
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    /// A Plain envelope of the wrong width is a malformed message: recv binds
+    /// no value and records a diagnostic (mirrors the legacy int decode).
+    #[test]
+    fn layout_plain_width_mismatch_binds_none_with_error() {
+        crate::hew_clear_error();
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let wide = plain_layout(8, 8);
+            let value: i64 = 1;
+            hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const wide);
+
+            let narrow = plain_layout(4, 4);
+            let mut out: i32 = -1;
+            let rc = hew_channel_try_recv_layout(
+                rx,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const narrow,
+            );
+            assert_eq!(rc, 0);
+            let err = CStr::from_ptr(crate::hew_last_error())
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                err.contains("expected 4-byte element payload"),
+                "unexpected error: {err}"
+            );
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    // Heap-owning element thunks for the channel-level round trip. Same shape
+    // as the `channel_core` mocks; separate statics keep counter attribution
+    // local to this module's lock.
+    static CH_OWNED_LOCK: Mutex<()> = Mutex::new(());
+    static CH_OWNED_CLONES: AtomicUsize = AtomicUsize::new(0);
+    static CH_OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[repr(C)]
+    struct ChOwnedElem {
+        tag: u64,
+        heap: *mut u8,
+    }
+
+    unsafe extern "C" fn ch_owned_clone(src: *const c_void, dst: *mut c_void) -> i32 {
+        // SAFETY: thunk contract — src is a live element.
+        let s = unsafe { &*src.cast::<ChOwnedElem>() };
+        // SAFETY: thunk contract — dst holds a writable memcpy of src.
+        let d = unsafe { &mut *dst.cast::<ChOwnedElem>() };
+        // SAFETY: plain allocation; freed by ch_owned_drop.
+        let dup = unsafe { libc::malloc(8).cast::<u8>() };
+        if !s.heap.is_null() {
+            // SAFETY: both buffers are 8 bytes.
+            unsafe { std::ptr::copy_nonoverlapping(s.heap, dup, 8) };
+        }
+        d.heap = dup;
+        CH_OWNED_CLONES.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn ch_owned_drop(slot: *mut c_void) {
+        // SAFETY: thunk contract — slot is a live element being released.
+        let e = unsafe { &mut *slot.cast::<ChOwnedElem>() };
+        if !e.heap.is_null() {
+            // SAFETY: heap was malloc'd by ch_owned_clone / the test body.
+            unsafe { libc::free(e.heap.cast()) };
+            e.heap = ptr::null_mut();
+        }
+        CH_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn ch_owned_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<ChOwnedElem>(),
+            align: align_of::<ChOwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: Some(ch_owned_clone),
+            drop_fn: Some(ch_owned_drop),
+        }
+    }
+
+    /// Heap-owning element round trip: send deep-copies in (clone 1), the
+    /// caller keeps + frees its own value, recv moves out (no drop by the
+    /// queue), and the consumer releases the received element exactly once.
+    #[test]
+    fn layout_roundtrip_owned_element_clone_on_send_move_on_recv() {
+        let _g = CH_OWNED_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let clones_before = CH_OWNED_CLONES.load(Ordering::SeqCst);
+        let drops_before = CH_OWNED_DROPS.load(Ordering::SeqCst);
+
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = ch_owned_layout();
+            let heap = libc::malloc(8).cast::<u8>();
+            std::ptr::write_bytes(heap, 0x5A, 8);
+            let value = ChOwnedElem { tag: 11, heap };
+            hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+            assert_eq!(
+                CH_OWNED_CLONES.load(Ordering::SeqCst) - clones_before,
+                1,
+                "send deep-copies the element in exactly once"
+            );
+            // The caller still owns its value; release it independently.
+            libc::free(value.heap.cast());
+
+            let mut out = ChOwnedElem {
+                tag: 0,
+                heap: ptr::null_mut(),
+            };
+            let rc =
+                hew_channel_recv_layout(rx, std::ptr::addr_of_mut!(out).cast(), &raw const layout);
+            assert_eq!(rc, 1);
+            assert_eq!(out.tag, 11);
+            assert!(!out.heap.is_null(), "deep copy must own its own buffer");
+            assert_eq!(
+                CH_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+                0,
+                "recv moves ownership out — the queue must not drop"
+            );
+            // The consumer owns the element; release it exactly once.
+            ch_owned_drop(std::ptr::addr_of_mut!(out).cast());
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+        assert_eq!(CH_OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 1);
+    }
+
+    /// Receiver dropped with owned items still queued: the queue releases each
+    /// unconsumed envelope exactly once (no leak, no double-free).
+    #[test]
+    fn layout_receiver_close_releases_queued_owned_elements() {
+        let _g = CH_OWNED_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = CH_OWNED_DROPS.load(Ordering::SeqCst);
+
+        let pair = hew_channel_new(8);
+        // SAFETY: pair was just created; slots are live locals.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let layout = ch_owned_layout();
+            for tag in 0..2u64 {
+                let heap = libc::malloc(8).cast::<u8>();
+                let value = ChOwnedElem { tag, heap };
+                hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+                libc::free(value.heap.cast());
+            }
+
+            hew_channel_sender_close(tx);
+            // Both envelopes are still queued; closing the receiver drops the
+            // last core reference and must release each exactly once.
+            hew_channel_receiver_close(rx);
+        }
+        assert_eq!(
+            CH_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "queue teardown must release each unconsumed owned element once"
+        );
     }
 }

@@ -19,6 +19,13 @@ pub enum HewTypeOwnershipKind {
     String = 1,
     /// Elements require layout-driven clone/drop semantics not implemented yet.
     LayoutManaged = 2,
+    /// Elements are `bytes` values (`BytesTriple` at the ABI). Used by the
+    /// channel/stream element witness, where a bytes element travels as its
+    /// contents (the queue envelope IS the value, matching what platform
+    /// stream backings produce natively). Collection constructors reject this
+    /// kind fail-closed — `Vec`/`HashMap` describe bytes elements through
+    /// their own dedicated paths, never through this discriminant.
+    Bytes = 3,
 }
 
 /// Runtime-visible layout descriptor for a Hew value type.
@@ -557,6 +564,7 @@ mod tests {
         assert_eq!(HewTypeOwnershipKind::Plain as u8, 0);
         assert_eq!(HewTypeOwnershipKind::String as u8, 1);
         assert_eq!(HewTypeOwnershipKind::LayoutManaged as u8, 2);
+        assert_eq!(HewTypeOwnershipKind::Bytes as u8, 3);
     }
 
     #[test]

@@ -1231,7 +1231,7 @@ impl Checker {
         // NEW-4: a `pat from rx.recv()` select/join arm over a std/channel
         // `Receiver<T>`. Recognised before the actor-ask shape: the receiver is
         // a channel handle (not an actor), and `recv` resolves to `Option<T>`
-        // with a recorded runtime rewrite (hew_channel_recv*), exactly as an
+        // with a recorded runtime rewrite (hew_channel_recv_layout), exactly as an
         // awaited `rx.recv()`. The select substrate polls the channel core for
         // readiness and binds `Option<T>` on the winning edge.
         if let Expr::MethodCall {
@@ -1328,14 +1328,12 @@ impl Checker {
             );
             return;
         }
-        if !matches!(resolved, Ty::String) && !resolved.is_integer() {
+        if !self.queue_elem_admissible(&resolved) {
+            let reason = self.queue_elem_rejection_reason(&resolved);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!(
-                    "Channel<{resolved}> is not supported in `for await`; \
-                     only Channel<string> and Channel<i64> are currently supported"
-                ),
+                format!("Channel<{resolved}> is not supported in `for await`: {reason}"),
             );
             return;
         }

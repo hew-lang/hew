@@ -2118,12 +2118,10 @@ pub enum HirSelectArmKind {
     TaskAwait { task: Box<HirExpr> },
     /// `pat from <rx>.recv() => body`. The arm waits for a queued item
     /// on a std/channel `Receiver<T>` (NEW-4); the binding receives
-    /// `Option<T>` (`None` on channel close). `elem_is_int` selects the
-    /// int vs string element ABI for the winner-edge materialisation.
-    ChannelRecv {
-        receiver: Box<HirExpr>,
-        elem_is_int: bool,
-    },
+    /// `Option<T>` (`None` on channel close). The element type is carried
+    /// by the checker-resolved `Receiver<T>` receiver type; the winner
+    /// edge materialises it through the element-layout witness.
+    ChannelRecv { receiver: Box<HirExpr> },
     /// `after <duration-expr> => body`. The arm fires when the
     /// deadline elapses; the body runs with no binding.
     AfterTimer { duration: Box<HirExpr> },

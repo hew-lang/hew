@@ -20,7 +20,9 @@
 //! - A channel receive arm may also participate in `select { pat from
 //!   rx.recv() => ... }`.
 //!
-//! Supported element types: `string`, `i64`.
+//! Supported element types: primitives (`i64`, `f64`, `bool`, `char`, ...),
+//! `string`, `bytes`, and value records/enums/tuples. Container elements
+//! (`Vec<T>`, `HashMap<K, V>`) and handle types are not supported yet.
 //!
 //! # Examples
 //!
@@ -81,9 +83,12 @@ trait SenderMethods {
 
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
+    ///
+    /// Routes through the element-layout witness entry — codegen intercepts
+    /// the call by name and supplies the witness for the element type.
     fn send(tx: Sender, data: string) {
         unsafe {
-            hew_channel_send(tx, data)
+            hew_channel_send_layout(tx, data)
         };
     }
     /// Clone this sender for multi-producer use.
@@ -126,13 +131,13 @@ impl ReceiverMethods for Receiver {
     /// Receive the next string message, suspending if necessary.
     fn recv(rx: Receiver) -> Option<string> {
         unsafe {
-            hew_channel_recv(rx)
+            hew_channel_recv_layout(rx)
         }
     }
     /// Try to receive a string without blocking.
     fn try_recv(rx: Receiver) -> Option<string> {
         unsafe {
-            hew_channel_try_recv(rx)
+            hew_channel_try_recv_layout(rx)
         }
     }
     /// Close this receiver and release resources.
@@ -177,11 +182,10 @@ extern "C" {
     fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
-    fn hew_channel_send(tx: Sender, data: string);
-    fn hew_channel_send_int(tx: Sender, data: i64);
-    // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
-    // hew_channel_try_recv_int use an out-parameter ABI for Option<T> and
-    // are declared by codegen with the correct calling convention.
+    // hew_channel_send_layout, hew_channel_recv_layout, and
+    // hew_channel_try_recv_layout use an out-parameter + element-layout
+    // witness ABI and are declared by codegen with the correct calling
+    // convention.
     fn hew_channel_sender_clone(tx: Sender) -> Sender;
     fn hew_channel_sender_close(tx: Sender);
     fn hew_channel_receiver_close(rx: Receiver);

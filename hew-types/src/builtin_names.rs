@@ -153,12 +153,13 @@ builtin_named_types! {
         canonical: "Sender",
         qualified: "channel.Sender",
         methods: [
+            // The element-layout witness entry carries every describable
+            // element type through one symbol; the checker gates admission
+            // (queue_elem_admissible) and codegen synthesizes the witness
+            // from the value argument's static type.
             "send" => {
                 signature: ValueToUnit,
-                runtime: BuiltinMethodRuntime::IntegerOverload {
-                    default_symbol: "hew_channel_send",
-                    integer_symbol: "hew_channel_send_int",
-                }
+                runtime: BuiltinMethodRuntime::Fixed("hew_channel_send_layout")
             },
             "clone" => {
                 signature: CloneSelf,
@@ -176,19 +177,17 @@ builtin_named_types! {
         canonical: "Receiver",
         qualified: "channel.Receiver",
         methods: [
+            // Layout-witness recv entries (`i32 sym(handle, out, witness)`):
+            // codegen intercepts the call by name and decodes the element
+            // directly into the Option<T> dest slot — one symbol for every
+            // describable element type.
             "recv" => {
                 signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::IntegerOverload {
-                    default_symbol: "hew_channel_recv",
-                    integer_symbol: "hew_channel_recv_int",
-                }
+                runtime: BuiltinMethodRuntime::Fixed("hew_channel_recv_layout")
             },
             "try_recv" => {
                 signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::IntegerOverload {
-                    default_symbol: "hew_channel_try_recv",
-                    integer_symbol: "hew_channel_try_recv_int",
-                }
+                runtime: BuiltinMethodRuntime::Fixed("hew_channel_try_recv_layout")
             },
             "close" => {
                 signature: ReturnUnit,
@@ -205,19 +204,17 @@ builtin_named_types! {
             // Channel-family naming: recv/close mirror Duplex and RecvHalf.
             // Iterator-style aliases (.next, .lines, .collect) are removed from
             // the fundamental surface; they land via trait impls in stdlib work.
+            // Layout-witness recv entries: one symbol per operation for every
+            // describable element type (mirrors Receiver<T> above). The
+            // blocking recv flips to the suspending channel-await substrate
+            // in execution-context callers (MIR `lower_direct_call`).
             "recv" => {
                 signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::ElementOverload {
-                    string_symbol: "hew_stream_next",
-                    bytes_symbol: "hew_stream_next_bytes",
-                }
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_next_layout")
             },
             "try_recv" => {
                 signature: ReturnOptionT,
-                runtime: BuiltinMethodRuntime::ElementOverload {
-                    string_symbol: "hew_stream_try_next",
-                    bytes_symbol: "hew_stream_try_next_bytes",
-                }
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_try_next_layout")
             },
             "close" => {
                 signature: ReturnUnit,

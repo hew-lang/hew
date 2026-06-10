@@ -586,7 +586,7 @@ fn await_recv_continue_loop_no_per_frame_leak_slope() {
 // is the WIDER ABI variant: a native `bytes` value is a stack-resident
 // `BytesTriple { ptr, i32, i32 }`, not a single owned pointer. The
 // matching recv surface today is `for await frame in <Stream<bytes>>`
-// (`hew_stream_pop_bytes` hands the consumer a fresh refcounted triple
+// (the layout-witness pop hands the consumer a fresh refcounted triple
 // per frame). Pre-fix, the per-iteration Some-arm payload was overwritten
 // on the back-edge with no `hew_bytes_drop` call (the codegen-side cow_
 // heap_release table only handles single-ptr slot shapes, so the inline-
@@ -617,7 +617,7 @@ fn await_recv_continue_loop_no_per_frame_leak_slope() {
 // (`let b = "...".to_bytes()`) outside the loop and reuses it every
 // frame via `await sink.send(b)`. `hew_sink_write_bytes` BORROWS the
 // buffer (caller retains ownership — `hew-runtime/src/stream.rs` doc
-// on `hew_sink_write_bytes`), and `hew_stream_pop_bytes` returns a
+// on `hew_sink_write_bytes`), and the layout-witness pop returns a
 // FRESH refcounted triple on the consumer side, so per-iteration
 // allocation happens at pop time (the consumer side — what this oracle
 // covers). The producer holds a single function-scope `b` whose
@@ -636,7 +636,7 @@ fn await_recv_continue_loop_no_per_frame_leak_slope() {
 /// payload-binding shape for the Bytes ABI variant. `frames` controls
 /// the number of `sink.send(b)` calls before `sink.close()`; the
 /// consumer drains via `for await`. Pre-fix the per-iteration triple
-/// from `hew_stream_pop_bytes` is overwritten on the back-edge with
+/// from the layout-witness pop is overwritten on the back-edge with
 /// no `hew_bytes_drop` — 1.0 leak/frame (consumer-side). Post-fix the
 /// Some-arm payload binding's `Instr::Drop { ty: Bytes, drop_fn:
 /// Some("hew_bytes_drop") }` registration releases the triple's data

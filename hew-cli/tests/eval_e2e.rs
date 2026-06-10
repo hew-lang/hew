@@ -135,6 +135,16 @@ fn try_recv_stream_string_drains_to_completion_under_single_worker() {
 }
 
 #[test]
+fn for_await_recv_f64_drains_to_completion_under_single_worker() {
+    run_for_await_surface_fixture("for_await_recv_f64");
+}
+
+#[test]
+fn channel_record_elements_roundtrip_and_early_exit_under_single_worker() {
+    run_for_await_surface_fixture("channel_record_elements");
+}
+
+#[test]
 fn for_await_mir_dump_contains_suspending_recv_terminators() {
     for name in ["for_await_recv_string", "for_await_recv_int"] {
         let dump = for_await_mir_checked_dump(name);
@@ -144,27 +154,28 @@ fn for_await_mir_dump_contains_suspending_recv_terminators() {
         );
     }
 
-    // Bytes element: `SuspendingStreamNext { elem_is_string: false, .. }`
-    // (the `false` discriminator selects the BytesTriple pop ABI in codegen).
+    // Bytes element: `SuspendingStreamNext { elem_ty: Bytes, .. }` — the
+    // checker-resolved element type selects the Bytes content-encoding
+    // witness for the layout pop in codegen.
     let bytes_dump = for_await_mir_checked_dump("for_await_stream_bytes");
     assert!(
         bytes_dump.contains("SuspendingStreamNext"),
         "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{bytes_dump}",
     );
     assert!(
-        bytes_dump.contains("elem_is_string: false"),
+        bytes_dump.contains("elem_ty: Bytes"),
         "for_await_stream_bytes's SuspendingStreamNext must carry \
-         elem_is_string: false (BytesTriple pop ABI):\n{bytes_dump}",
+         elem_ty: Bytes (the Bytes element witness):\n{bytes_dump}",
     );
     assert!(
-        !bytes_dump.contains("elem_is_string: true"),
-        "for_await_stream_bytes must NOT emit elem_is_string: true \
-         (string discriminator leaking into the bytes path):\n{bytes_dump}",
+        !bytes_dump.contains("elem_ty: String"),
+        "for_await_stream_bytes must NOT carry elem_ty: String \
+         (string element type leaking into the bytes path):\n{bytes_dump}",
     );
 
-    // String element: `SuspendingStreamNext { elem_is_string: true, .. }`
-    // (the `true` discriminator selects the header-aware cstring pop ABI
-    // — `hew_stream_pop_string` — and binds `Option<string>`).
+    // String element: `SuspendingStreamNext { elem_ty: String, .. }` — the
+    // String element witness keeps the header-aware cstring decode and binds
+    // `Option<string>`.
     for name in ["for_await_stream_string", "typed_streams_string"] {
         let dump = for_await_mir_checked_dump(name);
         assert!(
@@ -172,14 +183,14 @@ fn for_await_mir_dump_contains_suspending_recv_terminators() {
             "{name} must lower to a SuspendingStreamNext terminator:\n{dump}",
         );
         assert!(
-            dump.contains("elem_is_string: true"),
-            "{name}'s SuspendingStreamNext must carry elem_is_string: true \
-             (selects the hew_stream_pop_string ABI):\n{dump}",
+            dump.contains("elem_ty: String"),
+            "{name}'s SuspendingStreamNext must carry elem_ty: String \
+             (the String element witness):\n{dump}",
         );
         assert!(
-            !dump.contains("elem_is_string: false"),
-            "{name} must NOT emit elem_is_string: false \
-             (bytes discriminator leaking into the string path):\n{dump}",
+            !dump.contains("elem_ty: Bytes"),
+            "{name} must NOT carry elem_ty: Bytes \
+             (bytes element type leaking into the string path):\n{dump}",
         );
     }
 }

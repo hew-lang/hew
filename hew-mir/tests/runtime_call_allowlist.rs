@@ -105,12 +105,6 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "Node::lookup",
         "hew_remote_pid_tell",
         "hew_tcp_attach_local",
-        "hew_stream_next_bytes",
-        "hew_stream_try_next_bytes",
-        "hew_channel_recv",
-        "hew_channel_try_recv",
-        "hew_channel_recv_int",
-        "hew_channel_try_recv_int",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",
     ]
@@ -129,8 +123,6 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
     // Stream/Sink ElementOverload + close peers — real exports from
     // `hew-types/src/builtin_names.rs:208-265`.
     let element_overload_extras: HashSet<&'static str> = [
-        "hew_stream_next",
-        "hew_stream_try_next",
         "hew_sink_write_string",
         "hew_sink_try_write_string",
         "hew_sink_try_write_bytes",

@@ -2653,7 +2653,7 @@ fn mir_checked_dump(source: &str) -> String {
 /// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
 /// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
 /// caller) flip to the suspending terminators; a context-free caller (`main`,
-/// free fn) keeps the blocking `hew_stream_next_bytes` / `hew_sink_write_bytes`
+/// free fn) keeps the blocking `hew_stream_next_layout` / `hew_sink_write_bytes`
 /// call.
 #[test]
 fn suspending_stream_recv_send_flip_in_execution_context() {

@@ -908,15 +908,17 @@ impl Checker {
                                             WasmUnsupportedFeature::Streams,
                                         );
                                         let resolved = self.subst.resolve(&validated_inner);
-                                        if Self::runtime_stream_element_name(&resolved).is_none() {
+                                        if !matches!(resolved, Ty::Var(_))
+                                            && !self.queue_elem_admissible(&resolved)
+                                        {
+                                            let reason =
+                                                self.queue_elem_rejection_reason(&resolved);
                                             self.report_error(
                                                 TypeErrorKind::InvalidOperation,
                                                 &iterable.1,
                                                 format!(
                                                     "`Stream<{}>` is not supported in \
-                                                     `for await`; runtime lowering is \
-                                                     currently implemented only for \
-                                                     string and bytes",
+                                                     `for await`: {reason}",
                                                     validated_inner.user_facing()
                                                 ),
                                             );

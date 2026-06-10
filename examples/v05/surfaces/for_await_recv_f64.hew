@@ -1,0 +1,27 @@
+//! Status: runnable (v0.5 for-await over Receiver<f64>)
+//! Description: Drains a float channel receiver with `for await`.
+//!
+//! `Receiver<f64>` rides the element-layout witness: the checker admits any
+//! describable element type and the recv path decodes the 8-byte Plain
+//! envelope through `hew_channel_recv_layout` — no per-type runtime symbol.
+
+import std::channel::channel;
+
+actor DrainFloats {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<f64>, channel.Receiver<f64>) = channel.new(4);
+        tx.send(0.5);
+        tx.send(1.25);
+        tx.send(-3.75);
+        tx.close();
+        for await sample in rx {
+            println(sample);
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn DrainFloats;
+    worker.run(0);
+    sleep_ms(500);
+}

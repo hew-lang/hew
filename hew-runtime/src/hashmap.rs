@@ -349,6 +349,12 @@ pub unsafe fn validate_descriptor_ownership(
                 );
             }
         }
+        HewTypeOwnershipKind::Bytes => {
+            // The Bytes kind belongs to the channel/stream element witness;
+            // map descriptors never carry it. Fail closed.
+            crate::set_last_error("HewLayoutHashMap: key_layout ownership_kind=Bytes is not valid");
+            panic!("HewLayoutHashMap: key_layout ownership_kind=Bytes is not valid");
+        }
     }
     match vl.ownership_kind {
         HewTypeOwnershipKind::Plain => {}
@@ -369,6 +375,12 @@ pub unsafe fn validate_descriptor_ownership(
                     "HewLayoutHashMap: val_layout ownership_kind=LayoutManaged requires drop_fn"
                 );
             }
+        }
+        HewTypeOwnershipKind::Bytes => {
+            // The Bytes kind belongs to the channel/stream element witness;
+            // map descriptors never carry it. Fail closed.
+            crate::set_last_error("HewLayoutHashMap: val_layout ownership_kind=Bytes is not valid");
+            panic!("HewLayoutHashMap: val_layout ownership_kind=Bytes is not valid");
         }
     }
 }
@@ -802,6 +814,9 @@ unsafe fn clone_layout_key_blob(
         HewTypeOwnershipKind::LayoutManaged => abort_layout_clone(
             "hew_hashmap_clone_layout: key layout-managed clone thunk is unavailable",
         ),
+        HewTypeOwnershipKind::Bytes => abort_layout_clone(
+            "hew_hashmap_clone_layout: key ownership_kind=Bytes is not valid for maps",
+        ),
     }
 }
 
@@ -826,6 +841,9 @@ unsafe fn clone_layout_value_blob(layout: HewMapValueLayout, src: *const u8, dst
             };
             clone_fn(src.cast::<c_void>(), dst.cast::<c_void>());
         }
+        HewTypeOwnershipKind::Bytes => abort_layout_clone(
+            "hew_hashmap_clone_layout: value ownership_kind=Bytes is not valid for maps",
+        ),
     }
 }
 
@@ -1454,6 +1472,12 @@ pub unsafe extern "C" fn hew_hashmap_keys_layout(m: *const HewLayoutHashMap) -> 
             );
             std::process::abort();
         }
+        HewTypeOwnershipKind::Bytes => {
+            // The Bytes kind belongs to the channel/stream element witness;
+            // map descriptors never carry it. Fail closed.
+            crate::set_last_error("hew_hashmap_keys_layout: ownership_kind=Bytes is not valid");
+            std::process::abort();
+        }
         HewTypeOwnershipKind::Plain => {
             let type_layout = HewTypeLayout {
                 size: map.key_layout.size,
@@ -1542,6 +1566,12 @@ pub unsafe extern "C" fn hew_hashmap_values_layout(m: *const HewLayoutHashMap) -
             crate::set_last_error(
                 "hew_hashmap_values_layout: LayoutManaged values not yet supported (W5.011-P2b-maps)",
             );
+            std::process::abort();
+        }
+        HewTypeOwnershipKind::Bytes => {
+            // The Bytes kind belongs to the channel/stream element witness;
+            // map descriptors never carry it. Fail closed.
+            crate::set_last_error("hew_hashmap_values_layout: ownership_kind=Bytes is not valid");
             std::process::abort();
         }
         HewTypeOwnershipKind::Plain => {

@@ -416,7 +416,7 @@ fn recv_half_try_recv_resolves() {
 // ---------------------------------------------------------------------------
 
 /// `s.try_recv()` on `Stream<string>` returns `Option<string>` and records
-/// `hew_stream_try_next` in the rewrite table.
+/// `hew_stream_try_next_layout` in the rewrite table.
 #[test]
 fn stream_try_recv_resolves() {
     let source = r"
@@ -431,8 +431,8 @@ fn stream_try_recv_resolves() {
         output.errors
     );
     assert!(
-        has_rewrite(&output, "hew_stream_try_next"),
-        "expected hew_stream_try_next in method_call_rewrites; got: {:#?}",
+        has_rewrite(&output, "hew_stream_try_next_layout"),
+        "expected hew_stream_try_next_layout in method_call_rewrites; got: {:#?}",
         output.method_call_rewrites
     );
 }

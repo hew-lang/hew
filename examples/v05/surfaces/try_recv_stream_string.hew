@@ -4,10 +4,10 @@
 //! invariant.
 //!
 //! `Stream<string>::try_recv` resolves to the runtime symbol
-//! `hew_stream_try_next` (canonical, unsuffixed = string lane;
-//! `hew_stream_try_next_bytes` is the bytes sibling). Unlike the blocking
+//! `hew_stream_try_next_layout` (the layout-witness entry, one symbol for
+//! every describable element type). Unlike the blocking
 //! `recv` / suspending `await recv` siblings, try_recv lowers to a plain
-//! `Terminator::Call { callee: "hew_stream_try_next" }` whose codegen
+//! `Terminator::Call { callee: "hew_stream_try_next_layout" }` whose codegen
 //! intercept emits the same header-aware pop + `Option<string>` bind on
 //! the call's `next` block.
 //!
@@ -16,9 +16,9 @@
 //! enqueues all frames + closes synchronously before the consumer starts
 //! polling, so the drain order is deterministic.
 //!
-//! The stream handle is BORROWED by `hew_stream_try_next` — the call does
+//! The stream handle is BORROWED by `hew_stream_try_next_layout` — the call does
 //! not consume it. The MIR escape gate (`is_handle_borrowing_call_abi`)
-//! lists `hew_stream_try_next` exactly so the `let (sink, input) =
+//! lists `hew_stream_try_next_layout` exactly so the `let (sink, input) =
 //! stream.pipe(N); input.try_recv()` shape does not trip the
 //! aggregate-handle double-free analysis.
 

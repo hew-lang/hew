@@ -34,6 +34,8 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+
 use crate::actor::HewActor;
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
@@ -71,6 +73,13 @@ struct Inner {
     consumer: Option<Waiter>,
     /// Parked producers blocked on a full ring, woken FIFO as space frees.
     producers: VecDeque<Waiter>,
+    /// Element layout witness stamped by the first layout-managed send
+    /// (`*_send_layout` with `ownership_kind == LayoutManaged`). Drives the
+    /// drop-per-envelope discipline on every discard exit: queue drop, a
+    /// post-close send, and a parked producer woken by `close_stream`.
+    /// `None` for Plain/String/Bytes elements — their envelopes own no heap
+    /// beyond the `Vec<u8>` itself.
+    elem_layout: Option<HewVecElemLayout>,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -110,6 +119,7 @@ impl ChannelCore {
                 stream_closed: false,
                 consumer: None,
                 producers: VecDeque::new(),
+                elem_layout: None,
             }),
             cv: Condvar::new(),
         }
@@ -121,6 +131,56 @@ impl ChannelCore {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Stamp the element layout witness for a layout-managed element type.
+    /// Called by every `*_send_layout` entry BEFORE the envelope is enqueued so
+    /// any later discard exit (queue drop, post-close send, `close_stream`)
+    /// can release the envelope's owned heap via `drop_fn`.
+    ///
+    /// Idempotent for one witness; a second, different witness on the same
+    /// core aborts fail-closed — the ownership state of envelopes built under
+    /// two witnesses is unknowable (one element type per pipe is a compiler
+    /// invariant).
+    pub fn stamp_elem_layout(&self, layout: &HewVecElemLayout) {
+        let mut inner = self.locked();
+        match &inner.elem_layout {
+            None => inner.elem_layout = Some(*layout),
+            Some(existing) => {
+                if existing.size != layout.size || existing.ownership_kind != layout.ownership_kind
+                {
+                    crate::channel_common::abort_elem_witness(
+                        "ChannelCore::stamp_elem_layout",
+                        "conflicting element witnesses stamped on one queue",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Release one discarded envelope. For a stamped layout-managed witness
+    /// the envelope's owned heap is dropped via `drop_fn` exactly once; for
+    /// every other element kind the `Vec<u8>` drop is sufficient. Runs OUTSIDE
+    /// the core lock (the thunk may free arbitrary owned heap).
+    fn drop_envelope(layout: Option<&HewVecElemLayout>, mut env: Vec<u8>) {
+        let Some(l) = layout else {
+            return;
+        };
+        if l.ownership_kind != HewTypeOwnershipKind::LayoutManaged {
+            return;
+        }
+        if env.len() != l.size {
+            crate::channel_common::abort_elem_witness(
+                "ChannelCore::drop_envelope",
+                "owned envelope size does not match the stamped witness",
+            );
+        }
+        if let Some(drop_fn) = l.drop_fn {
+            // SAFETY: the envelope holds one live owned element (deep-copied in
+            // by the send edge and never consumed); the thunk releases its
+            // owned heap exactly once. The envelope bytes are dead afterwards.
+            unsafe { drop_fn(env.as_mut_ptr().cast()) };
+        }
     }
 
     /// Deposit a Data readiness signal and wake the parked peer. Runs OUTSIDE
@@ -344,7 +404,12 @@ impl ChannelCore {
             if inner.stream_closed || inner.sink_closed {
                 // Consumer gone (mpsc-disconnect), or the producer already
                 // signalled EOF (`close_sink`): fail closed — the send is a
-                // no-op, never an enqueue past EOF, and never a park.
+                // no-op, never an enqueue past EOF, and never a park. A
+                // discarded owned envelope is released via the stamped
+                // witness, outside the lock.
+                let layout = inner.elem_layout;
+                drop(inner);
+                Self::drop_envelope(layout.as_ref(), item);
                 return STREAM_AWAIT_READY;
             }
             if inner.queue.len() < inner.capacity {
@@ -378,6 +443,11 @@ impl ChannelCore {
             let mut inner = self.locked();
             loop {
                 if inner.stream_closed {
+                    // Consumer gone: the silent discard releases an owned
+                    // envelope via the stamped witness, outside the lock.
+                    let layout = inner.elem_layout;
+                    drop(inner);
+                    Self::drop_envelope(layout.as_ref(), item);
                     return;
                 }
                 if inner.queue.len() < inner.capacity {
@@ -406,7 +476,12 @@ impl ChannelCore {
         {
             let mut inner = self.locked();
             if inner.stream_closed {
-                return true; // discard, not "full"
+                // Discard, not "full": release an owned envelope via the
+                // stamped witness, outside the lock.
+                let layout = inner.elem_layout;
+                drop(inner);
+                Self::drop_envelope(layout.as_ref(), item);
+                return true;
             }
             if inner.queue.len() >= inner.capacity {
                 return false;
@@ -463,20 +538,30 @@ impl ChannelCore {
 
     /// The consumer closed (local cancel/discard). Wakes every parked producer
     /// so their `await_send` resumes (the writes become no-ops) and drops their
-    /// pending items.
+    /// pending items — owned envelopes are released via the stamped witness.
     pub fn close_stream(&self) {
         let mut wakes: Vec<Waiter> = Vec::new();
+        let mut discarded: Vec<Vec<u8>> = Vec::new();
+        let layout;
         {
             let mut inner = self.locked();
             inner.stream_closed = true;
-            while let Some(w) = inner.producers.pop_front() {
+            layout = inner.elem_layout;
+            while let Some(mut w) = inner.producers.pop_front() {
+                if let Some(item) = w.item.take() {
+                    discarded.push(item);
+                }
                 wakes.push(w);
             }
         }
         for w in wakes {
             // SAFETY: removed under the lock; we own each in-flight ref. The
-            // pending item is dropped with the `Waiter`.
+            // pending item was taken above so the witness drop below runs on
+            // it exactly once.
             unsafe { Self::wake(w) };
+        }
+        for env in discarded {
+            Self::drop_envelope(layout.as_ref(), env);
         }
         self.cv.notify_all();
     }
@@ -492,6 +577,35 @@ impl ChannelCore {
             inner.queue.push_back(item);
         }
         Some(w)
+    }
+}
+
+impl Drop for ChannelCore {
+    /// Tear down the pipe: every unconsumed envelope (queued, or still owned
+    /// by a parked producer that never delivered) is released via the stamped
+    /// witness exactly once, and any registration the core still holds an
+    /// in-flight slot ref for is released (no read-slot leak on teardown).
+    fn drop(&mut self) {
+        let inner = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let layout = inner.elem_layout;
+        for env in inner.queue.drain(..) {
+            Self::drop_envelope(layout.as_ref(), env);
+        }
+        if let Some(w) = inner.consumer.take() {
+            // SAFETY: the core owned this in-flight ref; nothing else can
+            // release it once the core is gone.
+            unsafe { hew_read_slot_free(w.slot) };
+        }
+        while let Some(mut w) = inner.producers.pop_front() {
+            if let Some(item) = w.item.take() {
+                Self::drop_envelope(layout.as_ref(), item);
+            }
+            // SAFETY: as above — the core owned this in-flight ref.
+            unsafe { hew_read_slot_free(w.slot) };
+        }
     }
 }
 
@@ -638,6 +752,175 @@ mod tests {
         // The item must NOT have been enqueued past EOF: the consumer sees EOF.
         assert_eq!(core.pop(), None, "no post-EOF enqueue after close_sink");
         unsafe { hew_read_slot_free(slot) };
+    }
+
+    // ── Element-witness drop discipline (generic element width) ─────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
+    /// Serialises the owned-element tests so the global thunk counters stay
+    /// attributable to one test at a time.
+    static OWNED_TEST_LOCK: StdMutex<()> = StdMutex::new(());
+    static OWNED_CLONES: AtomicUsize = AtomicUsize::new(0);
+    static OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Mock heap-owning element: a tag plus one malloc'd 8-byte buffer. The
+    /// clone thunk duplicates the buffer; the drop thunk frees it. Leaks and
+    /// double-frees surface under the sanitizer lanes; counts are asserted
+    /// through the statics above.
+    #[repr(C)]
+    struct OwnedElem {
+        tag: u64,
+        heap: *mut u8,
+    }
+
+    unsafe extern "C" fn owned_elem_clone(
+        src: *const core::ffi::c_void,
+        dst: *mut core::ffi::c_void,
+    ) -> i32 {
+        let s = &*src.cast::<OwnedElem>();
+        let d = &mut *dst.cast::<OwnedElem>();
+        let dup = libc::malloc(8).cast::<u8>();
+        if !s.heap.is_null() {
+            std::ptr::copy_nonoverlapping(s.heap, dup, 8);
+        }
+        d.heap = dup;
+        OWNED_CLONES.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
+        let e = &mut *slot.cast::<OwnedElem>();
+        if !e.heap.is_null() {
+            libc::free(e.heap.cast());
+            e.heap = std::ptr::null_mut();
+        }
+        OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn owned_elem_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<OwnedElem>(),
+            align: align_of::<OwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: Some(owned_elem_clone),
+            drop_fn: Some(owned_elem_drop),
+        }
+    }
+
+    /// Build an owned envelope exactly the way the send edge does: memcpy the
+    /// element bytes, run the clone thunk, and release the source's own heap
+    /// (the caller keeps its value; the envelope owns an independent copy).
+    fn owned_envelope(tag: u64) -> Vec<u8> {
+        unsafe {
+            let heap = libc::malloc(8).cast::<u8>();
+            std::ptr::write_bytes(heap, 0xA5, 8);
+            let src = OwnedElem { tag, heap };
+            let mut env = vec![0u8; size_of::<OwnedElem>()];
+            std::ptr::copy_nonoverlapping(
+                (&raw const src).cast::<u8>(),
+                env.as_mut_ptr(),
+                size_of::<OwnedElem>(),
+            );
+            assert_eq!(
+                owned_elem_clone((&raw const src).cast(), env.as_mut_ptr().cast()),
+                0
+            );
+            libc::free(heap.cast());
+            env
+        }
+    }
+
+    #[test]
+    fn core_drop_releases_unconsumed_owned_envelopes_exactly_once() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(4);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert!(core.try_send(owned_envelope(1)));
+        assert!(core.try_send(owned_envelope(2)));
+        assert!(core.try_send(owned_envelope(3)));
+        drop(core);
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            3,
+            "queue drop must release each unconsumed owned envelope exactly once"
+        );
+    }
+
+    #[test]
+    fn close_stream_releases_parked_producer_owned_envelope() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(1);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert!(core.try_send(owned_envelope(1)));
+        let slot = hew_read_slot_new();
+        // Ring full → producer parks, owning its envelope.
+        let rc = unsafe { core.await_send(std::ptr::null_mut(), slot, owned_envelope(2)) };
+        assert_eq!(rc, STREAM_AWAIT_SUSPEND);
+        // Consumer cancels: the parked envelope is released via the witness.
+        core.close_stream();
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            1,
+            "close_stream must release the parked producer's owned envelope"
+        );
+        unsafe { hew_read_slot_free(slot) };
+        // Core drop releases the still-queued first envelope.
+        drop(core);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
+    }
+
+    #[test]
+    fn send_after_consumer_close_releases_discarded_owned_envelope() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(2);
+        core.stamp_elem_layout(&owned_elem_layout());
+        core.close_stream();
+        // Discards (consumer gone) must still release the owned envelope.
+        assert!(core.try_send(owned_envelope(7)), "discard, not full");
+        core.blocking_send(owned_envelope(8));
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "post-close sends must release their discarded envelopes"
+        );
+        drop(core);
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "nothing was queued, so core drop releases nothing further"
+        );
+    }
+
+    #[test]
+    fn pop_moves_owned_envelope_out_without_dropping() {
+        let _g = OWNED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = OWNED_DROPS.load(Ordering::SeqCst);
+        let core = ChannelCore::new(2);
+        core.stamp_elem_layout(&owned_elem_layout());
+        assert!(core.try_send(owned_envelope(9)));
+        let mut env = core.pop().expect("queued envelope");
+        assert_eq!(
+            OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            0,
+            "pop transfers ownership — the queue must not drop"
+        );
+        // The consumer owns the element now; release it exactly once.
+        unsafe { owned_elem_drop(env.as_mut_ptr().cast()) };
+        drop(core);
+        assert_eq!(OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 1);
     }
 
     #[test]

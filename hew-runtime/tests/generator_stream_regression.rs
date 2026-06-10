@@ -5,11 +5,10 @@ use std::ptr;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use hew_runtime::cabi::free_cstring;
 use hew_runtime::generator::{
     hew_gen_ctx_create, hew_gen_free, hew_gen_next, hew_gen_yield, HewGenCtx,
 };
-use hew_runtime::stream::{hew_stream_lines, hew_stream_next, HewStream};
+use hew_runtime::stream::{hew_stream_lines, hew_stream_next_sized, HewStream};
 
 // ---------------------------------------------------------------------------
 // Bug 1 regression: calling hew_gen_next after completion must not deadlock
@@ -72,15 +71,16 @@ fn stream_lines_empty_line_preserved() {
 
         let mut items: Vec<String> = Vec::new();
         loop {
-            let ptr = hew_stream_next(lines);
+            let mut size: usize = 0;
+            let ptr = hew_stream_next_sized(lines, std::ptr::addr_of_mut!(size));
             if ptr.is_null() {
                 break;
             }
-            let cstr = std::ffi::CStr::from_ptr(ptr.cast());
-            items.push(cstr.to_string_lossy().into_owned());
-            // hew_stream_next now returns a header-aware cstring payload — release
-            // via the matching deallocator so the magic-prefix invariant holds.
-            free_cstring(ptr);
+            // Empty items return a non-null buffer with size 0 — only EOF is
+            // null, preserving the empty-line invariant on the sized accessor.
+            let bytes = std::slice::from_raw_parts(ptr.cast::<u8>(), size);
+            items.push(String::from_utf8_lossy(bytes).into_owned());
+            libc::free(ptr); // ALLOCATOR-PAIRING: libc
         }
 
         assert_eq!(items.len(), 3, "expected 3 lines, got {items:?}");

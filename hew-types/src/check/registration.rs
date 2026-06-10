@@ -5356,21 +5356,25 @@ impl Checker {
         self.register_channel_recv_builtins();
     }
 
-    /// Registers synthetic `fn_sigs` entries for channel `recv`/`try_recv`
-    /// functions whose calling convention is handled entirely by codegen.
+    /// Registers synthetic `fn_sigs` entries for the channel layout-witness
+    /// `send`/`recv`/`try_recv` entries, whose calling convention is handled
+    /// entirely by codegen.
     ///
-    /// These functions use an out-parameter ABI for `Option<T>` and must
-    /// NOT be declared in `extern "C"` blocks — the codegen intercepts
-    /// them by name and emits custom MLIR.  We register them here so the
-    /// type checker can resolve calls inside `unsafe` blocks.
+    /// The real runtime ABI carries an out-parameter and an element-layout
+    /// witness pointer (`hew_channel_recv_layout(rx, out, witness)`), which
+    /// cannot be expressed in an `extern "C"` block — codegen intercepts the
+    /// call by name and emits the witness ABI. We register them here so the
+    /// type checker can resolve the stdlib impl-body calls inside `unsafe`
+    /// blocks (the declared `string` element types are placeholders; the
+    /// intercept derives the element type from the call site).
     ///
-    /// Only activates when we're actually in the channel module: the
-    /// local module must define `Receiver` AND the extern block must
-    /// have already registered `hew_channel_send`.
+    /// Only activates when we're actually in the channel module: the local
+    /// module must define `Receiver` AND the extern block must have already
+    /// registered the `hew_channel_new` constructor.
     pub(super) fn register_channel_recv_builtins(&mut self) {
-        let send_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send")
-            .unwrap_or_else(|| "hew_channel_send".to_string());
-        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&send_key) {
+        let marker_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_new")
+            .unwrap_or_else(|| "hew_channel_new".to_string());
+        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&marker_key) {
             return;
         }
 
@@ -5379,28 +5383,58 @@ impl Checker {
             name: "Receiver".to_string(),
             args: vec![],
         };
+        let sender_ty = Ty::Named {
+            builtin: None,
+            name: "Sender".to_string(),
+            args: vec![],
+        };
 
-        let builtins: &[(&str, Ty)] = &[
-            ("hew_channel_recv", Ty::option(Ty::String)),
-            ("hew_channel_recv_int", Ty::option(Ty::I64)),
-            ("hew_channel_try_recv", Ty::option(Ty::String)),
-            ("hew_channel_try_recv_int", Ty::option(Ty::I64)),
+        let builtins: &[(&str, &str, Ty, Ty)] = &[
+            (
+                "hew_channel_recv_layout",
+                "rx",
+                receiver_ty.clone(),
+                Ty::option(Ty::String),
+            ),
+            (
+                "hew_channel_try_recv_layout",
+                "rx",
+                receiver_ty.clone(),
+                Ty::option(Ty::String),
+            ),
         ];
 
-        for (name, ret_ty) in builtins {
+        for (name, param_name, param_ty, ret_ty) in builtins {
             let key = scoped_module_item_name(self.current_module.as_deref(), name)
                 .unwrap_or_else(|| (*name).to_string());
             if self.fn_sigs.contains_key(&key) {
                 continue;
             }
             let sig = FnSig {
-                param_names: vec!["rx".to_string()],
-                params: vec![receiver_ty.clone()],
+                param_names: vec![(*param_name).to_string()],
+                params: vec![param_ty.clone()],
                 return_type: ret_ty.clone(),
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
             self.unsafe_functions.insert(key);
+        }
+
+        // The typed-serialise send takes the value by reference plus the
+        // witness in the real ABI; the placeholder 2-arg shape carries arity
+        // for the stdlib impl body.
+        let send_key =
+            scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send_layout")
+                .unwrap_or_else(|| "hew_channel_send_layout".to_string());
+        if !self.fn_sigs.contains_key(&send_key) {
+            let sig = FnSig {
+                param_names: vec!["tx".to_string(), "data".to_string()],
+                params: vec![sender_ty, Ty::String],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            };
+            self.fn_sigs.insert(send_key.clone(), sig);
+            self.unsafe_functions.insert(send_key);
         }
     }
 

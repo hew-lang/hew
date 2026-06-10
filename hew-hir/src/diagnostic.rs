@@ -529,7 +529,7 @@ pub enum HirDiagnosticKind {
         construct: String,
     },
     /// Blocking channel recv is not supported on wasm32. The program calls
-    /// `.recv()` on a channel (or the builtin `hew_channel_recv*`) with target
+    /// `.recv()` on a channel (or the builtin `hew_channel_recv_layout`) with target
     /// `wasm32`, which would reach `unreachable!` at
     /// `hew-runtime/src/lib.rs:378` or `:391`. Fail-closed per slepp A222:
     /// compile-time diagnostic instead of runtime panic. Non-blocking

@@ -105,26 +105,14 @@ pub enum IntegerElem {
     I64,
 }
 
-/// Element-kind discriminator for the Stream/Sink families
-/// (`hew_stream_next_bytes` vs `hew_stream_next_string`,
-/// `hew_sink_write_bytes` vs `hew_sink_write_string`). The substrate
-/// admits both kinds; today only the bytes path is producer-emitted
-/// via the `Terminator::Call` intercept; a follow-up commit migrates that path onto this descriptor.
+/// Element-kind discriminator for the Sink write families
+/// (`hew_sink_write_bytes` vs `hew_sink_write_string`). Stream/channel
+/// recv retired their per-element symbols in favour of the
+/// element-layout-witness `*_layout` entries, which bypass
+/// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamElementKind {
     Bytes,
-    String,
-}
-
-/// Element-kind discriminator for `std::channel` `recv`/`try_recv` variants
-/// (`hew_channel_recv`, `hew_channel_recv_int`, `hew_channel_try_recv`,
-/// `hew_channel_try_recv_int`). Today only `String` (`hew_channel_recv`)
-/// and `Int` (`hew_channel_recv_int`) are wired in codegen's
-/// `Terminator::Call` intercept; bytes is reserved for parity with
-/// Stream/Sink.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChannelElementKind {
-    Int,
     String,
 }
 
@@ -201,12 +189,10 @@ pub enum RuntimeCallFamily {
     CancelTokenRetain,
 
     // --- Channel<T> (std::channel) ------------------------------------------
-    // Pre-staged: today these dispatch via codegen's
-    // `Terminator::Call` callee-name intercept. Their symbols
-    // are NOT in `MIR_EMITTER_RUNTIME_SYMBOLS`; the bijection test
-    // explicitly excludes them from the allowlist-coverage assertion.
-    ChannelRecv(ChannelElementKind),
-    ChannelTryRecv(ChannelElementKind),
+    // recv/try_recv/send ride the element-layout-witness `*_layout`
+    // entries, which bypass `RuntimeCallFamily` (codegen `Terminator::Call`
+    // intercept; not in `MIR_EMITTER_RUNTIME_SYMBOLS`). Only the close
+    // releases remain enumerable here.
     ChannelSenderClose,
     ChannelReceiverClose,
 
@@ -378,16 +364,10 @@ pub enum RuntimeCallFamily {
     SinkTryWrite(StreamElementKind),
 
     // --- Stream<T> ---------------------------------------------------------
-    // Pre-staged consumers: see Sink note above. The string-element
-    // recv/try-recv symbols are `hew_stream_next` / `hew_stream_try_next`
-    // (NB no `_string` suffix — the bytes path is the "overload" added
-    // later, so the no-suffix name is the original string path). Source
-    // of truth: `hew-types/src/builtin_names.rs:208-220` ElementOverload
-    // table. `consumes_receiver()` is `true` for `StreamClose`/`SinkClose`
-    // to mirror `runtime_symbol_consumes_receiver`.
+    // recv/try_recv ride the element-layout-witness `*_layout` entries
+    // (see the Channel note above). `consumes_receiver()` is `true` for
+    // `StreamClose`/`SinkClose` to mirror `runtime_symbol_consumes_receiver`.
     StreamClose,
-    StreamNext(StreamElementKind),
-    StreamTryNext(StreamElementKind),
 
     // --- String runtime helpers --------------------------------------------
     StringCharCount,
@@ -475,10 +455,6 @@ impl RuntimeCallFamily {
             Self::CancelTokenRelease => "hew_cancel_token_release",
             Self::CancelTokenRetain => "hew_cancel_token_retain",
             // Channel (pre-staged)
-            Self::ChannelRecv(ChannelElementKind::Int) => "hew_channel_recv_int",
-            Self::ChannelRecv(ChannelElementKind::String) => "hew_channel_recv",
-            Self::ChannelTryRecv(ChannelElementKind::Int) => "hew_channel_try_recv_int",
-            Self::ChannelTryRecv(ChannelElementKind::String) => "hew_channel_try_recv",
             Self::ChannelSenderClose => "hew_channel_sender_close",
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
             // Duplex
@@ -606,15 +582,9 @@ impl RuntimeCallFamily {
             Self::SinkWrite(StreamElementKind::String) => "hew_sink_write_string",
             Self::SinkTryWrite(StreamElementKind::Bytes) => "hew_sink_try_write_bytes",
             Self::SinkTryWrite(StreamElementKind::String) => "hew_sink_try_write_string",
-            // Stream (pre-staged consumers; string variants resolve to the
-            // no-suffix names `hew_stream_next` / `hew_stream_try_next`
-            // per hew-types/src/builtin_names.rs:208-220 — NOT the
-            // invented `_string` suffix)
+            // Stream (recv/try_recv ride the layout-witness `*_layout`
+            // entries outside this enum; only close remains here)
             Self::StreamClose => "hew_stream_close",
-            Self::StreamNext(StreamElementKind::Bytes) => "hew_stream_next_bytes",
-            Self::StreamNext(StreamElementKind::String) => "hew_stream_next",
-            Self::StreamTryNext(StreamElementKind::Bytes) => "hew_stream_try_next_bytes",
-            Self::StreamTryNext(StreamElementKind::String) => "hew_stream_try_next",
             // String
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
@@ -705,10 +675,6 @@ impl RuntimeCallFamily {
             "hew_cancel_token_release" => Self::CancelTokenRelease,
             "hew_cancel_token_retain" => Self::CancelTokenRetain,
             // Channel
-            "hew_channel_recv_int" => Self::ChannelRecv(ChannelElementKind::Int),
-            "hew_channel_recv" => Self::ChannelRecv(ChannelElementKind::String),
-            "hew_channel_try_recv_int" => Self::ChannelTryRecv(ChannelElementKind::Int),
-            "hew_channel_try_recv" => Self::ChannelTryRecv(ChannelElementKind::String),
             "hew_channel_sender_close" => Self::ChannelSenderClose,
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
             // Duplex
@@ -837,10 +803,6 @@ impl RuntimeCallFamily {
             "hew_sink_try_write_string" => Self::SinkTryWrite(StreamElementKind::String),
             // Stream
             "hew_stream_close" => Self::StreamClose,
-            "hew_stream_next_bytes" => Self::StreamNext(StreamElementKind::Bytes),
-            "hew_stream_next" => Self::StreamNext(StreamElementKind::String),
-            "hew_stream_try_next_bytes" => Self::StreamTryNext(StreamElementKind::Bytes),
-            "hew_stream_try_next" => Self::StreamTryNext(StreamElementKind::String),
             // String
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
@@ -922,25 +884,18 @@ impl RuntimeCallFamily {
     /// Classify the family's async-suspending behaviour, if any.
     ///
     /// Source of truth: the HIR await-classifier at
-    /// `hew-hir/src/lower.rs` — `is_stream_recv_await` (line 8341,
-    /// `c_symbol == "hew_stream_next_bytes"`), `is_channel_recv_await`
-    /// (line 8356, `c_symbol == "hew_channel_recv"` /
-    /// `"hew_channel_recv_int"`), `is_stream_send_await` (line 8388,
-    /// `c_symbol == "hew_sink_write_bytes"`), and the duplex-close
-    /// await arm (line 10127, `c_symbol == "hew_duplex_close"`). The
-    /// returned `Some` set is EXACTLY those 5 symbols; everything else
-    /// is non-suspending today.
+    /// `hew-hir/src/lower.rs` — `is_stream_send_await`
+    /// (`c_symbol == "hew_sink_write_bytes"`) and the duplex-close
+    /// await arm (`c_symbol == "hew_duplex_close"`). The suspending
+    /// channel/stream recv path rides the element-layout-witness
+    /// `*_layout` symbols, which bypass `RuntimeCallFamily` entirely
+    /// (HIR string-matches `hew_channel_recv_layout` /
+    /// `hew_stream_next_layout` directly).
     ///
     /// The match is exhaustive over [`RuntimeCallFamily`] — there is
     /// no `_ =>` wildcard arm — so a future family variant cannot be
     /// added without explicitly declaring its suspension behaviour
     /// (LESSONS P0 `match-fail-closed` + `exhaustive-traversal-and-lowering`).
-    ///
-    /// coordinate with for-await Stage 2: when Stage 2 lands
-    /// `Stream<string>` awaitability, the `StreamNext(StreamElementKind::String)`
-    /// arm flips from `None` to `Some(AsyncSuspendKind::StreamRecvString)`
-    /// (and a sibling `StreamTryNext(String)` test is added). Do not
-    /// pre-flip here.
     #[must_use]
     #[allow(
         clippy::too_many_lines,
@@ -949,23 +904,16 @@ impl RuntimeCallFamily {
     pub fn is_async_suspending(self) -> Option<AsyncSuspendKind> {
         use RuntimeCallFamily as F;
         match self {
-            // The 5 suspending symbols (HIR await-classifier source of truth).
-            F::StreamNext(StreamElementKind::Bytes) => Some(AsyncSuspendKind::StreamRecvBytes),
-            F::ChannelRecv(_) => Some(AsyncSuspendKind::ChannelRecv),
+            // The suspending symbols (HIR await-classifier source of truth).
             F::SinkWrite(StreamElementKind::Bytes) => Some(AsyncSuspendKind::SinkSendBytes),
             F::DuplexClose => Some(AsyncSuspendKind::DuplexClose),
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
-            // coordinate with for-await Stage 2: StreamNext(String) +
-            // StreamTryNext(String) will flip.
-            F::StreamNext(StreamElementKind::String)
-            | F::StreamTryNext(_)
-            | F::StreamClose
+            F::StreamClose
             | F::SinkWrite(StreamElementKind::String)
             | F::SinkTryWrite(_)
             | F::SinkClose
-            | F::ChannelTryRecv(_)
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::DuplexClone
@@ -1127,19 +1075,12 @@ impl RuntimeCallFamily {
 }
 
 /// Async-suspending behaviour classification. One variant per HIR
-/// await-classifier flavour in `hew-hir/src/lower.rs`:
-/// `is_stream_recv_await` / `is_channel_recv_await` /
-/// `is_stream_send_await` / the duplex-close await arm.
-///
-/// coordinate with for-await Stage 2: a `StreamRecvString` variant
-/// lands when Stream<string> recv becomes awaitable.
+/// await-classifier flavour in `hew-hir/src/lower.rs` that still flows
+/// through `RuntimeCallFamily`: `is_stream_send_await` and the
+/// duplex-close await arm. The channel/stream recv awaits ride the
+/// element-layout-witness `*_layout` symbols outside this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
-    /// `await stream.recv()` over `Stream<bytes>` → `hew_stream_next_bytes`.
-    StreamRecvBytes,
-    /// `await rx.recv()` over `Receiver<T>` → `hew_channel_recv` /
-    /// `hew_channel_recv_int`.
-    ChannelRecv,
     /// `await sink.send(x)` over `Sink<bytes>` → `hew_sink_write_bytes`.
     SinkSendBytes,
     /// `await actor.close()` over a lambda-actor `Duplex` →
@@ -1395,10 +1336,6 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::CancelTokenRelease,
         F::CancelTokenRetain,
         // Channel
-        F::ChannelRecv(ChannelElementKind::Int),
-        F::ChannelRecv(ChannelElementKind::String),
-        F::ChannelTryRecv(ChannelElementKind::Int),
-        F::ChannelTryRecv(ChannelElementKind::String),
         F::ChannelSenderClose,
         F::ChannelReceiverClose,
         // Duplex
@@ -1529,10 +1466,6 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::SinkTryWrite(StreamElementKind::String),
         // Stream
         F::StreamClose,
-        F::StreamNext(StreamElementKind::Bytes),
-        F::StreamNext(StreamElementKind::String),
-        F::StreamTryNext(StreamElementKind::Bytes),
-        F::StreamTryNext(StreamElementKind::String),
         // String
         F::StringCharCount,
         F::StringConcat,
@@ -1613,9 +1546,7 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,
-        F::ChannelRecv(_)
-            | F::ChannelTryRecv(_)
-            | F::ChannelSenderClose
+        F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::MathIntrinsic(_)
             | F::NodeLookup
@@ -1624,8 +1555,6 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::SinkWrite(_)
             | F::SinkTryWrite(_)
             | F::StreamClose
-            | F::StreamNext(_)
-            | F::StreamTryNext(_)
             | F::TcpAttachLocal
     )
 }
@@ -1739,42 +1668,27 @@ mod tests {
         }
     }
 
-    /// `is_async_suspending` returns `Some(_)` for EXACTLY the 5 symbols
-    /// the HIR await-classifier discriminates today
-    /// (`hew-hir/src/lower.rs:8341` + `:8356` + `:8388` + `:10127`):
-    /// `hew_stream_next_bytes`, `hew_channel_recv`,
-    /// `hew_channel_recv_int`, `hew_sink_write_bytes`, `hew_duplex_close`.
+    /// `is_async_suspending` returns `Some(_)` for EXACTLY the symbols
+    /// the HIR await-classifier discriminates through `RuntimeCallFamily`
+    /// today: `hew_sink_write_bytes` and `hew_duplex_close`. The
+    /// channel/stream recv awaits ride the layout-witness `*_layout`
+    /// symbols outside this enum.
     /// Locks the consumer contract for the eventual migration.
     ///
-    /// Positive: the 5 symbols listed map to the matching
+    /// Positive: the symbols listed map to the matching
     /// `AsyncSuspendKind`. Negative: every other family returns `None`,
     /// pinned by enumeration via `all_runtime_call_families`. ESP. the
     /// historical mis-classifications (`DuplexRecv`, `DuplexSend`,
-    /// `StreamNext(String)`, `SinkWrite(String)`, every `try_*` peer)
-    /// MUST be non-suspending.
-    ///
-    /// coordinate with for-await Stage 2: `StreamNext(String)` and
-    /// `StreamTryNext(String)` will move to the positive set when
-    /// Stage 2 lands Stream<string> awaitability — update both the
-    /// match in `is_async_suspending` and this test together.
+    /// `SinkWrite(String)`, every `try_*` peer) MUST be non-suspending.
+    /// The channel/stream recv awaits ride the `*_layout` symbols
+    /// outside `RuntimeCallFamily` and are pinned by the HIR
+    /// await-classifier tests instead.
     #[test]
     fn is_async_suspending_pins_exact_classifier_set() {
         use RuntimeCallFamily as F;
 
-        // Positive: exactly these 5 (family, expected kind) tuples.
+        // Positive: exactly these (family, expected kind) tuples.
         let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
-            (
-                F::StreamNext(StreamElementKind::Bytes),
-                AsyncSuspendKind::StreamRecvBytes,
-            ),
-            (
-                F::ChannelRecv(ChannelElementKind::Int),
-                AsyncSuspendKind::ChannelRecv,
-            ),
-            (
-                F::ChannelRecv(ChannelElementKind::String),
-                AsyncSuspendKind::ChannelRecv,
-            ),
             (
                 F::SinkWrite(StreamElementKind::Bytes),
                 AsyncSuspendKind::SinkSendBytes,
@@ -1791,21 +1705,16 @@ mod tests {
 
         // Explicit negative regression set: the families a previous
         // revision wrongly marked as suspending (DuplexRecv/Send,
-        // StreamNext(String), SinkWrite(String)) plus the try_* peers
-        // the classifier never touches.
+        // SinkWrite(String)) plus the try_* peers the classifier never
+        // touches.
         let must_not_suspend: &[RuntimeCallFamily] = &[
             F::DuplexRecv,
             F::DuplexSend,
             F::DuplexTryRecv,
             F::DuplexTrySend,
-            F::StreamNext(StreamElementKind::String),
-            F::StreamTryNext(StreamElementKind::Bytes),
-            F::StreamTryNext(StreamElementKind::String),
             F::SinkWrite(StreamElementKind::String),
             F::SinkTryWrite(StreamElementKind::Bytes),
             F::SinkTryWrite(StreamElementKind::String),
-            F::ChannelTryRecv(ChannelElementKind::Int),
-            F::ChannelTryRecv(ChannelElementKind::String),
             F::StreamClose,
             F::SinkClose,
             F::DuplexCloseHalf,
@@ -1819,18 +1728,20 @@ mod tests {
         }
 
         // Coverage: walking the full family enumeration, the size of
-        // the suspending set is exactly 5. Adding a new family without
-        // a corresponding decision is caught by the exhaustive match
-        // in `is_async_suspending`; the count assertion below is the
-        // belt to that suspenders.
+        // the suspending set is exactly 2 (sink bytes write + duplex
+        // close; channel/stream recv ride the `*_layout` symbols outside
+        // this enum). Adding a new family without a corresponding
+        // decision is caught by the exhaustive match in
+        // `is_async_suspending`; the count assertion below is the belt
+        // to that suspenders.
         let suspending_count = all_runtime_call_families()
             .into_iter()
             .filter(|f| f.is_async_suspending().is_some())
             .count();
         assert_eq!(
-            suspending_count, 5,
-            "exactly 5 families should be suspending today; \
-             coordinate with for-await Stage 2 before changing this"
+            suspending_count, 2,
+            "exactly 2 families should be suspending today; declare any \
+             new suspending family explicitly in is_async_suspending"
         );
     }
 
@@ -1867,7 +1778,7 @@ mod tests {
         assert_eq!(d.elem(), None);
         assert_eq!(d.c_symbol(), "hew_duplex_close");
         assert!(d.consumes_receiver());
-        // DuplexClose is one of the 5 suspending classifier symbols.
+        // DuplexClose is one of the suspending classifier symbols.
         assert_eq!(d.is_async_suspending(), Some(AsyncSuspendKind::DuplexClose));
 
         // Non-suspending close peer: StreamClose / SinkClose are NOT
@@ -1876,18 +1787,6 @@ mod tests {
         assert_eq!(d.c_symbol(), "hew_stream_close");
         assert!(d.consumes_receiver());
         assert_eq!(d.is_async_suspending(), None);
-
-        let d = RuntimeCallDescriptor::new(
-            RuntimeCallFamily::StreamNext(StreamElementKind::Bytes),
-            None,
-        )
-        .unwrap();
-        assert_eq!(d.c_symbol(), "hew_stream_next_bytes");
-        assert!(!d.consumes_receiver());
-        assert_eq!(
-            d.is_async_suspending(),
-            Some(AsyncSuspendKind::StreamRecvBytes)
-        );
 
         let d = RuntimeCallDescriptor::new(RuntimeCallFamily::VecLen, None).unwrap();
         assert_eq!(d.c_symbol(), "hew_vec_len");

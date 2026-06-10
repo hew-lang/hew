@@ -1461,17 +1461,6 @@ fn intern_runtime_decl<'ctx>(
         "hew_stream_await_next" => {
             i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
         }
-        // hew_stream_pop_bytes(stream: *mut HewStream) -> BytesTriple
-        // (`hew-runtime/src/stream.rs`). Pops one queued item on the resume /
-        // immediate bind edge (empty triple → None). Returns the AAPCS/SysV
-        // two-eightbyte `[2 x i64]` like `hew_read_slot_take`.
-        "hew_stream_pop_bytes" => i64_ty.array_type(2).fn_type(&[ptr_ty.into()], false),
-        // hew_stream_pop_string(stream: *mut HewStream) -> *mut c_char
-        // (`hew-runtime/src/stream.rs`). String sibling of
-        // `hew_stream_pop_bytes`: pops one queued item on the resume /
-        // immediate bind edge (NULL → None, else Some — header-aware cstring
-        // the caller owns, drop spine frees via `hew_string_drop`).
-        "hew_stream_pop_string" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_stream_detach_await(stream: *mut HewStream, slot: *mut HewReadSlot)
         //   -> void (`hew-runtime/src/stream.rs`). The abandon edge: releases the
         // channel core's in-flight ref on the slot.
@@ -1526,18 +1515,26 @@ fn intern_runtime_decl<'ctx>(
         "hew_channel_cancel_pending_read" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
-        // hew_channel_recv(rx) / hew_channel_try_recv(rx) -> *mut c_char
-        // (`hew-runtime/src/channel.rs`). null → None; non-null → owned malloc'd
-        // string moved into the Option<string> Some payload (drop spine frees it
-        // via hew_string_drop). The suspend ramp pops via the non-blocking
-        // try_recv on its resume / immediate-ready edge.
-        "hew_channel_recv" | "hew_channel_try_recv" => ptr_ty.fn_type(&[ptr_ty.into()], false),
-        // hew_channel_recv_int(rx, out_valid: *mut i32) -> i64 /
-        // hew_channel_try_recv_int(rx, out_valid) -> i64. out-valid ABI:
-        // *out_valid = 1 → Some(value); 0 → None.
-        "hew_channel_recv_int" | "hew_channel_try_recv_int" => {
-            i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        // ── Layout-witness element entries (generic element width) ──────────
+        // i32 sym(handle: ptr, out: ptr, witness: *const HewVecElemLayout)
+        // (`hew-runtime/src/channel.rs` / `stream.rs`). The runtime decodes one
+        // element directly into `out` — the Option<T> Some payload slot — per
+        // the witness's ownership kind. rc 1 → Some; rc 0 → None (out
+        // untouched; a None-tagged Option never reads its payload slot).
+        "hew_channel_recv_layout"
+        | "hew_channel_try_recv_layout"
+        | "hew_stream_next_layout"
+        | "hew_stream_pop_layout"
+        | "hew_stream_try_next_layout" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
         }
+        // void sym(handle: ptr, data: ptr, witness: *const HewVecElemLayout):
+        // the typed-serialise send side. The element at `data` is deep-copied
+        // into the queue envelope (clone thunk for layout-managed elements);
+        // the caller keeps its value.
+        "hew_channel_send_layout" | "hew_stream_send_layout" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
         // hew_select_first(channels: *mut *mut HewReplyChannel, count: i32,
         //                  timeout_ms: i32) -> i32
         // (`hew-runtime/src/reply_channel.rs:484`). Returns the winning
@@ -2242,9 +2239,6 @@ fn intern_runtime_decl<'ctx>(
             .fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false),
         // ── BytesTriple `_raw` out-pointer variants (Windows x64 MSVC sret fix) ──
         "hew_read_slot_take_raw" => ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        "hew_stream_pop_bytes_raw" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         "hew_bytes_slice_raw" => ctx.void_type().fn_type(
@@ -13810,6 +13804,115 @@ fn owned_elem_layout_descriptor_ptr<'ctx>(
     Ok(g.as_pointer_value())
 }
 
+/// Synthesize (or reuse) the constant `HewVecElemLayout` witness static
+/// describing one channel/stream element type for the layout-witness
+/// recv/send ABI (`hew_channel_*_layout` / `hew_stream_*_layout`).
+///
+/// Encoding contract — must mirror `hew-runtime/src/channel_common.rs`:
+/// - `String` (ownership kind 1): pointer-sized element slot; the queue
+///   envelope is content-encoded (the runtime materialises a fresh
+///   header-aware cstring on decode).
+/// - `Bytes` (kind 3): `BytesTriple`-sized slot; content-encoded envelope.
+/// - scalars / BitCopy aggregates (kind 0, Plain): the raw representation,
+///   witness-width wide, no thunks.
+/// - heap-owning record/enum/tuple (kind 2, LayoutManaged): the W5.016 owned
+///   descriptor with the per-type `__hew_*_{clone,drop}_inplace` thunks,
+///   reused verbatim via [`owned_elem_layout_descriptor_ptr`].
+///
+/// The heap-ownership split reuses the Vec classifier
+/// (`resolved_ty_element_owns_heap_for_owned_vec`) so the channel/stream
+/// witness can never disagree with the Vec witness about one element type.
+fn channel_elem_layout_witness_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    elem_ty: &ResolvedTy,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    match elem_ty {
+        ResolvedTy::String => {
+            let ptr_bytes = u64::from(fn_ctx.target_data.get_pointer_byte_size(None));
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "pointer byte size fits u32 on every supported target"
+            )]
+            let align = ptr_bytes as u32;
+            const_elem_witness_global(fn_ctx, "__hew_elem_layout_string", ptr_bytes, align, 1)
+        }
+        ResolvedTy::Bytes => {
+            let triple_ty = fn_ctx.ctx.struct_type(
+                &[
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
+                    fn_ctx.ctx.i32_type().into(),
+                    fn_ctx.ctx.i32_type().into(),
+                ],
+                false,
+            );
+            let (size, align) = abi_size_align(triple_ty.into(), Some(fn_ctx.target_data))?;
+            const_elem_witness_global(fn_ctx, "__hew_elem_layout_bytes", size, align, 3)
+        }
+        _ if resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty) => {
+            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+            owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, label)
+        }
+        _ => {
+            // Plain: scalars (i8..i64, u8..u64, f32/f64, bool, char) and
+            // BitCopy aggregates ride the raw representation. The checker owns
+            // the admission decision; an element type it should not have
+            // admitted still gets a deterministic width here rather than a
+            // silent misdecode (the runtime cross-checks envelope width).
+            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
+            let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
+            const_elem_witness_global(
+                fn_ctx,
+                &format!("__hew_elem_layout_plain_{size}_{align}"),
+                size,
+                align,
+                0,
+            )
+        }
+    }
+}
+
+/// Emit (or reuse) a thunk-less constant `HewVecElemLayout` global. The
+/// struct shape `{usize, usize, i8, ptr, ptr}` matches `hew-cabi::vec` and
+/// the thunk-bearing twin emitted by [`owned_elem_layout_descriptor_ptr`].
+fn const_elem_witness_global<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    global_name: &str,
+    size: u64,
+    align: u32,
+    ownership_kind: u8,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(g) = fn_ctx.llvm_mod.get_global(global_name) {
+        return Ok(g.as_pointer_value());
+    }
+    let ctx = fn_ctx.ctx;
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let i8_ty = ctx.i8_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let layout_ty = ctx.struct_type(
+        &[
+            usize_ty.into(),
+            usize_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_int(u64::from(ownership_kind), false).into(),
+        ptr_ty.const_null().into(),
+        ptr_ty.const_null().into(),
+    ]);
+    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, global_name);
+    g.set_constant(true);
+    g.set_linkage(Linkage::Private);
+    g.set_initializer(&init);
+    Ok(g.as_pointer_value())
+}
+
 /// True for the W5.016 owned-element Vec runtime symbols.
 fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
@@ -15417,8 +15520,6 @@ fn is_bytes_triple_return_producer(symbol: &str) -> bool {
             | "hew_bytes_from_static"
             | "hew_bytes_concat"
             | "hew_bytes_slice"
-            | "hew_stream_next_bytes"
-            | "hew_stream_try_next_bytes"
     )
 }
 
@@ -22823,11 +22924,12 @@ struct SuspendingAcceptEmit {
 struct SuspendingStreamNextEmit {
     stream: Place,
     result_dest: Place,
-    /// `true` → `Option<string>` element (`hew_stream_pop_string`, nullable-ptr
-    /// header-aware cstring ABI); `false` → `Option<bytes>` element
-    /// (`hew_stream_pop_bytes`, `BytesTriple` empty-triple ABI). Mirrors the
-    /// `elem_is_int` flag on [`SuspendingChannelRecvEmit`].
-    elem_is_string: bool,
+    /// The stream's element type. The bind edge synthesizes a
+    /// `HewVecElemLayout` witness from it
+    /// ([`channel_elem_layout_witness_ptr`]) and pops via
+    /// `hew_stream_pop_layout` — one mechanism for every describable element
+    /// type. Mirrors `elem_ty` on [`SuspendingChannelRecvEmit`].
+    elem_ty: ResolvedTy,
     resume: u32,
     cleanup: u32,
 }
@@ -22846,9 +22948,12 @@ struct SuspendingStreamSendEmit {
 struct SuspendingChannelRecvEmit {
     receiver: Place,
     result_dest: Place,
-    /// `true` → `Option<i64>` (out-valid ABI); `false` → `Option<string>`
-    /// (nullable-ptr ABI). Selects the non-blocking pop on the bind edge.
-    elem_is_int: bool,
+    /// The channel's element type. The bind edge synthesizes a
+    /// `HewVecElemLayout` witness from it
+    /// ([`channel_elem_layout_witness_ptr`]) and pops via the non-blocking
+    /// `hew_channel_try_recv_layout` — one mechanism for every describable
+    /// element type.
+    elem_ty: ResolvedTy,
     resume: u32,
     cleanup: u32,
 }
@@ -24186,13 +24291,13 @@ fn emit_suspending_accept_terminator<'ctx>(
 ///   hew_stream_detach_await(stream, slot)            ; release the core ref
 ///   hew_read_slot_free(slot); br shared cleanup
 /// bind:                                              ; ready-now OR resumed
-///   triple = hew_stream_pop_bytes(stream)            ; pop the queued item
-///   <store triple as Option<bytes> into result_dest> ; null -> None, else Some
+///   rc = hew_stream_pop_layout(stream, out, witness) ; pop the queued item
+///   <select Option<T> tag from rc into result_dest>  ; rc 0 -> None, 1 -> Some
 ///   hew_read_slot_free(slot)                         ; release the creator ref
 ///   br resume_bb
 /// ```
 /// The item travels through the channel QUEUE across the suspend (NOT the slot —
-/// the slot is a pure readiness signal); on resume `hew_stream_pop_bytes` pops
+/// the slot is a pure readiness signal); on resume `hew_stream_pop_layout` pops
 /// it exactly once on the consumer's own edge. Slot refs: `new` (+1 creator);
 /// `hew_stream_await_next` takes the channel core's in-flight ref only on the
 /// park path; the single `hew_read_slot_free` on each terminal edge releases the
@@ -24384,78 +24489,26 @@ fn emit_suspending_stream_next_terminator<'ctx>(
         .build_unconditional_branch(coro.cleanup_block)
         .llvm_ctx("suspending stream-next abandon -> shared cleanup br")?;
 
-    // ── bind: ready-now OR resumed. Pop the queued item, map it into the
-    // Option<{bytes|string}> dest, release the creator ref, branch to the MIR
-    // resume. The element-kind discriminator (`elem_is_string`) selects which
-    // runtime pop the bind edge calls — mirror of the
-    // `SuspendingChannelRecv` ramp's `elem_is_int` selector. ─────────────────
+    // ── bind: ready-now OR resumed. Pop the queued item through the
+    // layout-witness entry (`hew_stream_pop_layout` decodes the element
+    // directly into the Option<T> Some payload slot per the element witness),
+    // release the creator ref, branch to the MIR resume. One mechanism for
+    // every describable element type — mirror of the `SuspendingChannelRecv`
+    // ramp's bind edge. ──────────────────────────────────────────────────────
     fn_ctx.builder.position_at_end(bind_bb);
     let Place::Local(dest_local) = term.result_dest else {
         return Err(CodegenError::FailClosed(format!(
-            "SuspendingStreamNext result_dest must be a local Option<bytes|string> slot, got {:?}",
+            "SuspendingStreamNext result_dest must be a local Option<T> slot, got {:?}",
             term.result_dest
         )));
     };
-    if term.elem_is_string {
-        // `Option<string>`: pop a header-aware `*mut c_char` (null = EOF →
-        // None; non-null = Some, OWNS the malloc'd cstring whose drop spine
-        // releases it via `hew_string_drop` exactly once on every consumption
-        // path — match arm or discard, mirroring the channel-recv string
-        // branch documented at `store_channel_recv_option`).
-        let pop_string = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_stream_pop_string",
-        )?;
-        let ret_ptr = fn_ctx
-            .builder
-            .build_call(
-                pop_string,
-                &[stream_ptr.into()],
-                "suspending_stream_next_pop_string",
-            )
-            .llvm_ctx("hew_stream_pop_string call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_stream_pop_string returned void".into()))?
-            .into_pointer_value();
-        store_recv_ptr_as_option_string(fn_ctx, ret_ptr, dest_local, "hew_stream_pop_string")?;
-    } else {
-        // `Option<bytes>`: use hew_stream_pop_bytes_raw to avoid Windows x64 MSVC sret.
-        let pop_bytes_raw = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_stream_pop_bytes_raw",
-        )?;
-        let bytes_struct_ty = fn_ctx.ctx.struct_type(
-            &[
-                fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into(),
-                fn_ctx.ctx.i32_type().into(),
-                fn_ctx.ctx.i32_type().into(),
-            ],
-            false,
-        );
-        let triple_alloca = fn_ctx
-            .builder
-            .build_alloca(bytes_struct_ty, "stream_pop_bytes_raw_out")
-            .llvm_ctx("hew_stream_pop_bytes_raw alloca")?;
-        fn_ctx
-            .builder
-            .build_call(
-                pop_bytes_raw,
-                &[stream_ptr.into(), triple_alloca.into()],
-                "suspending_stream_next_pop_raw",
-            )
-            .llvm_ctx("hew_stream_pop_bytes_raw call")?;
-        store_recv_triple_alloca_as_option(
-            fn_ctx,
-            triple_alloca,
-            dest_local,
-            "hew_stream_pop_bytes_raw",
-        )?;
-    }
+    store_recv_option_via_layout(
+        fn_ctx,
+        stream_ptr,
+        dest_local,
+        "hew_stream_pop_layout",
+        &term.elem_ty,
+    )?;
     fn_ctx
         .builder
         .build_call(
@@ -24490,8 +24543,7 @@ fn emit_suspending_stream_next_terminator<'ctx>(
 ///   hew_channel_detach_recv(rx, slot)               ; release the core ref
 ///   hew_read_slot_free(slot); br shared cleanup
 /// bind:                                              ; ready-now OR resumed
-///   <Option<string>: ptr = hew_channel_try_recv(rx); null -> None, else Some>
-///   <Option<i64>:    v   = hew_channel_try_recv_int(rx, &valid); valid -> Some>
+///   rc = hew_channel_try_recv_layout(rx, out, witness) ; rc 0 -> None, 1 -> Some
 ///   hew_read_slot_free(slot)                         ; release the creator ref
 ///   br resume_bb
 /// ```
@@ -24706,14 +24758,16 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
     // release the creator ref, branch to the MIR resume. ──────────────────────
     fn_ctx.builder.position_at_end(bind_bb);
     // The await already ensured readiness (an item is queued or the channel
-    // closed), so the bind edge pops via the NON-BLOCKING try_recv — the single
-    // consumer's own edge, popping the queued item exactly once (close → None).
-    let pop_symbol = if term.elem_is_int {
-        "hew_channel_try_recv_int"
-    } else {
-        "hew_channel_try_recv"
-    };
-    store_channel_recv_option(fn_ctx, rx_ptr, dest_local, pop_symbol, term.elem_is_int)?;
+    // closed), so the bind edge pops via the NON-BLOCKING layout entry — the
+    // single consumer's own edge, popping the queued item exactly once
+    // (close → rc 0 → None). The element witness decodes any describable T.
+    store_recv_option_via_layout(
+        fn_ctx,
+        rx_ptr,
+        dest_local,
+        "hew_channel_try_recv_layout",
+        &term.elem_ty,
+    )?;
     fn_ctx
         .builder
         .build_call(
@@ -24730,30 +24784,55 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
     Ok(())
 }
 
-/// Materialise an `Option<T>` channel-recv result into `dest_local` by calling
-/// `recv_symbol` (one of `hew_channel_recv` / `hew_channel_try_recv` for the
-/// string ABI, or `hew_channel_recv_int` / `hew_channel_try_recv_int` for the
-/// int out-valid ABI). Shared by the suspend ramp's bind edge (which passes the
-/// non-blocking `try_recv` variant) and the non-suspending `Terminator::Call`
-/// intercept (which passes the actual callee — blocking `recv` for default
-/// callers, `try_recv` for `try_recv()`).
+/// The element type of a recv dest local's checker-resolved `Option<T>` slot.
+/// The blocking-recv `Terminator::Call` intercepts derive the layout witness
+/// from this — the dest type is checker-authored (MIR allocates the dest from
+/// the call's declared return type), never re-inferred from a symbol name.
+fn recv_dest_option_elem_ty(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest_local: u32,
+    callee: &str,
+) -> CodegenResult<ResolvedTy> {
+    let dest_ty = fn_ctx.local_tys.get(&dest_local).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{callee} dest local _{dest_local} has no registered type"
+        ))
+    })?;
+    match dest_ty {
+        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => {
+            Ok(args[0].clone())
+        }
+        other => Err(CodegenError::FailClosed(format!(
+            "{callee} dest local _{dest_local} must be a checker-resolved Option<T> \
+             slot; got {other:?}"
+        ))),
+    }
+}
+
+/// Materialise an `Option<T>` recv result into `dest_local` through a
+/// layout-witness runtime entry (`i32 sym(handle, out, witness)` — one of
+/// `hew_channel_recv_layout` / `hew_channel_try_recv_layout` /
+/// `hew_stream_next_layout` / `hew_stream_pop_layout` /
+/// `hew_stream_try_next_layout`). One emission path for EVERY element type the
+/// witness can describe — the runtime decodes the element directly into the
+/// Option's Some payload slot, so there is no per-element-kind branch here.
 ///
-/// Branchless: the Option tag is a `select` on the null-ptr / out-valid signal
-/// and the payload is stored unconditionally (a `None`-tagged Option never reads
-/// or drops its payload slot, so a stored null pointer / stale i64 is inert).
-/// For `Option<string>` the payload is the owned malloc'd pointer, which the
-/// MIR drop spine frees with `hew_string_drop` on every consumption path.
-fn store_channel_recv_option<'ctx>(
+/// rc 1 → Some (tag 0; the payload slot holds the decoded element, ownership
+/// transferred to the consumer — the MIR drop spine releases owned payloads).
+/// rc 0 → None (tag 1; the payload slot is untouched and inert — a None-tagged
+/// Option never reads or drops its payload).
+fn store_recv_option_via_layout<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
-    rx_ptr: inkwell::values::PointerValue<'ctx>,
+    handle_ptr: inkwell::values::PointerValue<'ctx>,
     dest_local: u32,
     recv_symbol: &str,
-    elem_is_int: bool,
+    elem_ty: &ResolvedTy,
 ) -> CodegenResult<()> {
+    let witness = channel_elem_layout_witness_ptr(fn_ctx, elem_ty, recv_symbol)?;
     let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
     let BasicTypeEnum::IntType(tag_int) = tag_ty else {
         return Err(CodegenError::FailClosed(format!(
-            "channel recv dest Option tag must be integer-typed; got {tag_ty:?}"
+            "{recv_symbol} dest Option tag must be integer-typed; got {tag_ty:?}"
         )));
     };
     let payload_place = Place::EnumVariant {
@@ -24762,105 +24841,47 @@ fn store_channel_recv_option<'ctx>(
         field_idx: 0,
     };
     let (payload_ptr, _) = place_pointer(fn_ctx, payload_place)?;
-
-    if elem_is_int {
-        let recv_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            recv_symbol,
-        )?;
-        let i32_ty = fn_ctx.ctx.i32_type();
-        let out_valid = fn_ctx
-            .builder
-            .build_alloca(i32_ty, "channel_recv_out_valid")
-            .llvm_ctx("channel recv out_valid alloca")?;
-        let value = fn_ctx
-            .builder
-            .build_call(
-                recv_fn,
-                &[rx_ptr.into(), out_valid.into()],
-                "hew_channel_try_recv_int_call",
-            )
-            .llvm_ctx("hew_channel_try_recv_int call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_channel_try_recv_int returned void".into())
-            })?;
-        let valid = fn_ctx
-            .builder
-            .build_load(i32_ty, out_valid, "channel_recv_valid")
-            .llvm_ctx("channel recv out_valid load")?
-            .into_int_value();
-        let is_some = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                valid,
-                i32_ty.const_int(1, false),
-                "channel_recv_is_some",
-            )
-            .llvm_ctx("channel recv valid compare")?;
-        // tag: Some = 0, None = 1.
-        let tag_val = fn_ctx
-            .builder
-            .build_select(
-                is_some,
-                tag_int.const_zero(),
-                tag_int.const_int(1, false),
-                "channel_recv_tag",
-            )
-            .llvm_ctx("channel recv tag select")?;
-        fn_ctx
-            .builder
-            .build_store(payload_ptr, value)
-            .llvm_ctx("channel recv int payload store")?;
-        fn_ctx
-            .builder
-            .build_store(tag_ptr, tag_val)
-            .llvm_ctx("channel recv int tag store")?;
-    } else {
-        let recv_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            recv_symbol,
-        )?;
-        let ret_ptr = fn_ctx
-            .builder
-            .build_call(recv_fn, &[rx_ptr.into()], "hew_channel_recv_str_call")
-            .llvm_ctx("hew_channel_recv (string) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_channel_recv (string) returned void".into())
-            })?
-            .into_pointer_value();
-        let is_null = fn_ctx
-            .builder
-            .build_is_null(ret_ptr, "channel_recv_is_null")
-            .llvm_ctx("channel recv null compare")?;
-        // tag: None (null) = 1, Some (non-null) = 0.
-        let tag_val = fn_ctx
-            .builder
-            .build_select(
-                is_null,
-                tag_int.const_int(1, false),
-                tag_int.const_zero(),
-                "channel_recv_tag",
-            )
-            .llvm_ctx("channel recv tag select")?;
-        // Store the owned pointer into the Some payload slot (inert when None).
-        fn_ctx
-            .builder
-            .build_store(payload_ptr, ret_ptr)
-            .llvm_ctx("channel recv str payload store")?;
-        fn_ctx
-            .builder
-            .build_store(tag_ptr, tag_val)
-            .llvm_ctx("channel recv str tag store")?;
-    }
+    let recv_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        recv_symbol,
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            recv_fn,
+            &[handle_ptr.into(), payload_ptr.into(), witness.into()],
+            &format!("{recv_symbol}_call"),
+        )
+        .llvm_ctx_with(|| format!("{recv_symbol} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{recv_symbol} returned void")))?
+        .into_int_value();
+    let is_some = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_int(1, false),
+            &format!("{recv_symbol}_is_some"),
+        )
+        .llvm_ctx("layout recv rc compare")?;
+    // tag: Some = 0, None = 1.
+    let tag_val = fn_ctx
+        .builder
+        .build_select(
+            is_some,
+            tag_int.const_zero(),
+            tag_int.const_int(1, false),
+            &format!("{recv_symbol}_tag"),
+        )
+        .llvm_ctx("layout recv tag select")?;
+    fn_ctx
+        .builder
+        .build_store(tag_ptr, tag_val)
+        .llvm_ctx("layout recv tag store")?;
     Ok(())
 }
 
@@ -26971,323 +26992,8 @@ fn emit_remote_actor_ask_terminator<'ctx>(
 /// `u64` return shape. The catalog deliberately advertises the C-ABI shape so
 /// `predeclare_stdlib_catalog` declares the extern with the right LLVM type;
 /// the Result construction lives here, not in a new `FnSymbol` variant
-/// (single-shim per the lane plan; mirrors `RemotePid::from_raw`'s precedent
-/// of catalog-return-as-u64 + user-visible-type-via-codegen).
-/// Lower `stream.recv()` / `stream.try_recv()` over a `Stream<bytes>` into an
-/// `Option<bytes>` destination.
-///
-/// The runtime entry (`hew_stream_next_bytes` / `hew_stream_try_next_bytes`)
-/// returns a `bytes` value as the AAPCS/SysV `[2 x i64]` register pair (the
-/// boundary type for a `bytes` return; see `predeclare_extern_decls`). An empty
-/// triple (eightbyte0 == null ptr) means EOF (`recv`) or "no item ready"
-/// (`try_recv`); both map to `None`. A present triple maps to `Some(bytes)`,
-/// with the raw `[2 x i64]` stored into the Some payload slot (itself the
-/// `{ptr,i32,i32}` bytes value — byte layouts match).
-///
-/// Mirrors the `Instr::GeneratorNext` null→None / Some+payload pattern, adapted
-/// to a by-value triple return rather than a heap pointer (no free: the triple
-/// is moved into the Option, whose drop spine owns it).
-fn emit_bytes_stream_recv_call<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    fn_symbols: &FnSymbolMap<'ctx>,
-    callee: &str,
-    args: &[Place],
-    dest: Option<&Place>,
-    next: u32,
-) -> CodegenResult<()> {
-    let [stream_arg] = args else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv) expects exactly 1 argument (the stream handle), got {}",
-            args.len()
-        )));
-    };
-    let dest_place = dest.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "{callee} (stream recv) returns Option<bytes>; producer must supply a dest"
-        ))
-    })?;
-    let Place::Local(dest_local) = dest_place else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv) dest must be a local Option<bytes> enum slot, got {dest_place:?}"
-        )));
-    };
-
-    // The recv runtime entry is predeclared (from `std/stream.hew`'s extern
-    // block) with the `[2 x i64]` bytes boundary-return type. Use that
-    // declaration so the return shape matches the `predeclare_extern_decls`
-    // lowering rather than re-deriving it.
-    let FnSymbol::Real { value: recv_fn, .. } = *fn_symbols.get(callee).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "{callee} (stream recv) has no predeclared extern symbol"
-        ))
-    })?
-    else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv) must resolve to a real extern function symbol"
-        )));
-    };
-
-    // arg0: the stream handle (an opaque `ptr` alloca).
-    let stream_ptr = load_duplex_handle(fn_ctx, *stream_arg, &format!("{callee} stream"))?;
-    // Use _raw variant: alloca BytesTriple slot, pass address, avoid Windows sret mismatch.
-    let bytes_struct_ty = fn_ctx.ctx.struct_type(
-        &[
-            fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into(),
-            fn_ctx.ctx.i32_type().into(),
-            fn_ctx.ctx.i32_type().into(),
-        ],
-        false,
-    );
-    let triple_alloca = fn_ctx
-        .builder
-        .build_alloca(bytes_struct_ty, "stream_recv_raw_out")
-        .llvm_ctx_with(|| format!("{callee} triple alloca"))?;
-    fn_ctx
-        .builder
-        .build_call(
-            recv_fn,
-            &[stream_ptr.into(), triple_alloca.into()],
-            "stream_recv_raw_call",
-        )
-        .llvm_ctx_with(|| format!("{callee} _raw call"))?;
-    store_recv_triple_alloca_as_option(fn_ctx, triple_alloca, *dest_local, callee)?;
-
-    // ── Continue into the call's `next` block. ──
-    let next_bb = *fn_ctx
-        .blocks
-        .get(&next)
-        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
-    Ok(())
-}
-
-/// Store a raw `*mut c_char` (the stream/channel string-recv runtime return)
-/// into an `Option<string>` dest local. NULL → `None` (tag 1); non-null →
-/// `Some` (tag 0) with the OWNED malloc'd cstring pointer the MIR drop spine
-/// releases via `hew_string_drop` on every consumption path. Branchless: the
-/// tag is a `select`; the payload is stored unconditionally (a `None`-tagged
-/// Option never reads or drops its payload, so a stored null pointer is inert).
-/// Shared by the suspending `SuspendingStreamNext` ramp's bind edge and the
-/// non-suspending `Terminator::Call` intercept for `hew_stream_next` (the
-/// canonical string-element recv symbol — the `_bytes` suffix is the
-/// bytes-element sibling). Sibling of [`store_recv_triple_alloca_as_option`] for the
-/// bytes element kind, and mirrors the string branch of
-/// [`store_channel_recv_option`] (NEW-4).
-fn store_recv_ptr_as_option_string<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    ret_ptr: inkwell::values::PointerValue<'ctx>,
-    dest_local: u32,
-    callee: &str,
-) -> CodegenResult<()> {
-    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
-    let BasicTypeEnum::IntType(tag_int) = tag_ty else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee}: stream recv string dest Option tag must be integer-typed; got {tag_ty:?}"
-        )));
-    };
-    let payload_place = Place::EnumVariant {
-        local: dest_local,
-        variant_idx: 0,
-        field_idx: 0,
-    };
-    let (payload_ptr, _) = place_pointer(fn_ctx, payload_place)?;
-    let is_null = fn_ctx
-        .builder
-        .build_is_null(ret_ptr, "stream_recv_string_is_null")
-        .llvm_ctx_with(|| format!("{callee} null compare"))?;
-    // tag: None (null) = 1, Some (non-null) = 0.
-    let tag_val = fn_ctx
-        .builder
-        .build_select(
-            is_null,
-            tag_int.const_int(1, false),
-            tag_int.const_zero(),
-            "stream_recv_string_tag",
-        )
-        .llvm_ctx_with(|| format!("{callee} tag select"))?;
-    // Store the owned pointer into the Some payload slot (inert when None).
-    fn_ctx
-        .builder
-        .build_store(payload_ptr, ret_ptr)
-        .llvm_ctx_with(|| format!("{callee} payload store"))?;
-    fn_ctx
-        .builder
-        .build_store(tag_ptr, tag_val)
-        .llvm_ctx_with(|| format!("{callee} tag store"))?;
-    Ok(())
-}
-
-/// Lower `stream.recv()` / `stream.try_recv()` over a `Stream<string>` (the
-/// blocking path emitted by a `FunctionCallConv::Default` caller — `main` /
-/// free fn — where the suspending flip in `lower_direct_call` does NOT fire,
-/// and the always-direct `try_recv` path which never suspends) into an
-/// `Option<string>` destination. The string sibling of
-/// [`emit_bytes_stream_recv_call`].
-///
-/// The runtime entries (`hew_stream_next` / `hew_stream_try_next` — the
-/// canonical string-element recv symbols the checker resolves
-/// `Stream<string>::recv` / `::try_recv` to, predeclared from
-/// `std/stream.hew`'s extern block) return a header-aware `*mut c_char` —
-/// NULL on EOF (or "not ready" for try_recv); non-null is the OWNED malloc'd
-/// cstring whose drop spine frees via `hew_string_drop` exactly once.
-/// Empty items pass through as a non-null header-aware empty cstring
-/// (`Some("")`), never NULL. Mirrors the
-/// `hew_remote_pid_tell` / `hew_stream_next_bytes` intercept precedent.
-fn emit_string_stream_recv_call<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    fn_symbols: &FnSymbolMap<'ctx>,
-    callee: &str,
-    args: &[Place],
-    dest: Option<&Place>,
-    next: u32,
-) -> CodegenResult<()> {
-    let [stream_arg] = args else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv string) expects exactly 1 argument (the stream handle), got {}",
-            args.len()
-        )));
-    };
-    let dest_place = dest.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "{callee} (stream recv string) returns Option<string>; producer must supply a dest"
-        ))
-    })?;
-    let Place::Local(dest_local) = dest_place else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv string) dest must be a local Option<string> enum slot, got {dest_place:?}"
-        )));
-    };
-
-    // The recv runtime entry is predeclared (from `std/stream.hew`'s extern
-    // block) returning `*mut c_char` — the same shape the bytes intercept
-    // resolves to here. Use the predeclared symbol so the call site agrees
-    // with `predeclare_extern_decls` rather than re-deriving the type.
-    let FnSymbol::Real { value: recv_fn, .. } = *fn_symbols.get(callee).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "{callee} (stream recv string) has no predeclared extern symbol"
-        ))
-    })?
-    else {
-        return Err(CodegenError::FailClosed(format!(
-            "{callee} (stream recv string) must resolve to a real extern function symbol"
-        )));
-    };
-
-    let stream_ptr = load_duplex_handle(fn_ctx, *stream_arg, &format!("{callee} stream"))?;
-    let ret_ptr = fn_ctx
-        .builder
-        .build_call(recv_fn, &[stream_ptr.into()], "stream_recv_string_call")
-        .llvm_ctx_with(|| format!("{callee} call"))?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} returned void")))?
-        .into_pointer_value();
-    store_recv_ptr_as_option_string(fn_ctx, ret_ptr, *dest_local, callee)?;
-
-    // ── Continue into the call's `next` block. ──
-    let next_bb = *fn_ctx
-        .blocks
-        .get(&next)
-        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx_with(|| format!("{callee} cont br next"))?;
-    Ok(())
-}
-
-/// Unbox a `{ptr, i32, i32}` BytesTriple alloca (written by a `_raw` runtime
-/// call) into an `Option<bytes>` dest local. Null data ptr → `None` (tag 1);
-/// non-null → `Some` (tag 0) with the `{ptr, i32, i32}` payload.
-fn store_recv_triple_alloca_as_option<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    triple_alloca: inkwell::values::PointerValue<'ctx>,
-    dest_local: u32,
-    callee: &str,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
-    let triple_struct_ty = fn_ctx
-        .ctx
-        .struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
-    let data_ptr_gep = fn_ctx
-        .builder
-        .build_struct_gep(
-            triple_struct_ty,
-            triple_alloca,
-            0,
-            "recv_triple_alloca_ptr_gep",
-        )
-        .llvm_ctx_with(|| format!("{callee} triple alloca ptr GEP"))?;
-    let data_ptr = fn_ctx
-        .builder
-        .build_load(ptr_ty, data_ptr_gep, "recv_triple_alloca_ptr")
-        .llvm_ctx_with(|| format!("{callee} triple alloca ptr load"))?
-        .into_pointer_value();
-    let is_eof = fn_ctx
-        .builder
-        .build_is_null(data_ptr, "recv_triple_alloca_is_eof")
-        .llvm_ctx_with(|| format!("{callee} eof null check"))?;
-    let triple_struct = fn_ctx
-        .builder
-        .build_load(triple_struct_ty, triple_alloca, "recv_triple_alloca_struct")
-        .llvm_ctx_with(|| format!("{callee} triple alloca struct load"))?;
-    let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
-    let tag_int = match tag_ty {
-        BasicTypeEnum::IntType(t) => t,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "{callee} dest Option tag must be integer-shaped; got {other:?}"
-            )));
-        }
-    };
-    let some_payload = Place::EnumVariant {
-        local: dest_local,
-        variant_idx: 0,
-        field_idx: 0,
-    };
-    let (payload_ptr, _payload_ty) = place_pointer(fn_ctx, some_payload)?;
-    let parent_fn = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("stream-recv-alloca block has no parent fn".into()))?;
-    let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_none");
-    let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_some");
-    let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "recv_alloca_cont");
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_eof, none_bb, some_bb)
-        .llvm_ctx_with(|| format!("{callee} alloca branch"))?;
-    fn_ctx.builder.position_at_end(none_bb);
-    fn_ctx
-        .builder
-        .build_store(tag_ptr, tag_int.const_int(1, false))
-        .llvm_ctx_with(|| format!("{callee} None tag store"))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(cont_bb)
-        .llvm_ctx_with(|| format!("{callee} None br"))?;
-    fn_ctx.builder.position_at_end(some_bb);
-    fn_ctx
-        .builder
-        .build_store(tag_ptr, tag_int.const_int(0, false))
-        .llvm_ctx_with(|| format!("{callee} Some tag store"))?;
-    fn_ctx
-        .builder
-        .build_store(payload_ptr, triple_struct)
-        .llvm_ctx_with(|| format!("{callee} Some payload store"))?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(cont_bb)
-        .llvm_ctx_with(|| format!("{callee} Some br"))?;
-    fn_ctx.builder.position_at_end(cont_bb);
-    Ok(())
-}
-
+/// (mirrors `RemotePid::from_raw`'s precedent of catalog-return-as-u64 +
+/// user-visible-type-via-codegen).
 fn emit_node_lookup_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -28174,77 +27880,31 @@ fn lower_terminator<'ctx>(
                     .llvm_ctx("hew_tcp_attach_local br next")?;
                 return Ok(());
             }
-            // `stream.recv()` / `stream.try_recv()` over a `Stream<bytes>` route
-            // to `hew_stream_next_bytes` / `hew_stream_try_next_bytes`, which
-            // return a `bytes` value the checker wraps as `Option<bytes>` (None
-            // on EOF / not-ready). The runtime returns an empty triple
-            // (null ptr) for None; this intercept unboxes the returned triple
-            // into the `Option<bytes>` dest (null ptr → None tag 1; else Some
-            // tag 0 + the triple payload). Dispatch by callee name, mirroring
+            // `stream.recv()` / `stream.try_recv()` over a `Stream<T>` and
+            // `rx.recv()` / `rx.try_recv()` over a `std::channel` `Receiver<T>`
+            // route to the layout-witness recv entries
+            // (`i32 sym(handle, out, witness)`). In a context-bearing caller
+            // `recv` already flipped to `Terminator::SuspendingStreamNext` /
+            // `Terminator::SuspendingChannelRecv` (the suspend ramps); a
+            // `Terminator::Call` to these symbols is the NON-SUSPENDING path:
+            // a default caller's blocking `recv` (`main`/free fn — a foreign
+            // thread with no parkable continuation) or any `try_recv` (which
+            // never suspends — only ever lowers as a direct call). The element
+            // type comes from the dest local's checker-resolved `Option<T>`
+            // payload — never from the symbol name; the runtime decodes the
+            // element directly into the Option's Some payload slot and the
+            // return code selects the tag. Dispatch by callee name, mirroring
             // the `Node::lookup` / `hew_remote_pid_tell` precedent.
             if matches!(
                 callee.as_str(),
-                "hew_stream_next_bytes" | "hew_stream_try_next_bytes"
+                "hew_stream_next_layout"
+                    | "hew_stream_try_next_layout"
+                    | "hew_channel_recv_layout"
+                    | "hew_channel_try_recv_layout"
             ) {
-                emit_bytes_stream_recv_call(
-                    fn_ctx,
-                    fn_symbols,
-                    callee,
-                    args,
-                    dest.as_ref(),
-                    *next,
-                )?;
-                return Ok(());
-            }
-            // `stream.recv()` over a `Stream<string>` routes to the canonical
-            // `hew_stream_next` runtime symbol; the non-blocking
-            // `stream.try_recv()` routes to the sibling `hew_stream_try_next`
-            // (no `_string` suffix — the `_bytes` symbols are the
-            // bytes-element siblings; the unsuffixed names are the
-            // string-element variants, per the `builtin_names.rs`
-            // `ElementOverload`). In a context-bearing caller `recv` already
-            // flipped to `Terminator::SuspendingStreamNext { elem_is_string }`
-            // (the suspend ramp); a `Terminator::Call` to one of these
-            // symbols is the NON-SUSPENDING path: a default caller's blocking
-            // `recv` (`main`/free fn — a foreign thread with no parkable
-            // continuation) or any `try_recv` (which never suspends — only
-            // ever lowers as a direct call). The runtime returns NULL on EOF
-            // (or "not ready" for try_recv); this intercept materialises
-            // `Option<string>` in-place (null → None tag 1; else Some tag 0 +
-            // the OWNED malloc'd cstring pointer the MIR drop spine frees
-            // via `hew_string_drop`). Dispatch by callee name, mirroring the
-            // bytes-stream-recv precedent above.
-            if matches!(callee.as_str(), "hew_stream_next" | "hew_stream_try_next") {
-                emit_string_stream_recv_call(
-                    fn_ctx,
-                    fn_symbols,
-                    callee,
-                    args,
-                    dest.as_ref(),
-                    *next,
-                )?;
-                return Ok(());
-            }
-            // `rx.recv()` / `rx.try_recv()` over a `std::channel` `Receiver<T>`
-            // route to `hew_channel_recv*` / `hew_channel_try_recv*`. In a
-            // context-bearing caller `recv` already flipped to
-            // `Terminator::SuspendingChannelRecv` (the suspend ramp); a
-            // `Terminator::Call` to these symbols is the NON-SUSPENDING path: a
-            // default caller's blocking `recv` (`main`/free fn — a foreign thread
-            // with no parkable continuation) or any `try_recv` (never suspends).
-            // Materialise `Option<string>` (nullable-ptr ABI) / `Option<i64>`
-            // (out-valid ABI) in-place. Dispatch by callee name, mirroring the
-            // `hew_remote_pid_tell` / stream-recv precedent.
-            if matches!(
-                callee.as_str(),
-                "hew_channel_recv"
-                    | "hew_channel_try_recv"
-                    | "hew_channel_recv_int"
-                    | "hew_channel_try_recv_int"
-            ) {
-                let [rx_arg] = args.as_slice() else {
+                let [handle_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
-                        "{callee} expects exactly 1 argument (the receiver handle), got {}",
+                        "{callee} expects exactly 1 argument (the handle), got {}",
                         args.len()
                     )));
                 };
@@ -28258,12 +27918,77 @@ fn lower_terminator<'ctx>(
                         "{callee} dest must be Place::Local (Option<T> enum slot), got {dest_place:?}"
                     )));
                 };
-                let rx_ptr = load_duplex_handle(fn_ctx, *rx_arg, &format!("{callee} rx"))?;
-                let elem_is_int = matches!(
-                    callee.as_str(),
-                    "hew_channel_recv_int" | "hew_channel_try_recv_int"
-                );
-                store_channel_recv_option(fn_ctx, rx_ptr, *dest_local, callee, elem_is_int)?;
+                let elem_ty = recv_dest_option_elem_ty(fn_ctx, *dest_local, callee)?;
+                let handle_ptr =
+                    load_duplex_handle(fn_ctx, *handle_arg, &format!("{callee} handle"))?;
+                store_recv_option_via_layout(fn_ctx, handle_ptr, *dest_local, callee, &elem_ty)?;
+                let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
+                    CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(next_bb)
+                    .llvm_ctx_with(|| format!("{callee} br next"))?;
+                return Ok(());
+            }
+            // `tx.send(x)` over a `Sender<T>` and `sink.send(x)` over a
+            // `Sink<T>` (non-{string,bytes} elements) route to the typed-
+            // serialise layout entries (`void sym(handle, data_ptr, witness)`).
+            // The element is deep-copied INTO the queue envelope (`clone_fn`
+            // for layout-managed elements) — the caller keeps its value and
+            // its scope-exit drop; the queue owns an independent copy. The
+            // witness comes from the value argument's checker-resolved static
+            // type, and the value travels by SLOT ADDRESS (the local's alloca
+            // holds exactly the per-kind slot shape the runtime expects:
+            // a string slot, a BytesTriple, raw Plain bytes, or the owned
+            // representation).
+            if matches!(
+                callee.as_str(),
+                "hew_channel_send_layout" | "hew_stream_send_layout"
+            ) {
+                let [handle_arg, value_arg] = args.as_slice() else {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} expects exactly 2 arguments (handle, value), got {}",
+                        args.len()
+                    )));
+                };
+                if dest.is_some() {
+                    return Err(CodegenError::FailClosed(format!(
+                        "{callee} returns Unit and must not carry a Terminator::Call dest"
+                    )));
+                }
+                let value_local = match value_arg {
+                    Place::Local(local) => *local,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "{callee} value argument must be a Place::Local element slot, \
+                             got {other:?}"
+                        )));
+                    }
+                };
+                let elem_ty = fn_ctx.local_tys.get(&value_local).cloned().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "{callee} value local _{value_local} has no registered type"
+                    ))
+                })?;
+                let witness = channel_elem_layout_witness_ptr(fn_ctx, &elem_ty, callee)?;
+                let handle_ptr =
+                    load_duplex_handle(fn_ctx, *handle_arg, &format!("{callee} handle"))?;
+                let (value_ptr, _) = place_pointer(fn_ctx, *value_arg)?;
+                let send_fn = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    callee,
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        send_fn,
+                        &[handle_ptr.into(), value_ptr.into(), witness.into()],
+                        &format!("{callee}_call"),
+                    )
+                    .llvm_ctx_with(|| format!("{callee} call"))?;
                 let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                     CodegenError::FailClosed(format!("{callee} next bb{next} missing"))
                 })?;
@@ -29522,7 +29247,7 @@ fn lower_terminator<'ctx>(
         Terminator::SuspendingStreamNext {
             stream,
             result_dest,
-            elem_is_string,
+            elem_ty,
             resume,
             cleanup,
         } => emit_suspending_stream_next_terminator(
@@ -29530,7 +29255,7 @@ fn lower_terminator<'ctx>(
             SuspendingStreamNextEmit {
                 stream: *stream,
                 result_dest: *result_dest,
-                elem_is_string: *elem_is_string,
+                elem_ty: elem_ty.clone(),
                 resume: *resume,
                 cleanup: *cleanup,
             },
@@ -29538,7 +29263,7 @@ fn lower_terminator<'ctx>(
         Terminator::SuspendingChannelRecv {
             receiver,
             result_dest,
-            elem_is_int,
+            elem_ty,
             resume,
             cleanup,
         } => emit_suspending_channel_recv_terminator(
@@ -29546,7 +29271,7 @@ fn lower_terminator<'ctx>(
             SuspendingChannelRecvEmit {
                 receiver: *receiver,
                 result_dest: *result_dest,
-                elem_is_int: *elem_is_int,
+                elem_ty: elem_ty.clone(),
                 resume: *resume,
                 cleanup: *cleanup,
             },
@@ -30681,11 +30406,7 @@ fn emit_select_terminator<'ctx>(
             .into_pointer_value();
 
         let (dest_ptr, dest_ty) = place_pointer(fn_ctx, binding_place)?;
-        if let SelectArmKind::ChannelRecv {
-            receiver,
-            elem_is_int,
-        } = &arm.kind
-        {
+        if let SelectArmKind::ChannelRecv { receiver, elem_ty } = &arm.kind {
             // The poll fired `signal_ready` on readiness WITHOUT consuming; the
             // winning consumer pops the queued item itself on its own edge via
             // the non-blocking try_recv and materialises `Option<T>` (close →
@@ -30698,12 +30419,13 @@ fn emit_select_terminator<'ctx>(
                 )));
             };
             let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_channel_winner")?;
-            let pop_symbol = if *elem_is_int {
-                "hew_channel_try_recv_int"
-            } else {
-                "hew_channel_try_recv"
-            };
-            store_channel_recv_option(fn_ctx, rx_ptr, dest_local, pop_symbol, *elem_is_int)?;
+            store_recv_option_via_layout(
+                fn_ctx,
+                rx_ptr,
+                dest_local,
+                "hew_channel_try_recv_layout",
+                elem_ty,
+            )?;
             let _ = dest_ptr;
             let _ = dest_ty;
             // Free the winning channel's caller-side ref (its poll already
@@ -39672,7 +39394,7 @@ mod tests {
                         arms: vec![hew_mir::SelectArm {
                             kind: hew_mir::SelectArmKind::ChannelRecv {
                                 receiver: Place::Local(0),
-                                elem_is_int: false,
+                                elem_ty: ResolvedTy::String,
                             },
                             body_block: 1,
                             binding: Some(Place::Local(1)),
@@ -39729,7 +39451,7 @@ mod tests {
                     terminator: Terminator::SuspendingChannelRecv {
                         receiver: Place::Local(0),
                         result_dest: Place::Local(1),
-                        elem_is_int: false,
+                        elem_ty: ResolvedTy::String,
                         resume: 1,
                         cleanup: 2,
                     },
@@ -39788,7 +39510,7 @@ mod tests {
                     terminator: Terminator::SuspendingStreamNext {
                         stream: Place::Local(0),
                         result_dest: Place::Local(1),
-                        elem_is_string: false,
+                        elem_ty: ResolvedTy::Bytes,
                         resume: 1,
                         cleanup: 2,
                     },
@@ -39820,6 +39542,112 @@ mod tests {
             "WASM exclusion scan must surface `hew_stream_await_next` for a \
              `Terminator::SuspendingStreamNext` carrier; got `{found}`"
         );
+    }
+
+    /// Widened-carrier wasm fail-closed: the exclusion scan keys on terminator
+    /// SHAPE, not the element field, so a recv carrier whose `elem_ty` is a
+    /// record (the widened `Stream<MyRecord>` / `Receiver<MyRecord>` form) must
+    /// keep firing the same native-only symbols. A silent miss here would let a
+    /// wasm32 build reach `wasm-ld` with a dangling channel/stream reference
+    /// instead of the structured `WasmUnsupportedSubstrate` diagnostic.
+    /// LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_survives_record_element_recv_carriers() {
+        let record_elem_ty = ResolvedTy::Named {
+            name: "Frame".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let return_block = |id: u32| BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        };
+        let body = |name: &str, terminator: Terminator| RawMirFunction {
+            name: name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator,
+                },
+                return_block(1),
+                return_block(2),
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+        };
+
+        let cases = [
+            (
+                body(
+                    "record_elem_suspending_channel_recv",
+                    Terminator::SuspendingChannelRecv {
+                        receiver: Place::Local(0),
+                        result_dest: Place::Local(1),
+                        elem_ty: record_elem_ty.clone(),
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                ),
+                "hew_channel_await_recv",
+            ),
+            (
+                body(
+                    "record_elem_suspending_stream_next",
+                    Terminator::SuspendingStreamNext {
+                        stream: Place::Local(0),
+                        result_dest: Place::Local(1),
+                        elem_ty: record_elem_ty.clone(),
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                ),
+                "hew_stream_await_next",
+            ),
+            (
+                body(
+                    "record_elem_select_channel_recv_arm",
+                    Terminator::Select {
+                        arms: vec![hew_mir::SelectArm {
+                            kind: hew_mir::SelectArmKind::ChannelRecv {
+                                receiver: Place::Local(0),
+                                elem_ty: record_elem_ty.clone(),
+                            },
+                            body_block: 1,
+                            binding: Some(Place::Local(1)),
+                        }],
+                        next: 1,
+                    },
+                ),
+                "hew_channel_poll",
+            ),
+        ];
+        for (body, expected_symbol) in cases {
+            let name = body.name.clone();
+            let pipeline = raw_mir_only_pipeline(body);
+            let found = uses_wasm_excluded_symbol(&pipeline).unwrap_or_else(|| {
+                panic!("{name}: a record-element recv carrier must stay WASM-excluded")
+            });
+            assert_eq!(
+                found, expected_symbol,
+                "{name}: the widened (record-element) carrier must keep \
+                 surfacing `{expected_symbol}`; got `{found}`"
+            );
+        }
     }
 
     /// R-1 (plan review): a user-fn `<Type>::<method>` close is pure Hew

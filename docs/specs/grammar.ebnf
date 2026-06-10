@@ -237,7 +237,13 @@ BitAndExpr     = ShiftExpr { "&" ShiftExpr } ;
 ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
 AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
 MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;
-UnaryExpr      = ("!" | "-" | "~" | "await") UnaryExpr | PostfixExpr ;
+UnaryExpr      = ("!" | "-" | "~" | "await" | "clone") UnaryExpr | PostfixExpr ;
+(* `clone <operand>` is the prefix duplication form. It is contextual: `clone`
+   acts as a prefix only when followed immediately by an operand token
+   (identifier or literal). Otherwise it stays a plain identifier so that
+   `x.clone()`, `fn clone(...)`, and `clone(args)` are unaffected.
+   Binding power matches other unary prefixes, so `clone a + b` parses as
+   `(clone a) + b`. See also §3.4.4 for ownership and cloning semantics. *)
 PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" | "as" Type } ;
 
 Primary        = Literal
@@ -257,8 +263,8 @@ Primary        = Literal
                | Spawn
                | SelectExpr                          (* select { ... } *)
                | JoinExpr                            (* join { ... } *)
-               | Fork                                (* fork { ... } structured-concurrency block *)
-               | ForkChild                          (* fork name = expr or fork expr — only inside a Fork block *)
+               | ScopeExpr                          (* scope { ... } structured-concurrency block *)
+               | ForkChild                          (* fork name = expr or fork expr — only inside a scope block *)
                | YieldExpr ;
 
 FieldInitList  = FieldInit { "," FieldInit } ","? ;
@@ -293,12 +299,15 @@ TimeoutArm     = "after" Expr "=>" Expr ","? ;
 
 JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
 
-(* Structured concurrency. `fork` is dual-use: the block form opens a
-   structured-concurrency region; the child form spawns a sibling task
-   within an open block. The token after `fork` disambiguates — `{` opens
-   a block, anything else begins a child expression. Outside a block, a
-   child-form `fork` is a `ForkOutsideForkBlock` error. *)
-Fork           = "fork" Block ;
+(* Structured concurrency.
+   `scope { ... }` opens the structured-concurrency lexical lifetime boundary.
+   Inside that body, `fork name = expr` or bare `fork expr` spawn child tasks.
+   `after(duration) { ... }` inside a scope body introduces a deadline clause
+   that cancels the child tasks if the duration elapses before they all settle.
+   A `fork` or `after` outside a `scope` body is a parse error. *)
+ScopeExpr      = "scope" Block ;
+ScopeDeadline  = "after" "(" Expr ")" Block ;
+(* ScopeDeadline is only valid as a statement inside a ScopeExpr body. *)
 ForkChild      = "fork" ( Ident "=" )? Expr ;
 (* "cooperate" is reserved for compiler-internal safepoints; it is not a source expression. *)
 YieldExpr      = "yield" Expr? ;

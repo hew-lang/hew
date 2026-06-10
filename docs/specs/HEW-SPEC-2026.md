@@ -595,15 +595,24 @@ worker.send(message);        // message is MOVED via .send()
 
 **Cloning for continued use:**
 
+Hew provides two syntactic forms for duplication:
+
+- `val.clone()` — method call form; equivalent to invoking the `Clone` trait.
+- `clone val` — prefix expression form; contextual keyword at unary precedence.
+  Binds tighter than binary operators: `clone a + b` is `(clone a) + b`.
+  Only acts as a prefix when followed by an operand token (identifier or
+  literal); otherwise `clone` is a plain identifier, so `clone(args)` and
+  `x.clone()` are unaffected.
+
 ```hew
 receive fn broadcast(message: Message, targets: Vec<LocalPid<Handler>>) {
     for target in targets {
-        target.handle(message.clone());  // Each recipient gets a clone
+        target.handle(clone message);  // prefix form — each recipient gets a clone
     }
     // message still valid - we only sent clones
 }
 
-// Or for lambda actors:
+// Method form is identical in semantics:
 for target in targets {
     target.send(message.clone());
 }
@@ -2298,8 +2307,8 @@ these types in the current implementation.
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                              |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
-| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `.close()`                                                                                            |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()`, `.write(data)`, `.close()`                                                                                                 |
+| `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.read_string()` → `string`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
 | `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                  |
 
 Handle types are opaque — their internal representation is not accessible.
@@ -4514,7 +4523,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 ### 12.2 Operator Precedence (highest to lowest)
 
 1. Postfix: `?`, `.field`, `(args)`, `[index]`
-2. Unary: `!`, `-`, `~`, `await`
+2. Unary: `!`, `-`, `~`, `await`, `clone` (contextual prefix — see §3.4.4)
 3. Multiplicative: `*`, `/`, `%`
 4. Additive: `+`, `-` (`+` also concatenates strings)
 5. Shift: `<<`, `>>`
@@ -4522,7 +4531,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=` (value equality for strings; regex matching is via `Pattern.is_match`)
+10. Equality: `==`, `!=`, `is` (value equality for strings; `is` tests structural type membership; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=`

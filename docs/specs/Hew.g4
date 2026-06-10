@@ -527,8 +527,11 @@ stmt
     | exprStmt
     | unsafeBlock
     | block                                 // Standalone block: { ... }
-    | forkExpr                              // fork { ... } or fork child without trailing ;
+    | scopeExpr                             // scope { ... } structured-concurrency block
+    | forkChild                             // fork [name '='] expr — only valid inside scope
     ;
+// Note: scopeDeadline (`after(d) { ... }`) is valid only as a statement inside
+// a scopeExpr body.  It appears in stmt as an exprStmt wrapping a scopeDeadline.
 
 letStmt
     : 'let' pattern ( ':' type_ )? ( '=' expr )? ';'
@@ -643,8 +646,10 @@ andExpr
     ;
 
 eqExpr
-    : relExpr ( ( '==' | '!=' ) relExpr )*
+    : relExpr ( ( '==' | '!=' | 'is' ) relExpr )*
     ;
+// `is` tests structural type membership: `val is TypeName`.  It has the
+// same Pratt precedence as `==` and `!=` (parser pratt table: Token::Is => (9, 10)).
 
 relExpr
     : bitOrExpr ( ( '<' | '<=' | '>' | '>=' ) bitOrExpr )*
@@ -677,7 +682,19 @@ mulExpr
 
 unaryExpr
     : ( '!' | '-' | '~' | 'await' ) unaryExpr
+    | cloneExpr
     | postfixExpr
+    ;
+
+// `clone <operand>` duplicates the value at the same binding power as other
+// unary prefixes (parser CLONE_PREFIX_BP = 25).  `clone` is contextual: it
+// acts as a prefix only when the next token begins an operand (identifier or
+// literal); otherwise it stays a plain identifier.  Examples:
+//   clone x          — duplicate identifier
+//   clone a + b      — parsed as (clone a) + b
+//   x.clone()        — method call, clone is NOT the prefix here
+cloneExpr
+    : 'clone' unaryExpr
     ;
 
 postfixExpr
@@ -703,7 +720,8 @@ primary
     | spawn
     | selectExpr
     | joinExpr
-    | forkExpr                              // fork { ... } block or fork [name '='] expr child
+    | scopeExpr                             // scope { ... } structured-concurrency block
+    | forkChild                             // fork [name '='] expr — only valid inside scope
     | yieldExpr
     ;
 
@@ -810,24 +828,28 @@ joinExpr
 //  Structured concurrency
 // ----------------------------------------------------------------
 
-// `fork` is dual-use. The block opens a structured-concurrency region;
-// the child form (`fork name = expr` or bare `fork expr`) spawns a
-// sibling task within an open block. Both share the keyword; the
-// disambiguator is the token following `fork`. The two forms are
-// folded into a single production here so the keyword is matched
-// only once.
+// Structured concurrency uses three distinct productions:
+//   scopeExpr     — `scope { ... }` opens the lexical lifetime boundary
+//   scopeDeadline — `after(d) { ... }` inside a scope body sets a cancellation deadline
+//   forkChild     — `fork name = expr` or `fork expr` spawns a sibling task
 //
-// Notes:
-//   - `scope { ... }` is the structured-concurrency block (the lexical-
-//     lifetime boundary). `fork name = expr` and bare `fork expr` are
-//     only legal dynamically inside a `scope` block; outside one, the
-//     checker emits `ForkOutsideScopeBlock`.
-//   - Earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
-//     s.cancel() }`; that entire surface was removed in the 2026 edition
-//     (HEW-SPEC §4.9 historical note).
+// `fork` and `after` outside a `scope` body are parse errors.  The checker
+// additionally emits `ForkOutsideScopeBlock` for contextual violations.
+//
+// Historical note: earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
+// s.cancel() }`; that entire surface was removed in the 2026 edition
+// (HEW-SPEC §4.9 historical note).
 scopeExpr
     : 'scope' block                         // structured-concurrency block
     ;
+
+// Deadline clause — only valid as a statement inside a scopeExpr body.
+// `after(duration) { ... }` cancels remaining child tasks after the duration
+// elapses.  Parser: Token::After + looks_like_scope_deadline() → Expr::ScopeDeadline.
+scopeDeadline
+    : 'after' '(' expr ')' block
+    ;
+
 forkChild
     : 'fork' ident '=' expr                 // child binding: fork name = expr
     | 'fork' expr                           // bare child:    fork expr

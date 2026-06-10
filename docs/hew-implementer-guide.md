@@ -1880,6 +1880,37 @@ supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
 (run with `HEW_WORKERS=1` to see the single-worker serve+fetch proof).
 
+### Deadline forms — `await conn.read_string() | after d` and `await ln.accept() | after d`
+
+The `| after duration` timeout combinator works with the two blocking network
+operations, converting a plain suspend into a timed suspend that returns
+`Result` on expiry:
+
+| Suspend form | Return type |
+| --- | --- |
+| `await conn.read_string()` | `string` |
+| `await conn.read_string() \| after d` | `Result<string, IoError>` |
+| `await conn.read()` | `bytes` |
+| `await conn.read() \| after d` | `Result<bytes, IoError>` |
+| `await ln.accept()` | `net.Connection` |
+| `await ln.accept() \| after d` | `Result<net.Connection, IoError>` |
+
+Use inside a `scope` body to bound how long a handler waits for a peer:
+
+```hew
+scope {
+    fork {
+        match await conn.read_string() | after 5s {
+            Ok(data) => conn.write_string(data),
+            Err(_)   => conn.close(),
+        }
+    }
+}
+```
+
+The deadline form requires `await` — `conn.read_string() | after d` without
+`await` is a type error (checker expressions.rs:1778-1800).
+
 ### Remote ask suspension — `RemotePid<T>.ask` from an actor handler
 
 ```hew

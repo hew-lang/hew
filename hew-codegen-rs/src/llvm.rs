@@ -37345,11 +37345,14 @@ mod tests {
 
     // ── Terminator::Select codegen ──────────────────────────────────
     //
-    // ActorAsk and AfterTimer arms emit real IR (slice 3); StreamNext
-    // and TaskAwait remain fail-closed as defence-in-depth (the MIR
-    // producer rejects them with SelectArmNotImplemented before reaching
-    // codegen — but the codegen branch still guards against any future
-    // shape change that lets one slip through).
+    // ActorAsk, AfterTimer, ChannelRecv, StreamNext, and TaskAwait arms
+    // all reach codegen on native targets.  The type checker (not the MIR
+    // producer) is the authority: it rejects StreamNext arms in select{}
+    // from user source (checker-unreachable; see select_stream_e2e.rs:200-208).
+    // On wasm32 the MIR producer is expected to emit SelectArmNotImplemented
+    // for StreamNext (cfg(target_arch = "wasm32") test).  The codegen tests
+    // below exercise the paths via hand-constructed MIR as a defence-in-depth
+    // check that a future shape change cannot slip a rejected arm through.
 
     /// Construct an `IrPipeline` carrying a single function whose only
     /// block is a `Terminator::Select` with the given single arm. Used

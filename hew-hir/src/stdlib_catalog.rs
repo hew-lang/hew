@@ -16,6 +16,7 @@ pub enum BuiltinClass {
 pub enum PrintKind {
     I32,
     I64,
+    U8,
     U32,
     U64,
     F64,
@@ -161,6 +162,7 @@ impl BuiltinLinkage {
 pub enum BuiltinTy {
     I32,
     I64,
+    U8,
     U32,
     U64,
     F64,
@@ -197,6 +199,7 @@ impl BuiltinTy {
         match self {
             BuiltinTy::I32 => ResolvedTy::I32,
             BuiltinTy::I64 => ResolvedTy::I64,
+            BuiltinTy::U8 => ResolvedTy::U8,
             BuiltinTy::U32 => ResolvedTy::U32,
             BuiltinTy::U64 => ResolvedTy::U64,
             BuiltinTy::F64 => ResolvedTy::F64,
@@ -246,14 +249,16 @@ const PRINT_RUNTIME: &str = "hew_print_value";
 
 const I32: &[BuiltinTy] = &[BuiltinTy::I32];
 const I64: &[BuiltinTy] = &[BuiltinTy::I64];
+const U8: &[BuiltinTy] = &[BuiltinTy::U8];
 const U32: &[BuiltinTy] = &[BuiltinTy::U32];
 const U64: &[BuiltinTy] = &[BuiltinTy::U64];
 const F64: &[BuiltinTy] = &[BuiltinTy::F64];
 const BOOL: &[BuiltinTy] = &[BuiltinTy::Bool];
 const CHAR: &[BuiltinTy] = &[BuiltinTy::Char];
 const STRING: &[BuiltinTy] = &[BuiltinTy::String];
-const BYTES_I32: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I32];
+const BYTES_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::U8];
 const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
+const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
 const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
@@ -532,6 +537,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // Class A: monomorphic print/println overloads.
     print_entry!("println_i32", "println", I32, I32, true),
     print_entry!("println_i64", "println", I64, I64, true),
+    print_entry!("println_u8", "println", U8, U8, true),
     print_entry!("println_u32", "println", U32, U32, true),
     print_entry!("println_u64", "println", U64, U64, true),
     print_entry!("println_f64", "println", F64, F64, true),
@@ -539,6 +545,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     print_entry!("println_str", "println", STRING, Str, true),
     print_entry!("print_i32", "print", I32, I32, false),
     print_entry!("print_i64", "print", I64, I64, false),
+    print_entry!("print_u8", "print", U8, U8, false),
     print_entry!("print_u32", "print", U32, U32, false),
     print_entry!("print_u64", "print", U64, U64, false),
     print_entry!("print_f64", "print", F64, F64, false),
@@ -547,6 +554,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // Class A: monomorphic to_string overloads.
     tostring_entry!("to_string_i32", I32, "hew_int_to_string"),
     tostring_entry!("to_string_i64", I64, "hew_i64_to_string"),
+    tostring_entry!("to_string_u8", U8, "hew_u8_to_string"),
     tostring_entry!("to_string_u32", U32, "hew_uint_to_string"),
     tostring_entry!("to_string_u64", U64, "hew_u64_to_string"),
     tostring_entry!("to_string_f64", F64, "hew_float_to_string"),
@@ -574,6 +582,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
     // Class A: monomorphic assertion and len overloads.
     assert_entry!("assert_eq_i64", "assert_eq", I64_I64, "hew_assert_eq_i64"),
+    assert_entry!("assert_eq_u8", "assert_eq", U8_U8, "hew_assert_eq_u8"),
     assert_entry!(
         "assert_eq_str",
         "assert_eq",
@@ -588,6 +597,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
         "hew_assert_eq_bool"
     ),
     assert_entry!("assert_ne_i64", "assert_ne", I64_I64, "hew_assert_ne_i64"),
+    assert_entry!("assert_ne_u8", "assert_ne", U8_U8, "hew_assert_ne_u8"),
     assert_entry!(
         "assert_ne_str",
         "assert_ne",
@@ -977,7 +987,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     direct(
         "hew_bytes_push",
         BuiltinClass::ClassA,
-        BYTES_I32,
+        BYTES_U8,
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
@@ -986,14 +996,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // it routes to the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8`
     // runtime entry (the same getter the `b[i]` indexing sugar uses) rather than
     // the Vec element getter `hew_vec_get_i32`. `CalleeNameDispatchOnly`: the MIR
-    // producer arm (`lower_bytes_get_i32`) and the codegen `hew_bytes_index` arm
-    // unpack the single triple operand into the runtime's (ptr, offset, len) args
-    // and widen the u8 result to the method's declared `i32` return.
+    // producer arm and the codegen `hew_bytes_index` arm unpack the single triple
+    // operand into the runtime's (ptr, offset, len) args and store the u8 result.
     direct(
         "hew_bytes_index",
         BuiltinClass::ClassA,
         BYTES_I64,
-        BuiltinTy::I32,
+        BuiltinTy::U8,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
@@ -2225,6 +2234,7 @@ fn print_suffix(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::I32 => Some("i32"),
         ResolvedTy::I64 => Some("i64"),
+        ResolvedTy::U8 => Some("u8"),
         ResolvedTy::U32 => Some("u32"),
         ResolvedTy::U64 => Some("u64"),
         ResolvedTy::F64 => Some("f64"),
@@ -2238,6 +2248,7 @@ fn println_name_for_suffix(suffix: &str) -> Option<&'static str> {
     match suffix {
         "i32" => Some("println_i32"),
         "i64" => Some("println_i64"),
+        "u8" => Some("println_u8"),
         "u32" => Some("println_u32"),
         "u64" => Some("println_u64"),
         "f64" => Some("println_f64"),
@@ -2251,6 +2262,7 @@ fn print_name_for_suffix(suffix: &str) -> Option<&'static str> {
     match suffix {
         "i32" => Some("print_i32"),
         "i64" => Some("print_i64"),
+        "u8" => Some("print_u8"),
         "u32" => Some("print_u32"),
         "u64" => Some("print_u64"),
         "f64" => Some("print_f64"),
@@ -2264,6 +2276,7 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::I32 => Some("to_string_i32"),
         ResolvedTy::I64 => Some("to_string_i64"),
+        ResolvedTy::U8 => Some("to_string_u8"),
         ResolvedTy::U32 => Some("to_string_u32"),
         ResolvedTy::U64 => Some("to_string_u64"),
         ResolvedTy::F64 => Some("to_string_f64"),
@@ -2277,6 +2290,7 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 fn assert_eq_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::I64 => Some("assert_eq_i64"),
+        ResolvedTy::U8 => Some("assert_eq_u8"),
         ResolvedTy::String => Some("assert_eq_str"),
         ResolvedTy::F64 => Some("assert_eq_f64"),
         ResolvedTy::Bool => Some("assert_eq_bool"),
@@ -2287,6 +2301,7 @@ fn assert_eq_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 fn assert_ne_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
     match ty {
         ResolvedTy::I64 => Some("assert_ne_i64"),
+        ResolvedTy::U8 => Some("assert_ne_u8"),
         ResolvedTy::String => Some("assert_ne_str"),
         ResolvedTy::F64 => Some("assert_ne_f64"),
         ResolvedTy::Bool => Some("assert_ne_bool"),

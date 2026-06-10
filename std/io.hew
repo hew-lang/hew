@@ -55,9 +55,9 @@ pub fn read_all() -> string {
 // runtime entries exist.
 impl bytes {
     #[extern_symbol(hew_bytes_push)]
-    fn push(buf: bytes, byte: i32) {}
+    fn push(buf: bytes, byte: u8) {}
     #[extern_symbol(hew_vec_pop_i32)]
-    fn pop(buf: bytes) -> i32 {
+    fn pop(buf: bytes) -> u8 {
         0
     }
     #[extern_symbol(hew_vec_len)]
@@ -65,11 +65,11 @@ impl bytes {
         0
     }
     #[extern_symbol(hew_bytes_index)]
-    fn get(buf: bytes, index: i64) -> i32 {
+    fn get(buf: bytes, index: i64) -> u8 {
         0
     }
     #[extern_symbol(hew_vec_set_i32)]
-    fn set(buf: bytes, index: i64, byte: i32) {}
+    fn set(buf: bytes, index: i64, byte: u8) {}
     #[extern_symbol(hew_vec_is_empty)]
     fn is_empty(buf: bytes) -> bool {
         false
@@ -77,7 +77,7 @@ impl bytes {
     #[extern_symbol(hew_vec_clear)]
     fn clear(buf: bytes) {}
     #[extern_symbol(hew_vec_contains_i32)]
-    fn contains(buf: bytes, byte: i32) -> bool {
+    fn contains(buf: bytes, byte: u8) -> bool {
         false
     }
     #[extern_symbol(hew_bytes_to_string)]

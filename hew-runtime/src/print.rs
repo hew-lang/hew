@@ -49,6 +49,7 @@ enum PrintKind {
     Str = 4,
     U32 = 5,
     U64 = 6,
+    U8 = 7,
 }
 
 impl PrintKind {
@@ -61,6 +62,7 @@ impl PrintKind {
             4 => Some(Self::Str),
             5 => Some(Self::U32),
             6 => Some(Self::U64),
+            7 => Some(Self::U8),
             _ => None,
         }
     }
@@ -133,6 +135,12 @@ unsafe fn print_str(bits: u64, newline: bool) {
     }
 }
 
+unsafe fn print_u8(x: u8, newline: bool) {
+    let fmt = if newline { c"%u\n" } else { c"%u" };
+    // SAFETY: Format string is a valid NUL-terminated C literal; x is widened to u32 for printf varargs.
+    unsafe { libc::printf(fmt.as_ptr(), u32::from(x)) };
+}
+
 unsafe fn print_u32(x: u32, newline: bool) {
     let fmt = if newline { c"%u\n" } else { c"%u" };
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain u32.
@@ -152,6 +160,12 @@ unsafe fn print_u64(x: u64, newline: bool) {
 ///
 /// Called from compiled Hew programs via C ABI. `kind` and `bits` must match
 /// the payload encoding emitted by the compiler.
+///
+/// # Panics
+///
+/// Panics (in debug mode) if the `U8` tag is used with a `bits` value whose
+/// low 8 bits cannot be extracted — which is always possible, so this cannot
+/// occur in practice.
 #[no_mangle]
 pub unsafe extern "C" fn hew_print_value(kind: u8, bits: u64, newline: bool) {
     #[cfg(windows)]
@@ -168,6 +182,12 @@ pub unsafe extern "C" fn hew_print_value(kind: u8, bits: u64, newline: bool) {
         match kind {
             PrintKind::I32 => print_i32(decode_low_i32(bits), newline),
             PrintKind::I64 => print_i64(decode_i64(bits), newline),
+            // SAFETY: The compiler stores u8 zero-extended in the u64 bits field.
+            // The low 8 bits are the exact value; truncation is intentional.
+            PrintKind::U8 => print_u8(
+                u8::try_from(bits & 0xFF).expect("low 8 bits fit u8"),
+                newline,
+            ),
             PrintKind::F64 => print_f64(f64::from_bits(bits), newline),
             PrintKind::Bool => print_bool(bits != 0, newline),
             PrintKind::Str => print_str(bits, newline),

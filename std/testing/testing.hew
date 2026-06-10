@@ -24,6 +24,21 @@ pub fn assert_eq(actual: i64, expected: i64) {
     }
 }
 
+/// Assert that two `u8` byte values are equal.  Panics with a message
+/// showing the expected and actual values when they differ.
+pub fn assert_eq_u8(actual: u8, expected: u8) {
+    if actual != expected {
+        panic(f"assertion failed: expected {expected as i64}, got {actual as i64}");
+    }
+}
+
+/// Assert that two `u8` byte values are not equal.  Panics when `a == b`.
+pub fn assert_ne_u8(a: u8, b: u8) {
+    if a == b {
+        panic(f"assertion failed: expected {a as i64} != {b as i64}, but they are equal");
+    }
+}
+
 /// Assert that two strings are equal.  Panics with a message showing
 /// the expected and actual values when they differ.
 pub fn assert_eq_str(actual: string, expected: string) {

@@ -18987,11 +18987,8 @@ fn lower_call_runtime_abi(
                 )));
             }
             let (bytes_slot, _bytes_ty) = place_pointer(fn_ctx, args[0])?;
-            let byte_i32 = load_int_arg(fn_ctx, args[1], i32_ty, "hew_bytes_push byte")?;
-            let byte_i8 = fn_ctx
-                .builder
-                .build_int_truncate(byte_i32, i8_ty, "hew_bytes_push_byte_i8")
-                .llvm_ctx("hew_bytes_push byte truncate")?;
+            // The byte param is now typed u8 (i8 in LLVM); load directly as i8.
+            let byte_i8 = load_int_arg(fn_ctx, args[1], i8_ty, "hew_bytes_push byte")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -22493,6 +22490,7 @@ fn print_kind_for_resolved_ty(ty: &ResolvedTy) -> Option<PrintKind> {
     match ty {
         ResolvedTy::I32 => Some(PrintKind::I32),
         ResolvedTy::I64 => Some(PrintKind::I64),
+        ResolvedTy::U8 => Some(PrintKind::U8),
         ResolvedTy::U32 => Some(PrintKind::U32),
         ResolvedTy::U64 => Some(PrintKind::U64),
         ResolvedTy::F64 => Some(PrintKind::F64),
@@ -22511,6 +22509,7 @@ fn print_kind_tag(kind: PrintKind) -> u64 {
         PrintKind::Str => 4,
         PrintKind::U32 => 5,
         PrintKind::U64 => 6,
+        PrintKind::U8 => 7,
     }
 }
 
@@ -22554,7 +22553,7 @@ fn emit_print_value_call<'ctx>(
         .llvm_ctx("print arg load")?;
     let i64_ty = fn_ctx.ctx.i64_type();
     let bits = match kind {
-        PrintKind::I32 | PrintKind::U32 | PrintKind::Bool => {
+        PrintKind::I32 | PrintKind::U8 | PrintKind::U32 | PrintKind::Bool => {
             let int_value = expect_int_value(loaded, "print integer/bool payload")?;
             fn_ctx
                 .builder

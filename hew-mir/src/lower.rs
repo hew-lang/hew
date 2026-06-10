@@ -26714,6 +26714,18 @@ fn derive_closure_pair_drop_allowed(
 /// strip every admitted binding whose handle transitively flows into ANOTHER
 /// admitted binding's slot, so exactly the final owner releases.
 /// LESSONS: raii-null-after-move, cleanup-all-exits.
+/// Path-compressing union-find lookup over the undirected Move graph used by
+/// the fan-out collapse in [`dedup_whole_value_handoff`].
+fn move_component_root(parent: &mut HashMap<u32, u32>, x: u32) -> u32 {
+    let p = *parent.entry(x).or_insert(x);
+    if p == x {
+        return x;
+    }
+    let root = move_component_root(parent, p);
+    parent.insert(x, root);
+    root
+}
+
 fn dedup_whole_value_handoff(
     blocks: &[BasicBlock],
     binding_locals: &HashMap<BindingId, Place>,
@@ -26763,6 +26775,57 @@ fn dedup_whole_value_handoff(
         }
         if handed_off {
             allowed.remove(start_binding);
+        }
+    }
+
+    // Fan-out collapse (fail-closed). The hand-off strip above resolves a
+    // CHAIN — every upstream binding whose handle flows into another admitted
+    // binding defers to that downstream owner — but not a FAN-OUT: one source
+    // whole-value-copied into several sibling bindings (`let s1 = v; … let
+    // s2 = v;`, the Vec-pipeline receiver rebind `__hew_pipe_src_N`). No
+    // sibling flows into another, so after the source is stripped EVERY
+    // sibling stays admitted, and each fires its own scope-exit free of the
+    // SAME handle (the exit-time invalid-free class). Sole ownership inside
+    // such a group is unprovable under the move-only substrate, so remove
+    // every remaining admitted binding in any undirected Move-connected
+    // component that still holds more than one: each such handle leaks (as
+    // before the plain-Vec lane), never double-frees. Single-owner components
+    // (the array-literal chain, the pipeline-out → user-binding chain) are
+    // untouched and keep their exactly-one free.
+    // LESSONS: boundary-fail-closed, raii-null-after-move.
+    let remaining: Vec<(u32, BindingId)> = allowed
+        .iter()
+        .filter_map(|b| {
+            binding_locals
+                .get(b)
+                .and_then(|p| base_local(*p))
+                .map(|l| (l, *b))
+        })
+        .collect();
+    if remaining.len() < 2 {
+        return;
+    }
+    // Union-find over the UNDIRECTED Move graph: two admitted bindings in one
+    // component may share one handle's bits, so at most one free is provable
+    // — and we cannot prove which, so none fires.
+    let mut parent: HashMap<u32, u32> = HashMap::new();
+    for &(s, d) in &move_edges {
+        let rs = move_component_root(&mut parent, s);
+        let rd = move_component_root(&mut parent, d);
+        if rs != rd {
+            parent.insert(rs, rd);
+        }
+    }
+    let mut component_admitted: HashMap<u32, Vec<BindingId>> = HashMap::new();
+    for &(local, binding) in &remaining {
+        let root = move_component_root(&mut parent, local);
+        component_admitted.entry(root).or_default().push(binding);
+    }
+    for bindings in component_admitted.values() {
+        if bindings.len() > 1 {
+            for binding in bindings {
+                allowed.remove(binding);
+            }
         }
     }
 }

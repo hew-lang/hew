@@ -312,6 +312,94 @@ fn plain_vec_local_drop_excludes_spawn_escaped_vec() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Fan-out aliases — sibling whole-value copies of ONE handle must never each
+// fire their own free (the Vec-pipeline receiver rebind shape).
+// ---------------------------------------------------------------------------
+
+/// A Vec used as the receiver of MULTIPLE pipeline stages is whole-value
+/// rebound into one synthetic `__hew_pipe_src_N` PER stage — sibling aliases
+/// of ONE handle, none flowing into another. The fan-out collapse must leave
+/// at most one free per Move-connected component: here the receiver's whole
+/// alias group is ambiguous, so it leaks (fail-closed) and ONLY the two
+/// pipeline result vecs are freed. Before the collapse, every sibling fired
+/// its own `hew_vec_free` of the receiver's handle — the exit-time
+/// invalid-free crash. LESSONS: `boundary-fail-closed`.
+#[test]
+fn plain_vec_multi_pipeline_receiver_never_double_freed() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn double(x: i64) -> i64 { x * 2 }
+        fn main() -> i64 {
+            let v: Vec<i64> = [1, 2, 3];
+            let a = v.map(double);
+            let b = v.filter(|x: i64| x % 2 == 0);
+            let t = v.reduce(|x: i64, y: i64| x + y, 0);
+            a.len() + b.len() + t
+        }
+        ",
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        2,
+        "three pipeline stages over one receiver share ONE handle across the \
+         synthetic per-stage rebinds; the plan must free exactly the two \
+         result vecs and leak the ambiguous receiver group — one extra free \
+         is the exit-time invalid-free crash; got {drops:?}"
+    );
+}
+
+/// A single pipeline stage is the admitted variant: the receiver's alias
+/// group holds exactly one admitted binding after the hand-off strip, so the
+/// fan-out collapse must NOT touch it — the receiver's handle and the result
+/// vec are each freed exactly once (no over-exclusion, no leak).
+#[test]
+fn plain_vec_single_pipeline_frees_receiver_and_result_exactly_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn double(x: i64) -> i64 { x * 2 }
+        fn main() -> i64 {
+            let v: Vec<i64> = [1, 2, 3];
+            let a = v.map(double);
+            a.len()
+        }
+        ",
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        2,
+        "a single-stage pipeline has two distinct handles (receiver + result), \
+         each with exactly one admitted owner; both must free exactly once; \
+         got {drops:?}"
+    );
+}
+
+/// The chained form hands each intermediate vec off through exactly one
+/// downstream synthetic rebind — a CHAIN, not a fan-out. Every intermediate
+/// must keep its exactly-one free (the collapse must not over-exclude
+/// single-owner components). LESSONS: `cleanup-all-exits`.
+#[test]
+fn plain_vec_chained_pipeline_frees_each_intermediate_exactly_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        fn main() -> i64 {
+            let v: Vec<i64> = [1, 2, 3, 4];
+            v.filter(|x: i64| x > 1).map(|x: i64| x * 10).reduce(|a: i64, b: i64| a + b, 0)
+        }
+        ",
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        3,
+        "a filter->map->reduce chain has three distinct handles (receiver, \
+         filter out, map out), each a single-owner hand-off chain; all three \
+         must free exactly once; got {drops:?}"
+    );
+}
+
 /// A vec consumed by a by-value call is owned by the callee now; the calling
 /// function must NOT also free it. LESSONS: `raii-null-after-move`.
 #[test]

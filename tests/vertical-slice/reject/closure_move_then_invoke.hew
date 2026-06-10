@@ -1,0 +1,13 @@
+// A rebind transfers closure-pair ownership to the new binding; invoking
+// the source afterwards is a use-after-move. (Invoke-then-move is legal —
+// invocation borrows the pair; see accept/closure_invoke_then_move.hew.)
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let f = make_adder(5);
+    let g = f;
+    println(f(1));
+    println(g(2));
+}

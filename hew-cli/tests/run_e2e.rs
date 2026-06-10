@@ -2130,6 +2130,351 @@ fn capturing_closure_returned_runs() {
     assert_eq!(actual, "8\n", "expected 8; got: {actual:?}");
 }
 
+/// Returned capturing closure survives the producing frame being clobbered.
+///
+/// Previously the closure env stayed a stack alloca in the producer's frame
+/// even though the checker classified the literal `Escapes`; deep unrelated
+/// calls between `make_adder` and the closure call overwrote the frame and
+/// the capture read garbage. The env is now heap-promoted at the literal
+/// site (`Instr::MakeClosure` `HeapBox` mode) and freed exactly once by the
+/// pair's scope-exit `DropKind::ClosurePair` drop.
+#[test]
+fn returned_closure_survives_stack_clobber() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_env_heap_promotion.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_env_heap_promotion should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "15\n", "expected 15; got: {actual:?}");
+}
+
+/// `Vec<fn(i64) -> i64>` storage surface: array literal, indexing, push,
+/// get, and pop over boxed-pair elements riding the pointer-element ABI.
+#[test]
+fn vec_of_fn_storage_ops_run() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/vec_of_fn_storage.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "vec_of_fn_storage should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "2\n6\n101\n105\n2\n",
+        "expected 2/6/101/105/2; got: {actual:?}"
+    );
+}
+
+/// A vec of capture-carrying closures releases each element's env box and
+/// pair box exactly once at scope exit (`hew_vec_free_closure_pairs`).
+#[test]
+fn vec_of_fn_capturing_closures_drop_clean() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/vec_of_fn_drop_discipline.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "vec_of_fn_drop_discipline should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "25\n3\n", "expected 25/3; got: {actual:?}");
+}
+
+/// A record with a fn-typed field constructs, stores a capturing closure,
+/// returns by value (env heap-live across the return), and drops the env
+/// exactly once via the record drop spine.
+#[test]
+fn record_fn_field_round_trips() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/record_fn_field.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "record_fn_field should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "42\n11\n7\n", "expected 42/11/7; got: {actual:?}");
+}
+
+/// `h.cb(args)` on a fn-typed record field dispatches as a field-load +
+/// closure call; repeated dispatch borrows the pair (never consumes).
+#[test]
+fn record_fn_field_method_dispatch_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/record_fn_field_dispatch.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "record_fn_field_dispatch should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "42\n123\n101\n",
+        "expected 42/123/101; got: {actual:?}"
+    );
+}
+
+/// Closure-valued actor state fails closed at compile time (restart needs
+/// the clone direction; a closure env has a sole owner and no clone path).
+#[test]
+fn check_actor_state_closure_field_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/actor_state_closure_field.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("closure-valued actor state is not supported"),
+        "expected fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// A cross-module named function used as a value is a deferred feature:
+/// the checker diagnostic names the exported function and the lambda
+/// workaround instead of misreporting a missing constant.
+#[test]
+fn check_cross_module_fn_value_reports_deferred_feature() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/cross_module_fn_value/main.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("using a cross-module function as a value is not yet supported"),
+        "expected deferred-feature diagnostic; got: {combined}"
+    );
+    assert!(
+        !combined.contains("has no exported constant"),
+        "must not misreport an exported function as a missing constant; got: {combined}"
+    );
+}
+
+/// A Vec element type containing a function value fails closed at the
+/// checker (the layout/owned byte-copy would alias the sole-owner env).
+#[test]
+fn check_vec_of_record_with_fn_field_fails_closed() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/reject/vec_of_record_with_fn_field.hew");
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected check to fail; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("the element type contains a function value"),
+        "expected fail-closed diagnostic; got: {combined}"
+    );
+}
+
+/// Runs `hew check` on a reject fixture and returns the combined output
+/// after asserting the check failed.
+fn check_fails(fixture: &str) -> String {
+    let source = repo_root().join(fixture);
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+    assert!(
+        !output.status.success(),
+        "expected check to fail for {fixture}; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// Affine closure-pair discipline: storing the same closure binding in two
+/// record fields is a use-after-move (both records would free one env),
+/// rejected at check time naming the first store as the move site.
+#[test]
+fn check_closure_shared_across_records_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_shared_across_records.hew");
+    assert!(
+        combined.contains("is used after it was consumed"),
+        "expected use-after-move diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("binding consumed here"),
+        "expected the diagnostic to name the move site; got: {combined}"
+    );
+}
+
+/// Affine closure-pair discipline: pushing the same closure binding into
+/// two Vec slots is a use-after-move (two slots would free one env).
+#[test]
+fn check_closure_double_vec_push_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_double_vec_push.hew");
+    assert!(
+        combined.contains("is used after it was consumed"),
+        "expected use-after-move diagnostic; got: {combined}"
+    );
+}
+
+/// Affine closure-pair discipline: Vec push then record store of the same
+/// binding is a use-after-move (mixed-container double consumption).
+#[test]
+fn check_closure_vec_push_then_record_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_vec_push_then_record.hew");
+    assert!(
+        combined.contains("is used after it was consumed"),
+        "expected use-after-move diagnostic; got: {combined}"
+    );
+}
+
+/// A rebind transfers closure-pair ownership; invoking the source binding
+/// afterwards is a use-after-move (move-then-invoke). The inverse order is
+/// the accept fixture `closure_invoke_then_move.hew`.
+#[test]
+fn check_closure_move_then_invoke_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_move_then_invoke.hew");
+    assert!(
+        combined.contains("is used after it was consumed"),
+        "expected use-after-move diagnostic; got: {combined}"
+    );
+}
+
+/// A Vec element read is a borrow — storing it into another vec would give
+/// the second vec ownership of an env the first vec already owns. Refused
+/// outright (the store itself is the corruption, no later use needed).
+#[test]
+fn check_closure_borrowed_element_store_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_borrowed_element_store.hew");
+    assert!(
+        combined.contains("borrows a closure environment owned elsewhere"),
+        "expected borrowed-store diagnostic; got: {combined}"
+    );
+}
+
+/// A fn-typed parameter is a borrow of the caller's pair; storing it into
+/// an owning record field is refused (one caller passing the same closure
+/// to two storing calls would double-free).
+#[test]
+fn check_closure_param_field_store_fails_closed() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/closure_param_field_store.hew");
+    assert!(
+        combined.contains("borrows a closure environment owned elsewhere"),
+        "expected borrowed-store diagnostic; got: {combined}"
+    );
+}
+
+/// Invocation borrows the pair; a later owning store is the binding's
+/// single consumption. Invoke-then-move runs clean and the new owner
+/// dispatches and drops the env exactly once.
+#[test]
+fn closure_invoke_then_move_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/closure_invoke_then_move.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "closure_invoke_then_move should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "41\n42\n", "expected 41/42; got: {actual:?}");
+}
+
+/// Spec §3.8.6 Vec pipeline: `map`/`filter`/`reduce` expand to counted loops
+/// (closure bound once, called per element), including the chained form and
+/// a capture-carrying predicate.
+#[test]
+fn vec_pipeline_map_filter_reduce_runs() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/vec_pipeline_map_filter_reduce.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+    assert!(
+        output.status.success(),
+        "vec_pipeline_map_filter_reduce should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual, "10\n2\n15\n120\n9\n",
+        "expected 10/2/15/120/9; got: {actual:?}"
+    );
+}
+
 /// `scope { while { println } }`: calls inside nested control-flow within a
 /// scope block must NOT be treated as spawned tasks.
 ///

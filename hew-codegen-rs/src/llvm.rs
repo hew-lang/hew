@@ -1892,6 +1892,17 @@ fn intern_runtime_decl<'ctx>(
         // (Duplex handles, Named heap types). The caller casts the returned
         // opaque pointer to the appropriate concrete pointer type.
         "hew_vec_get_ptr" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // Pointer-element Vec mutators (`hew-runtime/src/vec.rs`): used by
+        // the closure-pair Vec marshalling (boxed-pair elements).
+        // hew_vec_push_ptr(v, val: *mut c_void); hew_vec_set_ptr(v, i, val);
+        // hew_vec_pop_ptr(v) -> *mut c_void.
+        "hew_vec_push_ptr" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        "hew_vec_set_ptr" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        "hew_vec_pop_ptr" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
         // (`hew-runtime/src/vec.rs`). Returns a retained/header-aware owner;
         // callers that bind it must balance the owner with hew_string_drop.
@@ -6794,6 +6805,26 @@ fn collection_layout_witness(
              MIR classifier should have rejected this with OpaqueInContainer."
         )));
     }
+    // Same backstop for the closure-pair class: a closure pair's environment
+    // box has a sole owner and no retain, so the managed clone would alias it
+    // (double free at the two containers' releases), and closure-pair Vecs are
+    // constructed/released through the dedicated pointer-element +
+    // `hew_vec_free_closure_pairs` path, never the managed witness. The MIR
+    // value-class gate (`supports_value_class_drop_spine`) and the actor-state
+    // closure guard reject these before codegen; this stays as the fail-close.
+    if matches!(
+        kind,
+        StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. }
+    ) && kind.contains_closure_pair()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "collection state field {kind:?} transitively carries a closure pair; \
+             the managed clone/free pair would alias its sole-owner environment \
+             box. The MIR value-class gate should have rejected this kind."
+        )));
+    }
     Ok(match kind {
         StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
             // Constructor lowering stamps every layout-backed Vec<T> handle with
@@ -6833,7 +6864,11 @@ fn collection_layout_witness(
         // OpaqueHandle is a pointer-width BitCopy-class handle (e.g. json.Value,
         // cron.Expr). No layout-managed runtime collection; falls through to the
         // per-kind helpers where clone fails closed and drop is a no-op.
-        | StateFieldCloneKind::OpaqueHandle { .. } => None,
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        // ClosurePair is not a runtime-managed collection: its drop is the
+        // env free-thunk dispatch in `emit_field_drop_step`'s dedicated arm
+        // and its clone is the rollback refusal in `emit_field_clone_step`.
+        | StateFieldCloneKind::ClosurePair => None,
     })
 }
 
@@ -6904,6 +6939,17 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
                  supervisor-restart clone is unsupported for opaque handles. \
                  Remove the opaque field from actor state or handle restart manually."
         ))),
+        // ClosurePair clone is a structural refusal, not a runtime extern:
+        // `emit_field_clone_step` intercepts the kind and branches to the
+        // rollback/fail path (the env box has a sole owner and no retain).
+        // Reaching this per-kind helper means a caller skipped that
+        // interception — fail closed.
+        StateFieldCloneKind::ClosurePair => Err(CodegenError::FailClosed(
+            "ClosurePair arm requires the caller-side rollback refusal in \
+             emit_field_clone_step, not a runtime extern — caller must \
+             dispatch separately"
+                .into(),
+        )),
     }
 }
 
@@ -7002,6 +7048,15 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         // drop does not auto-free opaque handles (consistent with BitCopy
         // ownership semantics). No-op here matches the Connection posture.
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(None),
+        // ClosurePair drop is the env free-thunk dispatch (load env slot,
+        // call the planted thunk, null-store), emitted by the dedicated arm
+        // in `emit_field_drop_step` — not a single named runtime extern.
+        StateFieldCloneKind::ClosurePair => Err(CodegenError::FailClosed(
+            "ClosurePair arm requires the env free-thunk dispatch in \
+             emit_field_drop_step, not a runtime extern — caller must \
+             dispatch separately"
+                .into(),
+        )),
     }
 }
 
@@ -7650,6 +7705,25 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("enum clone next branch f{field_idx}"))?;
             return Ok(());
         }
+        StateFieldCloneKind::ClosurePair => {
+            // Clone refusal (sole-owner env, no retain — see the variant
+            // doc). Branch straight to this step's rollback block: fields
+            // cloned by earlier steps are released by the rollback chain and
+            // the aggregate clone returns the protocol's failure code. Every
+            // reachable caller of a closure-bearing aggregate clone is
+            // rejected at MIR compile time; this arm is the defensive
+            // runtime backstop that refuses instead of aliasing the env.
+            builder
+                .build_unconditional_branch(rollback_bb)
+                .llvm_ctx_with(|| format!("closure pair clone refusal f{field_idx}"))?;
+            // The caller pre-allocated store_bb for this step; terminate it
+            // (no predecessor, but every block must end in a terminator).
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("closure pair clone store term f{field_idx}"))?;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -7806,6 +7880,114 @@ fn emit_field_drop_step<'ctx>(
                     &format!("drop_enum_f{field_idx}"),
                 )
                 .llvm_ctx_with(|| format!("drop enum call f{field_idx}"))?;
+            Ok(())
+        }
+        // ClosurePair: the field is the embedded two-pointer `{ fn_ptr,
+        // env_ptr }` pair. A non-null env points at the captures region of a
+        // heap env box whose slot at `env - CLOSURE_ENV_BOX_HEADER` holds the
+        // per-closure free thunk baked with the box's static size/align —
+        // run it, then null-store the env slot so a structurally-reachable
+        // second drop short-circuits (raii-null-after-move). Mirrors the
+        // standalone `DropKind::ClosurePair` binding drop exactly so the
+        // record-field release and the local release can never diverge
+        // (lifecycle-symmetry). Validates the parent slot IS the two-pointer
+        // pair shape before GEPing into it (same discipline as the Bytes arm).
+        StateFieldCloneKind::ClosurePair => {
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "closure pair field drop: parent struct {st_ty:?} has no field at \
+                     index {field_idx}"
+                ))
+            })?;
+            let pair_ty = match parent_field_ty {
+                BasicTypeEnum::StructType(st)
+                    if st.count_fields() == 2
+                        && st
+                            .get_field_types()
+                            .iter()
+                            .all(|f| matches!(f, BasicTypeEnum::PointerType(_))) =>
+                {
+                    st
+                }
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "closure pair field drop: parent struct field {field_idx} is \
+                         {other:?}, not the two-pointer closure pair; the \
+                         `StateFieldCloneKind::ClosurePair` kind and the record \
+                         layout have drifted"
+                    )));
+                }
+            };
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_closure_f{field_idx}_pair_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop closure pair gep f{field_idx}"))?;
+            let env_slot = builder
+                .build_struct_gep(
+                    pair_ty,
+                    field_ptr,
+                    1,
+                    &format!("drop_closure_f{field_idx}_env_slot"),
+                )
+                .llvm_ctx_with(|| format!("drop closure env gep f{field_idx}"))?;
+            let env = builder
+                .build_load(ptr_ty, env_slot, &format!("drop_closure_f{field_idx}_env"))
+                .llvm_ctx_with(|| format!("drop closure env load f{field_idx}"))?
+                .into_pointer_value();
+            let parent = builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm("closure pair field drop has no parent function".into())
+                })?;
+            let free_bb = ctx.append_basic_block(parent, &format!("closure_f{field_idx}_env_free"));
+            let cont_bb = ctx.append_basic_block(parent, &format!("closure_f{field_idx}_env_cont"));
+            let is_null = builder
+                .build_is_null(env, &format!("closure_f{field_idx}_env_is_null"))
+                .llvm_ctx_with(|| format!("drop closure null check f{field_idx}"))?;
+            builder
+                .build_conditional_branch(is_null, cont_bb, free_bb)
+                .llvm_ctx_with(|| format!("drop closure branch f{field_idx}"))?;
+            builder.position_at_end(free_bb);
+            let i64_ty = ctx.i64_type();
+            let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+            let thunk_slot = unsafe {
+                builder.build_in_bounds_gep(
+                    ctx.i8_type(),
+                    env,
+                    &[neg_header],
+                    &format!("closure_f{field_idx}_thunk_slot"),
+                )
+            }
+            .llvm_ctx_with(|| format!("drop closure thunk gep f{field_idx}"))?;
+            let thunk = builder
+                .build_load(
+                    ptr_ty,
+                    thunk_slot,
+                    &format!("closure_f{field_idx}_free_thunk"),
+                )
+                .llvm_ctx_with(|| format!("drop closure thunk load f{field_idx}"))?
+                .into_pointer_value();
+            let thunk_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+            builder
+                .build_indirect_call(
+                    thunk_ty,
+                    thunk,
+                    &[env.into()],
+                    &format!("closure_f{field_idx}_env_free_call"),
+                )
+                .llvm_ctx_with(|| format!("drop closure thunk call f{field_idx}"))?;
+            builder
+                .build_store(env_slot, ptr_ty.const_null())
+                .llvm_ctx_with(|| format!("drop closure env null store f{field_idx}"))?;
+            builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx_with(|| format!("drop closure cont branch f{field_idx}"))?;
+            builder.position_at_end(cont_bb);
             Ok(())
         }
         // Bytes: a `bytes` field is a `BytesTriple { ptr, i32, i32 }` embedded
@@ -8899,7 +9081,11 @@ fn collect_clone_target_names(
         | StateFieldCloneKind::IoHandle { .. }
         // OpaqueHandle has no synthesised clone/drop helper — it is a
         // pointer-width BitCopy-class handle. Nothing to enqueue.
-        | StateFieldCloneKind::OpaqueHandle { .. } => {}
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        // ClosurePair has no synthesised per-type helper: its drop is the
+        // inline env free-thunk dispatch and its clone is the inline
+        // rollback refusal. Nothing to enqueue.
+        | StateFieldCloneKind::ClosurePair => {}
     }
 }
 
@@ -11915,8 +12101,9 @@ fn lower_instruction(
             fn_symbol,
             env,
             dest,
+            env_mode,
         } => {
-            lower_make_closure(fn_ctx, fn_symbol, *env, *dest)?;
+            lower_make_closure(fn_ctx, fn_symbol, *env, *dest, *env_mode)?;
             let _ = ctx;
         }
         Instr::ClosureEnvFieldLoad {
@@ -12801,6 +12988,10 @@ fn lower_actor_state_field_store(
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
+            // ClosurePair: closure-valued actor state is rejected at check
+            // time by the transitive closure-field walk, so no overwrite
+            // reaches this store; grouped with the no-release kinds.
+            | StateFieldCloneKind::ClosurePair
             | StateFieldCloneKind::OpaqueHandle { .. } => {}
         }
     }
@@ -12893,11 +13084,25 @@ fn emit_state_field_old_value_release(
     Ok(())
 }
 
+/// Byte size of the heap env box's leading free-thunk slot. The thunk
+/// pointer sits immediately BEFORE the address stored in the closure pair
+/// (`env_ptr - 8`), so `ClosureEnvFieldLoad` capture offsets are identical
+/// for stack and heap envs, and any drop site can recover the per-closure
+/// free thunk from the env pointer alone.
+const CLOSURE_ENV_BOX_HEADER: u64 = 8;
+
+/// Alignment `hew_dyn_box_alloc` is called with for closure env boxes. The
+/// header slot is a pointer (align 8) and every admissible env field aligns
+/// to at most 8 (`lower_make_closure` fails closed otherwise), so the box
+/// and the captures region are both correctly aligned.
+const CLOSURE_ENV_BOX_ALIGN: u64 = 8;
+
 fn lower_make_closure(
     fn_ctx: &FnCtx<'_, '_>,
     fn_symbol: &str,
     env: Place,
     dest: Place,
+    env_mode: hew_mir::ClosureEnvMode,
 ) -> CodegenResult<()> {
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     let struct_ty = match dest_ty {
@@ -12918,7 +13123,23 @@ fn lower_make_closure(
         })?
         .real(fn_symbol, "MakeClosure")?
         .0;
-    let (env_ptr, _) = place_pointer(fn_ctx, env)?;
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let env_value: PointerValue<'_> = match env_mode {
+        // Local escape class: the pair stores the frame alloca's address.
+        hew_mir::ClosureEnvMode::Stack => place_pointer(fn_ctx, env)?.0,
+        // Named-fn shims and capture-free escaping closures: the shim
+        // performs zero env loads, and null is the pair-drop protocol's
+        // "nothing owned" signal — never store a dummy frame address into
+        // a pair that can cross a frame boundary.
+        hew_mir::ClosureEnvMode::Null => ptr_ty.const_null(),
+        // Escapes class with captures: copy the materialised env into a
+        // `hew_dyn_box_alloc` box laid out `[free_thunk: ptr][captures…]`
+        // and store the captures address. The per-closure free thunk bakes
+        // the box's (size, align) statically — the same alloc/dealloc
+        // layout-agreement convention as the dyn-Trait vtable slot 0
+        // (`emit_dyn_trait_drop_in_place_fns`).
+        hew_mir::ClosureEnvMode::HeapBox => emit_closure_env_heap_box(fn_ctx, fn_symbol, env)?,
+    };
     let fn_field = fn_ctx
         .builder
         .build_struct_gep(struct_ty, dest_ptr, 0, "closure_fn_ptr")
@@ -12933,8 +13154,368 @@ fn lower_make_closure(
         .llvm_ctx("MakeClosure fn store")?;
     fn_ctx
         .builder
-        .build_store(env_field, env_ptr)
+        .build_store(env_field, env_value)
         .llvm_ctx("MakeClosure env store")?;
+    Ok(())
+}
+
+/// Heap-promote a closure env: allocate the box, plant the free thunk in
+/// the header slot, copy the stack-materialised env record into the
+/// captures region, and return the captures address (the pair's env_ptr).
+fn emit_closure_env_heap_box<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbol: &str,
+    env: Place,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (env_alloca, env_llvm_ty) = place_pointer(fn_ctx, env)?;
+    let host_td = host_target_data();
+    let (env_size, env_align) = abi_size_align(env_llvm_ty, Some(&host_td))?;
+    if u64::from(env_align) > CLOSURE_ENV_BOX_ALIGN {
+        // No admissible capture type today exceeds pointer alignment; a
+        // future 16-aligned capture must widen the header convention, not
+        // silently under-align the box.
+        return Err(CodegenError::FailClosed(format!(
+            "closure env for `{fn_symbol}` requires alignment {env_align} > \
+             {CLOSURE_ENV_BOX_ALIGN}; the env-box header convention only \
+             supports pointer-aligned captures — refusing to emit an \
+             under-aligned heap box (LESSONS: boundary-fail-closed)"
+        )));
+    }
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let total_size = env_size + CLOSURE_ENV_BOX_HEADER;
+    let alloc_fn = fn_ctx
+        .llvm_mod
+        .get_function("hew_dyn_box_alloc")
+        .unwrap_or_else(|| {
+            let ty = ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_dyn_box_alloc", ty, Some(Linkage::External))
+        });
+    let box_ptr = fn_ctx
+        .builder
+        .build_call(
+            alloc_fn,
+            &[
+                i64_ty.const_int(total_size, false).into(),
+                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+            ],
+            "closure_env_box",
+        )
+        .llvm_ctx("closure env box alloc")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_dyn_box_alloc returned no value for closure env box".to_string(),
+            )
+        })?
+        .into_pointer_value();
+    // Header slot 0: the per-closure free thunk.
+    let free_thunk = get_or_emit_closure_env_free_thunk(fn_ctx, fn_symbol, total_size)?;
+    fn_ctx
+        .builder
+        .build_store(box_ptr, free_thunk.as_global_value().as_pointer_value())
+        .llvm_ctx("closure env box thunk store")?;
+    // Captures region starts after the header.
+    let env_data = unsafe {
+        fn_ctx.builder.build_in_bounds_gep(
+            ctx.i8_type(),
+            box_ptr,
+            &[i64_ty.const_int(CLOSURE_ENV_BOX_HEADER, false)],
+            "closure_env_data",
+        )
+    }
+    .llvm_ctx("closure env data gep")?;
+    fn_ctx
+        .builder
+        .build_memcpy(
+            env_data,
+            8,
+            env_alloca,
+            env_align,
+            i64_ty.const_int(env_size, false),
+        )
+        .llvm_ctx("closure env box memcpy")?;
+    Ok(env_data)
+}
+
+/// Synthesise (once per closure shim) the `void(ptr env)` free thunk the
+/// env box's header slot carries: `hew_dyn_box_free(env - HEADER, total,
+/// align)` with the exact layout the matching `hew_dyn_box_alloc` used.
+/// Private linkage — internal to the module, referenced only through the
+/// header slot planted by `emit_closure_env_heap_box`.
+fn get_or_emit_closure_env_free_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fn_symbol: &str,
+    total_size: u64,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let symbol = format!("__hew_closure_env_free_{fn_symbol}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&symbol) {
+        return Ok(existing);
+    }
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let void_ty = ctx.void_type();
+    let box_free_fn = fn_ctx
+        .llvm_mod
+        .get_function("hew_dyn_box_free")
+        .unwrap_or_else(|| {
+            let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
+        });
+    let thunk = fn_ctx.llvm_mod.add_function(
+        &symbol,
+        void_ty.fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Private),
+    );
+    let entry = ctx.append_basic_block(thunk, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let env = thunk
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "closure env free thunk `{symbol}`: synthesised function missing \
+                 the env parameter"
+            ))
+        })?
+        .into_pointer_value();
+    // box = env - HEADER (in-bounds: the header is part of the allocation).
+    let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let box_ptr =
+        unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }
+            .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: box base gep"))?;
+    builder
+        .build_call(
+            box_free_fn,
+            &[
+                box_ptr.into(),
+                i64_ty.const_int(total_size, false).into(),
+                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+            ],
+            "env_box_free",
+        )
+        .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: free call"))?;
+    builder
+        .build_return(None)
+        .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: return"))?;
+    Ok(thunk)
+}
+
+/// True when this `Terminator::Call` is a pointer-element Vec op whose
+/// element operand/dest is the two-pointer closure pair — the structural
+/// signal that the closure-pair boxing marshalling must run instead of the
+/// generic pointer-element path.
+fn is_closure_pair_vec_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+) -> CodegenResult<bool> {
+    let probe = match callee {
+        "hew_vec_push_ptr" => args.get(1).copied(),
+        "hew_vec_set_ptr" => args.get(2).copied(),
+        "hew_vec_get_ptr" | "hew_vec_pop_ptr" => dest.copied(),
+        _ => return Ok(false),
+    };
+    let Some(place) = probe else {
+        return Ok(false);
+    };
+    Ok(matches!(
+        place_resolved_ty(fn_ctx, place)?,
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+    ))
+}
+
+/// Box a closure pair for Vec ingress: `hew_dyn_box_alloc(16, 8)` + copy of
+/// the 16-byte pair. The box becomes the vec slot's owned element.
+fn emit_box_closure_pair<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    pair_place: Place,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let (pair_ptr, pair_ty) = place_pointer(fn_ctx, pair_place)?;
+    if !matches!(pair_ty, BasicTypeEnum::StructType(st) if st.count_fields() == 2) {
+        return Err(CodegenError::FailClosed(format!(
+            "closure-pair Vec ingress: element operand is not the two-pointer \
+             pair (got {pair_ty:?})"
+        )));
+    }
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let alloc_fn = fn_ctx
+        .llvm_mod
+        .get_function("hew_dyn_box_alloc")
+        .unwrap_or_else(|| {
+            let ty = ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+            fn_ctx
+                .llvm_mod
+                .add_function("hew_dyn_box_alloc", ty, Some(Linkage::External))
+        });
+    let box_ptr = fn_ctx
+        .builder
+        .build_call(
+            alloc_fn,
+            &[
+                i64_ty.const_int(16, false).into(),
+                i64_ty.const_int(8, false).into(),
+            ],
+            "closure_pair_box",
+        )
+        .llvm_ctx("closure pair box alloc")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_dyn_box_alloc returned no value for pair box".into())
+        })?
+        .into_pointer_value();
+    fn_ctx
+        .builder
+        .build_memcpy(box_ptr, 8, pair_ptr, 8, i64_ty.const_int(16, false))
+        .llvm_ctx("closure pair box memcpy")?;
+    Ok(box_ptr)
+}
+
+/// Copy a closure pair out of its element box into a pair-typed dest slot.
+fn emit_unbox_closure_pair(
+    fn_ctx: &FnCtx<'_, '_>,
+    box_ptr: PointerValue<'_>,
+    dest: Place,
+) -> CodegenResult<()> {
+    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+    if !matches!(dest_ty, BasicTypeEnum::StructType(st) if st.count_fields() == 2) {
+        return Err(CodegenError::FailClosed(format!(
+            "closure-pair Vec egress: dest is not the two-pointer pair (got {dest_ty:?})"
+        )));
+    }
+    let i64_ty = fn_ctx.ctx.i64_type();
+    fn_ctx
+        .builder
+        .build_memcpy(dest_ptr, 8, box_ptr, 8, i64_ty.const_int(16, false))
+        .llvm_ctx("closure pair unbox memcpy")?;
+    Ok(())
+}
+
+/// Lower a pointer-element Vec op whose element is a closure pair. See the
+/// `Terminator::Call` intercept comment for the per-op ownership contract.
+fn lower_closure_pair_vec_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let i64_ty = ctx.i64_type();
+    let vec_arg = args.first().copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!("{callee}: missing vec receiver argument"))
+    })?;
+    let vec_ptr = load_duplex_handle(fn_ctx, vec_arg, &format!("{callee} vec"))?;
+    let fv = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        callee,
+    )?;
+    match callee {
+        "hew_vec_push_ptr" => {
+            let boxed = emit_box_closure_pair(fn_ctx, args[1])?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into(), boxed.into()], "vec_push_pair")
+                .llvm_ctx("closure pair vec push")?;
+        }
+        "hew_vec_set_ptr" => {
+            // NOTE: the replaced slot's previous box + env leak (the same
+            // leak-not-double-free posture every excluded owner takes); the
+            // release walk frees only the elements live at scope exit.
+            let index = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{callee} index"))?;
+            let boxed = emit_box_closure_pair(fn_ctx, args[2])?;
+            fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), index.into(), boxed.into()],
+                    "vec_set_pair",
+                )
+                .llvm_ctx("closure pair vec set")?;
+        }
+        "hew_vec_get_ptr" => {
+            let index = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{callee} index"))?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into(), index.into()], "vec_get_pair")
+                .llvm_ctx("closure pair vec get")?;
+            let box_ptr = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_ptr returned void".into()))?
+                .into_pointer_value();
+            let dest = dest.copied().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_get_ptr: missing dest place".into())
+            })?;
+            emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
+        }
+        "hew_vec_pop_ptr" => {
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into()], "vec_pop_pair")
+                .llvm_ctx("closure pair vec pop")?;
+            let box_ptr = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_pop_ptr returned void".into()))?
+                .into_pointer_value();
+            let dest = dest.copied().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_pop_ptr: missing dest place".into())
+            })?;
+            emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
+            // Ownership transferred out of the vec: free the element box
+            // (the popped pair keeps the env).
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let void_ty = ctx.void_type();
+            let box_free_fn = fn_ctx
+                .llvm_mod
+                .get_function("hew_dyn_box_free")
+                .unwrap_or_else(|| {
+                    let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
+                    fn_ctx
+                        .llvm_mod
+                        .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
+                });
+            fn_ctx
+                .builder
+                .build_call(
+                    box_free_fn,
+                    &[
+                        box_ptr.into(),
+                        i64_ty.const_int(16, false).into(),
+                        i64_ty.const_int(8, false).into(),
+                    ],
+                    "vec_pop_pair_box_free",
+                )
+                .llvm_ctx("closure pair vec pop box free")?;
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "lower_closure_pair_vec_call: unexpected callee `{other}`"
+            )));
+        }
+    }
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("{callee} next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx_with(|| format!("{callee} br next"))?;
     Ok(())
 }
 
@@ -16264,6 +16845,13 @@ fn lower_vec_constructor_call(
         ResolvedTy::I64 | ResolvedTy::U64 => VecCtor::Plain("hew_vec_new_i64"),
         ResolvedTy::F64 => VecCtor::Plain("hew_vec_new_f64"),
         ResolvedTy::String => VecCtor::Plain("hew_vec_new_str"),
+        // Closure-pair elements: each slot holds a heap-boxed pair handle
+        // (the push/get marshalling boxes/unboxes), so the constructor is
+        // the plain pointer-element vec. Scope-exit release routes through
+        // `hew_vec_free_closure_pairs`, never the descriptor ABIs.
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+            VecCtor::Plain("hew_vec_new_ptr")
+        }
         _ => {
             // Owned (heap-owning record/enum/tuple) takes precedence over the
             // BitCopy-layout descriptor. The owned-vs-BitCopy verdict MUST be the
@@ -18698,6 +19286,19 @@ fn lower_call_runtime_abi(
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
             })?;
+            // Closure-pair element (`fns[i]` on a `Vec<fn(...)>`): the
+            // returned pointer is the slot's pair box; copy the 16-byte
+            // pair out (a borrow — the vec keeps the box and the env).
+            if symbol == "hew_vec_get_ptr"
+                && matches!(
+                    place_resolved_ty(fn_ctx, dest_place)?,
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                )
+            {
+                emit_unbox_closure_pair(fn_ctx, result_val.into_pointer_value(), dest_place)?;
+                let _ = (i32_ty, ptr_ty);
+                return Ok(());
+            }
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
             let store_val = if symbol == "hew_vec_get_bool" {
                 zext_bool_i1_to_dest(fn_ctx, result_val.into_int_value(), dest_ty, symbol)?
@@ -21079,6 +21680,101 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             // ritual fires.
             Ok(())
         }
+        // Escaping-closure pair: free the heap env box through the thunk
+        // its header slot carries. The env pointer is heap-or-null by
+        // construction at every pair-producing site (`Instr::MakeClosure`
+        // env modes), so null is the complete "nothing owned" signal:
+        // named-fn pairs and capture-free escaping closures skip. The
+        // thunk (`__hew_closure_env_free_<shim>`, planted by
+        // `emit_closure_env_heap_box`) bakes the box's static size/align,
+        // so the drop site needs no per-type knowledge. After the call the
+        // pair's env slot is null-stored (`raii-null-after-move`) so a
+        // second drop of the same slot is a no-op, never a double-free.
+        hew_mir::DropKind::ClosurePair => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "ClosurePair ElabDrop @ {place:?} unexpectedly carries \
+                     ElabDrop::drop_fn = {df:?}; the free thunk travels in the \
+                     env box's header slot, never through the close-method \
+                     dispatch (LESSONS: boundary-fail-closed).",
+                    place = drop.place,
+                    df = drop.drop_fn,
+                )));
+            }
+            let (pair_ptr, pair_ty) = place_pointer(fn_ctx, drop.place)?;
+            let struct_ty = match pair_ty {
+                BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ClosurePair ElabDrop @ {place:?}: place is not the \
+                         two-pointer closure pair (got {other:?}); the MIR \
+                         producer must only emit ClosurePair for fn-typed \
+                         locals (LESSONS: boundary-fail-closed).",
+                        place = drop.place,
+                    )));
+                }
+            };
+            let ctx = fn_ctx.ctx;
+            let ptr_ty = ctx.ptr_type(AddressSpace::default());
+            let i64_ty = ctx.i64_type();
+            let env_field = fn_ctx
+                .builder
+                .build_struct_gep(struct_ty, pair_ptr, 1, "closure_drop_env_slot")
+                .llvm_ctx("ClosurePair drop env gep")?;
+            let env = fn_ctx
+                .builder
+                .build_load(ptr_ty, env_field, "closure_drop_env")
+                .llvm_ctx("ClosurePair drop env load")?
+                .into_pointer_value();
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm("ClosurePair drop has no parent function".into())
+                })?;
+            let free_bb = ctx.append_basic_block(parent, "closure_env_free");
+            let cont_bb = ctx.append_basic_block(parent, "closure_env_drop_cont");
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(env, "closure_env_is_null")
+                .llvm_ctx("ClosurePair drop null check")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, cont_bb, free_bb)
+                .llvm_ctx("ClosurePair drop branch")?;
+            fn_ctx.builder.position_at_end(free_bb);
+            let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+            let thunk_slot = unsafe {
+                fn_ctx.builder.build_in_bounds_gep(
+                    ctx.i8_type(),
+                    env,
+                    &[neg_header],
+                    "closure_env_thunk_slot",
+                )
+            }
+            .llvm_ctx("ClosurePair drop thunk gep")?;
+            let thunk = fn_ctx
+                .builder
+                .build_load(ptr_ty, thunk_slot, "closure_env_free_thunk")
+                .llvm_ctx("ClosurePair drop thunk load")?
+                .into_pointer_value();
+            let thunk_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+            fn_ctx
+                .builder
+                .build_indirect_call(thunk_ty, thunk, &[env.into()], "closure_env_free_call")
+                .llvm_ctx("ClosurePair drop thunk call")?;
+            fn_ctx
+                .builder
+                .build_store(env_field, ptr_ty.const_null())
+                .llvm_ctx("ClosurePair drop env null store")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(cont_bb)
+                .llvm_ctx("ClosurePair drop cont branch")?;
+            fn_ctx.builder.position_at_end(cont_bb);
+            Ok(())
+        }
         // The pre-W5.011 kinds (`@resource` close, Duplex close protocols,
         // lambda-actor release, dyn-trait HeapBoxed) all dispatch through
         // the `ElabDrop::drop_fn` close-symbol path — `Some` calls the
@@ -21233,7 +21929,15 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
             // element Vec uses `hew_vec_free`. The element-owns-heap check must
             // agree with the MIR `ty_is_owned_element_vec` predicate so the
             // drop_fn the elaborator emits matches what codegen validates.
-            if args
+            // Closure-pair elements: each slot owns a heap-boxed pair (and
+            // its env box). Release walks the elements (env free thunk +
+            // pair-box free) before the buffer/handle free. Checked first —
+            // a fn element is neither an owned composite nor a plain leaf.
+            if args.first().is_some_and(|e| {
+                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+            }) {
+                Some("hew_vec_free_closure_pairs")
+            } else if args
                 .first()
                 .is_some_and(|e| resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, e))
             {
@@ -21280,6 +21984,9 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
             // W5.016: owned-element Vec release (per-element descriptor drop_fn
             // then buffer free).
             | "hew_vec_free_owned"
+            // Closure-pair Vec release (per-element env thunk + pair-box free,
+            // then buffer free).
+            | "hew_vec_free_closure_pairs"
             | HASHMAP_FREE_LAYOUT_SYMBOL
             | HASHSET_FREE_LAYOUT_SYMBOL
             // Generator<Y, R> / AsyncGenerator<Y> context release.
@@ -28010,6 +28717,21 @@ fn lower_terminator<'ctx>(
                     )?;
                     return Ok(());
                 }
+            }
+            // Closure-pair Vec element marshalling: a `Vec<fn(...)>` rides
+            // the pointer-element runtime ABI with each slot holding a
+            // `hew_dyn_box_alloc(16, 8)` copy of the closure pair. Detected
+            // structurally by the pair-typed operand/dest (so pointer-handle
+            // vecs — `Vec<LocalPid<T>>`, nested vecs — keep the generic
+            // path). push/set box the pair on ingress; get borrows the pair
+            // out of the slot's box; pop transfers ownership (copies the
+            // pair out, frees the element box; the popped pair keeps the
+            // env, whose free obligation the consumer's `let` admission
+            // tracks). The scope-exit release walk is
+            // `hew_vec_free_closure_pairs`.
+            if is_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref())? {
+                lower_closure_pair_vec_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
+                return Ok(());
             }
             if is_bool_vec_runtime_symbol(callee) {
                 lower_bool_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
@@ -36753,6 +37475,7 @@ mod tests {
                         fn_symbol: "__hew_closure_invoke_main_0".to_string(),
                         env: Place::Local(0),
                         dest: Place::Local(1),
+                        env_mode: hew_mir::ClosureEnvMode::Stack,
                     },
                     Instr::CallClosure {
                         callee: Place::Local(1),

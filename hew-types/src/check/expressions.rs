@@ -4159,6 +4159,23 @@ impl Checker {
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
                     if self.modules.contains(name) {
+                        // The module DOES export a function under this name:
+                        // the user is referencing a cross-module function as
+                        // a value, which is a deferred feature — say so
+                        // instead of misreporting a missing constant.
+                        if self.fn_sigs.contains_key(&qualified_key) {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`{qualified_key}` is an exported function; using a \
+                                     cross-module function as a value is not yet supported — \
+                                     call it directly, or wrap it in a lambda \
+                                     (`|x| {qualified_key}(x)`)"
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                         let similar = crate::error::find_similar(
                             field,
                             self.env

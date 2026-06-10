@@ -1159,72 +1159,107 @@ pub fn lower_hir_module_with_facts(
             .iter()
             .map(|field| field.ty.clone())
             .collect();
+        // Closure-valued actor state is rejected before classification: the
+        // classifier now admits `fn(...)` fields for the RECORD value-class
+        // (drop-only), but actor state additionally needs the CLONE direction
+        // for supervisor restart, and a closure pair's environment has a sole
+        // owner with no retain/deep-copy path. Transitive ty-level walk (a
+        // direct fn field, a record-with-closure field, a Vec<fn> field, and
+        // nestings all reject through one decision) so the refusal lands at
+        // MIR compile time, never as a runtime restart-clone failure.
+        let closure_field = actor.state_fields.iter().enumerate().find(|(_, field)| {
+            crate::model::ty_contains_closure_value(&field.ty, &record_layouts, &enum_layouts)
+        });
         let classification = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &state_field_tys,
             &record_layouts,
             &enum_layouts,
             &opaque_handle_names,
         );
-        let (clone_sym, drop_sym, clone_kinds) = match classification {
-            Ok(kinds) => (
-                Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
-                Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
-                Some(kinds),
-            ),
-            Err(err) => {
-                // Locate the failing field index by re-running the classifier
-                // per-field with a fresh visited set. This is O(n) on the
-                // field count (always small — actor state has at most a
-                // handful of fields in the corpus) and produces a precise
-                // diagnostic anchor rather than blaming the whole actor. If
-                // every per-field run somehow succeeds (impossible given the
-                // collected error, but defensive), fall back to index 0 with a
-                // marker reason rather than `unreachable!`.
-                let mut field_index = 0usize;
-                let mut field_name = actor
-                    .state_fields
-                    .first()
-                    .map(|f| f.name.clone())
-                    .unwrap_or_default();
-                let mut found = false;
-                for (idx, field) in actor.state_fields.iter().enumerate() {
-                    let mut v = std::collections::HashSet::new();
-                    if crate::state_clone::classify_state_field_full(
-                        &field.ty,
-                        &record_layouts,
-                        &enum_layouts,
-                        &opaque_handle_names,
-                        &mut v,
-                    )
-                    .is_err()
-                    {
-                        field_index = idx;
-                        field_name.clone_from(&field.name);
-                        found = true;
-                        break;
+        let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
+            let reason = format!(
+                "field `{}` holds (or transitively contains) a function value; \
+                 a closure's environment has a sole owner and no clone path, so \
+                 closure-valued actor state is not supported — store the closure \
+                 in a local or a record instead",
+                field.name
+            );
+            diagnostics.push(crate::model::MirDiagnostic {
+                kind: crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+                    actor: actor.name.clone(),
+                    field_index,
+                    field_name: field.name.clone(),
+                    reason: reason.clone(),
+                },
+                note: format!(
+                    "actor `{}` state-field classifier rejected closure-valued state: {}",
+                    actor.name, reason
+                ),
+            });
+            (None, None, None)
+        } else {
+            match classification {
+                Ok(kinds) => (
+                    Some(crate::state_clone::mangle_actor_state_clone_fn(&actor.name)),
+                    Some(crate::state_clone::mangle_actor_state_drop_fn(&actor.name)),
+                    Some(kinds),
+                ),
+                Err(err) => {
+                    // Locate the failing field index by re-running the classifier
+                    // per-field with a fresh visited set. This is O(n) on the
+                    // field count (always small — actor state has at most a
+                    // handful of fields in the corpus) and produces a precise
+                    // diagnostic anchor rather than blaming the whole actor. If
+                    // every per-field run somehow succeeds (impossible given the
+                    // collected error, but defensive), fall back to index 0 with a
+                    // marker reason rather than `unreachable!`.
+                    let mut field_index = 0usize;
+                    let mut field_name = actor
+                        .state_fields
+                        .first()
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default();
+                    let mut found = false;
+                    for (idx, field) in actor.state_fields.iter().enumerate() {
+                        let mut v = std::collections::HashSet::new();
+                        if crate::state_clone::classify_state_field_full(
+                            &field.ty,
+                            &record_layouts,
+                            &enum_layouts,
+                            &opaque_handle_names,
+                            &mut v,
+                        )
+                        .is_err()
+                        {
+                            field_index = idx;
+                            field_name.clone_from(&field.name);
+                            found = true;
+                            break;
+                        }
                     }
-                }
-                let reason = if found {
-                    format!("{err}")
-                } else {
-                    format!(
-                        "{err} (per-field re-run could not localise; \
+                    let reason = if found {
+                        format!("{err}")
+                    } else {
+                        format!(
+                            "{err} (per-field re-run could not localise; \
                          classifier saw an aggregate error)"
-                    )
-                };
-                diagnostics.push(crate::model::MirDiagnostic {
-                    kind: crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
-                        actor: actor.name.clone(),
-                        field_index,
-                        field_name,
-                        reason: reason.clone(),
-                    },
-                    note: format!(
-                        "actor `{}` state-field classifier failed: {}",
-                        actor.name, reason
-                    ),
-                });
-                (None, None, None)
+                        )
+                    };
+                    diagnostics.push(crate::model::MirDiagnostic {
+                        kind:
+                            crate::model::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+                                actor: actor.name.clone(),
+                                field_index,
+                                field_name,
+                                reason: reason.clone(),
+                            },
+                        note: format!(
+                            "actor `{}` state-field classifier failed: {}",
+                            actor.name, reason
+                        ),
+                    });
+                    (None, None, None)
+                }
             }
         };
         actor_layouts.push(crate::model::ActorLayout {
@@ -5268,6 +5303,41 @@ struct Builder {
     /// handler can attribute it to the bound binding. Reset around each closure
     /// lowering; only read immediately after lowering a `HirExprKind::Closure`.
     pending_closure_literal_suspends: Option<bool>,
+    /// Transient: set by `lower_closure_literal` to `true` when the
+    /// just-lowered closure literal's escape class selected the `Heap`
+    /// allocation strategy (its pair owns — or, capture-free, may own
+    /// nothing behind — a heap env box). Read by the `Let` handler to admit
+    /// the bound pair into `closure_pair_owned`. Same reset discipline as
+    /// `pending_closure_literal_suspends`.
+    pending_closure_literal_heap: Option<bool>,
+    /// Bindings that own an escaping-closure pair's env-box free obligation
+    /// (the sole-owner affine model). Admitted at the introducing
+    /// `HirStmtKind::Let` for three RHS shapes only: a closure literal whose
+    /// strategy was `Heap`, a fn-typed call result (the producer's pair is
+    /// always heap-or-null by construction), and a rebind of an
+    /// already-admitted binding (ownership transfers; the source is marked
+    /// moved). Every other producing shape leaks rather than risks freeing
+    /// a stack env (`boundary-fail-closed`: over-exclude, never re-admit).
+    /// `elaborate` narrows this set further (returned pairs, captured
+    /// pairs, consumed exits) into `closure_pair_drop_allowed`.
+    closure_pair_owned: HashSet<BindingId>,
+    /// Bindings holding a named-function pair (`let f = double;`) — the pair's
+    /// `env_ptr` is null by construction (the named-fn shim never reads it),
+    /// so the pair is freely byte-copyable: no env exists to double-free.
+    /// These bindings are exempt from the closure-pair ingress discipline
+    /// (`enforce_closure_pair_ingress`). Populated at the introducing `Let`
+    /// for an `Item`-resolved fn reference RHS and propagated through
+    /// rebinds of an already-exempt binding.
+    closure_pair_null_env: HashSet<BindingId>,
+    /// Closure-pair bindings whose ownership has already left them via a
+    /// rebind (`ClosurePairRhs::TransferFrom`). The dataflow checker flags
+    /// any later use of these on its own: the rebind's RHS read carries
+    /// HIR's `IntentKind::Consume`, so the source binding is `Consumed` in
+    /// the lattice and every subsequent read is `UseAfterConsume`. The
+    /// ingress gate consults this set only to avoid stacking a second
+    /// `ClosurePairBorrowedStore` diagnostic on a use the move checker
+    /// already rejects.
+    closure_pair_moved: HashSet<BindingId>,
     /// Reserved context for the later transition-body lowering slice. When
     /// set, the `BindingId` identifies the step function's `self` parameter
     /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
@@ -6144,6 +6214,19 @@ impl Builder {
         if !self.named_elem_owns_heap(&args[0], &mut HashSet::new()) {
             return;
         }
+        // A closure-bearing record/enum element never harvests: the owned-Vec
+        // descriptor deep-clones elements on push/set through the record clone
+        // thunk, and a closure pair's clone direction is refused (sole-owner
+        // env, no retain). Skipping the harvest keeps `Vec<Holder-with-fn>`
+        // on the fail-closed unsupported path at compile time instead of
+        // refusing at runtime on the first push.
+        if crate::model::ty_contains_closure_value(
+            &args[0],
+            &self.record_layouts_for_classification(),
+            &self.enum_layouts,
+        ) {
+            return;
+        }
         // Use the record-layout-key form for records (matches
         // `user_record_layout_key` consulted by the W3.029 escape hatch).
         let record_key = if self.lookup_record_field_order(&key).is_some() {
@@ -6501,6 +6584,7 @@ impl Builder {
                     false
                 };
                 self.pending_closure_literal_suspends = None;
+                self.pending_closure_literal_heap = None;
                 let value_place = self.lower_value(value);
                 if pending {
                     self.pending_lambda_actor_handle = None;
@@ -6517,6 +6601,54 @@ impl Builder {
                     self.suspending_closure_bindings.insert(binding.id);
                 }
                 self.pending_closure_literal_suspends = None;
+                // Closure-pair env-box ownership admission (sole-owner affine
+                // model). A fn-typed binding owns its pair's heap env-box
+                // free obligation only when the RHS shape proves the pair is
+                // heap-or-null by construction:
+                //   - a closure literal whose escape class selected `Heap`
+                //     (`pending_closure_literal_heap` — heap box with
+                //     captures, null without);
+                //   - a fn-typed call result (a pair crossing a return
+                //     boundary is Escapes-classified at its literal site, so
+                //     it is heap-or-null transitively);
+                //   - a rebind of an already-admitted binding (ownership
+                //     transfers; the source is marked moved so the env-box
+                //     is freed exactly once — `raii-null-after-move`).
+                // Every other producing shape (params, if/else merges, …) is
+                // excluded: such a pair may carry a stack env, and freeing
+                // one would over-free a frame address. Excluded pairs leak
+                // at worst, never double-free (`boundary-fail-closed`).
+                // `elaborate` narrows the set further (returned / aliased /
+                // consumed pairs) before any drop is emitted.
+                if matches!(
+                    binding_ty,
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                ) && value_place.is_some()
+                {
+                    let literal_heap = self.pending_closure_literal_heap == Some(true);
+                    match classify_closure_pair_rhs(value, literal_heap, &self.closure_pair_owned) {
+                        ClosurePairRhs::Owned => {
+                            self.closure_pair_owned.insert(binding.id);
+                        }
+                        ClosurePairRhs::TransferFrom(src_id) => {
+                            self.closure_pair_owned.remove(&src_id);
+                            self.closure_pair_moved.insert(src_id);
+                            self.mark_binding_moved(src_id);
+                            self.closure_pair_owned.insert(binding.id);
+                        }
+                        ClosurePairRhs::NotOwned => {
+                            // A named-function pair (`let f = double;`) carries
+                            // a null env by construction — exempt it (and
+                            // rebinds of an exempt binding) from the ingress
+                            // discipline: there is no environment to
+                            // double-free.
+                            if self.closure_rhs_is_null_env_pair(value) {
+                                self.closure_pair_null_env.insert(binding.id);
+                            }
+                        }
+                    }
+                }
+                self.pending_closure_literal_heap = None;
                 self.decide(value);
                 self.statements.push(MirStatement::Bind {
                     binding: binding.id,
@@ -7125,14 +7257,19 @@ impl Builder {
                         .lower_named_fn_invoke_shim(&fn_symbol, &shim_name, &param_tys, &fn_ret_ty);
                     self.generated_functions.push(shim);
                 }
-                // Null-env local: ResolvedTy::Unit so codegen allocates an i8
-                // alloca. The shim ignores env_ptr entirely — zero loads.
+                // Null-env pair: the shim ignores env_ptr entirely (zero
+                // loads), and a genuine null — not a dummy frame address —
+                // is what the closure-pair drop protocol checks before
+                // dereferencing the env's free-thunk slot. The Unit local
+                // is a placeholder operand only; `ClosureEnvMode::Null`
+                // makes codegen store a null pointer constant.
                 let null_env = self.alloc_local(ResolvedTy::Unit);
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
                 self.instructions.push(Instr::MakeClosure {
                     fn_symbol: shim_name,
                     env: null_env,
                     dest,
+                    env_mode: crate::model::ClosureEnvMode::Null,
                 });
                 Some(dest)
             }
@@ -7209,6 +7346,7 @@ impl Builder {
                 // CHECK without disturbing the drop machinery.
                 for elem in elements {
                     self.alias_moved_owned_operand(elem);
+                    self.enforce_closure_pair_ingress(elem);
                 }
 
                 // Allocate a local for the tuple result.
@@ -7604,8 +7742,11 @@ impl Builder {
                 // like a tuple element is moved into a tuple. Mark the source
                 // binding in the checker stream so a later use is rejected
                 // without changing the drop elaborator's alias-aware inputs.
+                // Closure-pair operands additionally pass the sole-owner
+                // ingress gate (owned binding → move; borrow → refuse).
                 for (_, fexpr) in fields {
                     self.alias_moved_owned_operand(fexpr);
+                    self.enforce_closure_pair_ingress(fexpr);
                 }
 
                 // Lower the functional-update base, if any.
@@ -8266,6 +8407,20 @@ impl Builder {
                     HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
                 );
 
+                // Vec element STORES (push / set — user-authored or the
+                // array-literal desugar) are owning ingress for closure-pair
+                // elements: the slot byte-copies the pair and
+                // `hew_vec_free_closure_pairs` frees its env at scope exit.
+                // Route closure-typed element operands through the
+                // sole-owner ingress gate (owned binding → move; borrow →
+                // refuse). Non-closure args keep ordinary call semantics.
+                let is_vec_element_store = matches!(
+                    target_family,
+                    hew_types::MethodTargetFamily::Vec(
+                        hew_types::VecMethod::Push | hew_types::VecMethod::Set
+                    )
+                );
+
                 // Lower receiver as arg[0], then explicit args.
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
@@ -8273,6 +8428,9 @@ impl Builder {
                     arg_places.push(self.lower_value(arg)?);
                     if is_array_literal_push {
                         self.alias_moved_owned_operand(arg);
+                    }
+                    if is_vec_element_store {
+                        self.enforce_closure_pair_ingress(arg);
                     }
                 }
                 let dest = if matches!(ret_ty, ResolvedTy::Unit) {
@@ -8543,6 +8701,7 @@ impl Builder {
                             src,
                         });
                         self.alias_moved_owned_operand(field_expr);
+                        self.enforce_closure_pair_ingress(field_expr);
                     }
                 }
                 Some(dest)
@@ -13711,7 +13870,15 @@ impl Builder {
             // types whose heap-backing is opaque to the element-load ABI.
             // `hew_vec_get_ptr` returns a *mut c_void which codegen casts to
             // the appropriate pointer.
-            ResolvedTy::Named { .. } => "hew_vec_get_ptr",
+            //
+            // Closure-pair elements share the symbol: the slot holds a
+            // heap-boxed copy of the 16-byte pair. `hew_vec_get_ptr` returns
+            // the box address; codegen's CallRuntimeAbi marshalling sees the
+            // pair-typed dest and copies the pair out of the box (a borrow —
+            // the vec slot keeps ownership of the box and the env).
+            ResolvedTy::Named { .. } | ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+                "hew_vec_get_ptr"
+            }
             other => {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
@@ -17428,27 +17595,44 @@ impl Builder {
             escape_kind,
             /* enable_lock_slots = */ false,
         );
-        // The layout's allocation_strategy determines whether the env
-        // record stays stack-allocated (Local), needs heap-box
-        // promotion (Escapes), or rides the scope-owned task path
-        // (Forked). Today the existing emit path is stack-allocated
-        // for every closure literal that reaches this lowering arm;
-        // forked closures take a separate path (`lower_spawned_
-        // closure_task` in this file) and never reach here. The
-        // Heap-promotion emit for `Escapes` is auto-lock-adjacent
-        // follow-on work — gated to a follow-on so this change stays
-        // small and additive (coherence I-5/I-6 write-contention on
-        // this file across the closure substrate consumers). The
-        // layout is computed and discarded here; storing it on the
-        // builder is a deliberate non-goal until at least one
-        // downstream consumer dispatches.
-        let _ = layout;
+        // The layout's allocation strategy commits the env storage the
+        // MakeClosure emit uses. `Stack` (Local escape class) keeps the
+        // frame alloca address — the closure provably never outlives the
+        // introducing scope. `Heap` (Escapes) promotes: with captures the
+        // env is copied into a `hew_dyn_box_alloc` box so the pair stays
+        // valid after this frame unwinds; capture-free escaping closures
+        // store a null env instead (zero loads in the shim, nothing owned,
+        // and null is the pair-drop protocol's "skip" signal). `ScopeOwned`
+        // (Forked) closures never reach this lowering arm (they ride
+        // `lower_spawned_closure_task`); if one ever does, the stack emit
+        // preserves the pre-promotion behaviour rather than fabricating an
+        // unowned heap box.
+        let strategy = layout.allocation_strategy();
+        let env_mode = match strategy {
+            crate::closure_env::AllocationStrategy::Heap => {
+                if captures.is_empty() {
+                    crate::model::ClosureEnvMode::Null
+                } else {
+                    crate::model::ClosureEnvMode::HeapBox
+                }
+            }
+            crate::closure_env::AllocationStrategy::Stack
+            | crate::closure_env::AllocationStrategy::ScopeOwned => {
+                crate::model::ClosureEnvMode::Stack
+            }
+        };
+        // Record the escape verdict so the enclosing `Let` handler can admit
+        // the bound pair into the closure-pair drop set (the same
+        // pending-flag pattern `pending_closure_literal_suspends` uses).
+        self.pending_closure_literal_heap =
+            Some(strategy == crate::closure_env::AllocationStrategy::Heap);
 
         let closure_place = self.alloc_local(expr.ty.clone());
         self.instructions.push(Instr::MakeClosure {
             fn_symbol: shim_name,
             env: env_place,
             dest: closure_place,
+            env_mode,
         });
 
         Some(closure_place)
@@ -19263,6 +19447,170 @@ impl Builder {
             ty,
         });
     }
+
+    /// True when a `Let` RHS produces a named-function pair whose `env_ptr`
+    /// is null by construction: a direct `Item`-resolved fn reference
+    /// (`let f = double;`), a rebind of an already-exempt binding, or either
+    /// shape behind transparent block tails. Null-env pairs are freely
+    /// byte-copyable — no environment exists to double-free — so they are
+    /// exempt from the closure-pair ingress discipline.
+    fn closure_rhs_is_null_env_pair(&self, value: &HirExpr) -> bool {
+        match &value.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            } => true,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => self.closure_pair_null_env.contains(id),
+            HirExprKind::Block(block) => block
+                .tail
+                .as_deref()
+                .is_some_and(|tail| self.closure_rhs_is_null_env_pair(tail)),
+            _ => false,
+        }
+    }
+
+    /// Ownership classification for a closure-pair operand entering an
+    /// owning container position (record field, Vec element store, machine
+    /// payload, tuple element). Mirrors `classify_closure_pair_rhs` but
+    /// answers the ingress question — "may this operand's pair be stored
+    /// as an owner?" — rather than the `Let` drop-admission question.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "literal, named-fn reference, and call-result arms are \
+                  semantically distinct fresh-pair producers (each comment \
+                  documents WHY its pair is safely owned); merging them would \
+                  obscure the per-shape ownership argument"
+    )]
+    fn classify_closure_pair_ingress(&self, operand: &HirExpr) -> ClosurePairIngress {
+        match &operand.kind {
+            // A closure literal in an aggregate-operand position is
+            // Escapes-classified by the checker (non-direct-call use), so
+            // its env is heap-or-null and the aggregate becomes the sole
+            // owner of a fresh pair.
+            HirExprKind::Closure { .. } => ClosurePairIngress::Fresh,
+            // A named function used as a value synthesises a fresh pair
+            // with a null env at every use site — nothing to double-free.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            } => ClosurePairIngress::Fresh,
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(id),
+            } => {
+                if self.closure_pair_null_env.contains(id) {
+                    ClosurePairIngress::Fresh
+                } else if self.closure_pair_owned.contains(id) {
+                    ClosurePairIngress::OwnedBinding {
+                        id: *id,
+                        name: name.clone(),
+                    }
+                } else if self.closure_pair_moved.contains(id) {
+                    // Ownership already left via a rebind; the move checker
+                    // flags this read as `UseAfterConsume` on its own.
+                    ClosurePairIngress::AlreadyMoved
+                } else {
+                    ClosurePairIngress::Borrowed {
+                        name: Some(name.clone()),
+                    }
+                }
+            }
+            // Vec element reads are borrows: the vec slot keeps ownership
+            // of the element's pair box and env.
+            HirExprKind::ResolvedImplCall { target_symbol, .. }
+                if target_symbol == "hew_vec_get_ptr" =>
+            {
+                ClosurePairIngress::Borrowed { name: None }
+            }
+            // A fn-typed call result is a fresh owned pair (heap-or-null
+            // transitively: a pair crossing a return boundary is
+            // Escapes-classified at its literal site).
+            HirExprKind::Call { .. }
+            | HirExprKind::ResolvedImplCall { .. }
+            | HirExprKind::CallTraitMethodStatic { .. }
+            | HirExprKind::CallDynMethod { .. } => ClosurePairIngress::Fresh,
+            HirExprKind::Block(block) => block
+                .tail
+                .as_deref()
+                .map_or(ClosurePairIngress::Borrowed { name: None }, |tail| {
+                    self.classify_closure_pair_ingress(tail)
+                }),
+            // Everything else — record-field reads, parameters reached via
+            // shapes above, `if`/`match` merges — is a borrow or a pair
+            // whose ownership the analysis cannot prove. Fail closed.
+            _ => ClosurePairIngress::Borrowed { name: None },
+        }
+    }
+
+    /// Sole-owner ingress gate for closure-pair operands (the affine "first
+    /// use moves" discipline). An owning container position byte-copies the
+    /// 16-byte `{fn_ptr, env_ptr}` pair, so admitting anything but an owned
+    /// pair creates a second owner of one closure environment and a double
+    /// free at scope exit:
+    ///
+    /// - an OWNED binding operand is moved — a checker-stream
+    ///   `AggregateAlias` marks it so the dataflow rejects every later use
+    ///   (`UseAfterConsume` anchored at this store; invoking before the
+    ///   store stays legal — invocation is the borrow the pair exists for);
+    /// - a BORROWED operand (parameter, vec-element read, record-field
+    ///   read, unproven merge shape) is refused outright with
+    ///   `ClosurePairBorrowedStore` — its pair is owned elsewhere, and the
+    ///   store itself is the corruption, with or without a later use;
+    /// - fresh pairs (literals, fn-typed call results, named-fn null-env
+    ///   pairs) pass through: the container becomes their sole owner.
+    fn enforce_closure_pair_ingress(&mut self, operand: &HirExpr) {
+        let ty = self.subst_ty(&operand.ty);
+        if !ty_is_closure_pair(&ty) {
+            return;
+        }
+        match self.classify_closure_pair_ingress(operand) {
+            ClosurePairIngress::Fresh | ClosurePairIngress::AlreadyMoved => {}
+            ClosurePairIngress::OwnedBinding { id, name } => {
+                self.statements.push(MirStatement::AggregateAlias {
+                    binding: id,
+                    name,
+                    site: operand.site,
+                    ty,
+                });
+            }
+            ClosurePairIngress::Borrowed { name } => {
+                let rendered = name
+                    .as_ref()
+                    .map_or_else(|| "this function value".to_string(), |n| format!("`{n}`"));
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::ClosurePairBorrowedStore {
+                        name,
+                        site: operand.site,
+                    },
+                    note: format!(
+                        "storing {rendered} would give the container a second owner \
+                         of one closure environment: closure pairs are sole-owner \
+                         values with no clone path, so only an owned pair (a closure \
+                         literal, a fresh fn-typed call result, or a binding that \
+                         owns its closure) may be stored"
+                    ),
+                });
+            }
+        }
+    }
+}
+
+/// Ownership verdict for a closure-pair operand at an owning container
+/// ingress site. See `Builder::classify_closure_pair_ingress`.
+enum ClosurePairIngress {
+    /// A fresh pair the container may own outright (literal, call result,
+    /// named-fn null-env pair, null-env binding).
+    Fresh,
+    /// An owned binding — the store is its move; later uses are rejected.
+    OwnedBinding { id: BindingId, name: String },
+    /// A binding whose ownership already transferred away; the move checker
+    /// flags this read independently.
+    AlreadyMoved,
+    /// A borrow or unproven shape — refused (fail closed).
+    Borrowed { name: Option<String> },
 }
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -19590,6 +19938,7 @@ fn elaborate(
         &checked.blocks,
         &builder.owned_locals,
         &builder.binding_locals,
+        ty_is_local_collection_handle,
     );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -19626,6 +19975,86 @@ fn elaborate(
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
             ) {
                 local_bytes_drop_allowed.remove(binding);
+            }
+        }
+    }
+
+    // Closure-pair `Vec<fn(...)>` handle scope-exit drop allow-set. Rides the
+    // same receiver-borrow escape model as the HashMap/HashSet derivation
+    // (the handle is the owner; push/index/len reads borrow it), narrowed by
+    // the same consume filter. An admitted handle releases every element's
+    // pair box + env box exactly once via `hew_vec_free_closure_pairs`; an
+    // excluded handle leaks (as every plain Vec local does today), never
+    // double-frees.
+    let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        ty_is_closure_pair_vec,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                closure_vec_drop_allowed.remove(binding);
+            }
+        }
+    }
+    // Whole-value hand-off dedup. The array-literal desugar binds the fresh
+    // vec to a synthetic let (`__hew_array_N`) and the user binding then
+    // receives the SAME handle through a chain of whole-value `Move`s
+    // (synthetic slot → expression temp → binding slot) — TWO admitted
+    // bindings whose slots hold ONE handle, which would emit two scope-exit
+    // releases (a double free; the dataflow does not mark the synthetic
+    // source consumed). Ownership follows the `Move` chain: strip every
+    // admitted binding whose handle transitively flows into ANOTHER
+    // admitted binding's slot, so exactly the final owner releases.
+    // LESSONS: raii-null-after-move, cleanup-all-exits.
+    {
+        let admitted_locals: HashMap<u32, BindingId> = closure_vec_drop_allowed
+            .iter()
+            .filter_map(|b| {
+                builder
+                    .binding_locals
+                    .get(b)
+                    .and_then(|p| base_local(*p))
+                    .map(|l| (l, *b))
+            })
+            .collect();
+        let mut move_edges: Vec<(u32, u32)> = Vec::new();
+        for block in &checked.blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if sl != dl {
+                            move_edges.push((sl, dl));
+                        }
+                    }
+                }
+            }
+        }
+        for (&start_local, start_binding) in &admitted_locals {
+            // BFS the Move graph from this admitted local; if the handle
+            // reaches another admitted binding's slot, the downstream
+            // binding owns the release and this one must not also fire.
+            let mut frontier = vec![start_local];
+            let mut seen: HashSet<u32> = HashSet::new();
+            seen.insert(start_local);
+            let mut handed_off = false;
+            while let Some(cur) = frontier.pop() {
+                for &(s, d) in &move_edges {
+                    if s == cur && seen.insert(d) {
+                        if d != start_local && admitted_locals.contains_key(&d) {
+                            handed_off = true;
+                        }
+                        frontier.push(d);
+                    }
+                }
+            }
+            if handed_off {
+                closure_vec_drop_allowed.remove(start_binding);
             }
         }
     }
@@ -19698,6 +20127,32 @@ fn elaborate(
         &builder.enum_layouts,
     );
 
+    // Escaping-closure pair env-box drop allow-set. Starts from the
+    // `Let`-admitted ownership ledger (heap-mode literal / call result /
+    // admitted rebind — see `closure_pair_owned`), then removes every
+    // binding whose pair bits are aliased or moved out of the slot
+    // (returned, passed as a call argument, captured into an aggregate) via
+    // the fail-closed source-operand scan, and finally every binding the
+    // dataflow proves consumed or maybe-consumed at any exit (the same
+    // belt-and-suspenders net the owned-Vec / cow arms use). Both
+    // directions only ever over-EXCLUDE (leak), never re-admit
+    // (`boundary-fail-closed`, `cleanup-all-exits`).
+    let mut closure_pair_drop_allowed = derive_closure_pair_drop_allowed(
+        &checked.blocks,
+        &builder.closure_pair_owned,
+        &builder.binding_locals,
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                closure_pair_drop_allowed.remove(binding);
+            }
+        }
+    }
+
     let lifo_drops = build_lifo_drops(
         &builder.owned_locals,
         &builder.binding_locals,
@@ -19713,6 +20168,8 @@ fn elaborate(
         &tuple_composite_drop_allowed,
         &returned_aggregate_members,
         &consumed_local_aggregate_members,
+        &closure_pair_drop_allowed,
+        &closure_vec_drop_allowed,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -19931,6 +20388,17 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
             drop_fn: "hew_vec_free_owned",
         },
+        // Closure-pair `Vec<fn(...)>` scope-exit release: same dedicated-kind
+        // acceptance shape as the owned-Vec arm — a local Vec whose element
+        // is a closure pair may carry the closure-pair release symbol; any
+        // other shape re-derives via the Place-driven dispatcher.
+        DropKind::CowHeap {
+            drop_fn: "hew_vec_free_closure_pairs",
+        } if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair_vec(&drop.ty) => {
+            DropKind::CowHeap {
+                drop_fn: "hew_vec_free_closure_pairs",
+            }
+        }
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
         // in-place helper), while the place is an ordinary stack `Local`
@@ -19940,6 +20408,19 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         DropKind::TupleInPlace => {
             if matches!(drop.place, Place::Local(_)) && matches!(&drop.ty, ResolvedTy::Tuple(_)) {
                 DropKind::TupleInPlace
+            } else {
+                drop_kind_for(drop.place, &drop.ty, None)
+            }
+        }
+        // Escaping-closure pair drops are keyed by both kind and
+        // `ElabDrop::ty` (the fn surface type confirms the two-pointer pair
+        // ABI), while the place is an ordinary stack `Local` holding the
+        // pair. Accept the dedicated kind on a local fn-typed place; any
+        // other shape re-derives via the Place-driven dispatcher so a
+        // non-pair place cannot silently carry a `ClosurePair` kind.
+        DropKind::ClosurePair => {
+            if matches!(drop.place, Place::Local(_)) && ty_is_closure_pair(&drop.ty) {
+                DropKind::ClosurePair
             } else {
                 drop_kind_for(drop.place, &drop.ty, None)
             }
@@ -22942,12 +23423,15 @@ fn derive_local_collection_drop_allowed(
     blocks: &[BasicBlock],
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    ty_filter: fn(&ResolvedTy) -> bool,
 ) -> HashSet<BindingId> {
-    // Candidate collection locals: base locals of owned HashMap / HashSet
-    // handle bindings.
+    // Candidate collection locals: base locals of owned handle bindings of
+    // the caller-selected type class (HashMap/HashSet handles, or
+    // closure-pair Vec handles — the escape model is identical: the handle
+    // is the owner, receiver-borrowing collection ops are interior reads).
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
-        if !ty_is_local_collection_handle(ty) {
+        if !ty_filter(ty) {
             continue;
         }
         let Some(place) = binding_locals.get(binding) else {
@@ -23028,6 +23512,26 @@ fn derive_local_collection_drop_allowed(
             if matches!(instr, Instr::Drop { .. }) {
                 continue;
             }
+            // A receiver-borrowing Vec op lowered as an INSTRUCTION (the
+            // `xs[i]` bounds-check + getter path emits `hew_vec_len` /
+            // `hew_vec_get_ptr` as `Instr::CallRuntimeAbi`, not a
+            // terminator) borrows the handle as arg 0 — an interior read,
+            // not an escape. Scan only the by-value operand tail, mirroring
+            // the terminator-side receiver-borrow rule below.
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if is_vec_receiver_borrow_symbol(call.symbol()) {
+                    for p in call.args().iter().skip(1) {
+                        if let Some(l) = base_local(*p) {
+                            if alias_of.contains_key(&l)
+                                && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            {
+                                note_escape(l, &mut excluded_roots);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
             // Every other instruction reading an alias member is an owning-sink
             // escape (stored into a record field, captured into a closure env,
             // moved into an aggregate via `RecordInit` / `SpawnActor`, …).
@@ -23051,7 +23555,8 @@ fn derive_local_collection_drop_allowed(
         // is an escape.
         match &block.terminator {
             Terminator::Call { callee, args, .. }
-                if is_collection_receiver_borrow_callee(callee) =>
+                if is_collection_receiver_borrow_callee(callee)
+                    || is_vec_receiver_borrow_symbol(callee) =>
             {
                 for p in args.iter().skip(1) {
                     if let Some(l) = base_local(*p) {
@@ -25325,6 +25830,147 @@ fn classify_dyn_trait_storage(
     }
 }
 
+/// RHS-shape verdict for closure-pair env-box ownership admission at a
+/// fn-typed `let` binding. See the `HirStmtKind::Let` arm for the
+/// soundness argument per shape.
+enum ClosurePairRhs {
+    /// The binding owns a heap-or-null pair (heap-mode literal or call
+    /// result) — admit into `closure_pair_owned`.
+    Owned,
+    /// The RHS rebinds an already-admitted binding; ownership transfers
+    /// (admit the new binding, mark the carried source moved).
+    TransferFrom(BindingId),
+    /// Unrecognised or stack-pair shape — never admit (leak over over-free).
+    NotOwned,
+}
+
+/// Classify a fn-typed `let` RHS for closure-pair ownership. `literal_heap`
+/// is the `pending_closure_literal_heap` verdict captured after lowering the
+/// RHS — for `Block` shapes it describes the tail literal (the last closure
+/// literal lowered in the RHS). Mirrors `classify_dyn_trait_storage`'s
+/// shape dispatch; unrecognised shapes return `NotOwned` (fail-closed:
+/// the binding leaks rather than risking a stack-env free).
+fn classify_closure_pair_rhs(
+    value: &HirExpr,
+    literal_heap: bool,
+    owned: &HashSet<BindingId>,
+) -> ClosurePairRhs {
+    match &value.kind {
+        HirExprKind::Closure { .. } => {
+            if literal_heap {
+                ClosurePairRhs::Owned
+            } else {
+                ClosurePairRhs::NotOwned
+            }
+        }
+        // Vec element reads are BORROWS: the vec slot keeps ownership of the
+        // element's pair box and env. Admitting a `fns.get(i)` result would
+        // double-free against `hew_vec_free_closure_pairs`. `pop` transfers
+        // ownership out of the vec (the marshalling frees the element box and
+        // the popped pair keeps the env), so it stays on the Owned path.
+        HirExprKind::ResolvedImplCall { target_symbol, .. }
+            if target_symbol == "hew_vec_get_ptr" =>
+        {
+            ClosurePairRhs::NotOwned
+        }
+        HirExprKind::Call { .. }
+        | HirExprKind::ResolvedImplCall { .. }
+        | HirExprKind::CallTraitMethodStatic { .. }
+        | HirExprKind::CallDynMethod { .. } => ClosurePairRhs::Owned,
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(id),
+            ..
+        } if owned.contains(id) => ClosurePairRhs::TransferFrom(*id),
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .map_or(ClosurePairRhs::NotOwned, |tail| {
+                classify_closure_pair_rhs(tail, literal_heap, owned)
+            }),
+        _ => ClosurePairRhs::NotOwned,
+    }
+}
+
+/// True when `ty` is the two-pointer closure-pair value (`fn(...) -> T`
+/// surface type). The ABI-shape confirmation for `DropKind::ClosurePair`;
+/// the ownership decision is the separate fail-closed
+/// `derive_closure_pair_drop_allowed` authority.
+fn ty_is_closure_pair(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+}
+
+/// Fail-closed sole-owner narrowing for closure-pair drops. Starts from the
+/// `Let`-admitted `closure_pair_owned` ledger and KEEPS a binding only when
+/// its backing local is never read as a source operand by anything other
+/// than the closure-call drivers' callee read (`Instr::CallClosure` /
+/// `Terminator::SuspendingCallClosure` — calling the pair is the borrow it
+/// exists for). Every other read aliases or moves the pair bits out of the
+/// slot with no retain:
+///
+/// - `Move { dest: ReturnSlot }` — the caller owns the env now (function
+///   tails do not emit a consume fact, so an exit-state gate alone would
+///   double-free the returned pair);
+/// - a call argument — the callee may return or store the same pair
+///   (`let b = id_fn(a)` would otherwise free one env twice);
+/// - `RecordInit` / aggregate ingress — a nested closure capturing the pair
+///   or a record/Vec storing it owns the env through the aggregate.
+///
+/// Excluded bindings leak (as before this lane); they never double-free.
+fn derive_closure_pair_drop_allowed(
+    blocks: &[BasicBlock],
+    closure_pair_owned: &HashSet<BindingId>,
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashSet<BindingId> {
+    if closure_pair_owned.is_empty() {
+        return HashSet::new();
+    }
+    let mut aliased: HashSet<u32> = HashSet::new();
+    let mark = |p: Place, aliased: &mut HashSet<u32>| {
+        if let Some(l) = base_local(p) {
+            aliased.insert(l);
+        }
+    };
+    for block in blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::CallClosure { args, .. } => {
+                    // The callee read is benign; args may alias a pair out.
+                    for p in args {
+                        mark(*p, &mut aliased);
+                    }
+                }
+                _ => {
+                    for p in instr_source_places(instr) {
+                        mark(p, &mut aliased);
+                    }
+                }
+            }
+        }
+        match &block.terminator {
+            Terminator::SuspendingCallClosure { args, .. } => {
+                for p in args {
+                    mark(*p, &mut aliased);
+                }
+            }
+            other => {
+                for p in terminator_source_places(other) {
+                    mark(p, &mut aliased);
+                }
+            }
+        }
+    }
+    closure_pair_owned
+        .iter()
+        .filter(|binding| {
+            binding_locals
+                .get(binding)
+                .and_then(|place| base_local(*place))
+                .is_some_and(|local| !aliased.contains(&local))
+        })
+        .copied()
+        .collect()
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "drop elaboration threads the binding ledgers, the per-class \
@@ -25352,6 +25998,8 @@ fn build_lifo_drops(
     tuple_composite_drop_allowed: &HashSet<BindingId>,
     returned_aggregate_members: &HashSet<BindingId>,
     consumed_local_aggregate_members: &HashSet<BindingId>,
+    closure_pair_drop_allowed: &HashSet<BindingId>,
+    closure_vec_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -25387,6 +26035,30 @@ fn build_lifo_drops(
         // (derived from the builder's `is_owned_vec_element` authority); the
         // local guard here only confirms the binding's type is a `Vec` so the
         // `hew_vec_free_owned` ABI is correct for the handle.
+        // Closure-pair `Vec<fn(...)>` handle: each slot owns a heap-boxed
+        // pair (and its env box). `hew_vec_free_closure_pairs` walks the
+        // elements (env free-thunk + pair-box free per slot), then frees the
+        // buffer and the handle. Intercept BEFORE the owned-Vec arm so the
+        // closure-element class never routes through the descriptor-driven
+        // `hew_vec_free_owned` ABI it was not constructed under.
+        if closure_vec_drop_allowed.contains(binding) && ty_is_closure_pair_vec(ty) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: closure-pair Vec binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::CowHeap {
+                    drop_fn: "hew_vec_free_closure_pairs",
+                },
+            });
+            continue;
+        }
         if owned_vec_drop_allowed.contains(binding) && ty_is_vec(ty) {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
@@ -25561,6 +26233,36 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::TupleInPlace,
+            });
+            continue;
+        }
+        // Escaping-closure pair (the closure env heap-lifetime contract). A
+        // fn-typed binding is `ValueClass::PersistentShare` and would fall
+        // into the no-drop arm below, leaking its heap env-box on every
+        // scope exit. Intercept BEFORE the value-class match (mirroring the
+        // dyn-trait arm) and emit the `DropKind::ClosurePair` drop ONLY for
+        // bindings the fail-closed sole-owner derivation admitted
+        // (`derive_closure_pair_drop_allowed`): the pair is heap-or-null by
+        // construction at its producing site, and its env-box has exactly
+        // this one owner left at scope exit. The drop protocol null-checks
+        // the env pointer, so named-fn pairs and capture-free escaping
+        // closures are no-ops. A binding the prover did not clear leaks (as
+        // before this lane); it never double-frees.
+        // LESSONS: cleanup-all-exits, raii-null-after-move,
+        // boundary-fail-closed, ffi-ownership-contracts.
+        if closure_pair_drop_allowed.contains(binding) && ty_is_closure_pair(ty) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: closure-pair binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::ClosurePair,
             });
             continue;
         }
@@ -25762,6 +26464,21 @@ fn ty_is_vec(ty: &ResolvedTy) -> bool {
     )
 }
 
+/// True when `ty` is a builtin `Vec<T>` whose element is a closure pair
+/// (`fn(...) -> T` / closure surface type). Such a vec owns each element's
+/// pair box and, transitively, the pair's env box; its scope-exit release is
+/// `hew_vec_free_closure_pairs` (element walk + buffer + handle).
+fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Vec),
+            args,
+            ..
+        } if args.first().is_some_and(ty_is_closure_pair)
+    )
+}
+
 /// True when `ty` is a builtin `HashMap<K, V>` / `HashSet<E>` handle. Dispatches
 /// on the `builtin` discriminant (NOT the name string) so a user
 /// `type HashMap { ... }` is never mistaken for the runtime collection handle.
@@ -25797,6 +26514,26 @@ fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 /// confirmed against the runtime signature to take the handle by shared/mutable
 /// borrow (`*const` / `*mut`, never freed): `hew-runtime/src/hashmap.rs`,
 /// `hew-runtime/src/hashset.rs`.
+/// Receiver-borrowing Vec runtime ops: arg 0 is the vec handle, read but
+/// never owned by the callee. The closure-pair Vec drop derivation treats
+/// these as interior reads (mirroring `is_collection_receiver_borrow_callee`)
+/// so ordinary push/index/len use does not exclude the handle from its
+/// scope-exit `hew_vec_free_closure_pairs` release. `push`/`set` DO consume
+/// their element operand — the arg-tail scan still records that escape.
+fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
+    matches!(
+        callee,
+        "hew_vec_len"
+            | "hew_vec_is_empty"
+            | "hew_vec_clear"
+            | "hew_vec_push_ptr"
+            | "hew_vec_get_ptr"
+            | "hew_vec_set_ptr"
+            | "hew_vec_pop_ptr"
+            | "hew_vec_remove_at"
+    )
+}
+
 fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
     matches!(
         callee,
@@ -26734,6 +27471,7 @@ mod slice3_invariants {
                     | DropKind::AggregateRecursive
                     | DropKind::EnumInPlace
                     | DropKind::TupleInPlace
+                    | DropKind::ClosurePair
                     | DropKind::TraitObject { .. } => {}
                 }
             }
@@ -29405,8 +30143,12 @@ mod f1_suspending_escape_poison {
                 .into_iter()
                 .collect();
 
-        let allowed =
-            derive_local_collection_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_collection_drop_allowed(
+            &[block],
+            &owned_locals,
+            &binding_locals,
+            ty_is_local_collection_handle,
+        );
 
         assert!(
             !allowed.contains(&binding_b),
@@ -29463,8 +30205,12 @@ mod f1_suspending_escape_poison {
                 .into_iter()
                 .collect();
 
-        let allowed =
-            derive_local_collection_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_collection_drop_allowed(
+            &[block],
+            &owned_locals,
+            &binding_locals,
+            ty_is_local_collection_handle,
+        );
 
         assert!(
             allowed.contains(&binding_a) && allowed.contains(&binding_b),

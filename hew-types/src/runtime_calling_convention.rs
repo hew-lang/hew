@@ -224,7 +224,18 @@ impl RuntimeCallingConvention {
             // they are the one pointer-shaped case the context-free
             // path can prove without a `TypeDef` lookup. `&T` borrows
             // are pointer-shaped at runtime and route identically.
-            Ty::Pointer { .. } | Ty::Borrow { .. } => Self::Pointer,
+            //
+            // Function / closure values cross the C-ABI boundary as a
+            // single heap-boxed pair handle: the 16-byte closure pair
+            // `{ fn_ptr, env_ptr }` is copied into a `hew_dyn_box_alloc`
+            // box at the boundary and the box address rides the pointer
+            // convention. This is the closure-pair container ABI contract
+            // (the boxing/unboxing emission lives in codegen's vec-op
+            // marshalling); it deliberately avoids a 16-byte element
+            // width class and any `_layout` witness entry.
+            Ty::Pointer { .. } | Ty::Borrow { .. } | Ty::Function { .. } | Ty::Closure { .. } => {
+                Self::Pointer
+            }
 
             // LayoutDescriptor: every value-shaped Ty *and* every
             // `Ty::Named` (fail-closed: callers must consult
@@ -243,8 +254,6 @@ impl RuntimeCallingConvention {
             | Ty::Tuple(_)
             | Ty::Array(_, _)
             | Ty::Slice(_)
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
             | Ty::TraitObject { .. }
             | Ty::Task(_)
             | Ty::AssocType { .. }
@@ -534,6 +543,29 @@ mod tests {
     }
 
     #[test]
+    fn fn_and_closure_values_route_to_pointer() {
+        // Closure-pair container ABI: a fn/closure value crosses the C-ABI
+        // boundary as a heap-boxed pair handle, riding the pointer
+        // convention (no 16-byte width class, no `_layout` witness entry).
+        let fn_ty = Ty::Function {
+            params: vec![Ty::I64],
+            ret: Box::new(Ty::I64),
+        };
+        let closure_ty = Ty::Closure {
+            params: vec![],
+            ret: Box::new(Ty::Unit),
+            captures: vec![],
+        };
+        for ty in [fn_ty, closure_ty] {
+            assert_eq!(
+                RuntimeCallingConvention::for_ty(&ty),
+                RuntimeCallingConvention::Pointer,
+                "expected Pointer for {ty:?}",
+            );
+        }
+    }
+
+    #[test]
     fn raw_pointer_routes_to_pointer_in_both_paths() {
         // Raw pointers are the one pointer-shaped case the
         // context-free path can prove without a TypeDef lookup.
@@ -566,15 +598,6 @@ mod tests {
             Ty::Tuple(vec![Ty::I32, Ty::String]),
             Ty::Array(Box::new(Ty::I32), 4),
             Ty::Slice(Box::new(Ty::I32)),
-            Ty::Function {
-                params: vec![Ty::I32],
-                ret: Box::new(Ty::Unit),
-            },
-            Ty::Closure {
-                params: vec![],
-                ret: Box::new(Ty::Unit),
-                captures: vec![],
-            },
             Ty::TraitObject { traits: vec![] },
             Ty::Task(Box::new(Ty::I32)),
             Ty::AssocType {

@@ -1,0 +1,18 @@
+// Mixed consumption: a Vec push moves the closure pair into the vec slot;
+// a later record-field store of the same binding would create a second
+// owner of the environment. Rejected as use-after-move at the record init.
+type Holder {
+    cb: fn(i64) -> i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let f = make_adder(5);
+    let fns: Vec<fn(i64) -> i64> = Vec::new();
+    fns.push(f);
+    let h = Holder { cb: f };
+    println(h.cb(10));
+}

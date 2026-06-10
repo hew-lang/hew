@@ -175,6 +175,29 @@ pub enum StateFieldCloneKind {
     /// codegen authority.
     Enum { name: String },
 
+    /// Closure pair (`fn(...) -> T` surface type): a two-pointer
+    /// `{ fn_ptr, env_ptr }` value whose non-null `env_ptr` points at the
+    /// captures region of a heap env box carrying its own free thunk at
+    /// `env_ptr - 8` (the heap-promotion substrate's sole-owner contract).
+    ///
+    /// **Drop**: wired. `emit_field_drop_step` loads the env slot, runs the
+    /// planted free thunk when non-null, and null-stores the slot — the same
+    /// shape as the standalone `DropKind::ClosurePair` binding drop, so the
+    /// record's drop releases the env exactly once as the pair's sole owner.
+    ///
+    /// **Clone**: refused. The env box's size/align are baked into the
+    /// per-closure free thunk and are unknowable at a record-clone site (any
+    /// closure can inhabit the field), so no deep copy can be emitted; and
+    /// the sole-owner model forbids aliasing the env without a refcount.
+    /// Every reachable clone entry point is rejected at compile time (actor
+    /// state refuses closure-valued fields; owned-Vec element harvesting
+    /// skips closure-bearing records); the synthesised record-clone arm
+    /// itself branches to the rollback/fail path as a defensive runtime
+    /// backstop, returning the protocol's failure code instead of aliasing
+    /// the env. A true closure-value clone (retain or deep env copy) is
+    /// deferred until a concrete surface needs it.
+    ClosurePair,
+
     /// `#[opaque]` runtime handle declared in a stdlib or user module (e.g.
     /// `json.Value`, `yaml.Value`, `cron.Expr`). The clone direction has no
     /// dup helper — supervisor-restart clone fails closed (`FailClosed`).
@@ -228,7 +251,40 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
-            | StateFieldCloneKind::Enum { .. } => false,
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::ClosurePair => false,
+        }
+    }
+
+    /// True when this kind is, or transitively contains, a [`ClosurePair`].
+    ///
+    /// Kind-level codegen backstop, mirroring [`contains_opaque_handle`]: the
+    /// managed-collection clone/free witness must refuse a container whose
+    /// element transitively carries a closure pair — the managed clone would
+    /// shallow-copy the pair and create two owners of one environment box
+    /// (double free at the two containers' releases). Closure-pair `Vec<fn>`
+    /// handles have their own dedicated release
+    /// (`hew_vec_free_closure_pairs`) and never ride the managed witness.
+    ///
+    /// [`ClosurePair`]: StateFieldCloneKind::ClosurePair
+    /// [`contains_opaque_handle`]: StateFieldCloneKind::contains_opaque_handle
+    #[must_use]
+    pub fn contains_closure_pair(&self) -> bool {
+        match self {
+            StateFieldCloneKind::ClosurePair => true,
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+                elem.contains_closure_pair()
+            }
+            StateFieldCloneKind::HashMap { key, val } => {
+                key.contains_closure_pair() || val.contains_closure_pair()
+            }
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::String
+            | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::UserRecord { .. }
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. } => false,
         }
     }
 
@@ -280,20 +336,35 @@ impl StateFieldCloneKind {
     #[must_use]
     pub fn supports_value_class_drop_spine(&self) -> bool {
         match self {
+            // ClosurePair joins the leaf-admitted set DROP-ONLY: the record's
+            // synthesised drop body releases the env via the planted free
+            // thunk; the clone arm is a protocol-conformant runtime refusal
+            // (rollback + failure code) whose reachable entry points are all
+            // rejected at compile time — see the variant doc. Same drop-wired
+            // / clone-refused posture as `IoHandle`, except the record IS
+            // seeded for `RecordInPlace` (the drop side is the entire point
+            // of admitting fn-typed record fields).
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::String
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
-            | StateFieldCloneKind::Enum { .. } => true,
+            | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::ClosurePair => true,
             // Containers: supported iff they carry no opaque handle (the managed
-            // clone/free witness fails closed on an opaque-bearing container) and
-            // the element/key/value kind is itself supported.
+            // clone/free witness fails closed on an opaque-bearing container),
+            // no closure pair (the managed clone would shallow-copy the pair
+            // and alias its sole-owner environment; closure-pair Vecs ride the
+            // dedicated `hew_vec_free_closure_pairs` release, not the managed
+            // witness), and the element/key/value kind is itself supported.
             StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
-                !self.contains_opaque_handle() && elem.supports_value_class_drop_spine()
+                !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
+                    && elem.supports_value_class_drop_spine()
             }
             StateFieldCloneKind::HashMap { key, val } => {
                 !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
                     && key.supports_value_class_drop_spine()
                     && val.supports_value_class_drop_spine()
             }
@@ -557,6 +628,7 @@ pub fn classify_owned_string_record_fields(
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
+            | StateFieldCloneKind::ClosurePair
             | StateFieldCloneKind::OpaqueHandle { .. } => return Ok(None),
         }
     }
@@ -712,10 +784,18 @@ fn classify_state_field_full_impl(
             kind: IoHandleKind::CancellationToken,
         }),
 
+        // Closure pair (`fn(...) -> T`): drop-only admission — the record
+        // drop releases the env via the planted free thunk; the clone
+        // direction is refused (see the `ClosurePair` variant doc). Actor
+        // state keeps rejecting closure-valued fields via the ty-level
+        // containment guard at the actor classification site, so this arm
+        // is reached only for user-record value-class classification.
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
+            Ok(StateFieldCloneKind::ClosurePair)
+        }
+
         ResolvedTy::Pointer { .. }
         | ResolvedTy::Borrow { .. }
-        | ResolvedTy::Function { .. }
-        | ResolvedTy::Closure { .. }
         | ResolvedTy::TraitObject { .. }
         | ResolvedTy::Tuple(_)
         | ResolvedTy::Array(..)
@@ -1154,13 +1234,34 @@ fn classify_enum(
     // where the error surfaces (with the recursion stack preserved).
     for variant in &layout.variants {
         for field_ty in &variant.field_tys {
-            let _ = classify_state_field_full_impl(
+            let kind = classify_state_field_full_impl(
                 field_ty,
                 record_layouts,
                 enum_layouts,
                 opaque_handle_names,
                 visited,
             )?;
+            // Closure-pair enum payloads stay fail-closed: the tag-aware
+            // enum clone/drop dispatch has no proven coverage for the
+            // pair's sole-owner env discipline (the record spine carries
+            // it; the enum spine does not yet). Transitive ty-level walk so
+            // a payload of record-with-fn-field rejects too — the kind-level
+            // `UserRecord` carries only a registry name and cannot see the
+            // nested pair. Rejects here so an `Option<fn(...)>`-shaped enum
+            // never reaches codegen with an env-owning payload the clone
+            // walk would alias.
+            if kind.contains_closure_pair()
+                || crate::model::ty_contains_closure_value(field_ty, record_layouts, enum_layouts)
+            {
+                return Err(ClassificationError::Unsupported {
+                    rendered: format!(
+                        "enum `{}` variant `{}` carries a function-valued payload \
+                         field ({field_ty:?}); closure values in enum payloads are \
+                         not supported",
+                        layout.name, variant.name
+                    ),
+                });
+            }
         }
     }
     visited.remove(&layout.name);
@@ -1678,10 +1779,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_function_typed_state_fails_closed() {
-        // `dispatch_invariants #3 no-silent-no-op-stubs` — the
-        // classifier returns Err, not a default kind, for shapes
-        // outside the closed set.
+    fn function_typed_field_classifies_as_drop_only_closure_pair() {
+        // A `fn(...)` field classifies as `ClosurePair`: admitted to the
+        // record value-class DROP-ONLY (the drop side releases the env via
+        // the planted free thunk; the clone side is a structural refusal).
+        // Actor state still rejects closure-valued fields — that guard
+        // lives at the actor classification site via the transitive
+        // `ty_contains_closure_value` walk, not here.
         let mut v = HashSet::new();
         let result = classify_state_field(
             &ResolvedTy::Function {
@@ -1691,10 +1795,8 @@ mod tests {
             &no_records(),
             &mut v,
         );
-        assert!(matches!(
-            result,
-            Err(ClassificationError::Unsupported { .. })
-        ));
+        assert_eq!(result, Ok(StateFieldCloneKind::ClosurePair));
+        assert!(StateFieldCloneKind::ClosurePair.supports_value_class_drop_spine());
     }
 
     #[test]

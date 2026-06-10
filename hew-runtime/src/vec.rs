@@ -1270,6 +1270,61 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     }
 }
 
+/// Free a closure-pair `Vec<fn(...)>`: release every element's environment
+/// and pair box, then the buffer and the handle.
+///
+/// Element contract (planted by codegen's closure-pair vec marshalling):
+/// each 8-byte slot holds a `hew_dyn_box_alloc(16, 8)` box containing a copy
+/// of the closure pair `{ fn_ptr, env_ptr }`. A non-null `env_ptr` points at
+/// the captures region of a heap env box whose slot at `env_ptr - 8` holds
+/// the per-closure free thunk (`void (*)(env_ptr)`) the compiler synthesised
+/// with the box's static size/align. Null `env_ptr` (named-fn pairs,
+/// capture-free closures) owns nothing.
+///
+/// Each element is released exactly once: env thunk first (if any), then the
+/// 16-byte pair box via [`crate::trait_object::hew_dyn_box_free`] with the
+/// exact alloc layout. Null element slots are skipped (defensive; codegen
+/// never stores one).
+///
+/// # Safety
+///
+/// `v` must be a closure-pair vec built through `hew_vec_new_ptr` +
+/// `hew_vec_push_ptr`/`hew_vec_set_ptr` with boxed-pair elements as above
+/// (or null). After this call `v` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_closure_pairs(v: *mut HewVec) {
+    const PAIR_BOX_SIZE: usize = 16;
+    const PAIR_BOX_ALIGN: usize = 8;
+    // SAFETY: caller guarantees the closure-pair element contract.
+    unsafe {
+        if v.is_null() {
+            return;
+        }
+        if !(*v).data.is_null() {
+            for i in 0..(*v).len {
+                let slot = (*v).data.add(i * (*v).elem_size).cast::<*mut u8>();
+                let elem = *slot;
+                if elem.is_null() {
+                    continue;
+                }
+                // Pair layout: { fn_ptr @ +0, env_ptr @ +8 }.
+                let env = *elem.add(8).cast::<*mut u8>();
+                if !env.is_null() {
+                    // The compiler-planted free thunk sits immediately
+                    // before the captures region.
+                    let thunk = *env.sub(8).cast::<Option<unsafe extern "C" fn(*mut u8)>>();
+                    if let Some(thunk) = thunk {
+                        thunk(env);
+                    }
+                }
+                crate::trait_object::hew_dyn_box_free(elem, PAIR_BOX_SIZE, PAIR_BOX_ALIGN);
+            }
+            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+        }
+        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+    }
+}
+
 /// Free a witness-managed `Vec<T>` handle, applying the element ownership
 /// discipline recorded in the handle's layout descriptor.
 ///

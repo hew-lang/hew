@@ -1,0 +1,35 @@
+// Returned capturing closure survives the producing frame being clobbered.
+// Previously the env record was a stack alloca in `make_adder`'s frame even
+// though the checker classified the closure `Escapes`; calling the returned
+// closure after deep unrelated calls overwrote the frame read garbage.
+// Heap promotion (`hew_dyn_box_alloc` env box, freed once by the pair's
+// scope-exit drop) makes the env outlive the introducing frame.
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn smash(depth: i64) -> i64 {
+    let a = depth * 3 + 1;
+    let b = a + depth;
+    let c = b * 2 + a;
+    let d = c + b + a;
+    let e = d * 2 - c;
+    let f = e + d - b;
+    let g = f * 3 - a;
+    let h = g + f + e;
+    match depth {
+        0 => a + b + c + d + e + f + g + h,
+        _ => h + smash(depth - 1),
+    }
+}
+
+fn main() {
+    let add = make_adder(10);
+    let junk = smash(64);
+    let keep = junk > 0;
+    let got = add(5);
+    match keep {
+        true => println(got),  // 15
+        false => println(0 - got),
+    }
+}

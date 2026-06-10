@@ -12796,7 +12796,13 @@ impl LowerCtx {
             ResolvedTy::F64 => Some("hew_vec_push_f64"),
             ResolvedTy::String => Some("hew_vec_push_str"),
             ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
-            ResolvedTy::Named {
+            // Closure-pair elements ride the pointer convention: codegen's
+            // push marshalling boxes the 16-byte pair behind a heap handle
+            // (same authority as `vec_element_runtime_suffix`'s fn arm).
+            // Collection handles share the pointer-element push.
+            ResolvedTy::Function { .. }
+            | ResolvedTy::Closure { .. }
+            | ResolvedTy::Named {
                 builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
                 ..
             } => Some("hew_vec_push_ptr"),
@@ -12956,6 +12962,452 @@ impl LowerCtx {
                 span: span.clone(),
             }),
             vec_ty,
+        )
+    }
+
+    /// Expand a `Vec` pipeline call (`map` / `filter` / `reduce`, spec
+    /// §3.8.6) into a counted loop over the receiver.
+    ///
+    /// Shape (map):
+    /// ```text
+    /// {
+    ///     let __hew_pipe_src = <receiver>;
+    ///     let __hew_pipe_fn = <closure arg>;
+    ///     let __hew_pipe_out = Vec::new();
+    ///     for __hew_pipe_i in 0..__hew_pipe_src.len() {
+    ///         __hew_pipe_out.push(__hew_pipe_fn(__hew_pipe_src[__hew_pipe_i]));
+    ///     }
+    ///     __hew_pipe_out
+    /// }
+    /// ```
+    /// `filter` wraps the push in an `if`; `reduce` folds into a mutable
+    /// accumulator seeded from the second argument and yields it.
+    ///
+    /// Receiver and closure are bound exactly once (chained receivers
+    /// evaluate once; the closure value is reused across iterations as a
+    /// borrow — calls never consume the pair). Element access reuses the
+    /// established `Index` lowering and the push reuses the array-literal
+    /// push substrate, so every element-type ABI rule and drop discipline
+    /// is inherited rather than re-derived. The checker rejects
+    /// function-valued element receivers before recording this rewrite
+    /// (single-owner environment contract).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the three pipeline expansions share the src/fn/loop scaffolding; \
+                  splitting per-op helpers would triple the binding plumbing"
+    )]
+    fn lower_builtin_vec_higher_order(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        args: &[hew_parser::ast::CallArg],
+        op: hew_types::VecHigherOrderOp,
+        elem_ty: &ResolvedTy,
+        out_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        use hew_types::VecHigherOrderOp as HofOp;
+        let (label, expected_args) = match op {
+            HofOp::Map => ("Vec::map", 1),
+            HofOp::Filter => ("Vec::filter", 1),
+            HofOp::Reduce => ("Vec::reduce", 2),
+        };
+        if args.len() != expected_args {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: label.to_string(),
+                    reason: format!(
+                        "checker side-table expected {expected_args} argument(s), found {}",
+                        args.len()
+                    ),
+                },
+                span.clone(),
+                "Vec pipeline lowering arity disagrees with the checker-recorded rewrite",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("{label} has invalid arity")),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let src_vec_ty = Self::resolved_vec_ty(elem_ty.clone());
+        // `filter` records `out_ty == elem_ty`, so the collected vec is
+        // `Vec<out_ty>` for both collecting ops.
+        let result_ty = match op {
+            HofOp::Map | HofOp::Filter => Self::resolved_vec_ty(out_ty.clone()),
+            HofOp::Reduce => out_ty.clone(),
+        };
+
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let mut statements: Vec<HirStmt> = Vec::new();
+
+        // Bind the receiver once.
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+        let src_name = format!("__hew_pipe_src_{}", self.ids.binding().0);
+        let src_binding = self.bind(src_name.clone(), src_vec_ty.clone(), false, span.clone());
+        let src_id = src_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(src_binding, Some(lowered_receiver)),
+            span: span.clone(),
+        });
+
+        // Bind the closure argument once. The synthetic binding carries the
+        // lowered argument's own type (a named-fn pair or a closure type).
+        let lowered_fn = self.lower_expr(args[0].expr(), IntentKind::Read);
+        let fn_ty = lowered_fn.ty.clone();
+        let fn_name = format!("__hew_pipe_fn_{}", self.ids.binding().0);
+        let fn_binding = self.bind(fn_name.clone(), fn_ty.clone(), false, span.clone());
+        let fn_id = fn_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(fn_binding, Some(lowered_fn)),
+            span: span.clone(),
+        });
+
+        // The collected vec (map/filter) or the mutable accumulator (reduce).
+        let acc_name = format!("__hew_pipe_out_{}", self.ids.binding().0);
+        let (acc_init, acc_mutable) = match op {
+            HofOp::Map | HofOp::Filter => (
+                self.make_vec_new_expr(result_ty.clone(), span.clone()),
+                false,
+            ),
+            HofOp::Reduce => (self.lower_expr(args[1].expr(), IntentKind::Read), true),
+        };
+        let acc_binding = self.bind(
+            acc_name.clone(),
+            result_ty.clone(),
+            acc_mutable,
+            span.clone(),
+        );
+        let acc_id = acc_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(acc_binding, Some(acc_init)),
+            span: span.clone(),
+        });
+
+        // for __hew_pipe_i in 0..src.len() { <per-op body> }
+        let i_name = format!("__hew_pipe_i_{}", self.ids.binding().0);
+        let i_binding = self.bind(i_name.clone(), ResolvedTy::I64, false, span.clone());
+        let i_id = i_binding.id;
+        let start = self.make_i64_literal(0, span.clone());
+        let src_ref_for_len = self.make_binding_ref(
+            src_name.clone(),
+            src_id,
+            src_vec_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let end = self.make_vec_len_call(src_ref_for_len, elem_ty, span.clone());
+
+        let make_elem_read = |this: &mut Self| {
+            let src_ref = this.make_binding_ref(
+                src_name.clone(),
+                src_id,
+                src_vec_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            );
+            let i_ref = this.make_binding_ref(
+                i_name.clone(),
+                i_id,
+                ResolvedTy::I64,
+                IntentKind::Read,
+                span.clone(),
+            );
+            this.make_expr(
+                HirExprKind::Index {
+                    container: Box::new(src_ref),
+                    index: Box::new(i_ref),
+                },
+                elem_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
+
+        let body = match op {
+            HofOp::Map => {
+                let elem_read = make_elem_read(self);
+                let fn_ref = self.make_binding_ref(
+                    fn_name.clone(),
+                    fn_id,
+                    fn_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let mapped = self.make_expr(
+                    HirExprKind::Call {
+                        callee: Box::new(fn_ref),
+                        args: vec![elem_read],
+                    },
+                    out_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let out_ref = self.make_binding_ref(
+                    acc_name.clone(),
+                    acc_id,
+                    result_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let Some(push) = self.make_vec_push_expr(out_ref, mapped, out_ty, span.clone())
+                else {
+                    self.pop_scope();
+                    return (
+                        HirExprKind::Unsupported(
+                            "Vec::map result element type has no Vec push ABI".into(),
+                        ),
+                        result_ty,
+                    );
+                };
+                let push_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Expr(push),
+                    span: span.clone(),
+                };
+                self.make_unit_block(vec![push_stmt], None, ResolvedTy::Unit, span.clone())
+            }
+            HofOp::Filter => {
+                let elem_read = make_elem_read(self);
+                let fn_ref = self.make_binding_ref(
+                    fn_name.clone(),
+                    fn_id,
+                    fn_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let cond = self.make_expr(
+                    HirExprKind::Call {
+                        callee: Box::new(fn_ref),
+                        args: vec![elem_read],
+                    },
+                    ResolvedTy::Bool,
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let kept_read = make_elem_read(self);
+                let out_ref = self.make_binding_ref(
+                    acc_name.clone(),
+                    acc_id,
+                    result_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let Some(push) = self.make_vec_push_expr(out_ref, kept_read, elem_ty, span.clone())
+                else {
+                    self.pop_scope();
+                    return (
+                        HirExprKind::Unsupported(
+                            "Vec::filter element type has no Vec push ABI".into(),
+                        ),
+                        result_ty,
+                    );
+                };
+                let push_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Expr(push),
+                    span: span.clone(),
+                };
+                let then_block =
+                    self.make_unit_block(vec![push_stmt], None, ResolvedTy::Unit, span.clone());
+                let then_expr = self.make_expr(
+                    HirExprKind::Block(then_block),
+                    ResolvedTy::Unit,
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let if_expr = self.make_expr(
+                    HirExprKind::If {
+                        condition: Box::new(cond),
+                        then_expr: Box::new(then_expr),
+                        else_expr: None,
+                    },
+                    ResolvedTy::Unit,
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let if_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Expr(if_expr),
+                    span: span.clone(),
+                };
+                self.make_unit_block(vec![if_stmt], None, ResolvedTy::Unit, span.clone())
+            }
+            HofOp::Reduce => {
+                let acc_read = self.make_binding_ref(
+                    acc_name.clone(),
+                    acc_id,
+                    result_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let elem_read = make_elem_read(self);
+                let fn_ref = self.make_binding_ref(
+                    fn_name.clone(),
+                    fn_id,
+                    fn_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let folded = self.make_expr(
+                    HirExprKind::Call {
+                        callee: Box::new(fn_ref),
+                        args: vec![acc_read, elem_read],
+                    },
+                    result_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                let acc_target = self.make_binding_ref(
+                    acc_name.clone(),
+                    acc_id,
+                    result_ty.clone(),
+                    IntentKind::Modify,
+                    span.clone(),
+                );
+                let assign_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Assign {
+                        target: acc_target,
+                        value: Box::new(folded),
+                    },
+                    span: span.clone(),
+                };
+                self.make_unit_block(vec![assign_stmt], None, ResolvedTy::Unit, span.clone())
+            }
+        };
+
+        let for_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: None,
+                binding: i_binding,
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive: false,
+                body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(for_expr),
+            span: span.clone(),
+        });
+
+        let tail = self.make_binding_ref(
+            acc_name,
+            acc_id,
+            result_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        self.pop_scope();
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: Some(Box::new(tail)),
+                ty: result_ty.clone(),
+                span,
+            }),
+            result_ty,
+        )
+    }
+
+    /// Expand `receiver.field(args)` — a record field of function type
+    /// called in method position — into a synthetic block:
+    ///
+    /// ```text
+    /// { let __hew_fnfield = <receiver>.<field>; __hew_fnfield(args...) }
+    /// ```
+    ///
+    /// The field read is a BORROW of the closure pair (the record keeps env
+    /// ownership; `classify_closure_pair_rhs` leaves field-access rhs
+    /// unadmitted), so the call neither frees nor retains the environment.
+    fn lower_record_fn_field_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[hew_parser::ast::CallArg],
+        field_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let ret_ty = match field_ty {
+            ResolvedTy::Function { ret, .. } | ResolvedTy::Closure { ret, .. } => (**ret).clone(),
+            other => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("fn-field call `.{method}`"),
+                        reason: format!("recorded field type `{other}` is not a function type"),
+                    },
+                    span.clone(),
+                    "RecordFnFieldCall rewrite requires a function-typed field",
+                ));
+                return (
+                    HirExprKind::Unsupported(format!(
+                        "fn-field call `.{method}` has non-function field type"
+                    )),
+                    ResolvedTy::Unit,
+                );
+            }
+        };
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+        let field_access = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(lowered_receiver),
+                field: method.to_string(),
+            },
+            field_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let fn_name = format!("__hew_fnfield_{}", self.ids.binding().0);
+        let fn_binding = self.bind(fn_name.clone(), field_ty.clone(), false, span.clone());
+        let fn_id = fn_binding.id;
+        let let_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(fn_binding, Some(field_access)),
+            span: span.clone(),
+        };
+        let fn_ref = self.make_binding_ref(
+            fn_name,
+            fn_id,
+            field_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let lowered_args: Vec<HirExpr> = args
+            .iter()
+            .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+            .collect();
+        let call = self.make_expr(
+            HirExprKind::Call {
+                callee: Box::new(fn_ref),
+                args: lowered_args,
+            },
+            ret_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        self.pop_scope();
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements: vec![let_stmt],
+                tail: Some(Box::new(call)),
+                ty: ret_ty.clone(),
+                span,
+            }),
+            ret_ty,
         )
     }
 
@@ -14951,6 +15403,14 @@ impl LowerCtx {
         match rewrite {
             Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
                 self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
+            }
+            Some(MethodCallRewrite::BuiltinVecHigherOrder {
+                op,
+                elem_ty,
+                out_ty,
+            }) => self.lower_builtin_vec_higher_order(receiver, args, op, &elem_ty, &out_ty, span),
+            Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
+                self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
             }
             Some(MethodCallRewrite::BuiltinVecIterNext { elem_ty }) => {
                 self.lower_builtin_vec_iter_next(receiver, &elem_ty, span)
@@ -22727,6 +23187,12 @@ fn check_vec_index_element_type(
                 | ResolvedTy::String
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                // Closure-pair elements: `xs[i]` loads the pair out of the
+                // slot's heap box (`hew_vec_get_ptr` + codegen unbox). The
+                // range-slice form stays unsupported — a sliced vec would
+                // shallow-share the element boxes with the source.
+                | ResolvedTy::Function { .. }
+                | ResolvedTy::Closure { .. }
         )
     };
 

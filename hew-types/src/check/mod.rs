@@ -52,7 +52,7 @@ pub use self::types::{
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
-    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
@@ -1262,6 +1262,16 @@ impl Checker {
             ClosureEscapeRule::EscapesViaBlockValue | ClosureEscapeRule::NoStaticBinding
         );
         if !admit_local {
+            return;
+        }
+        // One advisory per closure literal: the classifier visits the same
+        // span more than once (let-bound block walk + anonymous-expression
+        // walk; top-level item list + module graph for the entry module).
+        // Gate on first-insert; distinct spans still warn independently.
+        if !self
+            .closure_escape_advisory_spans
+            .insert(SpanKey::from(lambda_span))
+        {
             return;
         }
         self.warnings.push(crate::error::TypeError {

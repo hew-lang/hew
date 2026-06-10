@@ -1275,6 +1275,33 @@ pub enum MethodCallRewrite {
     /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
     /// `Result<T::Reply, AskError>` return type.
     RemoteActorAsk,
+    /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
+    /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
+    /// loop over the receiver — bind the receiver and the closure argument
+    /// once, then per element call the closure and collect (`map`),
+    /// conditionally push the element (`filter`), or fold into a mutable
+    /// accumulator (`reduce`). No runtime symbol exists for these; the
+    /// loop reuses the established Vec substrate (`hew_vec_len`, the
+    /// element getter family, and the `hew_vec_push_*` family), so every
+    /// element-type ABI rule and drop discipline is inherited rather than
+    /// re-derived.
+    BuiltinVecHigherOrder {
+        op: VecHigherOrderOp,
+        /// Receiver element type.
+        elem_ty: crate::resolved_ty::ResolvedTy,
+        /// `Map`: the mapped element type; `Filter`: equals `elem_ty`;
+        /// `Reduce`: the accumulator type.
+        out_ty: crate::resolved_ty::ResolvedTy,
+    },
+    /// `receiver.field(args)` where `field` is a record field of function
+    /// type: dispatches as a field-load + closure call, not a method lookup.
+    /// HIR expands the call site into a synthetic let binding the field's
+    /// pair value (a borrow — the record keeps env ownership) followed by a
+    /// closure call on that binding. `field_ty` is the checker-resolved
+    /// function type of the field; its return type is the call's type.
+    RecordFnFieldCall {
+        field_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -1303,6 +1330,20 @@ pub enum MathGenericOp {
     Abs,
     Min,
     Max,
+}
+
+/// Which `Vec<T>` pipeline method a
+/// [`MethodCallRewrite::BuiltinVecHigherOrder`] expands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecHigherOrderOp {
+    /// `v.map(f)` — `Vec<T> → Vec<U>` via `f: fn(T) -> U`.
+    Map,
+    /// `v.filter(p)` — `Vec<T> → Vec<T>` keeping elements where
+    /// `p: fn(T) -> bool` holds.
+    Filter,
+    /// `v.reduce(f, init)` — `Vec<T> → A` via `f: fn(A, T) -> A` seeded
+    /// with `init: A`.
+    Reduce,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2115,6 +2156,13 @@ pub struct Checker {
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
+    /// Spans that already emitted the `ClosureEscapeAdvisory` warning. The
+    /// escape classifier visits a literal more than once (the let-bound block
+    /// walk and the anonymous-expression walk, and the top-level item list
+    /// plus the module graph both cover the entry module), so the advisory
+    /// is gated on first-insert per span — one warning per closure literal,
+    /// distinct literals still warn independently.
+    pub(super) closure_escape_advisory_spans: HashSet<SpanKey>,
     /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
     ///
     /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
@@ -2459,6 +2507,7 @@ impl Checker {
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
             closure_escape_facts: HashMap::new(),
+            closure_escape_advisory_spans: HashSet::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),

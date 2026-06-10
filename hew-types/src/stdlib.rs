@@ -99,6 +99,13 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::Named {
             builtin: Some(b), ..
         } if b.lowers_as_pointer_vec_element() => Some("ptr"),
+        // Function / closure elements ride the pointer convention: each
+        // element slot holds a heap-boxed copy of the 16-byte closure pair
+        // (the boxing/unboxing marshalling lives in codegen's vec-op
+        // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
+        // Same authority as `RuntimeCallingConvention::for_ty`'s
+        // Function/Closure → Pointer arm — keep the two in agreement.
+        crate::Ty::Function { .. } | crate::Ty::Closure { .. } => Some("ptr"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
         // share the pointer-shaped ABI; value-record nominals
         // (`is_indirect = false`) lower through the layout-descriptor

@@ -1039,7 +1039,11 @@ impl Checker {
         self.validate_hashset_element_type(elem_ty, span)
     }
 
-    fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+    pub(super) fn instantiate_type_def_member(
+        ty: &Ty,
+        type_params: &[String],
+        type_args: &[Ty],
+    ) -> Ty {
         let map: HashMap<String, Ty> = type_params
             .iter()
             .zip(type_args.iter())
@@ -1097,6 +1101,66 @@ impl Checker {
         }
     }
 
+    /// True when a Vec element type transitively carries a function/closure
+    /// value INSIDE a composite (record field, enum variant payload, tuple
+    /// member, Option/Result/Range argument). A direct `Vec<fn(...)>` element
+    /// is the supported boxed-pair class and is NOT flagged here — the caller
+    /// exempts the top-level Function/Closure shape. Composite elements ride
+    /// the layout/owned byte-copy ABIs, which would shallow-copy the embedded
+    /// pair and alias its sole-owner environment box, so they fail closed at
+    /// admission. Recursion shape mirrors
+    /// [`vec_element_contains_structural_array`](Self::vec_element_contains_structural_array).
+    pub(super) fn vec_element_contains_fn_value(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Function { .. } | Ty::Closure { .. } => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|elem| self.vec_element_contains_fn_value(elem, visiting)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => {
+                self.vec_element_contains_fn_value(inner, visiting)
+            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                args,
+                ..
+            } => args
+                .iter()
+                .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
+            Ty::Named { name, args, .. } => {
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    return false;
+                };
+                if visiting.contains(type_def.name.as_str()) {
+                    return false;
+                }
+                visiting.insert(type_def.name.clone());
+                let result = type_def.fields.values().any(|field_ty| {
+                    let field_ty =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.vec_element_contains_fn_value(&field_ty, visiting)
+                }) || type_def.variants.values().any(|variant| match variant {
+                    VariantDef::Unit => false,
+                    VariantDef::Tuple(tys) => tys.iter().any(|ty| {
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_fn_value(&ty, visiting)
+                    }),
+                    VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_fn_value(&ty, visiting)
+                    }),
+                });
+                visiting.remove(type_def.name.as_str());
+                result
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn validate_resolved_vec_element_type(
         &mut self,
         resolved: &Ty,
@@ -1117,6 +1181,27 @@ impl Checker {
                 ),
             );
             return false;
+        }
+
+        // Composite elements embedding a function value fail closed: the
+        // layout/owned element ABIs byte-copy the element, which would
+        // shallow-copy the closure pair and alias its sole-owner environment.
+        // A direct Vec<fn(...)> element is the supported boxed-pair class.
+        if !matches!(resolved, Ty::Function { .. } | Ty::Closure { .. }) {
+            let mut visiting = HashSet::new();
+            if self.vec_element_contains_fn_value(resolved, &mut visiting) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "Vec<{}> is not supported: the element type contains a function \
+                         value, and each closure environment has a sole owner — store \
+                         the functions directly in a Vec<fn(...)> instead",
+                        resolved.user_facing()
+                    ),
+                );
+                return false;
+            }
         }
 
         true

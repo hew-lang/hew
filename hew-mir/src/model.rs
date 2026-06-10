@@ -1248,6 +1248,95 @@ fn ty_contains_unclonable_opaque_inner(
     }
 }
 
+/// True when `ty` is, or transitively contains, a closure-pair value
+/// (`fn(...) -> T` / closure surface type).
+///
+/// Transitive authority mirroring [`ty_contains_unclonable_opaque`] for the
+/// CLONE-refused closure-pair class: a closure pair's environment box has a
+/// sole owner and no retain/deep-copy path, so every context whose clone
+/// direction is reachable (actor-state classification, owned-Vec element
+/// harvesting) consults this walk and fails closed at MIR time rather than
+/// refusing late at codegen synthesis or — worse — at runtime on a restart
+/// or push. Recursion shape, layout keying, and cycle handling are identical
+/// to the opaque walk.
+#[must_use]
+pub fn ty_contains_closure_value(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    ty_contains_closure_value_inner(ty, record_layouts, enum_layouts, &mut HashSet::new())
+}
+
+fn ty_contains_closure_value_inner(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => true,
+        ResolvedTy::Named { name, args, .. } => {
+            if args.iter().any(|arg| {
+                ty_contains_closure_value_inner(arg, record_layouts, enum_layouts, visited)
+            }) {
+                return true;
+            }
+            let short = short_name(name);
+            if let Some(record) = record_layouts
+                .iter()
+                .find(|r| r.name == *name || short_name(&r.name) == short)
+            {
+                if visited.insert(record.name.clone()) {
+                    let found = record.field_tys.iter().any(|ft| {
+                        ty_contains_closure_value_inner(ft, record_layouts, enum_layouts, visited)
+                    });
+                    visited.remove(&record.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            let enum_found = if args.is_empty() {
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == *name || short_name(&el.name) == short)
+            } else {
+                let mangled = mangle(short, args);
+                enum_layouts
+                    .iter()
+                    .find(|el| el.name == mangled || el.name == *name)
+            };
+            if let Some(layout) = enum_found {
+                if visited.insert(layout.name.clone()) {
+                    let found = layout.variants.iter().any(|v| {
+                        v.field_tys.iter().any(|ft| {
+                            ty_contains_closure_value_inner(
+                                ft,
+                                record_layouts,
+                                enum_layouts,
+                                visited,
+                            )
+                        })
+                    });
+                    visited.remove(&layout.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| ty_contains_closure_value_inner(e, record_layouts, enum_layouts, visited)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_closure_value_inner(inner, record_layouts, enum_layouts, visited)
+        }
+        _ => false,
+    }
+}
+
 /// True when `ty` may own — transitively — an affine HANDLE leaf the owned-handle
 /// aggregate double-free gate (`detect_unproven_aggregate_handle_double_free`)
 /// guards: a `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
@@ -3320,8 +3409,20 @@ pub enum Instr {
         env: Place,
         /// Destination closure-pair value (`{ fn_ptr, env_ptr }`).
         dest: Place,
+        /// Storage mode for the env pointer stored in the pair. Derived from
+        /// `ClosureEnvLayout::allocation_strategy()` at the literal site:
+        /// `Stack` keeps the frame alloca address (Local escape class),
+        /// `HeapBox` copies the materialised env into a `hew_dyn_box_alloc`
+        /// box with a leading free-thunk slot (Escapes class with captures),
+        /// and `Null` stores a null env (named-fn shims and capture-free
+        /// escaping closures — the shim never loads the env).
+        env_mode: ClosureEnvMode,
     },
     /// Load one captured field from a closure invoke shim's environment pointer.
+    ///
+    /// The field offsets are identical for stack and heap envs: a heap env's
+    /// free-thunk slot lives BEFORE the pair's env pointer (at `env_ptr - 8`),
+    /// so capture loads never see it.
     ClosureEnvFieldLoad {
         /// Local holding the opaque env pointer parameter.
         env: Place,
@@ -4558,6 +4659,30 @@ pub enum DropKind {
     /// (returned) is excluded so exactly one owner drops each member. A binding
     /// the prover does not positively clear leaks; it never double-frees.
     TupleInPlace,
+    /// Escaping-closure pair drop (the closure env heap-lifetime contract).
+    /// The dropped value is the two-pointer closure pair `{ fn_ptr, env_ptr }`
+    /// held in a stack `Local`. The env pointer is, by construction at every
+    /// pair-producing site, one of:
+    ///
+    /// - **null** — a named-fn shim pair or a capture-free escaping closure;
+    ///   nothing is owned, the drop is a no-op.
+    /// - **a heap env** produced by the `Instr::MakeClosure` `HeapBox` mode:
+    ///   a `hew_dyn_box_alloc` box whose slot at `env_ptr - 8` holds the
+    ///   per-closure free thunk (`__hew_closure_env_free_<shim>`, synthesised
+    ///   by codegen with the box's static size/align — the same
+    ///   size-align-agreement convention as the dyn-Trait vtable slot 0).
+    ///
+    /// Codegen loads the env pointer from pair field 1, skips on null,
+    /// otherwise calls the thunk loaded from `env_ptr - 8` and null-stores
+    /// the pair's env slot (`raii-null-after-move`). A stack env (Local
+    /// escape class) NEVER earns this kind: the MIR elaborator admits a
+    /// binding only through the fail-closed `closure_pair_drop_allowed`
+    /// derivation, whose producing shapes (heap-mode literal, call result,
+    /// admitted-binding rebind) exclude stack pairs by construction.
+    ///
+    /// `ElabDrop::drop_fn` must be `None`; the thunk is carried in-band by
+    /// the env box itself, never resolved through the close-method dispatch.
+    ClosurePair,
 }
 
 /// Storage discriminator for `DropKind::TraitObject`. Distinguishes the
@@ -4593,6 +4718,34 @@ pub enum TraitObjectStorage {
     /// `hew_dyn_box_alloc`-allocated heap buffer; release with
     /// `hew_dyn_box_free` after `drop_in_place`.
     HeapBoxed,
+}
+
+/// Storage mode for the env pointer an `Instr::MakeClosure` stores into the
+/// closure pair. Selected at the literal site from
+/// `ClosureEnvLayout::allocation_strategy()`:
+///
+/// - `Stack` — the env record stays a frame alloca and the pair stores its
+///   address (Local escape class; the closure provably never outlives the
+///   introducing scope). No drop obligation.
+/// - `HeapBox` — the materialised env is copied into a `hew_dyn_box_alloc`
+///   heap box (Escapes class with at least one capture). The box layout is
+///   `[free_thunk: ptr][captures...]` and the pair stores the address of the
+///   captures region, so `ClosureEnvFieldLoad` offsets are identical to the
+///   stack layout. The last owner of the pair frees the box exactly once via
+///   the thunk (`DropKind::ClosurePair`).
+/// - `Null` — the pair stores a null env pointer (named-fn invoke shims and
+///   capture-free escaping closures; the shim performs zero env loads). A
+///   null env is the universal "nothing owned" signal the pair-drop protocol
+///   checks before dereferencing, so producers MUST use `Null` rather than a
+///   dummy frame address for any pair that can cross a frame boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClosureEnvMode {
+    /// Frame-alloca env address (Local escape class).
+    Stack,
+    /// `hew_dyn_box_alloc` box with a leading free-thunk slot (Escapes).
+    HeapBox,
+    /// Null env pointer (named-fn shims, capture-free escaping closures).
+    Null,
 }
 
 /// Direction selector for `DropKind::DuplexHalfClose`. Mirrors the
@@ -4897,6 +5050,17 @@ pub enum MirDiagnosticKind {
     /// double-free; full aggregate-extraction support lands in v0.5.1. `name` is
     /// the source binding; `handle_ty` is its rendered type.
     OwnedHandleAggregateExtractionUnsupported { name: String, handle_ty: String },
+    /// Sole-owner closure-pair ingress gate: a function value flowing into an
+    /// owning container position (record field, Vec element, machine payload,
+    /// tuple element) is a borrow — a parameter, a collection-element or
+    /// record-field read, or a binding that never owned its pair. Storing it
+    /// would byte-copy the `{fn_ptr, env_ptr}` pair and give the container a
+    /// second owner of one closure environment (double free at scope exit).
+    /// Closure pairs have no clone path, so only owned pairs (a closure
+    /// literal, a fresh fn-typed call result, or an owning binding) may enter
+    /// an owning position. `name` is the source binding when the operand is a
+    /// binding read; expression-shaped operands carry `None`.
+    ClosurePairBorrowedStore { name: Option<String>, site: SiteId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

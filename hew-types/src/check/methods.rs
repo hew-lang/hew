@@ -2137,6 +2137,17 @@ impl Checker {
             return ty;
         }
 
+        // Fn-typed field call: `w.cb(args)` where `cb` is a record field of
+        // function type dispatches as a field-load + closure call, not a
+        // method lookup. Pre-validated here (arity + per-arg types against
+        // the field's signature) and recorded as a structured rewrite so HIR
+        // never guesses (`checker-codegen-pattern-contract`). A field that
+        // exists but is NOT fn-typed falls through to `UndefinedMethod` —
+        // the gate keeps rejecting what it claims to.
+        if let Some(ret_ty) = self.try_record_fn_field_call(receiver_ty, method_name, args, span) {
+            return ret_ty;
+        }
+
         // Synthesize args for error recovery so independent arg diagnostics are not suppressed.
         for arg in args {
             let (expr, sp) = arg.expr();
@@ -2149,6 +2160,67 @@ impl Checker {
             self.similar_methods(receiver_ty, method_name),
         );
         Ty::Error
+    }
+
+    /// Recognise `receiver.field(args)` where `field` resolves to a record
+    /// field of function/closure type. Returns the call's type (the field
+    /// signature's return type) after checking arity and arguments, or
+    /// `None` when the receiver is not a record, the field does not exist,
+    /// or the field is not function-typed (the caller's `UndefinedMethod`
+    /// fall-through then applies).
+    fn try_record_fn_field_call(
+        &mut self,
+        receiver_ty: &Ty,
+        method_name: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Option<Ty> {
+        let Ty::Named {
+            name,
+            args: type_args,
+            builtin: None,
+        } = receiver_ty
+        else {
+            return None;
+        };
+        let type_def = self.lookup_type_def(name)?;
+        let field_ty = type_def.fields.get(method_name)?;
+        let field_ty =
+            Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
+        let resolved_field = self.subst.resolve(&field_ty);
+        let (params, ret) = match &resolved_field {
+            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+                (params.clone(), (**ret).clone())
+            }
+            _ => return None,
+        };
+        if args.len() != params.len() {
+            self.report_error(
+                TypeErrorKind::ArityMismatch,
+                span,
+                format!(
+                    "field `{method_name}` on `{name}` is `{}` and takes {} argument(s), \
+                     but {} were supplied",
+                    resolved_field.user_facing(),
+                    params.len(),
+                    args.len()
+                ),
+            );
+            return Some(Ty::Error);
+        }
+        for (arg, param_ty) in args.iter().zip(params.iter()) {
+            let (expr, sp) = arg.expr();
+            self.check_against(expr, sp, param_ty);
+        }
+        if let Ok(field_resolved) = crate::resolved_ty::ResolvedTy::from_ty(&resolved_field) {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RecordFnFieldCall {
+                    field_ty: field_resolved,
+                },
+            );
+        }
+        Some(ret)
     }
 
     fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
@@ -2940,6 +3012,56 @@ impl Checker {
             .symbol_name = symbol_name.to_string();
     }
 
+    /// Fail-closed gate for the Vec pipeline methods (`map`/`filter`/`reduce`)
+    /// on function-valued elements. Each `Vec<fn(...)>` slot owns its
+    /// closure-pair box and, transitively, the pair's environment box; the
+    /// pipeline desugar reads elements by index (a borrow) and would hand a
+    /// second owner the same environment the source vec still releases at
+    /// scope exit (`boundary-fail-closed`, `ffi-ownership-contracts`).
+    /// Returns `true` when the call was rejected.
+    fn reject_vec_pipeline_fn_element(&mut self, method: &str, elem_ty: &Ty, span: &Span) -> bool {
+        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Vec::{method}` is not supported for function-valued elements: \
+                     each element owns its closure environment, and reading elements \
+                     into a pipeline result would create a second owner of one \
+                     environment"
+                ),
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Record the [`MethodCallRewrite::BuiltinVecHigherOrder`] entry that
+    /// drives the HIR pipeline-loop expansion. Skipped (fail-closed: the call
+    /// then dies at HIR with `MethodCallNoRewrite`) when either type fails
+    /// boundary conversion — an unresolved inference hole here means the call
+    /// site itself already carries a type diagnostic.
+    fn record_vec_higher_order_rewrite(
+        &mut self,
+        op: VecHigherOrderOp,
+        elem_ty: &Ty,
+        out_ty: &Ty,
+        span: &Span,
+    ) {
+        let elem = ResolvedTy::from_ty(&elem_ty.clone().materialize_literal_defaults());
+        let out = ResolvedTy::from_ty(&out_ty.clone().materialize_literal_defaults());
+        if let (Ok(elem_ty), Ok(out_ty)) = (elem, out) {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::BuiltinVecHigherOrder {
+                    op,
+                    elem_ty,
+                    out_ty,
+                },
+            );
+        }
+    }
+
     /// Instantiate an [`ArgTemplate`] against the receiver's concrete types.
     fn collection_arg_ty(template: ArgTemplate, cx: &CollectionTyCx) -> Ty {
         match template {
@@ -3373,6 +3495,25 @@ impl Checker {
     ) -> Option<&'static str> {
         if method == "join" {
             return matches!(elem_ty, Ty::String).then_some("hew_vec_join_str");
+        }
+        // Closure-pair elements: each slot owns a heap-boxed pair (and,
+        // transitively, the pair's env box). The shared-buffer methods would
+        // shallow-copy those boxes and double-free them at the two vecs'
+        // releases — fail closed with a precise diagnostic rather than alias
+        // owners (`boundary-fail-closed`, `ffi-ownership-contracts`).
+        if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
+            && matches!(method, "clone" | "append" | "extend")
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Vec::{method}` is not supported for function-valued elements: \
+                     each element owns its closure environment, and a shallow \
+                     buffer copy would create two owners of one environment"
+                ),
+            );
+            return None;
         }
         let sym = crate::stdlib::resolve_vec_method(method, elem_ty, &self.type_defs)?;
         if sym.ends_with("_layout") {
@@ -3815,6 +3956,15 @@ impl Checker {
                 }
                 let resolved_ret = self.subst.resolve(&ret_ty);
                 self.reject_rc_collection_element("Vec", &resolved_ret, span);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.reject_vec_pipeline_fn_element("map", &resolved_elem, span) {
+                    self.record_vec_higher_order_rewrite(
+                        VecHigherOrderOp::Map,
+                        &resolved_elem,
+                        &resolved_ret,
+                        span,
+                    );
+                }
                 self.make_vec_type(resolved_ret, span)
             }
             "filter" => {
@@ -3828,7 +3978,51 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &expected_fn);
                 }
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.reject_vec_pipeline_fn_element("filter", &resolved_elem, span) {
+                    self.record_vec_higher_order_rewrite(
+                        VecHigherOrderOp::Filter,
+                        &resolved_elem,
+                        &resolved_elem,
+                        span,
+                    );
+                }
                 resolved.clone()
+            }
+            "reduce" => {
+                // Argument order: closure first, seed second
+                // (`numbers.reduce(|a, b| a + b, 0)`) — `fold` with the
+                // arguments flipped for chain readability (spec §3.8.6
+                // documents this seeded form). A seedless 1-arg `reduce`
+                // is deliberately not provided: it would need an
+                // empty-vector answer, and we refuse to invent one.
+                self.check_arity(args, 2, "`Vec::reduce`", span);
+                self.reject_rc_collection_element("Vec", &elem_ty, span);
+                let acc_ty = if let Some(arg) = args.get(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp)
+                } else {
+                    Ty::Var(TypeVar::fresh())
+                };
+                let expected_fn = Ty::Function {
+                    params: vec![acc_ty.clone(), elem_ty.clone()],
+                    ret: Box::new(acc_ty.clone()),
+                };
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &expected_fn);
+                }
+                let resolved_acc = self.subst.resolve(&acc_ty);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.reject_vec_pipeline_fn_element("reduce", &resolved_elem, span) {
+                    self.record_vec_higher_order_rewrite(
+                        VecHigherOrderOp::Reduce,
+                        &resolved_elem,
+                        &resolved_acc,
+                        span,
+                    );
+                }
+                resolved_acc
             }
             "fold" => {
                 self.check_arity(args, 2, "`Vec::fold`", span);
@@ -5964,6 +6158,16 @@ impl Checker {
                         return Ty::Error;
                     }
                     // hits.is_empty() → fall through to UndefinedMethod below.
+                }
+                // Fn-typed field call: `w.cb(args)` where `cb` is a record
+                // field of function type dispatches as a field-load +
+                // closure call, not a method lookup. Pre-validated (arity +
+                // per-arg types against the field signature) and recorded as
+                // a structured rewrite so HIR never guesses
+                // (`checker-codegen-pattern-contract`). A field that exists
+                // but is NOT fn-typed falls through to `UndefinedMethod`.
+                if let Some(ret_ty) = self.try_record_fn_field_call(&resolved, method, args, span) {
+                    return ret_ty;
                 }
                 // Synthesize args even if method unknown (for error recovery)
                 for arg in args {

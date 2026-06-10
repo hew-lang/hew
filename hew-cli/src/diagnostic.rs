@@ -115,7 +115,8 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::MustConsume { .. }
         | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
         | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
-        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "E_MIR_CHECK",
+        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
         hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
@@ -483,6 +484,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "OwnedHandleAggregateExtractionUnsupported"
         }
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "ClosurePairBorrowedStore",
     }
 }
 
@@ -530,9 +532,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { site, .. }
-        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. } => {
-            Some(*site)
-        }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. }
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => Some(*site),
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -671,6 +672,19 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
              shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
              return it without re-aggregating (full support lands in v0.5.1)"
         ),
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { name, .. } => {
+            let what = name.as_ref().map_or_else(
+                || "this function value".to_string(),
+                |n| format!("the function value `{n}`"),
+            );
+            format!(
+                "cannot store {what} here: it borrows a closure environment owned \
+                 elsewhere (a parameter, collection element, or record-field read), \
+                 and storing it would create a second owner of that environment — \
+                 store a closure literal, a fresh call result, or a binding that \
+                 owns its closure instead"
+            )
+        }
     };
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
@@ -740,6 +754,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             handle_ty, ..
         } => {
             notes.push(format!("handle type: {handle_ty}"));
+        }
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => {
+            notes.push(format!("store site: {site}"));
         }
     }
     if !diagnostic.note.is_empty() {

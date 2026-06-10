@@ -1,0 +1,14 @@
+// Pushing the same closure binding into two Vec slots would store two
+// owning byte-copies of one pair; `hew_vec_free_closure_pairs` would free
+// the environment twice at scope exit. The second push is a use-after-move.
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let f = make_adder(5);
+    let fns: Vec<fn(i64) -> i64> = Vec::new();
+    fns.push(f);
+    fns.push(f);
+    println(fns.len());
+}

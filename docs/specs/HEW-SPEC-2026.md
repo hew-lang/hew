@@ -1756,8 +1756,16 @@ let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
 numbers
     .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
     .map(|x| x * 2)                 // x: i64, result: i64
-    .reduce(|a, b| a + b)           // a: i64, b: i64 from reduce signature
+    .reduce(|a, b| a + b, 0)        // a: i64 (accumulator), b: i64 (element); seed last
 ```
+
+`Vec::reduce` takes the combining closure first and the seed second
+(`numbers.reduce(|acc, x| acc + x, 0)`). It is `fold` with the argument
+order flipped for chain readability — `fold` takes the seed first
+(`numbers.fold(0, |acc, x| acc + x)`); both fold left over the elements
+with an explicit seed. A seedless `reduce` (first element as the
+accumulator) is not provided: it would need an empty-vector answer, and
+Hew refuses to invent one.
 
 **Closure syntax:**
 
@@ -1765,7 +1773,7 @@ Hew uses pipe-delimited closure syntax for first-class function values:
 
 ```hew
 let doubled = transform(|x| x * 2, 21);
-let sum = numbers.reduce(|a, b| a + b);
+let sum = numbers.reduce(|a, b| a + b, 0);
 let checked = |x: i64| -> i64 { x + 1 };
 ```
 

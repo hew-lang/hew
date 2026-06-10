@@ -1,0 +1,19 @@
+// `h.cb(args)` where `cb` is a fn-typed record field dispatches as a
+// field-load + closure call. The field read borrows the pair — repeated
+// dispatch through the same record neither consumes nor re-frees the env.
+type Holder {
+    cb: fn(i64) -> i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let h = Holder { cb: |x: i64| x + 1 };
+    println(h.cb(41)); // 42
+    let g = Holder { cb: make_adder(100) };
+    println(g.cb(23)); // 123
+    // Second dispatch through the same field: 101.
+    println(g.cb(1));
+}

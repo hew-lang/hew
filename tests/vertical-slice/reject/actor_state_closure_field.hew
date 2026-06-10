@@ -1,0 +1,13 @@
+// Closure-valued actor state is rejected at compile time: supervisor
+// restart needs the clone direction, and a closure environment has a sole
+// owner with no clone path.
+actor Worker {
+    let cb: fn(i64) -> i64 = |x: i64| x;
+    receive fn poke() {
+        println(cb(1));
+    }
+}
+
+fn main() {
+    println(0);
+}

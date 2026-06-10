@@ -1,0 +1,17 @@
+// Vec element reads are borrows: the vec slot keeps ownership of the
+// element's pair box and environment. Storing the borrowed read into
+// another vec would make the second vec a second owner of the same
+// environment — refused outright (the store itself is the corruption,
+// with or without any later use of the binding).
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let fns: Vec<fn(i64) -> i64> = Vec::new();
+    fns.push(make_adder(1));
+    let first = fns[0];
+    let other: Vec<fn(i64) -> i64> = Vec::new();
+    other.push(first);
+    println(other.len());
+}

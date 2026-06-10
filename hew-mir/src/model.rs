@@ -771,6 +771,22 @@ pub struct ActorHandlerLayout {
     /// field becomes redundant once codegen emits lock calls inline rather
     /// than relying on the scheduler acquire/release path.
     pub requires_state_guard: bool,
+    /// `#[every(duration)]` periodic self-send interval in milliseconds.
+    ///
+    /// `None` for ordinary message-driven handlers. `Some(ms)` when the
+    /// HIR handler carried `every_ns`; the ns→ms conversion (truncating
+    /// divide) happens once, at `lower_actor_handler_layouts`, because the
+    /// runtime ABI (`hew_actor_schedule_periodic`) is millisecond-grained.
+    /// The checker rejects intervals that floor to 0 ms, so a populated
+    /// value is ≥ 1 for checked programs; if an unchecked input slips a 0
+    /// through, the runtime refuses to arm (null handle) and codegen's
+    /// spawn-site null check traps — fail-closed at every layer.
+    ///
+    /// Codegen consumes this at each `Instr::SpawnActor` site to emit one
+    /// `hew_actor_schedule_periodic(actor, msg_type, every_ms)` call per
+    /// periodic handler, using this row's `msg_type` (the same
+    /// protocol-descriptor id the send path uses).
+    pub every_ms: Option<u64>,
 }
 
 /// Layout descriptor for a `supervisor` declaration.

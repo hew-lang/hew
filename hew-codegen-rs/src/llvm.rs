@@ -17650,6 +17650,13 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
             // QUIC send: `data: bytes` passed as *const BytesTriple.
             | "hew_quic_stream_send"
             | "hew_quic_stream_send_timeout_hew"
+            // compress: all _hew wrappers accept `bytes` inputs via *const BytesTriple.
+            | "hew_gzip_compress_hew"
+            | "hew_gzip_decompress_hew"
+            | "hew_deflate_compress_hew"
+            | "hew_deflate_decompress_hew"
+            | "hew_zlib_compress_hew"
+            | "hew_zlib_decompress_hew"
     )
 }
 
@@ -17693,6 +17700,13 @@ fn is_bytes_triple_return_producer(symbol: &str) -> bool {
             // QUIC recv: `-> bytes` FFI wrappers return BytesTriple by value.
             | "hew_quic_stream_recv"
             | "hew_quic_stream_recv_timeout_hew"
+            // compress: all _hew wrappers return BytesTriple by value.
+            | "hew_gzip_compress_hew"
+            | "hew_gzip_decompress_hew"
+            | "hew_deflate_compress_hew"
+            | "hew_deflate_decompress_hew"
+            | "hew_zlib_compress_hew"
+            | "hew_zlib_decompress_hew"
     )
 }
 

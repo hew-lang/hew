@@ -8,11 +8,12 @@
 //! decoded payload is expected. All returned buffers are allocated with
 //! `libc::malloc` so callers can free them with [`hew_compress_free`].
 
-// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
+// Force-link hew-runtime so the linker can resolve hew_vec_* and
+// hew_bytes_* symbols referenced by hew-cabi and hew-runtime's object code.
 #[cfg(test)]
 extern crate hew_runtime;
 
+use hew_runtime::bytes::BytesTriple;
 use std::io::{self, Read};
 
 use flate2::read::{
@@ -399,58 +400,109 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
 }
 
 // ---------------------------------------------------------------------------
-// HewVec-ABI wrappers (used by std/compress.hew)
+// BytesTriple-ABI wrappers (used by std/compress.hew)
+//
+// All `_hew` entry points follow the v0.5 BytesTriple ABI:
+//   - `bytes` input args are passed as `*const BytesTriple` (by-pointer consumer).
+//   - `bytes` return values are returned as `BytesTriple` by value, with a
+//     matching `_raw` sibling that writes through a caller-supplied `*mut BytesTriple`
+//     for use in the compiler's call-site out-pointer path.
+//
+// WHEN OBSOLETE: when codegen emits the correct C-ABI coercion for by-value
+// struct arguments/returns (via `byval`/coerced-int lowering), the by-pointer
+// consumer convention and `_raw` sidecars can be removed and the Rust functions
+// can use `BytesTriple` directly in all positions.
 // ---------------------------------------------------------------------------
 
-/// Helper to call a compression function with `*const u8, usize, *mut usize`
-/// ABI.
+/// Extract a byte slice from a `BytesTriple` by-pointer consumer argument.
+///
+/// Returns an empty slice for a null pointer or a zero-length triple.
 ///
 /// # Safety
 ///
-/// Caller must ensure the `f` function is called with valid pointers.
-unsafe fn compress_op(
-    v: *mut hew_cabi::vec::HewVec,
+/// If non-null, `triple` must point to a live `BytesTriple` whose payload
+/// is valid for at least `offset + len` bytes.
+unsafe fn bytes_slice_from_triple<'a>(triple: *const BytesTriple) -> &'a [u8] {
+    if triple.is_null() {
+        return &[];
+    }
+    // SAFETY: caller guarantees triple is non-null and valid.
+    let t = unsafe { &*triple };
+    if t.len == 0 || t.ptr.is_null() {
+        return &[];
+    }
+    let offset = t.offset as usize;
+    let len = t.len as usize;
+    // SAFETY: t.ptr + offset is valid for len bytes per BytesTriple invariant.
+    unsafe { std::slice::from_raw_parts(t.ptr.add(offset), len) }
+}
+
+/// Allocate a `BytesTriple` from a byte slice via the runtime allocator.
+fn bytes_triple_from_slice(data: &[u8]) -> BytesTriple {
+    if data.is_empty() {
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    }
+    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    // SAFETY: data is valid for len bytes; hew_bytes_from_static copies the slice.
+    unsafe { hew_runtime::bytes::hew_bytes_from_static(data.as_ptr(), len) }
+}
+
+/// Helper: compress input triple via `f(ptr, len, &out_len) -> *mut u8`.
+///
+/// # Safety
+///
+/// `triple` must be null or a valid `*const BytesTriple`.
+unsafe fn compress_triple(
+    triple: *const BytesTriple,
     f: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
+) -> BytesTriple {
+    // SAFETY: forwarded per function contract.
+    let input = unsafe { bytes_slice_from_triple(triple) };
     let mut out_len: usize = 0;
     // SAFETY: input slice is valid; out_len is writable.
     let ptr = unsafe { f(input.as_ptr(), input.len(), &raw mut out_len) };
     if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
     }
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
+    let result = bytes_triple_from_slice(slice);
     // SAFETY: ptr was allocated by the codec function via libc::malloc.
     unsafe { hew_compress_free(ptr) };
     result
 }
 
-/// Helper to call a decompression function with
-/// `*const u8, usize, *mut usize, usize` ABI.
+/// Helper: decompress input triple via `f(ptr, len, &out_len, max) -> *mut u8`.
 ///
 /// # Safety
 ///
-/// Caller must ensure the `f` function is called with valid pointers.
-unsafe fn decompress_op(
-    v: *mut hew_cabi::vec::HewVec,
+/// `triple` must be null or a valid `*const BytesTriple`.
+unsafe fn decompress_triple(
+    triple: *const BytesTriple,
     max_output_len: i64,
     f: unsafe extern "C" fn(*const u8, usize, *mut usize, usize) -> *mut u8,
-) -> *mut hew_cabi::vec::HewVec {
+) -> BytesTriple {
     let max_output_len = match hew_max_output_len(max_output_len) {
         Ok(limit) => limit,
         Err(err) => {
             set_last_error(err.to_string());
-            // SAFETY: hew_vec_new allocates a valid empty HewVec.
-            return unsafe { hew_cabi::vec::hew_vec_new() };
+            return BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
         }
     };
-    // SAFETY: v validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
+    // SAFETY: forwarded per function contract.
+    let input = unsafe { bytes_slice_from_triple(triple) };
     let mut out_len: usize = 0;
     // SAFETY: input slice is valid; out_len is writable.
     let ptr = unsafe {
@@ -462,102 +514,206 @@ unsafe fn decompress_op(
         )
     };
     if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
     }
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
+    let result = bytes_triple_from_slice(slice);
     // SAFETY: ptr was allocated by the codec function via libc::malloc.
     unsafe { hew_compress_free(ptr) };
     result
 }
 
-/// Gzip-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Gzip-compress `data` (`bytes`), returning a new `BytesTriple`.
+///
+/// Receives `data` as `*const BytesTriple` (by-pointer consumer convention).
+/// Returns a `BytesTriple` by value; see `hew_gzip_compress_hew_raw` for the
+/// out-pointer variant used by some codegen paths.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
-/// `max_output_len` must be non-negative.
-/// `max_output_len` must be non-negative.
+/// `data` must be null or a valid `*const BytesTriple` for the duration of
+/// the call.
 #[no_mangle]
-pub unsafe extern "C" fn hew_gzip_compress_hew(
-    v: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_gzip_compress) }
+pub unsafe extern "C" fn hew_gzip_compress_hew(data: *const BytesTriple) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { compress_triple(data, hew_gzip_compress) }
 }
 
-/// Gzip-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Out-pointer sibling for `hew_gzip_compress_hew`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
-/// `max_output_len` must be non-negative.
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_gzip_compress_hew_raw(
+    data: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_gzip_compress_hew(data) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Gzip-decompress `data` (`bytes`), returning a new `BytesTriple`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `max_output_len` must
+/// be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gzip_decompress_hew(
-    v: *mut hew_cabi::vec::HewVec,
+    data: *const BytesTriple,
     max_output_len: i64,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to decompress_op.
-    unsafe { decompress_op(v, max_output_len, hew_gzip_decompress) }
+) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { decompress_triple(data, max_output_len, hew_gzip_decompress) }
 }
 
-/// Deflate-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Out-pointer sibling for `hew_gzip_decompress_hew`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
 #[no_mangle]
-pub unsafe extern "C" fn hew_deflate_compress_hew(
-    v: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_deflate_compress) }
+pub unsafe extern "C" fn hew_gzip_decompress_hew_raw(
+    data: *const BytesTriple,
+    max_output_len: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_gzip_decompress_hew(data, max_output_len) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
 }
 
-/// Deflate-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Deflate-compress `data` (`bytes`), returning a new `BytesTriple`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
-/// `max_output_len` must be non-negative.
+/// `data` must be null or a valid `*const BytesTriple`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_deflate_compress_hew(data: *const BytesTriple) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { compress_triple(data, hew_deflate_compress) }
+}
+
+/// Out-pointer sibling for `hew_deflate_compress_hew`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_deflate_compress_hew_raw(
+    data: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_deflate_compress_hew(data) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Deflate-decompress `data` (`bytes`), returning a new `BytesTriple`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `max_output_len` must
+/// be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_deflate_decompress_hew(
-    v: *mut hew_cabi::vec::HewVec,
+    data: *const BytesTriple,
     max_output_len: i64,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to decompress_op.
-    unsafe { decompress_op(v, max_output_len, hew_deflate_decompress) }
+) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { decompress_triple(data, max_output_len, hew_deflate_decompress) }
 }
 
-/// Zlib-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Out-pointer sibling for `hew_deflate_decompress_hew`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
 #[no_mangle]
-pub unsafe extern "C" fn hew_zlib_compress_hew(
-    v: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to compress_op.
-    unsafe { compress_op(v, hew_zlib_compress) }
+pub unsafe extern "C" fn hew_deflate_decompress_hew_raw(
+    data: *const BytesTriple,
+    max_output_len: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_deflate_decompress_hew(data, max_output_len) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
 }
 
-/// Zlib-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
+/// Zlib-compress `data` (`bytes`), returning a new `BytesTriple`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
-/// `max_output_len` must be non-negative.
+/// `data` must be null or a valid `*const BytesTriple`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_zlib_compress_hew(data: *const BytesTriple) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { compress_triple(data, hew_zlib_compress) }
+}
+
+/// Out-pointer sibling for `hew_zlib_compress_hew`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_zlib_compress_hew_raw(
+    data: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_zlib_compress_hew(data) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Zlib-decompress `data` (`bytes`), returning a new `BytesTriple`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `max_output_len` must
+/// be non-negative.
 #[no_mangle]
 pub unsafe extern "C" fn hew_zlib_decompress_hew(
-    v: *mut hew_cabi::vec::HewVec,
+    data: *const BytesTriple,
     max_output_len: i64,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to decompress_op.
-    unsafe { decompress_op(v, max_output_len, hew_zlib_decompress) }
+) -> BytesTriple {
+    // SAFETY: data is null-or-valid per caller contract.
+    unsafe { decompress_triple(data, max_output_len, hew_zlib_decompress) }
+}
+
+/// Out-pointer sibling for `hew_zlib_decompress_hew`.
+///
+/// # Safety
+///
+/// `data` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_zlib_decompress_hew_raw(
+    data: *const BytesTriple,
+    max_output_len: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_zlib_decompress_hew(data, max_output_len) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
 }
 
 #[cfg(test)]

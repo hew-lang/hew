@@ -127,6 +127,34 @@ pub unsafe extern "C" fn hew_assert_ne_f64(left: f64, right: f64) {
     }
 }
 
+/// Assert that two `u8` values are equal.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_assert_eq_u8(left: u8, right: u8) {
+    if left != right {
+        eprintln!("assertion failed: assert_eq({left}, {right})");
+        // SAFETY: abort() is always safe to call.
+        unsafe { libc::abort() };
+    }
+}
+
+/// Assert that two `u8` values are not equal.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_assert_ne_u8(left: u8, right: u8) {
+    if left == right {
+        eprintln!("assertion failed: assert_ne({left}, {right})");
+        // SAFETY: abort() is always safe to call.
+        unsafe { libc::abort() };
+    }
+}
+
 /// Assert that two `bool` values (as `i32`: 0 or 1) are equal.
 ///
 /// # Safety

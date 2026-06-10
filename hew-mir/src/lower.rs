@@ -15345,7 +15345,7 @@ impl Builder {
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
-            "hew_bytes_index" => self.lower_bytes_get_i32(hir_args, site, context),
+            "hew_bytes_index" => self.lower_bytes_get_u8(hir_args, site, context),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             "hew_observe_read_u64" | "hew_observe_scrape" | "hew_observe_series" => {
                 self.lower_observe_runtime_call(symbol, hir_args, site, context)
@@ -15465,11 +15465,10 @@ impl Builder {
     /// `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so it routes to
     /// the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8` runtime
     /// entry (the same getter the `b[i]` indexing sugar uses) rather than the
-    /// Vec element getter `hew_vec_get_i32(*mut HewVec, i64)`. Codegen unpacks
-    /// the single triple Place into the runtime's `(ptr, offset, len)` args and
-    /// widens the u8 result to the method's declared `i32` return. The runtime
-    /// bounds-checks and aborts on OOB (boundary-fail-closed).
-    fn lower_bytes_get_i32(
+    /// Vec element getter `hew_vec_get_i32(*mut HewVec, i64)`. The runtime
+    /// bounds-checks and aborts on OOB (boundary-fail-closed). The dest place
+    /// is typed `u8` matching the catalog and runtime ABI return type.
+    fn lower_bytes_get_u8(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
@@ -15491,7 +15490,7 @@ impl Builder {
         let buf = self.lower_value(&hir_args[0])?;
         let idx = self.lower_value(&hir_args[1])?;
         let dest =
-            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I32));
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::U8));
         self.push_runtime_call("hew_bytes_index", vec![buf, idx], dest);
         dest
     }

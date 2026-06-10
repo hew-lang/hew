@@ -1,10 +1,10 @@
 //! Behavioural tests for std::encoding::xml.
 
 import std::encoding::xml;
+
 import std::testing;
 
 // ── Happy-path parse ──────────────────────────────────────────────────
-
 #[test]
 fn test_parse_root_tag() {
     let root = xml.parse("<a>text</a>");
@@ -46,12 +46,11 @@ fn test_parse_attribute() {
 fn test_is_element_returns_positive_for_element() {
     let root = xml.parse("<a/>");
     // is_element == 1 for element nodes
-    testing.assert_eq(root.is_element(), 1);
+    testing.assert_eq(root.is_element() as i64, 1);
     root.free();
 }
 
 // ── Boundary / error ─────────────────────────────────────────────────
-
 #[test]
 fn test_free_no_panic() {
     let root = xml.parse("<x/>");

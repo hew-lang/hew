@@ -226,6 +226,24 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
+/// Convert a `u8` to its decimal string representation. Caller must free the result with `hew_string_drop`.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_u8_to_string(n: u8) -> *mut c_char {
+    let mut buf = [0u8; 4]; // max 3 digits for 0..=255
+    let len = {
+        use std::io::Write;
+        let mut w: &mut [u8] = &mut buf;
+        let _ = write!(w, "{n}");
+        4 - w.len()
+    };
+    // SAFETY: buf contains len valid UTF-8 bytes from write!.
+    unsafe { malloc_cstring(buf.as_ptr(), len) }
+}
+
 /// Convert a `u32` to its decimal string representation. Caller must free the result with `hew_string_drop`.
 ///
 /// # Safety

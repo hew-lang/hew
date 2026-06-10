@@ -30,17 +30,17 @@ pub fn encode_header(payload_len: i64, flags: i64) -> bytes {
     // Version
     out.push(1);
     // Flags (only bit 0 is valid)
-    out.push(flags as i32 & 1);
+    out.push((flags & 1) as u8);
     // Payload length (little-endian 4 bytes). Shift payload_len (i64) then
-    // truncate to i32 for push(). Let-bindings avoid operator-precedence
-    // ambiguity: `x >> n as i32` would cast the literal, not the result.
+    // truncate to u8 for push(). Let-bindings avoid operator-precedence
+    // ambiguity: `x >> n as u8` would cast the literal, not the result.
     let p8: i64 = payload_len >> 8;
     let p16: i64 = payload_len >> 16;
     let p24: i64 = payload_len >> 24;
-    out.push(payload_len as i32 & 255);
-    out.push(p8 as i32 & 255);
-    out.push(p16 as i32 & 255);
-    out.push(p24 as i32 & 255);
+    out.push((payload_len & 255) as u8);
+    out.push((p8 & 255) as u8);
+    out.push((p16 & 255) as u8);
+    out.push((p24 & 255) as u8);
     out
 }
 

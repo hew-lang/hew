@@ -54,7 +54,7 @@ pub fn decode(s: string) -> bytes {
         if v < 0 {
             return bytes::new();
         }
-        vals.push(v);
+        vals.push(v as u8);
     }
     // Process groups of 4 values → 3 bytes
     let nvals = vals.len();
@@ -122,26 +122,26 @@ fn encode_impl(data: bytes, url_safe: bool) -> string {
         let a = data.get(i);
         let b = data.get(i + 1);
         let c = data.get(i + 2);
-        out.push(b64_char(a >> 2, url_safe));
-        out.push(b64_char((a & 3) << 4 | b >> 4, url_safe));
-        out.push(b64_char((b & 15) << 2 | c >> 6, url_safe));
-        out.push(b64_char(c & 63, url_safe));
+        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
+        out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
+        out.push(b64_char((b as i32 & 15) << 2 | c as i32 >> 6, url_safe) as u8);
+        out.push(b64_char(c as i32 & 63, url_safe) as u8);
         i = i + 3;
     }
     // Handle remaining bytes (always pad with '=')
     let remaining = dlen - i;
     if remaining == 1 {
         let a = data.get(i);
-        out.push(b64_char(a >> 2, url_safe));
-        out.push(b64_char((a & 3) << 4, url_safe));
+        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
+        out.push(b64_char((a as i32 & 3) << 4, url_safe) as u8);
         out.push(61); // '='
         out.push(61);
     } else if remaining == 2 {
         let a = data.get(i);
         let b = data.get(i + 1);
-        out.push(b64_char(a >> 2, url_safe));
-        out.push(b64_char((a & 3) << 4 | b >> 4, url_safe));
-        out.push(b64_char((b & 15) << 2, url_safe));
+        out.push(b64_char(a as i32 >> 2, url_safe) as u8);
+        out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
+        out.push(b64_char((b as i32 & 15) << 2, url_safe) as u8);
         out.push(61); // '='
     }
     out.to_string()

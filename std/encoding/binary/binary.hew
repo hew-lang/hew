@@ -28,14 +28,14 @@
 //! }
 //! ```
 
-// ── Internal: extract the low 8 bits of an i64 as i32 ────────────────
+// ── Internal: extract the low 8 bits of an i64 as u8 ─────────────────
 //
-// INTERNAL-ABI: two-statement form avoids the precedence trap where
-// the formatter rewrites `(v & 0xFF) as i32` → `v & 0xFF as i32`
-// (binding `as` tighter than `&`), causing a type error when v: i64.
-fn lo_byte(v: i64) -> i32 {
-    let masked = v & 0xFF;
-    masked as i32
+// INTERNAL-ABI: explicit `let masked: i64` annotation is required — `0xFF`
+// is an i32 literal; without the annotation, `v & 0xFF` resolves to i32
+// storage, causing a NumericCast storage-type mismatch when casting to u8.
+fn lo_byte(v: i64) -> u8 { // INTERNAL-ABI: masks to low 8 bits; u8 matches bytes.push contract
+    let masked: i64 = v & 0xFF;
+    masked as u8
 }
 
 // ── Little-endian put helpers ─────────────────────────────────────────

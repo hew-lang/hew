@@ -51,7 +51,7 @@ pub fn decode(s: string) -> bytes {
         if lo < 0 {
             return bytes::new();
         }
-        out.push(hi * 16 + lo);
+        out.push((hi * 16 + lo) as u8);
         i = i + 2;
     }
     out
@@ -62,10 +62,10 @@ fn encode_impl(data: bytes, upper: bool) -> string {
     let out: bytes = bytes::new();
     for i in 0 .. data.len() {
         let b = data.get(i);
-        let hi = b / 16;
-        let lo = b % 16;
-        out.push(nibble_to_char(hi, upper));
-        out.push(nibble_to_char(lo, upper));
+        let hi = b as i32 / 16;
+        let lo = b as i32 % 16;
+        out.push(nibble_to_char(hi, upper) as u8);
+        out.push(nibble_to_char(lo, upper) as u8);
     }
     out.to_string()
 }

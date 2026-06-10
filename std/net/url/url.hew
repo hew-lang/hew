@@ -275,7 +275,7 @@ fn decode_impl(s: string) -> string {
             if pending.len() == 0 && literal_start < i {
                 out = out + s.slice(literal_start, i);
             }
-            pending.push(hi * 16 + lo);
+            pending.push((hi * 16 + lo) as u8);
             i = i + 3;
             literal_start = i;
             continue;

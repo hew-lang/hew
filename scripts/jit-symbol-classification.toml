@@ -702,6 +702,7 @@ stable = [
   "hew_vec_contains_str",
   "hew_vec_contains_thunk",
   "hew_vec_free",
+  "hew_vec_free_closure_pairs",
   "hew_vec_free_managed",
   "hew_vec_free_owned",
   "hew_vec_from_u8_data",

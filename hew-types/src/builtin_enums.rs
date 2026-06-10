@@ -160,5 +160,18 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
             ],
             suppress_from_sandbox_emit: false,
         },
+        // `TimeoutError` is the error arm of `await rx.recv() | after d` and
+        // `await stream.recv() | after d`.  A unit enum with one variant
+        // (`Timeout`) that distinguishes a deadline expiry from a closed channel
+        // (`Ok(None)`).  Carried out-of-band here because user programs only
+        // reference it as `Err(_)` in match arms — not as a standalone type
+        // declaration — so the `EnumLayoutRegistry` generic path would never
+        // register it. `suppress_from_sandbox_emit: true` because the sandbox
+        // bytecode descriptor has no stable fixture baseline for `TimeoutError`.
+        BuiltinMonomorphicEnum {
+            name: "TimeoutError",
+            variants: &[BuiltinMonomorphicEnumVariant { name: "Timeout" }],
+            suppress_from_sandbox_emit: true,
+        },
     ]
 }

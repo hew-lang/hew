@@ -90,6 +90,23 @@ pub enum AskError {
     NoRunnableWork;
 }
 
+/// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
+///
+/// Returned as `Err(TimeoutError::Timeout)` when the deadline fires before an
+/// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
+///
+/// ```hew
+/// match await rx.recv() | after 50ms {
+///     Ok(Some(v)) => v,       // item received before deadline
+///     Ok(None)    => -1,      // channel closed (no deadline race)
+///     Err(_)      => -2,      // deadline fired
+/// }
+/// ```
+pub enum TimeoutError {
+    /// The deadline fired before the recv completed.
+    Timeout;
+}
+
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
 /// Named actors opt into the erased `Pid` surface by implementing this trait

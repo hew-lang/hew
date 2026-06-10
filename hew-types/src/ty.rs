@@ -64,7 +64,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
-            | BuiltinType::Trap,
+            | BuiltinType::Trap
+            | BuiltinType::TimeoutError,
         )
         | None => None,
     }
@@ -852,6 +853,15 @@ impl Ty {
     #[must_use]
     pub fn ask_error() -> Ty {
         Self::builtin_named(BuiltinType::AskError, vec![])
+    }
+
+    /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
+    /// and `await stream.recv() | after d`.  A unit enum with one variant
+    /// (`Timeout`) distinguishing deadline expiry from a closed channel
+    /// (`Ok(None)`).
+    #[must_use]
+    pub fn timeout_error() -> Ty {
+        Self::builtin_named(BuiltinType::TimeoutError, vec![])
     }
 
     /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.

@@ -1,9 +1,0 @@
-// Cross-module named functions as values are deferred: the diagnostic must
-// name the exported function and the lambda workaround, never misreport a
-// missing constant or crash.
-import helpers;
-
-fn main() {
-    let f = helpers.double;
-    println(f(21));
-}

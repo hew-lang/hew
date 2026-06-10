@@ -11276,6 +11276,48 @@ impl LowerCtx {
                     }
                 }
 
+                // Pre-dispatch: module-qualified function reference in value
+                // position, e.g. `module_short.fn_name` stored, passed, or
+                // returned (not called). The checker accepted this and
+                // recorded a `Ty::Function` in `expr_types`; the HIR must
+                // produce a `BindingRef { Item(id) }` carrying the mangled
+                // symbol (e.g. `helpers$double`) so MIR's named-fn-value shim
+                // machinery resolves it through `module_fn_names` exactly
+                // like a same-module named fn.
+                //
+                // Guard: object is a bare `Expr::Identifier` and the mangled
+                // qualified key is in `fn_registry`. Generic cross-module fns
+                // never reach here — the checker rejects them with a deferred
+                // diagnostic before lowering starts.
+                if let Expr::Identifier(module_name) = &object.0 {
+                    let qualified_key = format!("{module_name}.{field}");
+                    let mangled = crate::mangle_dotted_name(&qualified_key);
+                    if let Some(entry) = self.fn_registry.get(&mangled).cloned() {
+                        // Checker authority: take the Function type recorded
+                        // by check_field_access. The fallback from the
+                        // registry entry is equivalent for the accepted
+                        // non-generic case.
+                        let ty = self
+                            .checker_expr_ty(&span, "cross-module fn value")
+                            .unwrap_or_else(|| ResolvedTy::Function {
+                                params: entry.param_tys.clone(),
+                                ret: Box::new(entry.return_ty.clone()),
+                            });
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                            ty,
+                            intent,
+                            kind: HirExprKind::BindingRef {
+                                name: mangled,
+                                resolved: ResolvedRef::Item(entry.id),
+                            },
+                            span,
+                        };
+                    }
+                }
+
                 let missing_import = if let Expr::Identifier(module_name) = &object.0 {
                     self.missing_stdlib_module_import(module_name)
                         .map(|module| (module_name, module))

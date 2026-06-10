@@ -7338,22 +7338,24 @@ impl Builder {
                 name,
                 resolved: ResolvedRef::Item(_),
             } if matches!(&expr.ty, ResolvedTy::Function { .. }) => {
-                // Resolve the function's symbol. Only same-module non-generic
-                // named functions are supported; anything else fails closed
-                // with a NotYetImplemented diagnostic.
+                // Resolve the function's symbol. Same-module and cross-module
+                // non-generic named functions are supported (the HIR lowerer
+                // emits the qualified mangled symbol for the cross-module
+                // case); anything else fails closed with a NotYetImplemented
+                // diagnostic.
                 let fn_symbol = if self.module_fn_names.contains(name.as_str()) {
                     name.clone()
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
                             construct: format!(
-                                "named function `{name}` used as a value (only same-module \
-                                 non-generic named functions are currently supported)"
+                                "named function `{name}` used as a value (only non-generic \
+                                 named functions are currently supported)"
                             ),
                             site: expr.site,
                         },
-                        note: "cross-module or generic named functions as values are not yet \
-                               implemented in the current spine"
+                        note: "generic named functions as values are not yet implemented in \
+                               the current spine"
                             .to_string(),
                     });
                     return None;

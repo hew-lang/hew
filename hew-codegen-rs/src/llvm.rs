@@ -7479,6 +7479,52 @@ fn get_or_declare_enum_drop_inplace<'ctx>(
     )
 }
 
+/// Lookup-or-declare the synthesised per-record overwrite-release helper
+/// `fn(*mut old, *const new)`. Called by `lower_actor_state_field_store`
+/// before a record-typed state field is overwritten: the body neutralises
+/// (nulls) every old heap leaf whose pointer reappears anywhere in the
+/// incoming value, then runs `__hew_record_drop_inplace_<Record>` over
+/// what remains. See `emit_record_overwrite_release_body` for the alias
+/// model and the leak-over-UAF posture.
+fn get_or_declare_record_overwrite_release<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    record_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_record_overwrite_release_{record_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ctx.void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Per-enum companion of `get_or_declare_record_overwrite_release`
+/// (`fn(*mut old, *const new)`; both point at the enum's outer
+/// tagged-union struct).
+fn get_or_declare_enum_overwrite_release<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    enum_name: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_enum_overwrite_release_{enum_name}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ctx.void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
 /// Compute the ABI byte size of an actor's or record's LLVM struct type.
 /// Falls back to the host data layout when no target machine is bound —
 /// matches `build_tagged_union_layout`'s policy.
@@ -7557,6 +7603,40 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         })?;
         emit_enum_clone_inplace_body(ctx, llvm_mod, enum_name, layout, variant_kinds)?;
         emit_enum_drop_inplace_body(ctx, llvm_mod, enum_name, layout, variant_kinds)?;
+    }
+    // Overwrite-release helpers (state-field re-store) — synthesised for
+    // every classified record/enum, mirroring the clone/drop families
+    // above, so a `lower_actor_state_field_store` declaration always
+    // resolves to a real body.
+    {
+        let rec_kinds_map: HashMap<&str, &[StateFieldCloneKind]> = record_classifications
+            .iter()
+            .map(|(name, kinds)| (name.as_str(), kinds.as_slice()))
+            .collect();
+        let enum_kinds_map: HashMap<&str, &EnumVariantKinds> = enum_classifications
+            .iter()
+            .map(|(name, kinds)| (name.as_str(), kinds))
+            .collect();
+        let ow_cx = OverwriteReleaseCx {
+            ctx,
+            llvm_mod,
+            record_structs: record_struct_map,
+            machine_layouts: machine_layout_map,
+            rec_kinds: &rec_kinds_map,
+            enum_kinds: &enum_kinds_map,
+        };
+        for (record_name, kinds) in &record_classifications {
+            let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "overwrite-release synthesis: record `{record_name}` has no LLVM \
+                     StructType in record_struct_map"
+                ))
+            })?;
+            emit_record_overwrite_release_body(&ow_cx, record_name, record_struct, kinds)?;
+        }
+        for (enum_name, variant_kinds) in &enum_classifications {
+            emit_enum_overwrite_release_body(&ow_cx, enum_name, variant_kinds)?;
+        }
     }
     for actor in actor_layouts {
         let (clone_sym, drop_sym, kinds) = match (
@@ -9721,6 +9801,790 @@ fn emit_enum_drop_inplace_body<'ctx>(
     builder.position_at_end(done_bb);
     builder.build_return(None).llvm_ctx("enum drop ret")?;
     Ok(())
+}
+
+// ── Overwrite-release synthesis (record / enum state-field re-store) ──────
+//
+// Re-storing a record- or enum-typed actor state field must release the
+// PREVIOUS value's owned heap, but cannot blindly run the in-place drop
+// spine over it: `ActorStateFieldLoad` byte-copies aggregates at refcount
+// unchanged, so the incoming value routinely ALIASES old heap leaves —
+// the functional-update idiom (`prof = Profile { name: prof.name,
+// hits: prof.hits + 1 }`) re-uses the old `name` pointer verbatim, and the
+// whole-value self-store (`prof = prof`) re-uses every leaf. An
+// unconditional drop would free buffers the field is about to re-own
+// (use-after-free); no release leaks the replaced leaves permanently.
+//
+// The synthesised `__hew_{record,enum}_overwrite_release_<Name>(old, new)`
+// helpers thread that needle in three steps:
+//   1. COLLECT — load every owned heap-leaf pointer of the NEW value into
+//      a static set of pointer slots (capacity computed per type at
+//      synthesis time; enum variants fill a reserved range under a tag
+//      switch, unused slots stay null).
+//   2. NEUTRALISE — for every owned heap leaf of the OLD value, compare
+//      its pointer against ALL collected slots and null the old slot on
+//      any match (`select`, no branches). Comparing against the full set —
+//      not just the same position — keeps cross-position moves (swap
+//      shapes) sound. IoHandle leaves are nulled unconditionally:
+//      close-on-reassign is a behavioural decision deliberately not taken
+//      here, so the old handle stays open exactly as pre-fix. ClosurePair
+//      env slots are nulled unconditionally for the same leak-over-UAF
+//      reason (closure-valued state is check-rejected upstream; this is
+//      the defensive posture if a future producer admits one).
+//   3. DROP — run the existing `__hew_{record,enum}_drop_inplace_<Name>`
+//      spine over the neutralised OLD value. Every release symbol the
+//      spine calls is null-tolerant, so neutralised leaves no-op and the
+//      remaining (genuinely replaced) leaves free exactly once. The drop
+//      spine stays the SOLE release authority (lifecycle-symmetry): this
+//      pass only decides WHICH leaves it may touch.
+//
+// The walk dispatches on the same `StateFieldCloneKind` classification the
+// clone/drop spines use; an unknown or drifted shape fails closed.
+
+/// Hard recursion bound for the overwrite-release walks. By-value record /
+/// enum nesting cannot legitimately recurse (a self-referential by-value
+/// type has infinite size and is rejected upstream), so hitting this depth
+/// means the classifier emitted a cyclic kind graph — fail closed instead
+/// of overflowing the compiler stack.
+const OVERWRITE_RELEASE_MAX_DEPTH: u32 = 64;
+
+/// Shared read-only context for the overwrite-release synthesis walks.
+struct OverwriteReleaseCx<'a, 'ctx> {
+    ctx: &'ctx Context,
+    llvm_mod: &'a LlvmModule<'ctx>,
+    record_structs: &'a RecordLayoutMap<'ctx>,
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
+    rec_kinds: &'a HashMap<&'a str, &'a [StateFieldCloneKind]>,
+    enum_kinds: &'a HashMap<&'a str, &'a EnumVariantKinds>,
+}
+
+impl OverwriteReleaseCx<'_, '_> {
+    fn record_kinds(&self, name: &str) -> CodegenResult<&[StateFieldCloneKind]> {
+        self.rec_kinds.get(name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "overwrite-release walk: record `{name}` has no clone classification; \
+                 `collect_reachable_clone_targets` and the walk have drifted"
+            ))
+        })
+    }
+
+    fn enum_kinds(&self, name: &str) -> CodegenResult<&EnumVariantKinds> {
+        self.enum_kinds.get(name).copied().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "overwrite-release walk: enum `{name}` has no clone classification; \
+                 `collect_reachable_clone_targets` and the walk have drifted"
+            ))
+        })
+    }
+}
+
+/// Static count of owned heap-leaf pointer slots a value of this field-kind
+/// list can contribute. Enum fields reserve their worst-case variant.
+fn overwrite_heap_leaf_capacity(
+    cx: &OverwriteReleaseCx<'_, '_>,
+    kinds: &[StateFieldCloneKind],
+    depth: u32,
+) -> CodegenResult<usize> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release capacity walk exceeded depth {OVERWRITE_RELEASE_MAX_DEPTH}; \
+             the state-field kind graph is cyclic"
+        )));
+    }
+    let mut total = 0usize;
+    for kind in kinds {
+        total += match kind {
+            StateFieldCloneKind::String
+            | StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. } => 1,
+            StateFieldCloneKind::UserRecord { name } => {
+                overwrite_heap_leaf_capacity(cx, cx.record_kinds(name)?, depth + 1)?
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let mut max = 0usize;
+                for variant in cx.enum_kinds(name)? {
+                    max = max.max(overwrite_heap_leaf_capacity(cx, variant, depth + 1)?);
+                }
+                max
+            }
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. }
+            | StateFieldCloneKind::ClosurePair => 0,
+        };
+    }
+    Ok(total)
+}
+
+/// GEP to the data-pointer slot (triple field 0) of a `bytes` field,
+/// validating the parent slot IS the `{ ptr, i32, i32 }` BytesTriple shape
+/// first — the same drift guard as `emit_field_drop_step`'s Bytes arm.
+fn overwrite_bytes_data_slot<'ctx>(
+    builder: &Builder<'ctx>,
+    st_ty: StructType<'ctx>,
+    base: PointerValue<'ctx>,
+    field_idx: u32,
+    label: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "overwrite-release bytes walk: parent struct {st_ty:?} has no field at \
+             index {field_idx}"
+        ))
+    })?;
+    let triple_ty = match parent_field_ty {
+        BasicTypeEnum::StructType(st) if st.count_fields() == 3 => {
+            let fields = st.get_field_types();
+            let f0_is_ptr = matches!(fields[0], BasicTypeEnum::PointerType(_));
+            let f1_is_i32 =
+                matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            let f2_is_i32 =
+                matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            if !(f0_is_ptr && f1_is_i32 && f2_is_i32) {
+                return Err(CodegenError::FailClosed(format!(
+                    "overwrite-release bytes walk: parent struct field {field_idx} is a \
+                     3-field struct but not the `{{ ptr, i32, i32 }}` BytesTriple shape \
+                     (got {fields:?})"
+                )));
+            }
+            st
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "overwrite-release bytes walk: parent struct field {field_idx} is \
+                 {other:?}, not the `{{ ptr, i32, i32 }}` BytesTriple struct"
+            )));
+        }
+    };
+    let field_ptr = builder
+        .build_struct_gep(st_ty, base, field_idx, &format!("{label}_triple_ptr"))
+        .llvm_ctx_with(|| format!("{label} bytes triple gep"))?;
+    builder
+        .build_struct_gep(triple_ty, field_ptr, 0, &format!("{label}_data_slot"))
+        .llvm_ctx_with(|| format!("{label} bytes data-slot gep"))
+}
+
+/// COLLECT step: load every owned heap-leaf pointer of the NEW value rooted
+/// at `base` (shaped `st_ty` / `kinds`) into the next `slots` entries.
+#[allow(clippy::too_many_arguments)]
+fn emit_overwrite_collect_leaves<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    f: FunctionValue<'ctx>,
+    st_ty: StructType<'ctx>,
+    base: PointerValue<'ctx>,
+    kinds: &[StateFieldCloneKind],
+    slots: &[PointerValue<'ctx>],
+    next_slot: &mut usize,
+    depth: u32,
+) -> CodegenResult<()> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release collect walk exceeded depth {OVERWRITE_RELEASE_MAX_DEPTH}"
+        )));
+    }
+    let ptr_ty = cx.ctx.ptr_type(AddressSpace::default());
+    for (idx, kind) in kinds.iter().enumerate() {
+        let idx_u = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed("overwrite-release collect: field index overflow".into())
+        })?;
+        let label = format!("ow_new_d{depth}_f{idx}");
+        let leaf_slot = match kind {
+            StateFieldCloneKind::String
+            | StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. } => Some(
+                builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_ptr"))
+                    .llvm_ctx_with(|| format!("{label} collect gep"))?,
+            ),
+            StateFieldCloneKind::Bytes => Some(overwrite_bytes_data_slot(
+                builder, st_ty, base, idx_u, &label,
+            )?),
+            StateFieldCloneKind::UserRecord { name } => {
+                let nested_kinds = cx.record_kinds(name)?;
+                let nested_struct = cx.record_structs.get(name).copied().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release collect: record `{name}` has no LLVM struct"
+                    ))
+                })?;
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_rec_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested record gep"))?;
+                emit_overwrite_collect_leaves(
+                    cx,
+                    builder,
+                    f,
+                    nested_struct,
+                    field_ptr,
+                    nested_kinds,
+                    slots,
+                    next_slot,
+                    depth + 1,
+                )?;
+                None
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
+                let consumed = emit_overwrite_collect_enum(
+                    cx,
+                    builder,
+                    f,
+                    name,
+                    field_ptr,
+                    slots,
+                    *next_slot,
+                    depth + 1,
+                )?;
+                *next_slot += consumed;
+                None
+            }
+            StateFieldCloneKind::BitCopy { .. }
+            | StateFieldCloneKind::IoHandle { .. }
+            | StateFieldCloneKind::OpaqueHandle { .. }
+            | StateFieldCloneKind::ClosurePair => None,
+        };
+        if let Some(slot_src) = leaf_slot {
+            let leaf = builder
+                .build_load(ptr_ty, slot_src, &format!("{label}_leaf"))
+                .llvm_ctx_with(|| format!("{label} collect load"))?;
+            let dst = slots.get(*next_slot).ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "overwrite-release collect overran the leaf-slot capacity; \
+                     `overwrite_heap_leaf_capacity` and the collect walk have drifted"
+                        .into(),
+                )
+            })?;
+            builder
+                .build_store(*dst, leaf)
+                .llvm_ctx_with(|| format!("{label} collect store"))?;
+            *next_slot += 1;
+        }
+    }
+    Ok(())
+}
+
+/// COLLECT step for an enum value: switch on the tag and fill the reserved
+/// slot range `[start, start + cap)` from the active variant's leaves.
+/// Returns the reserved capacity (the caller advances its cursor by it).
+#[allow(clippy::too_many_arguments)]
+fn emit_overwrite_collect_enum<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    f: FunctionValue<'ctx>,
+    enum_name: &str,
+    base: PointerValue<'ctx>,
+    slots: &[PointerValue<'ctx>],
+    start: usize,
+    depth: u32,
+) -> CodegenResult<usize> {
+    let layout = cx.machine_layouts.get(enum_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "overwrite-release collect: enum `{enum_name}` has no tagged-union layout"
+        ))
+    })?;
+    let variants = cx.enum_kinds(enum_name)?;
+    if variants.len() != layout.variant_struct_tys.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release collect: enum `{enum_name}` has {} classified variants \
+             but {} LLVM variant structs — classifier/layout drift",
+            variants.len(),
+            layout.variant_struct_tys.len()
+        )));
+    }
+    let mut cap = 0usize;
+    for variant in variants {
+        cap = cap.max(overwrite_heap_leaf_capacity(cx, variant, depth)?);
+    }
+    if cap == 0 {
+        return Ok(0);
+    }
+    let tag_ptr = builder
+        .build_struct_gep(
+            layout.outer_struct,
+            base,
+            0,
+            &format!("ow_new_d{depth}_{enum_name}_tag_ptr"),
+        )
+        .llvm_ctx("overwrite collect enum tag gep")?;
+    let tag = builder
+        .build_load(
+            layout.tag_int_ty,
+            tag_ptr,
+            &format!("ow_new_d{depth}_{enum_name}_tag"),
+        )
+        .llvm_ctx("overwrite collect enum tag load")?
+        .into_int_value();
+    let merge_bb = cx
+        .ctx
+        .append_basic_block(f, &format!("ow_new_d{depth}_{enum_name}_merge"));
+    let trap_bb = cx
+        .ctx
+        .append_basic_block(f, &format!("ow_new_d{depth}_{enum_name}_tag_oob"));
+    let mut cases = Vec::with_capacity(variants.len());
+    let mut variant_bbs = Vec::with_capacity(variants.len());
+    for idx in 0..variants.len() {
+        let bb = cx
+            .ctx
+            .append_basic_block(f, &format!("ow_new_d{depth}_{enum_name}_v{idx}"));
+        cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("overwrite collect enum tag switch")?;
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_collect_tag_oob")?;
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let payload = builder
+            .build_struct_gep(
+                layout.outer_struct,
+                base,
+                1,
+                &format!("ow_new_d{depth}_{enum_name}_v{idx}_payload"),
+            )
+            .llvm_ctx("overwrite collect enum payload gep")?;
+        let mut local_slot = start;
+        emit_overwrite_collect_leaves(
+            cx,
+            builder,
+            f,
+            *variant_struct,
+            payload,
+            &variants[idx],
+            slots,
+            &mut local_slot,
+            depth,
+        )?;
+        builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("overwrite collect enum merge br")?;
+    }
+    builder.position_at_end(merge_bb);
+    Ok(cap)
+}
+
+/// NEUTRALISE step for one owned heap-leaf slot of the OLD value: null the
+/// slot iff its pointer matches ANY collected new-leaf slot (branch-free
+/// compare chain + `select`). A null old leaf trivially "matches" a null
+/// slot and stays null — equivalent, since releasing null is a no-op.
+fn emit_overwrite_neutralize_slot<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+    slots: &[PointerValue<'ctx>],
+    label: &str,
+) -> CodegenResult<()> {
+    let ptr_ty = cx.ctx.ptr_type(AddressSpace::default());
+    let i64_ty = cx.ctx.i64_type();
+    let old = builder
+        .build_load(ptr_ty, slot, &format!("{label}_val"))
+        .llvm_ctx_with(|| format!("{label} neutralize load"))?
+        .into_pointer_value();
+    let old_int = builder
+        .build_ptr_to_int(old, i64_ty, &format!("{label}_int"))
+        .llvm_ctx_with(|| format!("{label} neutralize ptr_to_int"))?;
+    let mut matched = cx.ctx.bool_type().const_zero();
+    for (j, new_slot) in slots.iter().enumerate() {
+        let new_leaf = builder
+            .build_load(ptr_ty, *new_slot, &format!("{label}_cmp{j}_leaf"))
+            .llvm_ctx_with(|| format!("{label} neutralize slot load"))?
+            .into_pointer_value();
+        let new_int = builder
+            .build_ptr_to_int(new_leaf, i64_ty, &format!("{label}_cmp{j}_int"))
+            .llvm_ctx_with(|| format!("{label} neutralize slot ptr_to_int"))?;
+        let eq = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                old_int,
+                new_int,
+                &format!("{label}_cmp{j}_eq"),
+            )
+            .llvm_ctx_with(|| format!("{label} neutralize compare"))?;
+        matched = builder
+            .build_or(matched, eq, &format!("{label}_matched{j}"))
+            .llvm_ctx_with(|| format!("{label} neutralize or"))?;
+    }
+    let kept = builder
+        .build_select(
+            matched,
+            ptr_ty.const_null(),
+            old,
+            &format!("{label}_neutralized"),
+        )
+        .llvm_ctx_with(|| format!("{label} neutralize select"))?;
+    builder
+        .build_store(slot, kept)
+        .llvm_ctx_with(|| format!("{label} neutralize store"))?;
+    Ok(())
+}
+
+/// NEUTRALISE step: walk the OLD value rooted at `base`, nulling every
+/// owned heap leaf that reappears in the collected new-leaf `slots`, plus
+/// the unconditional no-release kinds (IoHandle, ClosurePair).
+#[allow(clippy::too_many_arguments)]
+fn emit_overwrite_neutralize_leaves<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    f: FunctionValue<'ctx>,
+    st_ty: StructType<'ctx>,
+    base: PointerValue<'ctx>,
+    kinds: &[StateFieldCloneKind],
+    slots: &[PointerValue<'ctx>],
+    depth: u32,
+) -> CodegenResult<()> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release neutralize walk exceeded depth {OVERWRITE_RELEASE_MAX_DEPTH}"
+        )));
+    }
+    let ptr_ty = cx.ctx.ptr_type(AddressSpace::default());
+    for (idx, kind) in kinds.iter().enumerate() {
+        let idx_u = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed("overwrite-release neutralize: field index overflow".into())
+        })?;
+        let label = format!("ow_old_d{depth}_f{idx}");
+        match kind {
+            StateFieldCloneKind::String
+            | StateFieldCloneKind::Vec { .. }
+            | StateFieldCloneKind::HashMap { .. }
+            | StateFieldCloneKind::HashSet { .. } => {
+                let slot = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_ptr"))
+                    .llvm_ctx_with(|| format!("{label} neutralize gep"))?;
+                emit_overwrite_neutralize_slot(cx, builder, slot, slots, &label)?;
+            }
+            StateFieldCloneKind::Bytes => {
+                let slot = overwrite_bytes_data_slot(builder, st_ty, base, idx_u, &label)?;
+                emit_overwrite_neutralize_slot(cx, builder, slot, slots, &label)?;
+            }
+            StateFieldCloneKind::UserRecord { name } => {
+                let nested_kinds = cx.record_kinds(name)?;
+                let nested_struct = cx.record_structs.get(name).copied().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: record `{name}` has no LLVM struct"
+                    ))
+                })?;
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_rec_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested record gep"))?;
+                emit_overwrite_neutralize_leaves(
+                    cx,
+                    builder,
+                    f,
+                    nested_struct,
+                    field_ptr,
+                    nested_kinds,
+                    slots,
+                    depth + 1,
+                )?;
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_enum_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested enum gep"))?;
+                emit_overwrite_neutralize_enum(cx, builder, f, name, field_ptr, slots, depth + 1)?;
+            }
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Connection,
+            } => {
+                // Connection drop is a no-op at the state level; nothing to
+                // neutralise.
+            }
+            StateFieldCloneKind::IoHandle { .. } => {
+                // Close-on-reassign is a behavioural decision deliberately
+                // NOT taken by the overwrite release: null the handle slot
+                // so the drop spine's close call no-ops (all close symbols
+                // are null-guarded). The old handle stays open and leaks
+                // exactly as pre-fix.
+                let slot = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_handle_ptr"))
+                    .llvm_ctx_with(|| format!("{label} handle gep"))?;
+                builder
+                    .build_store(slot, ptr_ty.const_null())
+                    .llvm_ctx_with(|| format!("{label} handle null store"))?;
+            }
+            StateFieldCloneKind::ClosurePair => {
+                // Closure-valued actor state is check-rejected upstream, so
+                // this leaf is unreachable from a state-field store today.
+                // Defensive posture if a future producer admits one: null
+                // the env slot so the drop spine's free-thunk dispatch
+                // no-ops (leak-over-UAF — the env box may be aliased by the
+                // incoming value with no retain to compare against).
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: parent struct {st_ty:?} has no \
+                         field at index {idx_u} for ClosurePair"
+                    ))
+                })?;
+                let pair_ty = match parent_field_ty {
+                    BasicTypeEnum::StructType(st)
+                        if st.count_fields() == 2
+                            && st
+                                .get_field_types()
+                                .iter()
+                                .all(|t| matches!(t, BasicTypeEnum::PointerType(_))) =>
+                    {
+                        st
+                    }
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "overwrite-release neutralize: ClosurePair field {idx_u} is \
+                             {other:?}, not the two-pointer closure pair"
+                        )));
+                    }
+                };
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_pair_ptr"))
+                    .llvm_ctx_with(|| format!("{label} closure pair gep"))?;
+                let env_slot = builder
+                    .build_struct_gep(pair_ty, field_ptr, 1, &format!("{label}_env_slot"))
+                    .llvm_ctx_with(|| format!("{label} closure env gep"))?;
+                builder
+                    .build_store(env_slot, ptr_ty.const_null())
+                    .llvm_ctx_with(|| format!("{label} closure env null store"))?;
+            }
+            StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+/// NEUTRALISE step for an enum value: switch on the OLD tag and neutralise
+/// the active variant's leaves. Skipped entirely when no variant carries
+/// anything the drop spine would touch.
+fn emit_overwrite_neutralize_enum<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    f: FunctionValue<'ctx>,
+    enum_name: &str,
+    base: PointerValue<'ctx>,
+    slots: &[PointerValue<'ctx>],
+    depth: u32,
+) -> CodegenResult<()> {
+    let layout = cx.machine_layouts.get(enum_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "overwrite-release neutralize: enum `{enum_name}` has no tagged-union layout"
+        ))
+    })?;
+    let variants = cx.enum_kinds(enum_name)?;
+    if variants.len() != layout.variant_struct_tys.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release neutralize: enum `{enum_name}` has {} classified variants \
+             but {} LLVM variant structs — classifier/layout drift",
+            variants.len(),
+            layout.variant_struct_tys.len()
+        )));
+    }
+    let needs_walk = variants.iter().flatten().any(|k| {
+        !matches!(
+            k,
+            StateFieldCloneKind::BitCopy { .. }
+                | StateFieldCloneKind::OpaqueHandle { .. }
+                | StateFieldCloneKind::IoHandle {
+                    kind: IoHandleKind::Connection
+                }
+        )
+    });
+    if !needs_walk {
+        return Ok(());
+    }
+    let tag_ptr = builder
+        .build_struct_gep(
+            layout.outer_struct,
+            base,
+            0,
+            &format!("ow_old_d{depth}_{enum_name}_tag_ptr"),
+        )
+        .llvm_ctx("overwrite neutralize enum tag gep")?;
+    let tag = builder
+        .build_load(
+            layout.tag_int_ty,
+            tag_ptr,
+            &format!("ow_old_d{depth}_{enum_name}_tag"),
+        )
+        .llvm_ctx("overwrite neutralize enum tag load")?
+        .into_int_value();
+    let merge_bb = cx
+        .ctx
+        .append_basic_block(f, &format!("ow_old_d{depth}_{enum_name}_merge"));
+    let trap_bb = cx
+        .ctx
+        .append_basic_block(f, &format!("ow_old_d{depth}_{enum_name}_tag_oob"));
+    let mut cases = Vec::with_capacity(variants.len());
+    let mut variant_bbs = Vec::with_capacity(variants.len());
+    for idx in 0..variants.len() {
+        let bb = cx
+            .ctx
+            .append_basic_block(f, &format!("ow_old_d{depth}_{enum_name}_v{idx}"));
+        cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("overwrite neutralize enum tag switch")?;
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_neutralize_tag_oob")?;
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let payload = builder
+            .build_struct_gep(
+                layout.outer_struct,
+                base,
+                1,
+                &format!("ow_old_d{depth}_{enum_name}_v{idx}_payload"),
+            )
+            .llvm_ctx("overwrite neutralize enum payload gep")?;
+        emit_overwrite_neutralize_leaves(
+            cx,
+            builder,
+            f,
+            *variant_struct,
+            payload,
+            &variants[idx],
+            slots,
+            depth,
+        )?;
+        builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("overwrite neutralize enum merge br")?;
+    }
+    builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Emit `__hew_record_overwrite_release_<Record>(old, new)`: collect the
+/// new value's heap leaves, neutralise aliased old leaves, then run the
+/// record's in-place drop spine over the old value. See the module block
+/// above `OVERWRITE_RELEASE_MAX_DEPTH` for the alias model.
+fn emit_record_overwrite_release_body<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    record_name: &str,
+    record_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let f = get_or_declare_record_overwrite_release(cx.ctx, cx.llvm_mod, record_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release synthesis: `__hew_record_overwrite_release_{record_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let builder = cx.ctx.create_builder();
+    let entry = cx.ctx.append_basic_block(f, "entry");
+    builder.position_at_end(entry);
+    let old = f
+        .get_nth_param(0)
+        .expect("overwrite release has 2 params")
+        .into_pointer_value();
+    let new = f
+        .get_nth_param(1)
+        .expect("overwrite release has 2 params")
+        .into_pointer_value();
+    let slots =
+        emit_overwrite_slot_allocas(cx, &builder, overwrite_heap_leaf_capacity(cx, kinds, 0)?)?;
+    let mut next_slot = 0usize;
+    emit_overwrite_collect_leaves(
+        cx,
+        &builder,
+        f,
+        record_struct,
+        new,
+        kinds,
+        &slots,
+        &mut next_slot,
+        0,
+    )?;
+    if next_slot != slots.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release synthesis for `{record_name}`: collect filled {next_slot} \
+             of {} leaf slots; capacity and collect walks have drifted",
+            slots.len()
+        )));
+    }
+    emit_overwrite_neutralize_leaves(cx, &builder, f, record_struct, old, kinds, &slots, 0)?;
+    let drop_fn = get_or_declare_record_drop_inplace(cx.ctx, cx.llvm_mod, record_name);
+    builder
+        .build_call(drop_fn, &[old.into()], "ow_drop_old")
+        .llvm_ctx("overwrite release record drop call")?;
+    builder
+        .build_return(None)
+        .llvm_ctx("overwrite release record ret")?;
+    Ok(())
+}
+
+/// Per-enum companion of `emit_record_overwrite_release_body`.
+fn emit_enum_overwrite_release_body<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    enum_name: &str,
+    variant_kinds: &EnumVariantKinds,
+) -> CodegenResult<()> {
+    let f = get_or_declare_enum_overwrite_release(cx.ctx, cx.llvm_mod, enum_name);
+    if f.count_basic_blocks() > 0 {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release synthesis: `__hew_enum_overwrite_release_{enum_name}` \
+             already has a body — duplicate synthesis is a substrate invariant violation"
+        )));
+    }
+    let builder = cx.ctx.create_builder();
+    let entry = cx.ctx.append_basic_block(f, "entry");
+    builder.position_at_end(entry);
+    let old = f
+        .get_nth_param(0)
+        .expect("overwrite release has 2 params")
+        .into_pointer_value();
+    let new = f
+        .get_nth_param(1)
+        .expect("overwrite release has 2 params")
+        .into_pointer_value();
+    let mut cap = 0usize;
+    for variant in variant_kinds {
+        cap = cap.max(overwrite_heap_leaf_capacity(cx, variant, 1)?);
+    }
+    let slots = emit_overwrite_slot_allocas(cx, &builder, cap)?;
+    let consumed = emit_overwrite_collect_enum(cx, &builder, f, enum_name, new, &slots, 0, 0)?;
+    if consumed != slots.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "overwrite-release synthesis for enum `{enum_name}`: collect reserved \
+             {consumed} of {} leaf slots; capacity and collect walks have drifted",
+            slots.len()
+        )));
+    }
+    emit_overwrite_neutralize_enum(cx, &builder, f, enum_name, old, &slots, 0)?;
+    let drop_fn = get_or_declare_enum_drop_inplace(cx.ctx, cx.llvm_mod, enum_name);
+    builder
+        .build_call(drop_fn, &[old.into()], "ow_drop_old")
+        .llvm_ctx("overwrite release enum drop call")?;
+    builder
+        .build_return(None)
+        .llvm_ctx("overwrite release enum ret")?;
+    Ok(())
+}
+
+/// Allocate + null-initialise the new-leaf pointer slots in the helper's
+/// entry block (before any tag switch splits the control flow).
+fn emit_overwrite_slot_allocas<'ctx>(
+    cx: &OverwriteReleaseCx<'_, 'ctx>,
+    builder: &Builder<'ctx>,
+    cap: usize,
+) -> CodegenResult<Vec<PointerValue<'ctx>>> {
+    let ptr_ty = cx.ctx.ptr_type(AddressSpace::default());
+    let mut slots = Vec::with_capacity(cap);
+    for i in 0..cap {
+        let slot = builder
+            .build_alloca(ptr_ty, &format!("ow_slot_{i}"))
+            .llvm_ctx("overwrite release slot alloca")?;
+        builder
+            .build_store(slot, ptr_ty.const_null())
+            .llvm_ctx("overwrite release slot null init")?;
+        slots.push(slot);
+    }
+    Ok(slots)
 }
 
 /// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
@@ -13382,17 +14246,21 @@ fn lower_actor_state_field_store(
     // actually stored. `None` kinds (non-handler functions, hand-built test
     // fixtures) keep the pre-fix posture.
     //
-    // Per-kind coverage is deliberately partial (fail-closed: every uncovered
-    // kind leaks exactly as before this fix, never double-frees):
+    // Per-kind release routes (leak-over-UAF posture throughout — every
+    // ambiguous alias shape keeps the old value alive rather than risking
+    // a double free):
     //   - `Bytes` / `String`: released here (refcount-aware `hew_bytes_drop` /
     //     null-and-static-tolerant `hew_string_drop`).
-    //   - `Vec` / `HashMap` / `HashSet`: their state-level release is owned
-    //     solely by the `collection_layout_witness` spine
-    //     (`hew_*_managed` / `*_layout` family); wiring an overwrite release
-    //     needs that witness lookup here — a separate slice. Overwrite still
-    //     leaks the previous collection.
-    //   - `UserRecord` / `Enum`: need the synthesised in-place drop helpers
-    //     with tag dispatch; overwrite still leaks the previous payload.
+    //   - `Vec` / `HashMap` / `HashSet`: single-pointer handles released here
+    //     with the same pointer-inequality guard; the release symbol derives
+    //     from `collection_layout_witness` — the SAME descriptor `state_drop`
+    //     frees the kind with, so the overwrite release and the final drop
+    //     can never select mismatched runtime symbols (lifecycle-symmetry,
+    //     W4.045 UAF class).
+    //   - `UserRecord` / `Enum`: the synthesised collect-neutralise-drop
+    //     helper (`__hew_{record,enum}_overwrite_release_<Name>`) — a bare
+    //     pointer compare cannot guard an embedded aggregate, so aliased
+    //     old leaves are nulled before the in-place drop spine runs.
     //   - `IoHandle`: an overwrite release would CLOSE the old handle (a
     //     behavioural decision about close-on-reassign, not just a leak fix);
     //     deliberately untouched.
@@ -13466,13 +14334,79 @@ fn lower_actor_state_field_store(
                     &format!("state_f{idx}_str"),
                 )?;
             }
-            StateFieldCloneKind::BitCopy { .. }
-            | StateFieldCloneKind::Vec { .. }
+            StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
+            | StateFieldCloneKind::HashSet { .. } => {
+                // The field slot holds the collection handle pointer by
+                // value. The release symbol comes from the layout witness —
+                // the sole collection symbol-selection authority — so this
+                // release and the `state_drop` release derive from one
+                // descriptor and cannot drift (W4.045 UAF class). All three
+                // `*_free_*` symbols are null-tolerant, so the spawn-time
+                // zero-initialised first store needs no extra guard.
+                let witness = collection_layout_witness(kind)?.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
+                         has no layout witness; `collection_layout_witness` and the \
+                         kind classifier have drifted"
+                    ))
+                })?;
+                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
+                         requires a pointer-typed handle slot, got {field_ty:?}; the \
+                         state layout and the kind classifier have drifted"
+                    )));
+                }
+                let old_ptr = fn_ctx
+                    .builder
+                    .build_load(
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        &format!("actor_state_field_{idx}_old_coll"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old collection load")?
+                    .into_pointer_value();
+                let new_ptr = src_val.into_pointer_value();
+                emit_state_field_old_value_release(
+                    fn_ctx,
+                    old_ptr,
+                    new_ptr,
+                    witness.drop_sym,
+                    &format!("state_f{idx}_coll"),
+                )?;
+            }
+            StateFieldCloneKind::UserRecord { name } => {
+                // Embedded aggregate: byte-copied loads mean the incoming
+                // value can alias old heap leaves (functional update /
+                // self-store), so the release is the synthesised
+                // collect-neutralise-drop helper, not a bare drop-spine
+                // call. See `emit_record_overwrite_release_body`.
+                let helper =
+                    get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+                fn_ctx
+                    .builder
+                    .build_call(
+                        helper,
+                        &[field_ptr.into(), src_ptr.into()],
+                        &format!("state_f{idx}_rec_release"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore record overwrite release")?;
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let helper =
+                    get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+                fn_ctx
+                    .builder
+                    .build_call(
+                        helper,
+                        &[field_ptr.into(), src_ptr.into()],
+                        &format!("state_f{idx}_enum_release"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore enum overwrite release")?;
+            }
+            StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
-            | StateFieldCloneKind::UserRecord { .. }
-            | StateFieldCloneKind::Enum { .. }
             // ClosurePair: closure-valued actor state is rejected at check
             // time by the transitive closure-field walk, so no overwrite
             // reaches this store; grouped with the no-release kinds.
@@ -46391,6 +47325,300 @@ fn main() {
                 panic!("expected CodegenError::FailClosed on non-struct field, got: {other:?}")
             }
         }
+    }
+
+    // ── overwrite-release synthesis (record / enum state-field re-store) ──
+    //
+    // The synthesised `__hew_{record,enum}_overwrite_release_<Name>(old, new)`
+    // helpers must (a) neutralise (null) old heap leaves whose pointer
+    // reappears in the new value BEFORE running the in-place drop spine
+    // (functional update / self-store byte-copies alias leaves at refcount
+    // unchanged — an unguarded drop is a use-after-free), and (b) fail
+    // closed on classification drift instead of emitting a walk over the
+    // wrong shape.
+
+    /// Give the in-place drop helper a trivial body so the module verifies
+    /// (internal-linkage declarations without bodies are invalid IR; in the
+    /// real pipeline `emit_state_clone_drop_synthesis` always emits the
+    /// body alongside).
+    fn stub_drop_inplace_body(ctx: &Context, f: inkwell::values::FunctionValue<'_>) {
+        let entry = ctx.append_basic_block(f, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        builder.build_return(None).expect("stub drop ret");
+    }
+
+    /// Happy path: a record `{ string, bytes, i64 }`. The synthesised body
+    /// must collect both new heap leaves, neutralise the old slots through
+    /// a compare+`select` (no unconditional release), and only then call
+    /// the record's in-place drop spine.
+    #[test]
+    fn record_overwrite_release_neutralizes_aliased_leaves_before_drop() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("ow_record_ok");
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i32_ty = ctx.i32_type();
+        let i64_ty = ctx.i64_type();
+        let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+        let rec_st = ctx.opaque_struct_type("OwRec");
+        rec_st.set_body(&[ptr_ty.into(), triple_ty.into(), i64_ty.into()], false);
+        let kinds = vec![
+            StateFieldCloneKind::String,
+            StateFieldCloneKind::Bytes,
+            StateFieldCloneKind::BitCopy { size_bytes: 8 },
+        ];
+        let mut record_structs = RecordLayoutMap::new();
+        record_structs.insert("OwRec".to_string(), rec_st);
+        let machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let kinds_slice: &[StateFieldCloneKind] = &kinds;
+        let rec_kinds: HashMap<&str, &[StateFieldCloneKind]> =
+            std::iter::once(("OwRec", kinds_slice)).collect();
+        let enum_kinds: HashMap<&str, &EnumVariantKinds> = HashMap::new();
+        let cx = OverwriteReleaseCx {
+            ctx: &ctx,
+            llvm_mod: &llvm_mod,
+            record_structs: &record_structs,
+            machine_layouts: &machine_layouts,
+            rec_kinds: &rec_kinds,
+            enum_kinds: &enum_kinds,
+        };
+        stub_drop_inplace_body(
+            &ctx,
+            get_or_declare_record_drop_inplace(&ctx, &llvm_mod, "OwRec"),
+        );
+
+        emit_record_overwrite_release_body(&cx, "OwRec", rec_st, &kinds)
+            .expect("record overwrite-release synthesis must succeed");
+
+        let ir = llvm_mod.print_to_string().to_string();
+        assert!(
+            ir.contains("define internal void @__hew_record_overwrite_release_OwRec"),
+            "helper must be defined; IR:\n{ir}"
+        );
+        // Both heap leaves are neutralised through a select, never an
+        // unconditional release of the old pointer.
+        assert_eq!(
+            ir.matches("_neutralized = select i1").count(),
+            2,
+            "one guarded select per heap leaf (string + bytes); IR:\n{ir}"
+        );
+        // The drop spine runs AFTER the neutralise pass.
+        let neutralize_at = ir
+            .find("_neutralized = select i1")
+            .expect("neutralize select present");
+        let drop_at = ir
+            .find("call void @__hew_record_drop_inplace_OwRec")
+            .expect("drop spine call present");
+        assert!(
+            neutralize_at < drop_at,
+            "neutralise must precede the drop-spine call; IR:\n{ir}"
+        );
+        llvm_mod
+            .verify()
+            .unwrap_or_else(|e| panic!("overwrite-release module failed verify: {e}"));
+    }
+
+    /// Fail-closed: a record field whose nested record name has no clone
+    /// classification (collector drift) must refuse synthesis instead of
+    /// walking an unknown shape.
+    #[test]
+    fn record_overwrite_release_fails_closed_on_unclassified_nested_record() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("ow_record_drift");
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let inner_st = ctx.opaque_struct_type("OwMissing");
+        inner_st.set_body(&[ptr_ty.into()], false);
+        let rec_st = ctx.opaque_struct_type("OwOuter");
+        rec_st.set_body(&[inner_st.into()], false);
+        let kinds = vec![StateFieldCloneKind::UserRecord {
+            name: "OwMissing".to_string(),
+        }];
+        let mut record_structs = RecordLayoutMap::new();
+        record_structs.insert("OwOuter".to_string(), rec_st);
+        record_structs.insert("OwMissing".to_string(), inner_st);
+        let machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let kinds_slice: &[StateFieldCloneKind] = &kinds;
+        // `OwMissing` is deliberately absent from the classification map.
+        let rec_kinds: HashMap<&str, &[StateFieldCloneKind]> =
+            std::iter::once(("OwOuter", kinds_slice)).collect();
+        let enum_kinds: HashMap<&str, &EnumVariantKinds> = HashMap::new();
+        let cx = OverwriteReleaseCx {
+            ctx: &ctx,
+            llvm_mod: &llvm_mod,
+            record_structs: &record_structs,
+            machine_layouts: &machine_layouts,
+            rec_kinds: &rec_kinds,
+            enum_kinds: &enum_kinds,
+        };
+
+        let err = emit_record_overwrite_release_body(&cx, "OwOuter", rec_st, &kinds)
+            .expect_err("unclassified nested record must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("OwMissing") && msg.contains("no clone classification"),
+                "message must cite the missing record classification; got: {msg}"
+            ),
+            other => panic!("expected FailClosed, got: {other:?}"),
+        }
+    }
+
+    /// Fail-closed: synthesising the same helper twice is a substrate
+    /// invariant violation (duplicate bodies), mirroring the drop family.
+    #[test]
+    fn record_overwrite_release_duplicate_synthesis_fails_closed() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("ow_record_dup");
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let rec_st = ctx.opaque_struct_type("OwDup");
+        rec_st.set_body(&[ptr_ty.into()], false);
+        let kinds = vec![StateFieldCloneKind::String];
+        let mut record_structs = RecordLayoutMap::new();
+        record_structs.insert("OwDup".to_string(), rec_st);
+        let machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let kinds_slice: &[StateFieldCloneKind] = &kinds;
+        let rec_kinds: HashMap<&str, &[StateFieldCloneKind]> =
+            std::iter::once(("OwDup", kinds_slice)).collect();
+        let enum_kinds: HashMap<&str, &EnumVariantKinds> = HashMap::new();
+        let cx = OverwriteReleaseCx {
+            ctx: &ctx,
+            llvm_mod: &llvm_mod,
+            record_structs: &record_structs,
+            machine_layouts: &machine_layouts,
+            rec_kinds: &rec_kinds,
+            enum_kinds: &enum_kinds,
+        };
+        stub_drop_inplace_body(
+            &ctx,
+            get_or_declare_record_drop_inplace(&ctx, &llvm_mod, "OwDup"),
+        );
+
+        emit_record_overwrite_release_body(&cx, "OwDup", rec_st, &kinds)
+            .expect("first synthesis succeeds");
+        let err = emit_record_overwrite_release_body(&cx, "OwDup", rec_st, &kinds)
+            .expect_err("second synthesis must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("duplicate synthesis"),
+                "message must cite the duplicate; got: {msg}"
+            ),
+            other => panic!("expected FailClosed, got: {other:?}"),
+        }
+    }
+
+    /// Enum helper: both the COLLECT pass (new value) and the NEUTRALISE
+    /// pass (old value) must tag-dispatch — two switches — and the body
+    /// must end in the enum's in-place drop spine. A unit variant + a
+    /// string-payload variant exercise the reserved-slot-range fill.
+    #[test]
+    fn enum_overwrite_release_switches_old_and_new_tags() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("ow_enum_ok");
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i8_ty = ctx.i8_type();
+        let outer_st = ctx.opaque_struct_type("OwStatus");
+        outer_st.set_body(&[i8_ty.into(), ctx.i8_type().array_type(8).into()], false);
+        let unit_variant = ctx.struct_type(&[], false);
+        let payload_variant = ctx.struct_type(&[ptr_ty.into()], false);
+        let layout = MachineCodegenLayout {
+            outer_struct: outer_st,
+            tag_int_ty: i8_ty,
+            variant_struct_tys: vec![unit_variant, payload_variant],
+            variant_field_tys: vec![vec![], vec![ResolvedTy::String]],
+            state_name_table: None,
+        };
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        machine_layouts.insert("OwStatus".to_string(), layout);
+        let variants: EnumVariantKinds = vec![vec![], vec![StateFieldCloneKind::String]];
+        let record_structs = RecordLayoutMap::new();
+        let rec_kinds: HashMap<&str, &[StateFieldCloneKind]> = HashMap::new();
+        let enum_kinds: HashMap<&str, &EnumVariantKinds> =
+            std::iter::once(("OwStatus", &variants)).collect();
+        let cx = OverwriteReleaseCx {
+            ctx: &ctx,
+            llvm_mod: &llvm_mod,
+            record_structs: &record_structs,
+            machine_layouts: &machine_layouts,
+            rec_kinds: &rec_kinds,
+            enum_kinds: &enum_kinds,
+        };
+        stub_drop_inplace_body(
+            &ctx,
+            get_or_declare_enum_drop_inplace(&ctx, &llvm_mod, "OwStatus"),
+        );
+
+        emit_enum_overwrite_release_body(&cx, "OwStatus", &variants)
+            .expect("enum overwrite-release synthesis must succeed");
+
+        let ir = llvm_mod.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("switch i8").count(),
+            2,
+            "collect (new tag) and neutralise (old tag) must each switch; IR:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @__hew_enum_drop_inplace_OwStatus"),
+            "the enum drop spine must run after neutralisation; IR:\n{ir}"
+        );
+        // Out-of-range tags fail closed through the trap path, not a
+        // silent fall-through.
+        assert!(
+            ir.contains("hew_trap_with_code"),
+            "tag switches must trap on out-of-range tags; IR:\n{ir}"
+        );
+        llvm_mod
+            .verify()
+            .unwrap_or_else(|e| panic!("enum overwrite-release module failed verify: {e}"));
+    }
+
+    /// Capacity arithmetic: records SUM their fields (recursing), enums
+    /// reserve their WORST-CASE variant, non-owned kinds contribute zero.
+    /// A drifted capacity under-allocates slots and the collect walk fails
+    /// closed at synthesis time, so this pins the arithmetic directly.
+    #[test]
+    fn overwrite_heap_leaf_capacity_sums_records_and_maxes_enums() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("ow_capacity");
+        let record_structs = RecordLayoutMap::new();
+        let machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let inner_kinds = vec![StateFieldCloneKind::String];
+        let inner_slice: &[StateFieldCloneKind] = &inner_kinds;
+        let rec_kinds: HashMap<&str, &[StateFieldCloneKind]> =
+            std::iter::once(("OwInner", inner_slice)).collect();
+        let variants: EnumVariantKinds = vec![
+            vec![],
+            vec![StateFieldCloneKind::String, StateFieldCloneKind::Bytes],
+        ];
+        let enum_kinds: HashMap<&str, &EnumVariantKinds> =
+            std::iter::once(("OwE", &variants)).collect();
+        let cx = OverwriteReleaseCx {
+            ctx: &ctx,
+            llvm_mod: &llvm_mod,
+            record_structs: &record_structs,
+            machine_layouts: &machine_layouts,
+            rec_kinds: &rec_kinds,
+            enum_kinds: &enum_kinds,
+        };
+        let kinds = vec![
+            StateFieldCloneKind::String,
+            StateFieldCloneKind::Bytes,
+            StateFieldCloneKind::Vec {
+                elem: Box::new(StateFieldCloneKind::BitCopy { size_bytes: 8 }),
+            },
+            StateFieldCloneKind::UserRecord {
+                name: "OwInner".to_string(),
+            },
+            StateFieldCloneKind::Enum {
+                name: "OwE".to_string(),
+            },
+            StateFieldCloneKind::BitCopy { size_bytes: 8 },
+            StateFieldCloneKind::IoHandle {
+                kind: IoHandleKind::Stream,
+            },
+        ];
+        let cap = overwrite_heap_leaf_capacity(&cx, &kinds, 0).expect("capacity walk succeeds");
+        // string(1) + bytes(1) + vec(1) + inner record(1) + enum max(0, 2)
+        // + bitcopy(0) + io handle(0) = 6
+        assert_eq!(cap, 6, "capacity must sum records and max enum variants");
     }
 }
 

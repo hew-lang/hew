@@ -48,7 +48,6 @@ const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
     "concurrency/counter_actor",
     "concurrency/supervisor",
     "machines/traffic_light",
-    "types/wire_types",
 ];
 
 // WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.

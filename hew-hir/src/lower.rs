@@ -249,29 +249,25 @@ const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 /// `seed_stdlib_fn_registry` mints them in the `u32::MAX / 2` band — the same
 /// band as `supervisor_stop` (`u32::MAX / 2`) and the `hew_duplex_*` family
 /// (`u32::MAX / 2 - 1 - offset`, offsets 0..=7). `link`/`monitor` sit just
-/// below the duplex slots. The MIR user-name → C-symbol bridge
-/// (`runtime_symbol_for_call_expr`) exempts this band from the
-/// `ResolvedRef::Item(_)` guard via [`is_synthetic_builtin_item`].
+/// below the duplex slots. The ids are registry placeholders only: their
+/// `FnEntry` rows carry `builtin_family`, so `lower_identifier` resolves
+/// the names to `ResolvedRef::Builtin(family)` and MIR reads the C symbol
+/// off the catalog bijection.
 const SYNTHETIC_LINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 9);
 const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `unlink` builtin.
 /// Mirrors `SYNTHETIC_LINK_ITEM` / `SYNTHETIC_MONITOR_ITEM`; the checker
 /// (`registration.rs`) registers `unlink` as a 1-arg `LocalPid<T> → Unit`
-/// builtin with no AST `fn` item. MIR routes
-/// `BindingRef { name: "unlink", resolved: Item(_) }` through
-/// `user_name_to_c_symbol` → `hew_actor_unlink`.
+/// builtin with no AST `fn` item. Resolves to
+/// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
 
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
 /// constructor. The checker (`Checker::register_builtins`) registers it as a
 /// builtin function with no AST `fn` item, so — like `link`/`monitor`/
-/// `supervisor_stop` — it needs a synthetic `Item(id)` in `fn_registry` for
-/// `lower_identifier` to resolve and for `verify_hir` to accept (it rejects
-/// `Unresolved` callee refs). It sits just below `monitor` in the same
-/// `u32::MAX / 2` band, inside the [`SYNTHETIC_BUILTIN_ITEM_FLOOR`] band, so
-/// the MIR user-name → C-symbol bridge (`runtime_symbol_for_call_expr`)
-/// exempts it from its `ResolvedRef::Item(_)` guard via
-/// [`is_synthetic_builtin_item`] and routes it to `hew_duplex_pair`.
+/// `supervisor_stop` — it carries `builtin_family` and resolves to
+/// `ResolvedRef::Builtin(DuplexPair)`. The id is a registry placeholder in
+/// the same `u32::MAX / 2` band, just below `monitor`.
 ///
 /// The sibling checker builtin `duplex` (detached) is deliberately NOT seeded
 /// here: `duplex` has no runtime constructor (`hew_duplex_new` was removed in
@@ -302,12 +298,11 @@ const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 ///      `Unresolved`, so the HIR callable-set gate fires `CallableUnsupportedInMir`
 ///      (which `build_callable_set` then silences) rather than the premature
 ///      `IndirectCallUnsupported`.
-///   3. `is_synthetic_builtin_item` admits the IDs, so MIR's
-///      `runtime_symbol_for_call_expr` does NOT short-circuit on the
-///      `ResolvedRef::Item` guard and reaches the `user_name_to_c_symbol`
-///      table; since these names have no entry there, the function returns
-///      `None`, and MIR falls through to `module_fn_names` (which this lane
-///      also populates) → `lower_direct_call` → `Terminator::Call`.
+///   3. MIR's `runtime_symbol_for_call_expr` returns `None` for them (they
+///      are Item-resolved, not `ResolvedRef::Builtin`, and not in the
+///      `MIR_EMITTER_RUNTIME_SYMBOLS` allowlist), so MIR falls through to
+///      `module_fn_names` (which this seeding also populates) →
+///      `lower_direct_call` → `Terminator::Call`.
 ///   4. Codegen intercepts the `Terminator::Call` by callee name and emits the
 ///      layout-witness ABI (`i32 sym(handle, out, witness)` for recv;
 ///      `void sym(handle, data_ptr, witness)` for send), deriving the element
@@ -323,27 +318,17 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 ///
 /// `seed_stdlib_fn_registry` mints checker-registered runtime builtins that
 /// have no AST `fn` item into the high `u32` range: the stdlib catalog at
-/// `u32::MAX - index`, and the C-symbol-bridge builtins (`supervisor_stop`,
+/// `u32::MAX - index`, and the no-AST-item builtins (`supervisor_stop`,
 /// `link`, `monitor`, the `hew_duplex_*` family) in the `u32::MAX / 2` band.
 /// Source items count up from 0, so this floor (chosen well below the lowest
 /// sentinel and far above any realistic source-item count) cleanly separates
 /// synthetic sentinels from user items.
-pub const SYNTHETIC_BUILTIN_ITEM_FLOOR: u32 = u32::MAX / 2 - 4096;
-
-/// True when `id` is a synthetic-builtin sentinel `ItemId` (see
-/// [`SYNTHETIC_BUILTIN_ITEM_FLOOR`]).
 ///
-/// The MIR producer uses this to exempt synthetic builtins from the
-/// `ResolvedRef::Item(_)` short-circuit in `runtime_symbol_for_call_expr`,
-/// so that `link`/`monitor`/`supervisor_stop` reach the user-name → C-symbol
-/// bridge while a *real* user function item that happens to share a builtin
-/// name (low `ItemId`) stays blocked. The bridge's own narrow allowlist
-/// (`user_name_to_c_symbol`) is the second gate, so exempting the whole
-/// sentinel band cannot mis-route any name outside that allowlist.
-#[must_use]
-pub fn is_synthetic_builtin_item(id: ItemId) -> bool {
-    id.0 >= SYNTHETIC_BUILTIN_ITEM_FLOOR
-}
+/// The band is documentation/segregation only since `ResolvedRef::Builtin`
+/// landed: MIR no longer consults a band predicate to decide whether an
+/// Item-resolved name may reach a user-name → C-symbol bridge (that bridge
+/// is deleted; the typed family travels on the resolution itself).
+pub const SYNTHETIC_BUILTIN_ITEM_FLOOR: u32 = u32::MAX / 2 - 4096;
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
@@ -593,6 +578,14 @@ struct FnEntry {
     /// decide whether the callee is a generic top-level user fn that
     /// requires a monomorphisation-registry entry.
     type_params: Vec<String>,
+    /// `Some(family)` for checker-registered runtime builtins with no
+    /// AST `fn` item (`supervisor_stop`, `link`, `monitor`, `unlink`,
+    /// `duplex_pair`). `lower_identifier` resolves these to
+    /// [`ResolvedRef::Builtin`] carrying the typed family instead of a
+    /// synthetic-sentinel `Item` id, so MIR never reverse-maps the
+    /// user-visible name through a string bridge. `None` for every real
+    /// function item.
+    builtin_family: Option<hew_types::runtime_call::RuntimeCallFamily>,
 }
 
 /// Pre-collected shape of a top-level `const NAME: T = ...;` declaration.
@@ -5726,6 +5719,7 @@ impl LowerCtx {
                 param_tys,
                 linkage: Some(builtin.linkage),
                 type_params: Vec::new(),
+                builtin_family: None,
             };
             self.fn_registry
                 .insert(builtin.name.to_string(), entry.clone());
@@ -5733,28 +5727,30 @@ impl LowerCtx {
                 self.fn_registry.insert(symbol.to_string(), entry);
             }
         }
+        self.seed_typed_builtin_fn_registry();
+        self.seed_channel_recv_fn_registry();
+    }
+
+    /// Seeds the checker-registered runtime builtins that have no
+    /// `stdlib_catalog` entry and no AST `fn` item (`supervisor_stop`,
+    /// `link`, `monitor`, `unlink`, `duplex_pair`, the `hew_duplex_*`
+    /// rewrite targets). See the per-entry comments for the resolution
+    /// contracts.
+    fn seed_typed_builtin_fn_registry(&mut self) {
+        use hew_types::runtime_call::RuntimeCallFamily;
         // Checker-registered runtime-builtin functions that have no stdlib_catalog
-        // entry and no AST `fn` item.  The HIR verifier rejects `Unresolved`
-        // callee refs, so these builtins need a synthetic `Item(id)` in
-        // `fn_registry` for `lower_identifier` to resolve.  IDs live in the
-        // `u32::MAX / 2` range — below the stdlib IDs (`u32::MAX - N`) and
-        // above the source-item sequence (which starts from 0).
+        // entry and no AST `fn` item. `builtin_family: Some(...)` makes
+        // `lower_identifier` resolve them to `ResolvedRef::Builtin(family)`;
+        // MIR's `runtime_symbol_for_call_expr` reads `family.c_symbol()`
+        // directly off the catalog bijection. The `id` is a registry
+        // placeholder only (the `u32::MAX / 2` band keeps it clear of both
+        // stdlib catalog IDs and the source-item sequence) — nothing
+        // resolves through it anymore.
         //
-        // MIR: the callee `BindingRef { name: "supervisor_stop", resolved: Item(_) }`
-        // routes through `user_name_to_c_symbol("supervisor_stop")` →
-        // `lower_runtime_call("hew_supervisor_stop", …)` before the Item-resolved
-        // fail-closed arm at `lower.rs:2774` is reached.
-        //
-        // WHEN obsolete: when HIR gains `ResolvedRef::Builtin { c_symbol }` and the
-        // verifier exempts it from the Unresolved check, at which point this seeding
-        // and `user_name_to_c_symbol` become the bridge between the two.
-        // WHAT: add `ResolvedRef::Builtin { c_symbol: String }` to `hew-hir`;
-        // populate in `lower_identifier`; match in MIR.
         // `supervisor_stop(sup: LocalPid<S>) -> ()`.  The param type is a
         // `LocalPid<S>` (named "LocalPid" in resolved form), which is what
         // the checker registers.  The exact inner type does not matter here
-        // because MIR lowering consults `user_name_to_c_symbol` on the
-        // callee name and passes the sup place opaquely.
+        // because MIR passes the sup place opaquely.
         self.fn_registry.insert(
             "supervisor_stop".to_string(),
             FnEntry {
@@ -5770,25 +5766,31 @@ impl LowerCtx {
                 }],
                 linkage: None,
                 type_params: Vec::new(),
+                builtin_family: Some(RuntimeCallFamily::SupervisorStop),
             },
         );
-        // Actor `link(target)` / `monitor(target)` builtins.  The checker
-        // (`Checker::register_builtins`) registers both as **1-arg**
-        // `LocalPid<T>` — the linking/monitoring subject is the implicit
-        // calling actor (`self`), matching Erlang/OTP `link(Pid)` /
-        // `monitor(process, Pid)`.  They have no AST `fn` item, so — like
-        // `supervisor_stop` above — they need a synthetic `Item(id)` here for
-        // `lower_identifier` to resolve (the HIR verifier rejects `Unresolved`
-        // callees).  MIR routes `BindingRef { name: "link"|"monitor",
-        // resolved: Item(_) }` through `user_name_to_c_symbol` →
-        // `hew_actor_link` / `hew_actor_monitor`, synthesizing
-        // `hew_actor_self()` as ABI arg0 and the user target as arg1.  The
-        // exact inner `LocalPid` arg matters only for arity; MIR passes the
-        // target place opaquely.
-        for (name, id) in [
-            ("link", SYNTHETIC_LINK_ITEM),
-            ("monitor", SYNTHETIC_MONITOR_ITEM),
-            ("unlink", SYNTHETIC_UNLINK_ITEM),
+        // Actor `link(target)` / `monitor(target)` / `unlink(target)`
+        // builtins.  The checker (`Checker::register_builtins`) registers
+        // them as **1-arg** `LocalPid<T>` — the linking/monitoring subject
+        // is the implicit calling actor (`self`), matching Erlang/OTP
+        // `link(Pid)` / `monitor(process, Pid)`.  They have no AST `fn`
+        // item; `builtin_family` resolves them to `ResolvedRef::Builtin`,
+        // and MIR's runtime-call producer synthesizes `hew_actor_self()`
+        // as ABI arg0 with the user target as arg1.  The exact inner
+        // `LocalPid` arg matters only for arity; MIR passes the target
+        // place opaquely.
+        for (name, id, family) in [
+            ("link", SYNTHETIC_LINK_ITEM, RuntimeCallFamily::ActorLink),
+            (
+                "monitor",
+                SYNTHETIC_MONITOR_ITEM,
+                RuntimeCallFamily::ActorMonitor,
+            ),
+            (
+                "unlink",
+                SYNTHETIC_UNLINK_ITEM,
+                RuntimeCallFamily::ActorUnlink,
+            ),
         ] {
             self.fn_registry.insert(
                 name.to_string(),
@@ -5805,19 +5807,18 @@ impl LowerCtx {
                     }],
                     linkage: None,
                     type_params: Vec::new(),
+                    builtin_family: Some(family),
                 },
             );
         }
         // `duplex_pair<S, R>(capacity: i64) -> (Duplex<S, R>, Duplex<R, S>)`.
         // The checker (`Checker::register_builtins`) registers it as a builtin
         // with no AST `fn` item, so — like `link`/`monitor`/`supervisor_stop`
-        // — it needs a synthetic `Item(id)` here for `lower_identifier` to
-        // resolve and for `verify_hir` to accept (the verifier rejects
-        // `Unresolved` callee refs). The call-result type is read from the
-        // checker's `expr_types` at the call site, so the entry's `return_ty`
-        // is only a placeholder; the param carries the `i64` capacity arity.
-        // MIR routes `BindingRef { name: "duplex_pair", resolved: Item(_) }`
-        // through `user_name_to_c_symbol("duplex_pair")` → `hew_duplex_pair`.
+        // — it carries `builtin_family` and resolves to
+        // `ResolvedRef::Builtin(DuplexPair)`. The call-result type is read
+        // from the checker's `expr_types` at the call site, so the entry's
+        // `return_ty` is only a placeholder; the param carries the `i64`
+        // capacity arity.
         self.fn_registry.insert(
             "duplex_pair".to_string(),
             FnEntry {
@@ -5826,6 +5827,7 @@ impl LowerCtx {
                 param_tys: vec![ResolvedTy::I64],
                 linkage: None,
                 type_params: vec!["S".to_string(), "R".to_string()],
+                builtin_family: Some(RuntimeCallFamily::DuplexPair),
             },
         );
         // Duplex method-call rewrites: `check_duplex_method` records
@@ -5859,10 +5861,10 @@ impl LowerCtx {
                     param_tys: Vec::new(),
                     linkage: None,
                     type_params: Vec::new(),
+                    builtin_family: None,
                 },
             );
         }
-        self.seed_channel_recv_fn_registry();
     }
 
     /// Seeds `fn_registry` entries for the channel/stream layout-witness
@@ -5905,6 +5907,7 @@ impl LowerCtx {
                     param_tys: Vec::new(),
                     linkage: None,
                     type_params: Vec::new(),
+                    builtin_family: None,
                 },
             );
         }
@@ -5930,6 +5933,7 @@ impl LowerCtx {
                 param_tys,
                 linkage: None,
                 type_params,
+                builtin_family: None,
             },
         );
     }
@@ -5985,6 +5989,7 @@ impl LowerCtx {
                 param_tys,
                 linkage: None,
                 type_params: Vec::new(),
+                builtin_family: None,
             },
         );
     }
@@ -13743,11 +13748,17 @@ impl LowerCtx {
                 params: entry.param_tys.clone(),
                 ret: Box::new(entry.return_ty.clone()),
             };
-            let id = entry.id;
+            // Checker-registered runtime builtins with no AST `fn` item
+            // resolve to the typed family directly; MIR reads
+            // `family.c_symbol()` instead of reverse-mapping the
+            // user-visible name through a string bridge.
+            let resolved = entry
+                .builtin_family
+                .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin);
             (
                 HirExprKind::BindingRef {
                     name: name.to_string(),
-                    resolved: ResolvedRef::Item(id),
+                    resolved,
                 },
                 fn_ty,
             )
@@ -21840,13 +21851,14 @@ fn operand_is_platform_sized_int(
 // per-`HirBlock` / `HirStmt` / `HirExpr` recursion exhaustive over the HIR
 // expression tree.
 //
-// Runtime ABI bridges (`is_known_runtime_symbol` and `user_name_to_c_symbol`)
-// live in `hew-mir`; `hew-hir` cannot depend on `hew-mir`. Instead the gate
-// recomputes the same callable set from sources that already exist in
-// `hew-hir`: `stdlib_catalog::entries()` for the runtime allowlist, plus the
-// hard-coded user-name → C-symbol bridges (`supervisor_stop`, `hew_duplex_*`)
-// that `LowerCtx::seed_stdlib_fn_registry` already mirrors when seeding the
-// fn registry.
+// The runtime ABI allowlist (`is_known_runtime_symbol`) lives in `hew-mir`;
+// `hew-hir` cannot depend on `hew-mir`. Instead the gate recomputes the same
+// callable set from sources that already exist in `hew-hir`:
+// `stdlib_catalog::entries()` for the runtime allowlist, plus the no-AST-item
+// builtin names that `LowerCtx::seed_stdlib_fn_registry` already mirrors when
+// seeding the fn registry. (The typed-builtin names resolve to
+// `ResolvedRef::Builtin` and are accepted by the gate unconditionally; their
+// entries here only matter for the by-name `Item` check.)
 
 /// Test-only entrypoint that runs the FC-P1-B call-shape gates against a
 /// synthetic HIR module slice. Exposed so integration tests in
@@ -21936,20 +21948,14 @@ fn build_callable_set(
     for mono in monomorphisations {
         set.insert(mono.mangled_name.clone());
     }
-    // Runtime-ABI bridges seeded into `fn_registry` by
-    // `seed_stdlib_fn_registry` (lines ~3055-3104) — kept in sync here
-    // because MIR's `runtime_symbol_for_call_expr` accepts them via
-    // `user_name_to_c_symbol`.
+    // No-AST-item builtins seeded into `fn_registry` by
+    // `seed_stdlib_fn_registry`. These resolve to `ResolvedRef::Builtin`
+    // (accepted by the gate without a set lookup); the names stay here so
+    // the set continues to mirror the seeded registry contents.
     set.insert("supervisor_stop".to_string());
-    // Actor link/monitor builtins — seeded into `fn_registry` by
-    // `seed_stdlib_fn_registry` and bridged in MIR via
-    // `user_name_to_c_symbol` (`hew_actor_link` / `hew_actor_monitor`).
     set.insert("link".to_string());
     set.insert("monitor".to_string());
     set.insert("unlink".to_string());
-    // User-facing `duplex_pair` constructor — seeded into `fn_registry` by
-    // `seed_stdlib_fn_registry` and bridged in MIR via
-    // `user_name_to_c_symbol("duplex_pair")` → `hew_duplex_pair`.
     set.insert("duplex_pair".to_string());
     for name in [
         "hew_duplex_send",
@@ -22239,6 +22245,11 @@ fn scan_expr_for_call_shape(
                         // A `const` is never a callee. If a const name appears
                         // in callee position the checker has already rejected
                         // it as a non-callable type; nothing to gate here.
+                    }
+                    ResolvedRef::Builtin(_) => {
+                        // A typed runtime-builtin reference is callable by
+                        // construction: the family is catalog-closed and the
+                        // MIR runtime-call producer dispatches on it directly.
                     }
                 }
             }

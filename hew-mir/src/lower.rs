@@ -5474,25 +5474,19 @@ fn runtime_symbol_for_call_expr(
     let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
         return None;
     };
+    // Typed path: HIR resolved a checker-registered runtime builtin
+    // (`supervisor_stop`, `link`, `monitor`, `unlink`, `duplex_pair`) to
+    // its closed-set family. The C symbol is derived from the catalog
+    // bijection — no user-name reverse-mapping. A real user function
+    // that shadows one of those names resolves to `ResolvedRef::Item`
+    // in HIR and never reaches this arm.
+    if let ResolvedRef::Builtin(family) = resolved {
+        return Some((family.c_symbol().to_string(), args, expr.site));
+    }
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
     }
-    // The guard short-circuits the user-name → C-symbol bridge for
-    // `Item`-resolved calls so a *real* user function item that shadows a
-    // builtin name (e.g. a user `fn link(..)`, low `ItemId`) routes to its
-    // own definition rather than the runtime ABI.  Synthetic-builtin
-    // sentinels (`link`/`monitor`/`supervisor_stop`/the `hew_duplex_*`
-    // family, seeded in the `u32::MAX / 2` band) must stay exempt so they
-    // continue to the bridge below — `user_name_to_c_symbol` is the narrow
-    // second gate, so exempting the whole sentinel band cannot mis-route any
-    // name outside its allowlist.
-    if let ResolvedRef::Item(id) = resolved {
-        if !hew_hir::lower::is_synthetic_builtin_item(*id) {
-            return None;
-        }
-    }
-    crate::runtime_symbols::user_name_to_c_symbol(name)
-        .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -7272,6 +7266,31 @@ impl Builder {
                     env_mode: crate::model::ClosureEnvMode::Null,
                 });
                 Some(dest)
+            }
+            // A typed runtime builtin used as a first-class value
+            // (`let f = link;`). There is no fn-pointer ABI for catalog
+            // builtins (their lowering synthesizes extra ABI args such as
+            // the implicit self handle), so this fails closed with an
+            // explicit diagnostic instead of silently producing no value.
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Builtin(family),
+            } => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "runtime builtin `{name}` ({symbol}) used as a value; builtins \
+                             are callable only in direct call position",
+                            symbol = family.c_symbol(),
+                        ),
+                        site: expr.site,
+                    },
+                    note: "runtime builtins have no fn-pointer ABI: their call lowering \
+                           synthesizes implicit ABI arguments that a first-class value \
+                           cannot carry"
+                        .to_string(),
+                });
+                None
             }
             // Catch-all for any other BindingRef shape not explicitly handled
             // above (e.g. unresolved refs, struct items used in expression

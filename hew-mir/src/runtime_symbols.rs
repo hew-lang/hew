@@ -651,52 +651,6 @@ pub fn is_borrowing_string_use(symbol: &str) -> bool {
     )
 }
 
-/// Map a user-facing builtin name to its C-ABI runtime symbol, if one
-/// exists.  Returns `None` for names that are not substrate builtins.
-///
-/// SHIM(E2→HIR): builtin functions like `duplex_pair` appear in HIR as
-/// `BindingRef { name: "duplex_pair", resolved: Unresolved }` — the
-/// user-facing name from the source — not the C-ABI `hew_duplex_pair`
-/// name.  This table is the bridge.
-///
-/// WHY: the HIR `lower_identifier` function checks the local binding
-/// scope and then the AST function-item registry.  Checker-registered
-/// builtins (registered via `Checker::register_builtins`) are not in
-/// the AST function-item registry, so `lower_identifier` falls through
-/// to the `UnresolvedSymbol` + `Unresolved` path, preserving the
-/// source-level name without the `hew_` prefix.  The MIR producer must
-/// map it to the C-ABI name before calling `is_known_runtime_symbol`.
-///
-/// WHEN obsolete: when HIR gains a `ResolvedRef::Builtin { c_symbol }`
-/// variant and the checker threads the `c_symbol` mapping into
-/// `lower_identifier`, at which point MIR can match on the resolved
-/// variant and this table becomes dead code.
-///
-/// WHAT: add `ResolvedRef::Builtin { c_symbol: String }` to `hew-hir`;
-/// populate it in `lower_identifier` via the checker's builtin registry;
-/// match on it in `lower.rs:lower_value` and remove this function.
-#[must_use]
-pub fn user_name_to_c_symbol(name: &str) -> Option<&'static str> {
-    // Only a small subset of checker-registered builtins have a direct
-    // C-ABI counterpart that MIR can emit today.  Extend this table
-    // when a new builtin gains a producer arm.
-    match name {
-        // Duplex substrate.
-        "duplex_pair" => Some("hew_duplex_pair"),
-        // Actor link/monitor builtins. The Hew user-facing name matches the
-        // builtin name registered by `Checker::register_builtins`; the C-ABI
-        // symbol adds the `hew_actor_` prefix.
-        "link" => Some("hew_actor_link"),
-        "monitor" => Some("hew_actor_monitor"),
-        "unlink" => Some("hew_actor_unlink"),
-        // supervisor_stop(sup) — the Hew source name; the C-ABI symbol adds the
-        // `hew_supervisor_` prefix.  The checker registers the builtin under the
-        // user-facing name so HIR emits the bare name.
-        "supervisor_stop" => Some("hew_supervisor_stop"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

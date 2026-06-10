@@ -19220,9 +19220,10 @@ fn lower_call_runtime_abi(
         // LLVM IR, which the Cluster 1 spine does not yet support.
         //
         // WHY this shim exists: the producer (MIR lower.rs) calls
-        // `lower_runtime_call("hew_actor_link", ...)` via
-        // `user_name_to_c_symbol("link")`.  Codegen must not silently discard
-        // the call, but also cannot construct the composite return today.
+        // `lower_runtime_call("hew_actor_link", ...)` off the HIR
+        // `ResolvedRef::Builtin(ActorLink)` resolution.  Codegen must not
+        // silently discard the call, but also cannot construct the
+        // composite return today.
         // The FFI call is emitted; return wrapping is deferred.
         //
         // WHEN obsolete: when the Cluster 2 spine lands enum-variant and

@@ -61,3 +61,45 @@ leak:hew_runtime::sim_transport::sim_transport_new
 leak:hew_duplex_pair
 leak:hew_duplex_send_half
 leak:hew_duplex_recv_half
+
+# ── hew_sched_init test-harness scheduler (test-only, one-shot) ──────────
+# WHY: Tests that call hew_sched_init directly (e.g.
+# hew_sched_init_returns_zero_on_success, connection_drop_wakes_pending_remote_ask)
+# create a full Scheduler box with crossbeam deques, work-stealers, and
+# parker pairs but never call hew_sched_shutdown + hew_runtime_cleanup
+# because those tests only exercise the init path in isolation. The scheduler
+# memory is genuinely unreachable at process exit; these are single-shot
+# test-harness allocations, not production runtime leaks.
+# WHEN obsolete: if the test suite is refactored to always call
+# hew_sched_shutdown + hew_runtime_cleanup (or uses a RAII scheduler guard
+# that does so), remove this suppression.
+leak:hew_sched_init
+
+# ── ScratchFrame coroutine-test helper (test-only, one-shot) ─────────────
+# WHY: scheduler tests use suspend_once_dispatch / suspend_twice_dispatch
+# helper functions (in src/scheduler.rs test module) that allocate a
+# ScratchFrame via Box::into_raw and return the raw pointer as a coroutine
+# handle. The LLVM CoroSplit ABI requires the destroy outline (scratch_destroy)
+# to free heap_guard but NOT the frame box itself — real CoroSplit destroy
+# outlines free the frame allocation. The test harness does not replicate
+# that final free, so the 40-byte ScratchFrame box leaks in tests that only
+# exercise the park or park+resume paths without a full destroy cycle.
+# WHEN obsolete: if ScratchFrame is redesigned so scratch_destroy calls
+# Box::from_raw(frame) (matching real CoroSplit destroy behaviour), or if
+# the tests are converted to use a mock clock that avoids raw pointers
+# entirely, remove this suppression.
+leak:hew_runtime::scheduler::tests::suspend_once_dispatch
+leak:hew_runtime::scheduler::tests::suspend_twice_dispatch
+leak:hew_runtime::scheduler_wasm::tests::suspend_once_dispatch_wasm
+
+# ── Supervisor heap-state test helper (test-only, one-shot) ─────────────
+# WHY: supervisor tests (heap_state_clone, hew_supervisor_set_child_state_clone_back_fills,
+# make_heap_template) use a HeapState helper with a libc::malloc'd payload
+# to test the clone-fn registration path independently of the drop-fn path.
+# When state_drop_fn is intentionally omitted (to isolate clone registration),
+# the runtime has no way to free the cloned payload on supervisor stop.
+# These are 8-byte one-shot test-harness allocations, not production leaks.
+# WHEN obsolete: if the tests are extended to always pair clone-fn with
+# drop-fn, remove this suppression.
+leak:hew_runtime::supervisor::tests::heap_state_clone
+leak:hew_runtime::supervisor::tests::make_heap_template

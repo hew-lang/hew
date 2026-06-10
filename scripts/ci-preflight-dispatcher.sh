@@ -650,10 +650,11 @@ if (( needs_stdlib_lint == 1 )); then
     add_command "make stdlib-lint"
 fi
 
-if (( needs_hew_suite == 1 )); then
+if (( needs_hew_suite == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "hew-tests" ]]; then
     # A .hew file under std/ changed: run both suites through their ratchets.
     # This catches breakage in test-hew (which imports stdlib) and in test-stdlib
     # (type-check of the modified file itself) before the diff reaches CI.
+    # Skip when LANE is fallback or hew-tests: both already include the ratchets.
     add_command "make test-hew-ratchet"
     add_command "make test-stdlib-ratchet"
 fi

@@ -192,6 +192,41 @@ fn restore_current_context_after_dispatch() {
 /// the crossbeam deques, parkers, and stealer handles.
 static SCHEDULER: AtomicPtr<Scheduler> = AtomicPtr::new(std::ptr::null_mut());
 
+/// Test-only drain handshake for [`NoWorkerSchedulerForTest`].
+///
+/// `SCHED_TEST_DRAIN_PTR` holds the transient, worker-less scheduler currently
+/// installed by the guard (or null when none is installed).
+/// `SCHED_TEST_DRAIN_COUNT` is the number of worker threads currently executing
+/// the body of [`worker_loop`] while bound to that transient.
+///
+/// A late-starting worker from a prior `hew_sched_init` can cache the transient
+/// pointer during the install window; the guard's `Drop` must not free the
+/// transient while such a worker is mid-iteration. Workers register in the
+/// counter (and re-check the global `SCHEDULER` pointer) before touching any
+/// scheduler field; `Drop` spins until the counter reaches zero before freeing.
+/// Both statics live for the lifetime of the process and are never freed, so the
+/// handshake itself is memory-safe even as the transient scheduler is torn down.
+/// In non-test builds none of this is compiled, so the production hot path is
+/// unaffected.
+#[cfg(test)]
+static SCHED_TEST_DRAIN_PTR: AtomicPtr<Scheduler> = AtomicPtr::new(std::ptr::null_mut());
+
+#[cfg(test)]
+static SCHED_TEST_DRAIN_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Scope guard that decrements [`SCHED_TEST_DRAIN_COUNT`] when a worker leaves
+/// the loop body, covering every exit path (`continue`, `break`, and panic).
+#[cfg(test)]
+struct SchedDrainGuard;
+
+#[cfg(test)]
+impl Drop for SchedDrainGuard {
+    fn drop(&mut self) {
+        SCHED_TEST_DRAIN_COUNT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Get a reference to the global scheduler, if initialized.
 ///
 /// # Safety
@@ -734,7 +769,17 @@ pub fn sched_try_wake() {
 
 /// Main loop executed by each worker thread.
 fn worker_loop(id: usize, local: &WorkDeque) {
+    // Production invariant: the global SCHEDULER pointer never changes after
+    // hew_sched_init, so a missing scheduler here is a hard logic error — keep
+    // the loud panic (the same contract as before this fix).
     let sched = get_scheduler().expect("scheduler not initialized");
+    // In test builds, capture the raw pointer this worker is bound to. The
+    // NoWorkerSchedulerForTest harness can swap SCHEDULER out from under a
+    // late-starting worker; the per-iteration check below detects that swap and
+    // drains cleanly before any freed pointer is dereferenced. See
+    // NoWorkerSchedulerForTest::Drop for the matching spin-until-zero drain.
+    #[cfg(test)]
+    let sched_raw: *mut Scheduler = (sched as *const Scheduler).cast_mut();
     let mut rng = Xorshift64::new(crate::deterministic::effective_worker_seed(id as u64));
     crate::observe::set_current_worker_shard(id);
 
@@ -746,6 +791,40 @@ fn worker_loop(id: usize, local: &WorkDeque) {
     crate::signal::init_worker_recovery(id as u32);
 
     while !sched.shutdown.load(Ordering::Acquire) {
+        // Test-only drain handshake. In production SCHEDULER is never swapped
+        // during a worker's lifetime, so this entire block is compiled away
+        // with zero hot-path overhead.
+        #[cfg(test)]
+        let _drain = {
+            // Fast path: if the global pointer no longer matches the one this
+            // worker bound to (NoWorkerSchedulerForTest::install/Drop swapped
+            // it), exit before touching any scheduler field.
+            if SCHEDULER.load(Ordering::Relaxed) != sched_raw {
+                break;
+            }
+            // If we are bound to the installed transient scheduler, register in
+            // the process-static drain counter so the guard's Drop defers the
+            // free until we leave the loop body. The statics are never freed, so
+            // this registration is memory-safe even though `sched` may be the
+            // transient about to be torn down.
+            if SCHED_TEST_DRAIN_PTR.load(Ordering::SeqCst) == sched_raw {
+                SCHED_TEST_DRAIN_COUNT.fetch_add(1, Ordering::SeqCst);
+                // Re-read SCHEDULER *after* the increment. This SeqCst load
+                // pairs with the SeqCst swap + counter load in Drop: if Drop
+                // already swapped the transient out, back out (decrement) and
+                // exit before dereferencing `sched`. The total-order guarantee
+                // makes it impossible for both this load to miss the swap and
+                // Drop's spin to miss our increment, so a worker still inside
+                // the body is always reflected in the counter Drop waits on.
+                if SCHEDULER.load(Ordering::SeqCst) != sched_raw {
+                    SCHED_TEST_DRAIN_COUNT.fetch_sub(1, Ordering::SeqCst);
+                    break;
+                }
+                Some(SchedDrainGuard)
+            } else {
+                None
+            }
+        };
         // 1. Pop from local deque (LIFO — cache-friendly).
         if let Some(ptr) = local.pop() {
             activate_actor(ptr.cast::<HewActor>());
@@ -1936,6 +2015,19 @@ pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new
 /// so an enqueued actor pointer stays observable for assertions. Used by the
 /// free-path UAF tests (both the reactor-detach and non-reactor link/monitor
 /// wake windows) to prove a freed actor is never left queued.
+///
+/// # Drop quiescence
+///
+/// Worker threads from a prior [`hew_sched_init`] may start executing
+/// `worker_loop` during the install window (after the global `SCHEDULER`
+/// pointer is swapped) and cache the test-only scheduler pointer.  The
+/// `Drop` impl sets `shutdown = true` on the installed scheduler, notifies its
+/// parkers, then performs a deterministic, load-independent drain: it spins
+/// until the process-static `SCHED_TEST_DRAIN_COUNT` (incremented by each
+/// worker on loop-body entry, decremented on every exit path) reaches zero,
+/// and only then frees the scheduler.  Together with the pointer re-check in
+/// `worker_loop`, this closes the test-only heap-use-after-free window without
+/// touching the production hot path.
 #[cfg(test)]
 pub(crate) struct NoWorkerSchedulerForTest {
     previous: *mut Scheduler,
@@ -1967,7 +2059,11 @@ impl NoWorkerSchedulerForTest {
             shutdown: AtomicBool::new(false),
         };
         let sched_ptr = Box::into_raw(Box::new(sched));
-        let previous = SCHEDULER.swap(sched_ptr, Ordering::AcqRel);
+        // Publish the transient pointer *before* the SCHEDULER swap so any
+        // worker that subsequently observes SCHEDULER == sched_ptr also sees a
+        // matching SCHED_TEST_DRAIN_PTR and registers in the drain counter.
+        SCHED_TEST_DRAIN_PTR.store(sched_ptr, Ordering::SeqCst);
+        let previous = SCHEDULER.swap(sched_ptr, Ordering::SeqCst);
         Self {
             previous,
             _sched_lock: sched_lock,
@@ -2005,10 +2101,49 @@ impl NoWorkerSchedulerForTest {
 #[cfg(test)]
 impl Drop for NoWorkerSchedulerForTest {
     fn drop(&mut self) {
-        let ptr = SCHEDULER.swap(self.previous, Ordering::AcqRel);
+        let ptr = SCHEDULER.swap(self.previous, Ordering::SeqCst);
         if !ptr.is_null() {
-            // SAFETY: `ptr` was allocated by `install` via Box::into_raw and no
-            // worker threads ever referenced it (worker-less scheduler).
+            // SAFETY: `ptr` was allocated by `install` via Box::into_raw and has
+            // not been freed yet (Drop runs once, under SCHED_TEST_MUTEX).
+            let installed = unsafe { &*ptr };
+            // Tell any worker bound to this transient to stop, and wake parked
+            // ones so they re-check promptly rather than waiting out PARK_TIMEOUT.
+            installed.shutdown.store(true, Ordering::Release);
+            for parker in &installed.parkers {
+                parker.cond.notify_all();
+            }
+            // Deterministic drain (replaces the old timing-based sleep): spin
+            // until every worker that entered the loop body bound to this
+            // transient has left it (counter == 0). The SeqCst swap above pairs
+            // with each worker's post-increment SCHEDULER re-read, so any worker
+            // still inside the body is already counted here. After the swap no
+            // new worker can enter (they fail the pointer check at the loop top),
+            // so the counter only decreases — the spin is bounded by the longest
+            // single in-flight loop-body iteration, independent of system load.
+            //
+            // The drain is unconditional and cheap: with no late worker bound to
+            // this transient the counter is already zero and the spin exits
+            // immediately, so the common worker-less case pays nothing.
+            //
+            // A hard timeout converts a genuine hang (a worker wedged forever in
+            // the loop body) into a loud panic instead of a silent deadlock.
+            let spin_start = std::time::Instant::now();
+            while SCHED_TEST_DRAIN_COUNT.load(Ordering::SeqCst) != 0 {
+                assert!(
+                    spin_start.elapsed() < Duration::from_secs(30),
+                    "NoWorkerSchedulerForTest::drop: worker drain did not reach \
+                     zero within 30s — a worker thread is stuck in worker_loop \
+                     holding a reference to the transient scheduler \
+                     (SCHED_TEST_DRAIN_COUNT={})",
+                    SCHED_TEST_DRAIN_COUNT.load(Ordering::Relaxed),
+                );
+                std::thread::yield_now();
+            }
+            // No worker references the transient now; stop tracking it so a
+            // future install starts from a clean slate, then free.
+            SCHED_TEST_DRAIN_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
+            // SAFETY: `ptr` was allocated by `install` via Box::into_raw and is
+            // now unreferenced by any worker (the drain above observed zero).
             drop(unsafe { Box::from_raw(ptr) });
         }
     }

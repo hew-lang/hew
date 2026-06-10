@@ -45,6 +45,8 @@
 #   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
+#   make test-lane CRATE=<crate> — fast in-process tier for one crate (lane iteration)
+#   make test-lane-all          — fast in-process tier for the whole workspace
 #   make test-hew          — run Hew test files (std/ *_test.hew)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
@@ -57,7 +59,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -539,6 +541,30 @@ test-runtime-net:
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
+
+# ── Lane-iteration tier ──────────────────────────────────────────────────────
+# Fast in-process tests only — exec/e2e corpus excluded (see profile.lane in
+# .config/nextest.toml for the exclusion list and coverage contract).
+#
+# Fast tier — exec corpus runs at the integrated gate.
+#
+# Usage:
+#   make test-lane CRATE=hew-types        # single crate
+#   make test-lane CRATE=hew-mir          # single crate
+#   make test-lane-all                    # full workspace
+#
+# Acceptance: use the plan's named proving gates (make test-types,
+#   make test-compiler-pipeline) — not this tier — before declaring ready.
+test-lane:
+ifndef CRATE
+	$(error CRATE is required: make test-lane CRATE=<crate-name>)
+endif
+	@echo "==> fast tier — exec corpus runs at the integrated gate"
+	cargo nextest run --profile lane -p $(CRATE)
+
+test-lane-all:
+	@echo "==> fast tier — exec corpus runs at the integrated gate"
+	cargo nextest run --workspace --profile lane
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"

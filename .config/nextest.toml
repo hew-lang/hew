@@ -156,3 +156,45 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # This is a safety net; the default-filter above should exclude them entirely.
 filter = "binary(eval_e2e)"
 test-group = "subprocess-intensive"
+
+[profile.lane]
+# Lane-iteration tier: in-process unit and IR-shape tests only.
+#
+# Purpose: make per-crate gates fast during lane development so iteration does
+# not pay for the subprocess-spawning exec/e2e corpus on every run.
+# Typical wall-clock: < 2 min per crate on a warm build.
+#
+# Usage:
+#   make test-lane CRATE=hew-types    — single crate, fast tier
+#   make test-lane-all                — full workspace, fast tier
+#   cargo nextest run -p <crate> --profile lane
+#
+# Coverage contract:
+#   - This tier is for ITERATION.  Acceptance requires the plan's named proving
+#     gates (e.g. make test-types, make test-compiler-pipeline).
+#   - Full exec/e2e corpus belongs to the integrated gate (profile.ci).
+#   - profile.ci and the preflight fallback are UNCHANGED by this profile.
+#
+# Binary-name survey (2026-06-10):
+#   Excluded by binary(~exec)   — all *_exec codegen/JIT tests
+#   Excluded by binary(~e2e)    — all *_e2e hew-cli/codegen/runtime tests
+#   Excluded by binary(~oracle) — leak-oracle hew-cli tests
+#   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
+#   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
+#   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
+#   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
+#
+# Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
+# binary(...) is an EXACT-equality match and nextest errors out when it matches
+# no binary name.  Substring exclusion therefore needs the contains matcher
+# `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
+# because those binaries exist.
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge)"
+test-threads = "num-cpus"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.lane.overrides]]
+# Safety net: route any exec-named tests that slip past the default-filter into
+# the subprocess-intensive group.  The default-filter should exclude them entirely.
+filter = "binary(~exec)"
+test-group = "subprocess-intensive"

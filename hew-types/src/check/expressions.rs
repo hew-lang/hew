@@ -4573,12 +4573,16 @@ impl Checker {
         for (i, p) in params.iter().enumerate() {
             let ty = if let Some(annotation) = &p.ty {
                 let (annotated_ty, hole_vars) = self.resolve_annotation_holes(annotation);
-                if !hole_vars.is_empty() {
-                    if let Some((expected_params, _)) = &expected {
-                        if let Some(expected_ty) = expected_params.get(i) {
-                            self.expect_type(expected_ty, &annotated_ty, &annotation.1);
-                        }
+                // Unify the annotated type against the expected param type regardless
+                // of whether the annotation contains holes.  The holes path (deferred
+                // inference) is orthogonal: a fully-concrete annotation (`|x: i64|`)
+                // must still be rejected when the expected param type is `bool`.
+                if let Some((expected_params, _)) = &expected {
+                    if let Some(expected_ty) = expected_params.get(i) {
+                        self.expect_type(expected_ty, &annotated_ty, &annotation.1);
                     }
+                }
+                if !hole_vars.is_empty() {
                     self.record_deferred_inference_holes(
                         annotation,
                         format!("lambda parameter `{}`", p.name),
@@ -4605,10 +4609,12 @@ impl Checker {
 
         let ret_ty = if let Some(annotation) = return_type {
             let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
+            // Unify the annotated return type against the contextual expected return
+            // type regardless of holes — same rationale as annotated param types above.
+            if let Some((_, contextual_ret)) = expected {
+                self.expect_type(contextual_ret, &expected_ret, &annotation.1);
+            }
             if !hole_vars.is_empty() {
-                if let Some((_, contextual_ret)) = expected {
-                    self.expect_type(contextual_ret, &expected_ret, &annotation.1);
-                }
                 self.record_deferred_inference_holes(annotation, "lambda return type", hole_vars);
             }
             self.current_return_type = Some(expected_ret.clone());

@@ -23523,3 +23523,155 @@ impl Discard for Discarter {
         output.errors
     );
 }
+
+// ── lambda annotated-param vs expected-fn-type unification (L29) ─────────────
+//
+// When a lambda has an explicit param annotation (`|x: T|`) and is passed
+// where a `fn(U) -> V` is expected, the checker must unify `T` against `U`.
+// Previously the unification was only attempted when the annotation contained
+// a `_` hole — fully-concrete annotations (no holes) were silently accepted
+// regardless of the expected type. Ditto for annotated return types.
+
+/// A fully-annotated param type that contradicts the expected fn type must be
+/// rejected at the call-site with a Mismatch error.
+#[test]
+fn annotated_lambda_param_type_contradicts_expected_fn_type_is_rejected() {
+    // `apply` expects `fn(bool) -> i64`; the lambda says `|x: i64|`.
+    let output = check_source(
+        r"
+fn apply(f: fn(bool) -> i64) -> i64 { f(true) }
+
+fn main() -> i64 {
+    apply(|x: i64| x + 1)
+}
+",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::Mismatch { expected, actual }
+                    if expected.contains("bool") && actual.contains("i64")
+                        || expected.contains("i64") && actual.contains("bool")
+            )
+        }),
+        "expected Mismatch error for bool/i64 param annotation conflict, got: {:#?}",
+        output.errors
+    );
+}
+
+/// A fully-annotated return type that contradicts the expected fn type must be
+/// rejected.
+#[test]
+fn annotated_lambda_return_type_contradicts_expected_fn_type_is_rejected() {
+    // `apply` expects `fn(i64) -> bool`; the lambda says `-> i64`.
+    let output = check_source(
+        r"
+fn apply(f: fn(i64) -> bool) -> bool { f(1) }
+
+fn main() -> bool {
+    apply(|x: i64| -> i64 { x + 1 })
+}
+",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::Mismatch { expected, actual }
+                    if expected.contains("bool") && actual.contains("i64")
+                        || expected.contains("i64") && actual.contains("bool")
+            )
+        }),
+        "expected Mismatch error for bool/i64 return annotation conflict, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Arity mismatch: a lambda with more params than the expected fn type is
+/// already rejected; verify this is still true (regression pin).
+#[test]
+fn lambda_arity_mismatch_against_expected_fn_type_is_rejected() {
+    let output = check_source(
+        r"
+fn apply(f: fn(i64) -> i64) -> i64 { f(1) }
+
+fn main() -> i64 {
+    apply(|x: i64, y: i64| x + y)
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch),
+        "expected ArityMismatch for lambda with extra param, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Unannotated lambda (inference path) must still be accepted when the body
+/// is compatible with the expected param type.
+#[test]
+fn unannotated_lambda_matching_expected_fn_type_is_accepted() {
+    let output = check_source(
+        r"
+fn apply(f: fn(bool) -> i64) -> i64 { f(true) }
+
+fn main() -> i64 {
+    apply(|x| if x { 1 } else { 0 })
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unannotated lambda compatible with expected fn type must pass; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Correctly-annotated lambda (annotation matches expected type) is accepted.
+#[test]
+fn correctly_annotated_lambda_matching_expected_fn_type_is_accepted() {
+    let output = check_source(
+        r"
+fn apply(f: fn(bool) -> i64) -> i64 { f(true) }
+
+fn main() -> i64 {
+    apply(|x: bool| if x { 1 } else { 0 })
+}
+",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "correctly annotated lambda must be accepted; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Nested fn type: param is itself a function type; verify annotation mismatch
+/// is caught when the outer expected type and annotation disagree on the
+/// inner function type.
+#[test]
+fn annotated_lambda_param_nested_fn_type_contradiction_is_rejected() {
+    // Expected: `fn(fn(i64) -> i64) -> i64`
+    // Lambda annotation: `fn(fn(bool) -> i64) -> i64` (inner param type wrong)
+    let output = check_source(
+        r"
+fn apply(f: fn(fn(i64) -> i64) -> i64) -> i64 { f(|x| x + 1) }
+
+fn main() -> i64 {
+    apply(|g: fn(bool) -> i64| g(true))
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::Mismatch { .. })),
+        "nested fn type annotation mismatch must be rejected; got: {:#?}",
+        output.errors
+    );
+}

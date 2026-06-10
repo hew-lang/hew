@@ -1,0 +1,34 @@
+// Non-generic cross-module named functions are first-class values: stored
+// in a let binding, passed as an argument, returned from a function, held
+// as a Vec element, held in a record field, and invoked through each path.
+// The same null-env shim machinery as same-module named fns backs the
+// qualified symbol.
+import helpers;
+
+type Op {
+    f: fn(i64) -> i64;
+    tag: i64;
+}
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn pick() -> fn(i64) -> i64 {
+    helpers.double
+}
+
+fn main() {
+    let f = helpers.double;
+    println(f(21)); // 42: stored then invoked
+    println(apply(helpers.negate, 8)); // -8: passed as argument
+    let g = pick();
+    println(g(50)); // 100: returned then invoked
+    let fs: Vec<fn(i64) -> i64> = [helpers.double, helpers.negate];
+    println(fs[0](6)); // 12: Vec element
+    println(fs[1](6)); // -6: Vec element
+    let op = Op { f: helpers.double, tag: 9 };
+    let opf = op.f;
+    println(opf(11)); // 22: record field
+    println(op.tag); // 9: tag rides alongside the pair untouched
+}

@@ -4176,17 +4176,31 @@ impl Checker {
                     // falling through to the generic "undefined variable `module`" error.
                     if self.modules.contains(name) {
                         // The module DOES export a function under this name:
-                        // the user is referencing a cross-module function as
-                        // a value, which is a deferred feature — say so
-                        // instead of misreporting a missing constant.
-                        if self.fn_sigs.contains_key(&qualified_key) {
+                        // a non-generic cross-module function in value
+                        // position resolves to its function type (the HIR
+                        // lowerer emits a fn-value BindingRef for it). The
+                        // generic case stays deferred with a diagnostic that
+                        // names the workaround instead of misreporting a
+                        // missing constant.
+                        if let Some(sig) = self.fn_sigs.get(&qualified_key) {
+                            if sig.type_params.is_empty() {
+                                let ty = Ty::Function {
+                                    params: sig.params.clone(),
+                                    ret: Box::new(sig.return_type.clone()),
+                                };
+                                self.used_modules.borrow_mut().insert(ImportKey::new(
+                                    self.current_module.clone(),
+                                    name.clone(),
+                                ));
+                                return ty;
+                            }
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "`{qualified_key}` is an exported function; using a \
-                                     cross-module function as a value is not yet supported — \
-                                     call it directly, or wrap it in a lambda \
+                                    "`{qualified_key}` is an exported generic function; using a \
+                                     generic cross-module function as a value is not yet \
+                                     supported — call it directly, or wrap it in a lambda \
                                      (`|x| {qualified_key}(x)`)"
                                 ),
                             );

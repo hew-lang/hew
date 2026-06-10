@@ -1,0 +1,3 @@
+pub fn first<T>(items: Vec<T>) -> T {
+    items[0]
+}

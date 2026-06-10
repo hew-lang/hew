@@ -562,9 +562,9 @@ fn non_dyn_resource_local_still_elaborates_as_resource_drop() {
             d.kind
         );
         assert_eq!(
-            d.drop_fn.as_deref(),
-            Some("Handle::close"),
-            "Resource drop must carry the Handle::close drop_fn"
+            d.drop_fn,
+            Some(hew_mir::DropFnSpec::UserClose("Handle::close".to_string())),
+            "Resource drop must carry the user Handle::close ritual"
         );
         assert!(
             matches!(d.place, Place::Local(_)),

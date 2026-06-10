@@ -663,7 +663,9 @@ RawMirFunction {
                     ),
                     ty: Bytes,
                     drop_fn: Some(
-                        "hew_bytes_drop",
+                        Release(
+                            "hew_bytes_drop",
+                        ),
                     ),
                 },
             ],
@@ -910,7 +912,9 @@ RawMirFunction {
                     ),
                     ty: Bytes,
                     drop_fn: Some(
-                        "hew_bytes_drop",
+                        Release(
+                            "hew_bytes_drop",
+                        ),
                     ),
                 },
             ],

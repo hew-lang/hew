@@ -725,7 +725,9 @@ RawMirFunction {
                     ),
                     ty: String,
                     drop_fn: Some(
-                        "hew_string_drop",
+                        Release(
+                            "hew_string_drop",
+                        ),
                     ),
                 },
             ],
@@ -976,7 +978,9 @@ RawMirFunction {
                     ),
                     ty: String,
                     drop_fn: Some(
-                        "hew_string_drop",
+                        Release(
+                            "hew_string_drop",
+                        ),
                     ),
                 },
             ],

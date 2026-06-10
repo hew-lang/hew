@@ -135,7 +135,9 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             Instr::Drop {
                 place: Place::DuplexHandle(0),
                 ty: duplex_ty(),
-                drop_fn: Some("hew_duplex_close".to_string()),
+                drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                )),
             },
             Instr::ConstI64 {
                 dest: Place::ReturnSlot,

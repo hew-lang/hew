@@ -16890,7 +16890,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Stream::close",
+                            Runtime(
+                                StreamClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -16927,7 +16929,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Stream::close",
+                            Runtime(
+                                StreamClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -17604,7 +17608,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Stream::close",
+                            Runtime(
+                                StreamClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -17661,7 +17667,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Stream::close",
+                            Runtime(
+                                StreamClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -18214,7 +18222,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Sink::close",
+                            Runtime(
+                                SinkClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -18251,7 +18261,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Sink::close",
+                            Runtime(
+                                SinkClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -18928,7 +18940,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Sink::close",
+                            Runtime(
+                                SinkClose,
+                            ),
                         ),
                         kind: Resource,
                     },
@@ -18985,7 +18999,9 @@ ElaboratedMirFunction {
                             is_opaque: false,
                         },
                         drop_fn: Some(
-                            "Sink::close",
+                            Runtime(
+                                SinkClose,
+                            ),
                         ),
                         kind: Resource,
                     },

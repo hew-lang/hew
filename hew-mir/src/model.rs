@@ -709,6 +709,13 @@ pub struct ActorLayout {
     /// None` would convert a memory leak into a use-after-free once
     /// Q185(c) is lifted (plan §8.8). Stage 2 codegen consumes the
     /// pair atomically.
+    ///
+    /// JUSTIFIED string survivor: this carries a per-actor GENERATED
+    /// object symbol (`__hew_state_drop_<Actor>`) — an open set minted
+    /// by codegen itself, structurally incapable of a closed-descriptor
+    /// representation. The string IS the linker-edge name by nature;
+    /// nothing dispatches on its content (the runtime receives the
+    /// resolved function pointer).
     pub state_drop_fn_symbol: Option<String>,
     /// Per-state-field clone classification (W2.002 Stage 1). Index
     /// `i` corresponds to `state_field_tys[i]` /
@@ -3517,17 +3524,15 @@ pub enum Instr {
         env_ty: ResolvedTy,
     },
     /// Run the drop ritual for `place`. Cluster 3 makes this first-class:
-    /// `drop_fn = Some(name)` calls the `@resource` type's declared
-    /// `close(consuming self)` method; `drop_fn = None` is a trivial drop
-    /// (no side effect — `@linear` types whose move-checker proof is
-    /// elsewhere, or value classes with no implicit close). The inkwell
-    /// backend treats trivial drops as no-ops on the integer spine; real
-    /// emission of the `close` call lands when `@resource` types reach
-    /// the spine subset.
+    /// `drop_fn = Some(spec)` selects the release ritual through the typed
+    /// [`DropFnSpec`]; `drop_fn = None` is a trivial drop (no side effect
+    /// — `@linear` types whose move-checker proof is elsewhere, or value
+    /// classes with no implicit close). The inkwell backend treats trivial
+    /// drops as no-ops on the integer spine.
     Drop {
         place: Place,
         ty: ResolvedTy,
-        drop_fn: Option<String>,
+        drop_fn: Option<DropFnSpec>,
     },
     /// Witness operation: load the runtime **size in bytes** of `ty` into
     /// `dest` (A606). `dest` is an integer-typed local (`ResolvedTy::Usize`).
@@ -4532,6 +4537,44 @@ pub enum ExitPath {
     },
 }
 
+/// Typed drop-ritual selector carried by [`Instr::Drop`] and [`ElabDrop`].
+///
+/// The drop world has exactly three identity domains, and each gets its
+/// own arm so no consumer ever re-parses a string to recover which one
+/// it is holding (`checker-authority` / `type-info-survival`):
+///
+/// - [`DropFnSpec::Runtime`] — the closed-set runtime close/release
+///   rituals (Duplex/Stream/Sink/half-handles/lambda-actor/
+///   `CancellationToken`). The C symbol is born at codegen from
+///   [`RuntimeDropDescriptor::c_symbol`]; nothing downstream matches a
+///   name string.
+/// - [`DropFnSpec::Release`] — a cow-heap / fresh-value release C
+///   symbol (`hew_string_drop`, `hew_bytes_drop`, `hew_vec_free`,
+///   `hew_vec_free_owned`, `hew_hashmap_free_layout`,
+///   `hew_hashset_free_layout`, `hew_gen_free`). Selected by a closed
+///   MIR-side type-shape authority (`generator_yield_drop_symbol`,
+///   `drop_kind_for`'s cow tables) and congruence-checked against the
+///   value's type in codegen before any call is emitted — the string is
+///   a C-ABI name consumed at the declare edge, never a dispatch key.
+/// - [`DropFnSpec::UserClose`] — a user `#[resource]` `close` method,
+///   addressed by its generated `<Type>::<method>` symbol. Open set by
+///   nature (the generated-object symbol IS the linker-edge name);
+///   codegen resolves it against the declared function table and fails
+///   closed when absent.
+///
+/// [`RuntimeDropDescriptor::c_symbol`]: hew_types::runtime_call::RuntimeDropDescriptor::c_symbol
+#[derive(Debug, Clone, PartialEq)]
+pub enum DropFnSpec {
+    /// Closed-set runtime close/release ritual.
+    Runtime(hew_types::runtime_call::RuntimeDropDescriptor),
+    /// Cow-heap / fresh-value release C symbol (closed MIR-side
+    /// selection; codegen validates type↔symbol congruence).
+    Release(&'static str),
+    /// User `#[resource]` close method (`<Type>::<method>` generated
+    /// symbol — the open-set linker-edge arm).
+    UserClose(String),
+}
+
 /// Ordered drop sequence for a single exit. Drops fire in
 /// reverse-declaration (LIFO) order: the latest-bound `@resource`
 /// drops first.
@@ -4540,9 +4583,10 @@ pub struct DropPlan {
     pub drops: Vec<ElabDrop>,
 }
 
-/// A single elaborated drop op. Either a `@resource` drop calling the
-/// type's `close` method (`drop_fn = Some(name)`), or a trivial drop
-/// for a value class with no side effect (`drop_fn = None`).
+/// A single elaborated drop op. Either a `@resource` drop selecting its
+/// ritual through the typed [`DropFnSpec`] (`drop_fn = Some(spec)`), or
+/// a trivial drop for a value class with no side effect
+/// (`drop_fn = None`).
 ///
 /// `kind` discriminates the M2 substrate's structural drop semantics:
 /// generic `@resource` close, Duplex-handle close-both-directions,
@@ -4551,7 +4595,7 @@ pub struct DropPlan {
 pub struct ElabDrop {
     pub place: Place,
     pub ty: ResolvedTy,
-    pub drop_fn: Option<String>,
+    pub drop_fn: Option<DropFnSpec>,
     /// Drop-kind discriminator. Distinguishes the structural close
     /// semantics that codegen (slice 5) and runtime (slice 4) need
     /// to honour. Generic `@resource` drops use `DropKind::Resource`

@@ -60,7 +60,9 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         drops: vec![ElabDrop {
             place: Place::DuplexHandle(1),
             ty: duplex_ty(),
-            drop_fn: Some("Duplex::close".to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+            )),
             kind: DropKind::DuplexClose,
         }],
     };
@@ -227,7 +229,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         drops: vec![ElabDrop {
             place: Place::Local(0),
             ty: ResolvedTy::I64,
-            drop_fn: Some(unknown_drop_fn.to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::UserClose(unknown_drop_fn.to_string())),
             kind: DropKind::Resource,
         }],
     };

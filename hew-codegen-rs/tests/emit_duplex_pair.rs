@@ -78,12 +78,16 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             Instr::Drop {
                 place: Place::DuplexHandle(2),
                 ty: duplex_ty.clone(),
-                drop_fn: Some("hew_duplex_close".to_string()),
+                drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                )),
             },
             Instr::Drop {
                 place: Place::DuplexHandle(1),
                 ty: duplex_ty.clone(),
-                drop_fn: Some("hew_duplex_close".to_string()),
+                drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                )),
             },
             // Populate the return slot so the integer-only return
             // contract holds (the spine subset declares main->i64).

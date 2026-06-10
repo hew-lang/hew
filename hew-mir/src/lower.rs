@@ -5792,7 +5792,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             });
         }
     }
@@ -5892,7 +5892,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             });
         }
     }
@@ -5968,7 +5968,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some(symbol.to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
         }
     }
@@ -10369,7 +10369,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty: ty.clone(),
-                drop_fn: Some("hew_string_drop".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
             });
         }
         // else: the retained element escapes the body (moved/stored/returned).
@@ -10489,7 +10489,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty: ty.clone(),
-                drop_fn: Some(symbol.to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
         }
         // else: the value escapes the consuming body — leak-not-double-free.
@@ -11374,7 +11374,7 @@ impl Builder {
                 self.instructions.push(Instr::Drop {
                     place: temp,
                     ty: field_ty,
-                    drop_fn: Some(drop_symbol.to_string()),
+                    drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
                 });
             }
         }
@@ -22737,7 +22737,7 @@ fn apply_nested_fresh_string_temp_drops(
                 Instr::Drop {
                     place,
                     ty,
-                    drop_fn: Some("hew_string_drop".to_string()),
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
                 },
             );
         }
@@ -25811,13 +25811,30 @@ fn drop_kind_for(
     }
 }
 
-fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> Option<String> {
+fn resource_drop_fn(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> Option<crate::model::DropFnSpec> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
     match ty {
-        ResolvedTy::CancellationToken => Some("hew_cancel_token_release".to_string()),
+        ResolvedTy::CancellationToken => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::CancellationTokenRelease,
+        )),
         ResolvedTy::Named { name, .. } => type_classes
             .get(name)
             .and_then(|(_, close)| close.as_ref())
-            .map(|m| format!("{name}::{m}")),
+            .map(|m| {
+                // Classify the close ritual at production: the type-class
+                // table's `<Type>::<method>` spelling lifts onto the typed
+                // runtime drop descriptor for the closed builtin set; user
+                // `#[resource]` close methods stay on the open-set
+                // generated-symbol arm.
+                let qualified = format!("{name}::{m}");
+                RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
+                    crate::model::DropFnSpec::UserClose(qualified),
+                    crate::model::DropFnSpec::Runtime,
+                )
+            }),
         // Task<T> and all other types have no user-visible close method.
         _ => None,
     }
@@ -25838,11 +25855,21 @@ fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> 
 /// `Duplex::close` / `Stream::close` / etc.
 ///
 /// LESSONS: producer-bridge-before-codegen, lifecycle-symmetry.
-fn place_aware_drop_fn(place: Place, ty_derived: Option<String>) -> Option<String> {
+fn place_aware_drop_fn(
+    place: Place,
+    ty_derived: Option<crate::model::DropFnSpec>,
+) -> Option<crate::model::DropFnSpec> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
     match place {
-        Place::LambdaActorHandle(_) => Some("LambdaActorHandle::close".to_string()),
-        Place::SendHalf(_) => Some("SendHalf::close".to_string()),
-        Place::RecvHalf(_) => Some("RecvHalf::close".to_string()),
+        Place::LambdaActorHandle(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::LambdaActorHandleClose,
+        )),
+        Place::SendHalf(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::SendHalfClose,
+        )),
+        Place::RecvHalf(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::RecvHalfClose,
+        )),
         _ => ty_derived,
     }
 }
@@ -27336,7 +27363,9 @@ mod slice3_invariants {
         let drops = vec![ElabDrop {
             place: Place::DuplexHandle(7),
             ty: duplex_int_int_ty(),
-            drop_fn: Some("Duplex::close".to_string()),
+            drop_fn: Some(crate::model::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+            )),
             kind: DropKind::Resource,
         }];
         let elab = make_elab_with_drops(drops);
@@ -29627,7 +29656,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(10),
                 ty: generator_ty(),
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             },
         ];
         let owned = vec![
@@ -29753,7 +29782,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(6),
                 ty: generator_ty(),
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             },
         ];
         let owned = vec![

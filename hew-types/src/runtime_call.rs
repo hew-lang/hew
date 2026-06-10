@@ -1340,10 +1340,11 @@ impl RuntimeDropDescriptor {
         }
     }
 
-    /// The producer-side method-name spelling consumed by today's
-    /// `runtime_drop_symbol(&str)`. Round-trip key for the migration
-    /// (a follow-up deletes the string-keyed lookup; until then this method
-    /// lets the bijection test pin parity with the existing table).
+    /// The producer-side method-name spelling (`<Type>::<method>`), the
+    /// round-trip key of the descriptor: unlike `c_symbol()` (where the
+    /// two half-close variants share a symbol), every variant has a
+    /// unique name, so [`RuntimeDropDescriptor::from_drop_fn_name`] is a
+    /// true inverse.
     #[must_use]
     pub fn drop_fn_name(self) -> &'static str {
         match self {
@@ -1354,6 +1355,27 @@ impl RuntimeDropDescriptor {
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
+        }
+    }
+
+    /// Inverse of [`RuntimeDropDescriptor::drop_fn_name`]: lift a
+    /// type-class-derived `<Type>::<method>` close name into the typed
+    /// descriptor. Returns `None` for user `#[resource]` close methods
+    /// (`MyType::close`) — the open-set arm of the drop-dispatch split.
+    /// MIR's drop elaboration uses this lift to classify every close
+    /// ritual at production; the `c_symbol` is then born at codegen from
+    /// the descriptor.
+    #[must_use]
+    pub fn from_drop_fn_name(name: &str) -> Option<Self> {
+        match name {
+            "Duplex::close" => Some(Self::DuplexClose),
+            "Stream::close" => Some(Self::StreamClose),
+            "Sink::close" => Some(Self::SinkClose),
+            "LambdaActorHandle::close" => Some(Self::LambdaActorHandleClose),
+            "SendHalf::close" => Some(Self::SendHalfClose),
+            "RecvHalf::close" => Some(Self::RecvHalfClose),
+            "CancellationToken::release" => Some(Self::CancellationTokenRelease),
+            _ => None,
         }
     }
 }
@@ -1941,6 +1963,23 @@ mod tests {
                  both or remove the variant"
             );
         }
+    }
+
+    /// `from_drop_fn_name` is a true inverse of `drop_fn_name` (every
+    /// variant has a unique name), and rejects user `<Type>::close`
+    /// spellings so the open-set arm stays open.
+    #[test]
+    fn drop_descriptor_name_round_trips() {
+        for d in all_runtime_drop_descriptors() {
+            assert_eq!(
+                RuntimeDropDescriptor::from_drop_fn_name(d.drop_fn_name()),
+                Some(d),
+                "drop_fn_name round-trip failed for {d:?}"
+            );
+        }
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("MyType::close").is_none());
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("hew_duplex_close").is_none());
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("").is_none());
     }
 
     // The allowlist-coverage parity tests

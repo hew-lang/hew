@@ -73,7 +73,10 @@ fn cancellation_token_intrinsic_and_release_drop_reach_mir() {
     assert!(
         drops.iter().any(|drop| {
             drop.kind == DropKind::Resource
-                && drop.drop_fn.as_deref() == Some("hew_cancel_token_release")
+                && drop.drop_fn
+                    == Some(hew_mir::DropFnSpec::Runtime(
+                        hew_types::runtime_call::RuntimeDropDescriptor::CancellationTokenRelease,
+                    ))
         }),
         "CancellationToken locals must release a ref on drop; drops={drops:#?}"
     );
@@ -129,7 +132,12 @@ fn cancellation_token_extracted_from_tuple_releases_exactly_once() {
     // Exactly one token release fires (the extracted `tok`'s standalone drop).
     let releases = all_drops
         .iter()
-        .filter(|drop| drop.drop_fn.as_deref() == Some("hew_cancel_token_release"))
+        .filter(|drop| {
+            drop.drop_fn
+                == Some(hew_mir::DropFnSpec::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::CancellationTokenRelease,
+                ))
+        })
         .count();
     assert_eq!(
         releases, 1,

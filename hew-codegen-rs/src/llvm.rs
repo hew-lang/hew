@@ -554,9 +554,9 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
                         wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
                     }
                     Instr::Drop {
-                        drop_fn: Some(fn_name),
+                        drop_fn: Some(spec),
                         ..
-                    } => fn_name.starts_with("hew_duplex_").then(|| fn_name.clone()),
+                    } => wasm_excluded_drop_symbol(spec),
                     _ => None,
                 };
                 if let Some(sym) = excluded {
@@ -652,17 +652,38 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     for elab_func in &pipeline.elaborated_mir {
         for (_, plan) in &elab_func.drop_plans {
             for drop in &plan.drops {
-                if let Some(ref drop_fn) = drop.drop_fn {
-                    if let Some(sym) = runtime_drop_symbol(drop_fn) {
-                        if sym.starts_with("hew_duplex_") {
-                            return Some(sym.to_string());
-                        }
+                if let Some(ref spec) = drop.drop_fn {
+                    if let Some(sym) = wasm_excluded_drop_symbol(spec) {
+                        return Some(sym);
                     }
                 }
             }
         }
     }
     None
+}
+
+/// WASM-excluded drop rituals: the Duplex close family rides the
+/// native-only duplex substrate (`hew-runtime/src/duplex.rs:54`,
+/// WASM-TODO(#1451)). Keyed on the typed descriptor — exhaustive over
+/// [`RuntimeDropDescriptor`], NO wildcard, so a new close ritual cannot
+/// land without an explicit wasm32 decision. `Release` symbols come from
+/// the closed cow-heap set (none duplex-backed) and `UserClose` bodies
+/// are pure Hew code; both compile on wasm32.
+///
+/// [`RuntimeDropDescriptor`]: hew_types::runtime_call::RuntimeDropDescriptor
+fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
+    use hew_types::runtime_call::RuntimeDropDescriptor as D;
+    match spec {
+        hew_mir::DropFnSpec::Runtime(d) => match d {
+            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
+            D::StreamClose
+            | D::SinkClose
+            | D::LambdaActorHandleClose
+            | D::CancellationTokenRelease => None,
+        },
+        hew_mir::DropFnSpec::Release(_) | hew_mir::DropFnSpec::UserClose(_) => None,
+    }
 }
 
 /// True iff `family` is a wasm32-EXCLUDED runtime-call family: its native
@@ -6770,10 +6791,21 @@ fn emit_lambda_env_dropper<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed(format!("env dropper `{name}` missing env param")))?
         .into_pointer_value();
     for (idx, class) in field_drops.iter().enumerate() {
-        let drop_symbol = match class {
+        // Symbol AND declared signature both derive from the typed field
+        // class in one match — no string self-compare to re-derive what
+        // the class already knows.
+        // `hew_string_drop(s: *mut c_char)` returns void;
+        // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
+        let (drop_symbol, sig) = match class {
             LambdaEnvFieldDrop::None => continue,
-            LambdaEnvFieldDrop::String => "hew_string_drop",
-            LambdaEnvFieldDrop::WeakSelfHandle => "hew_lambda_actor_weak_drop",
+            LambdaEnvFieldDrop::String => (
+                "hew_string_drop",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ),
+            LambdaEnvFieldDrop::WeakSelfHandle => (
+                "hew_lambda_actor_weak_drop",
+                ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+            ),
         };
         let field_idx = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
@@ -6789,16 +6821,9 @@ fn emit_lambda_env_dropper<'ctx>(
         let field_val = builder
             .build_load(ptr_ty, field_ptr, &format!("env_drop_field_{idx}"))
             .llvm_ctx("lambda env dropper field load")?;
-        let drop_fn = llvm_mod.get_function(drop_symbol).unwrap_or_else(|| {
-            // `hew_string_drop(s: *mut c_char)` returns void;
-            // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
-            let sig = if drop_symbol == "hew_lambda_actor_weak_drop" {
-                ctx.i32_type().fn_type(&[ptr_ty.into()], false)
-            } else {
-                ctx.void_type().fn_type(&[ptr_ty.into()], false)
-            };
-            llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External))
-        });
+        let drop_fn = llvm_mod
+            .get_function(drop_symbol)
+            .unwrap_or_else(|| llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External)));
         builder
             .build_call(drop_fn, &[field_val.into()], &format!("env_drop_{idx}"))
             .llvm_ctx("lambda env dropper field drop call")?;
@@ -20875,65 +20900,6 @@ fn lower_call_runtime_abi(
     Ok(())
 }
 
-/// Map an elaborator-produced `drop_fn` string to its C-ABI runtime symbol.
-///
-/// The elaborator emits `"<TypeName>::<method>"` strings from
-/// `hew-mir/src/lower.rs::build_lifo_drops` via the `TypeClassTable`.
-/// The C-ABI names in `hew-runtime/` are not always a predictable
-/// transformation of those strings — in particular, `LambdaActorHandle`
-/// uses the method name "close" in the type-class seeding but the
-/// runtime symbol is `hew_lambda_actor_release` (not
-/// `hew_lambda_actor_close`). This table is the authoritative bridge.
-///
-/// Accepts literal C-ABI symbol names (e.g. `"hew_duplex_close"`)
-/// as a backward-compatible pass-through so hand-built test MIR can
-/// use either format. Unknown strings fail closed — no wildcard.
-///
-/// LESSONS: producer-bridge-before-codegen (P1), boundary-fail-closed (P0),
-/// lifecycle-symmetry (P0).
-///
-/// W3.030 Stage 2: this table is now one of *two* dispatch arms. Names that
-/// land here are runtime-substrate drops (Duplex/LambdaActorHandle/SendHalf/
-/// RecvHalf, plus their `hew_*` C-ABI literals). Names of the form
-/// `<UserType>::<method>` that do not appear here are routed to the
-/// user-fn dispatch arm by `resolve_drop_fn`. Truly unknown names — neither
-/// a runtime substrate name nor a recognised `<Type>::<method>` user-fn
-/// candidate — fail closed in `resolve_drop_fn`.
-fn runtime_drop_symbol(drop_fn: &str) -> Option<&'static str> {
-    match drop_fn {
-        // Elaborator-produced names (from builtin_type_classes.rs seeding).
-        // Duplex<S, R> — close-both-directions.
-        "Duplex::close" => Some("hew_duplex_close"),
-        // Stream<T> / Sink<T> handle close.  The runtime symbol is
-        // element-type-independent at the ABI level; the type checker's
-        // builtin-method table (builtin_names.rs) emits "Stream::close" /
-        // "Sink::close" as the drop_fn regardless of element type.
-        "Stream::close" => Some("hew_stream_close"),
-        "Sink::close" => Some("hew_sink_close"),
-        // LambdaActorHandle — NB: the type-class seeding calls the method
-        // "close" but the runtime C-ABI symbol is "release", not "close".
-        // An explicit table entry is required; string-mangling would produce
-        // the wrong symbol.
-        "LambdaActorHandle::close" => Some("hew_lambda_actor_release"),
-        // Half-handle drops (slice-3 DropKind::DuplexHalfClose(Direction)).
-        // Both Send and Recv resolve to the same `hew_duplex_close_half`
-        // C-ABI symbol; the direction discriminant is materialised at the
-        // call site in `lower_drop` from the Place variant (SendHalf vs
-        // RecvHalf), not encoded in the symbol name. This closes the
-        // 6-cell drop gap surfaced by the W2.004 Stage-0 audit (rows #6/#7
-        // SendHalf/RecvHalf × {sync-return, async-cancel, actor-shutdown}).
-        "SendHalf::close" | "RecvHalf::close" => Some("hew_duplex_close_half"),
-        "CancellationToken::release" => Some("hew_cancel_token_release"),
-        // Literal C-ABI symbol pass-through (backward compat for hand-built
-        // test MIR that pre-dates elaborated-drop-plan consumption).
-        "hew_duplex_close" => Some("hew_duplex_close"),
-        "hew_lambda_actor_release" => Some("hew_lambda_actor_release"),
-        "hew_duplex_close_half" => Some("hew_duplex_close_half"),
-        "hew_cancel_token_release" => Some("hew_cancel_token_release"),
-        _ => None,
-    }
-}
-
 /// W3.030 Stage 2: typed dispatch decision for an `ElabDrop { drop_fn:
 /// Some(name) }`. The codegen drop path resolves *every* such drop to
 /// exactly one of these two arms; a third "unresolved" path is a
@@ -20960,76 +20926,74 @@ enum DropDispatch<'ctx> {
     },
 }
 
-/// Resolve an `ElabDrop` `drop_fn` string to a typed `DropDispatch`.
+/// Resolve a typed [`hew_mir::DropFnSpec`] to a `DropDispatch`.
 ///
-/// Resolution order (deterministic, fail-closed on the third path):
-///   1. If `runtime_drop_symbol` recognises the name → `RuntimeSymbol`.
-///   2. Else if the name looks like a `<Type>::<method>` user-method
-///      symbol *and* `fn_symbols` carries a `FnSymbol::Real` entry for it
-///      → `UserFn`. The user function must return Unit (Q-β-C). The
-///      lookup uses the same `<Self>::<method>` mangling as
+/// The MIR producer already classified the ritual; this function only
+/// materialises the codegen-side handles (deterministic, fail-closed):
+///
+///   1. `DropFnSpec::Runtime(d)` → `RuntimeSymbol(d.c_symbol())` — the C
+///      symbol is BORN here, at the codegen edge, from the typed
+///      descriptor's bijection. No name table, no string re-match.
+///   2. `DropFnSpec::UserClose(name)` → `UserFn` when `fn_symbols`
+///      carries a `FnSymbol::Real` entry for the generated
+///      `<Type>::<method>` symbol. The user function must return Unit
+///      (Q-β-C). The lookup uses the same `<Self>::<method>` mangling as
 ///      `HirImplBlock::method_symbol` and `declare_function` — no
 ///      translation glue (E6 in the plan).
-///   3. Else → `CodegenError::FailClosed` naming both arms.
+///   3. `DropFnSpec::Release(_)` → `CodegenError::FailClosed`: release
+///      symbols are consumed by the bytes / cow-heap emitters before the
+///      close-ritual dispatch; one reaching here is producer drift.
 ///
 /// W3.030 Stage 2: this is the single source of truth for drop dispatch
 /// classification. `lower_drop`, the codegen-internal verifier
 /// (`verify_drop_dispatch_resolves`), and any future caller must reach
 /// dispatch through this function.
 fn resolve_drop_fn<'ctx>(
-    drop_fn: &str,
+    drop_fn: &hew_mir::DropFnSpec,
     fn_symbols: &FnSymbolMap<'ctx>,
 ) -> CodegenResult<DropDispatch<'ctx>> {
-    if let Some(symbol) = runtime_drop_symbol(drop_fn) {
-        return Ok(DropDispatch::RuntimeSymbol(symbol));
-    }
-    // User-fn candidate: must be a `<Type>::<method>` mangled symbol. The
-    // `hew_` prefix is reserved for runtime C-ABI literals (already handled
-    // above); reject it here so a typo on a runtime literal does not silently
-    // get reclassified as a user fn.
-    if drop_fn.contains("::") && !drop_fn.starts_with("hew_") {
-        let entry = fn_symbols.get(drop_fn).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "drop_fn={drop_fn:?}: parsed as a qualified user-method \
-                 name but no function with that mangled symbol is \
-                 registered in the codegen function pre-pass. A \
-                 `#[resource]`'s `close` body must be declared in an \
-                 inherent `impl` block whose flattened \
-                 `<Self>::<method>` symbol reaches `declare_function` \
-                 before drop lowering (W3.030 / E6). Recognised runtime \
-                 substrate names: Duplex::close, LambdaActorHandle::close, \
-                 SendHalf::close, RecvHalf::close. Refusing to silently \
-                 no-op a resource drop \
-                 (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
-                 lifecycle-symmetry)."
-            ))
-        })?;
-        let (value, _return_ty, returns_unit) = entry.real(drop_fn, "drop dispatch")?;
-        if !returns_unit {
-            return Err(CodegenError::FailClosed(format!(
-                "drop_fn={drop_fn:?}: user-resource `close` must return \
-                 Unit (Q-β-C, ratified for v0.5 in W3.030). Fallible \
-                 cleanup belongs in a `defer` block, not a drop \
-                 ritual — a non-Unit close on a drop path would either \
-                 leak the result or panic with no recovery. \
-                 (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
-            )));
+    match drop_fn {
+        hew_mir::DropFnSpec::Runtime(descriptor) => {
+            Ok(DropDispatch::RuntimeSymbol(descriptor.c_symbol()))
         }
-        return Ok(DropDispatch::UserFn {
-            value,
-            symbol: drop_fn.to_string(),
-        });
+        hew_mir::DropFnSpec::UserClose(name) => {
+            let entry = fn_symbols.get(name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "drop_fn=UserClose({name:?}): no function with that mangled \
+                     symbol is registered in the codegen function pre-pass. A \
+                     `#[resource]`'s `close` body must be declared in an \
+                     inherent `impl` block whose flattened \
+                     `<Self>::<method>` symbol reaches `declare_function` \
+                     before drop lowering (W3.030 / E6). Refusing to silently \
+                     no-op a resource drop \
+                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                     lifecycle-symmetry)."
+                ))
+            })?;
+            let (value, _return_ty, returns_unit) = entry.real(name, "drop dispatch")?;
+            if !returns_unit {
+                return Err(CodegenError::FailClosed(format!(
+                    "drop_fn=UserClose({name:?}): user-resource `close` must return \
+                     Unit (Q-β-C, ratified for v0.5 in W3.030). Fallible \
+                     cleanup belongs in a `defer` block, not a drop \
+                     ritual — a non-Unit close on a drop path would either \
+                     leak the result or panic with no recovery. \
+                     (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+                )));
+            }
+            Ok(DropDispatch::UserFn {
+                value,
+                symbol: name.clone(),
+            })
+        }
+        hew_mir::DropFnSpec::Release(symbol) => Err(CodegenError::FailClosed(format!(
+            "drop_fn=Release({symbol:?}) reached the close-ritual dispatch; \
+             cow-heap / fresh-value release symbols are consumed by the bytes \
+             and cow-heap emitters, never by the runtime/user close split — \
+             the MIR producer mixed the two domains. Refusing to emit \
+             (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+        ))),
     }
-    Err(CodegenError::FailClosed(format!(
-        "drop_fn={drop_fn:?}: no C-ABI runtime symbol wired for this \
-         drop_fn string and it does not parse as a `<Type>::<method>` \
-         user-method symbol. Recognised runtime names today: \
-         Duplex::close, LambdaActorHandle::close, SendHalf::close, \
-         RecvHalf::close (and their hew_* C-ABI literals). User \
-         resources must declare `close` in an inherent impl block \
-         (W3.030). Refusing to silently no-op a resource drop \
-         (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
-    )))
 }
 
 /// W3.030 Stage 2 codegen-internal verifier (plan V13).
@@ -21093,7 +21057,11 @@ fn verify_drop_dispatch_resolves<'ctx>(
 /// A third dispatch path is impossible by construction — `resolve_drop_fn`
 /// either returns one of the two arms or fails closed. The verifier
 /// `verify_drop_dispatch_resolves` pins this at module-build time.
-fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
+fn lower_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    drop_fn: &hew_mir::DropFnSpec,
+) -> CodegenResult<()> {
     match resolve_drop_fn(drop_fn, fn_ctx.fn_symbols)? {
         DropDispatch::RuntimeSymbol(symbol) => lower_drop_runtime(fn_ctx, place, symbol),
         DropDispatch::UserFn { value, symbol } => lower_drop_user_fn(fn_ctx, place, value, &symbol),
@@ -21104,7 +21072,7 @@ fn lower_inline_drop(
     fn_ctx: &FnCtx<'_, '_>,
     place: Place,
     ty: &ResolvedTy,
-    drop_fn: &str,
+    drop_fn: &hew_mir::DropFnSpec,
 ) -> CodegenResult<()> {
     // Bytes ABI: a native `bytes` value is a stack-resident `BytesTriple
     // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
@@ -21124,26 +21092,26 @@ fn lower_inline_drop(
     // fail-closes on a non-ptr slot — surfacing the drift, but with a less
     // direct diagnostic than this arm's targeted message.
     if matches!(ty, ResolvedTy::Bytes) {
-        if drop_fn != "hew_bytes_drop" {
+        if *drop_fn != hew_mir::DropFnSpec::Release("hew_bytes_drop") {
             return Err(CodegenError::FailClosed(format!(
                 "inline Instr::Drop @ {place:?} on type Bytes carries drop_fn \
-                 {drop_fn:?}; the only admissible Bytes inline-drop symbol is \
-                 `hew_bytes_drop` (the MIR `generator_yield_drop_symbol` authority \
-                 — `hew-mir/src/lower.rs`). Refusing to route a Bytes value through \
-                 the generic single-ptr-load drop dispatcher (LESSONS: \
-                 boundary-fail-closed, dedup-semantic-boundary)."
+                 {drop_fn:?}; the only admissible Bytes inline-drop ritual is \
+                 Release(hew_bytes_drop) (the MIR `generator_yield_drop_symbol` \
+                 authority — `hew-mir/src/lower.rs`). Refusing to route a Bytes \
+                 value through the generic single-ptr-load drop dispatcher \
+                 (LESSONS: boundary-fail-closed, dedup-semantic-boundary)."
             )));
         }
         return emit_bytes_inplace_drop(fn_ctx, place);
     }
-    if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
-        if drop_fn == symbol {
+    if let hew_mir::DropFnSpec::Release(symbol) = drop_fn {
+        // A release ritual is only ever congruent with its own type's cow
+        // release symbol; anything else would free through the wrong ABI.
+        if cow_heap_release_symbol(fn_ctx, ty) == Some(symbol) {
             return emit_cow_heap_drop(fn_ctx, place, symbol);
         }
-    }
-    if is_known_cow_heap_drop_symbol(drop_fn) {
         return Err(CodegenError::FailClosed(format!(
-            "inline Instr::Drop @ {place:?} carries CowHeap release symbol {drop_fn:?} \
+            "inline Instr::Drop @ {place:?} carries release ritual {symbol:?} \
              incongruent with its type {ty:?} (whose release symbol is {expected:?}); \
              refusing to route a heap-owning value through the generic drop dispatcher",
             expected = cow_heap_release_symbol(fn_ctx, ty),
@@ -40245,8 +40213,8 @@ mod tests {
     // then invoke each helper and assert on the printed LLVM IR.
     //
     // The drop-substrate tests are simpler — they exercise
-    // `runtime_drop_symbol` / `resolve_drop_fn` (W3.030 Stage 2 typed
-    // dispatcher) and `intern_runtime_decl` directly.
+    // `resolve_drop_fn` (the typed DropFnSpec dispatcher) and
+    // `intern_runtime_decl` directly.
     // ========================================================================
 
     use hew_mir::{
@@ -40265,8 +40233,13 @@ mod tests {
     #[test]
     fn drop_fn_send_half_close_resolves_to_hew_duplex_close_half() {
         let syms = empty_fn_symbols();
-        match resolve_drop_fn("SendHalf::close", &syms)
-            .expect("SendHalf::close must resolve after W2.004 Stage 1")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::SendHalfClose,
+            ),
+            &syms,
+        )
+        .expect("SendHalf::close must resolve after W2.004 Stage 1")
         {
             DropDispatch::RuntimeSymbol(sym) => assert_eq!(
                 sym, "hew_duplex_close_half",
@@ -40281,8 +40254,13 @@ mod tests {
     #[test]
     fn drop_fn_recv_half_close_resolves_to_hew_duplex_close_half() {
         let syms = empty_fn_symbols();
-        match resolve_drop_fn("RecvHalf::close", &syms)
-            .expect("RecvHalf::close must resolve after W2.004 Stage 1")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::RecvHalfClose,
+            ),
+            &syms,
+        )
+        .expect("RecvHalf::close must resolve after W2.004 Stage 1")
         {
             DropDispatch::RuntimeSymbol(sym) => assert_eq!(sym, "hew_duplex_close_half"),
             DropDispatch::UserFn { .. } => panic!("RecvHalf::close must take RuntimeSymbol arm"),
@@ -40290,27 +40268,30 @@ mod tests {
     }
 
     #[test]
-    fn drop_fn_literal_hew_duplex_close_half_pass_through() {
-        assert_eq!(
-            runtime_drop_symbol("hew_duplex_close_half"),
-            Some("hew_duplex_close_half"),
-            "hew_duplex_close_half literal must pass through"
-        );
-    }
-
-    #[test]
     fn drop_fn_existing_duplex_close_still_resolves() {
-        // Regression: the existing Duplex::close mapping must not be
-        // disturbed by the half-close additions or the W3.030 Stage 2
-        // typed-dispatch refactor.
-        assert_eq!(
-            runtime_drop_symbol("Duplex::close"),
-            Some("hew_duplex_close")
-        );
-        assert_eq!(
-            runtime_drop_symbol("LambdaActorHandle::close"),
-            Some("hew_lambda_actor_release")
-        );
+        // Regression: the Duplex / lambda-actor close mappings must not be
+        // disturbed by the typed-descriptor migration. The symbol is born
+        // from the descriptor bijection at this dispatch — pin the values.
+        let syms = empty_fn_symbols();
+        for (descriptor, expected) in [
+            (
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                "hew_duplex_close",
+            ),
+            (
+                hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+                "hew_lambda_actor_release",
+            ),
+        ] {
+            match resolve_drop_fn(&hew_mir::DropFnSpec::Runtime(descriptor), &syms)
+                .expect("runtime descriptors must resolve")
+            {
+                DropDispatch::RuntimeSymbol(sym) => assert_eq!(sym, expected),
+                DropDispatch::UserFn { .. } => {
+                    panic!("{descriptor:?} must take the RuntimeSymbol arm")
+                }
+            }
+        }
     }
 
     #[test]
@@ -40320,18 +40301,16 @@ mod tests {
         // candidate, so it reaches the fn_symbols lookup and fails there
         // (no registered function). The diagnostic must still cite both
         // dispatch arms so the next implementer knows where to look.
-        let err = resolve_drop_fn("Mystery::close", &syms)
-            .expect_err("Unknown drop_fn strings must fail closed");
+        let err = resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Mystery::close".to_string()),
+            &syms,
+        )
+        .expect_err("an unregistered user close must fail closed");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
                     msg.contains("Mystery::close"),
-                    "diagnostic must name the offending drop_fn string; got: {msg}"
-                );
-                assert!(
-                    msg.contains("SendHalf::close") && msg.contains("RecvHalf::close"),
-                    "diagnostic must list SendHalf::close + RecvHalf::close as \
-                     recognised runtime substrate names; got: {msg}"
+                    "diagnostic must name the offending close symbol; got: {msg}"
                 );
                 assert!(
                     msg.contains("inherent") || msg.contains("impl"),
@@ -40369,8 +40348,11 @@ mod tests {
                 returns_unit: true,
             },
         );
-        match resolve_drop_fn("Conn::close", &syms)
-            .expect("Conn::close must resolve via the UserFn arm when registered")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Conn::close".to_string()),
+            &syms,
+        )
+        .expect("Conn::close must resolve via the UserFn arm when registered")
         {
             DropDispatch::UserFn { value: v, symbol } => {
                 assert_eq!(symbol, "Conn::close");
@@ -40404,8 +40386,11 @@ mod tests {
                 returns_unit: false,
             },
         );
-        let err = resolve_drop_fn("Bad::close", &syms)
-            .expect_err("non-Unit user-resource close must fail closed (Q-β-C)");
+        let err = resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Bad::close".to_string()),
+            &syms,
+        )
+        .expect_err("non-Unit user-resource close must fail closed (Q-β-C)");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(msg.contains("Bad::close"));
@@ -40436,7 +40421,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("NotARealType::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::UserClose(
+                            "NotARealType::close".to_string(),
+                        )),
                         kind: DropKind::Resource,
                     }],
                 },
@@ -40502,7 +40489,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::DuplexClose,
                     }],
                 },
@@ -40554,7 +40543,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::DuplexClose,
                     }],
                 },
@@ -41003,7 +40994,7 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Conn::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::UserClose("Conn::close".to_string())),
                         kind: DropKind::Resource,
                     }],
                 },
@@ -41696,7 +41687,7 @@ mod tests {
         let drop = ElabDrop {
             place: Place::Local(0),
             ty: ResolvedTy::String,
-            drop_fn: Some("hew_string_drop".to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::CowHeap {
                 drop_fn: "hew_string_drop",
             },
@@ -41727,7 +41718,7 @@ mod tests {
         let drop = ElabDrop {
             place: Place::Local(0),
             ty: tuple_ty,
-            drop_fn: Some("hew_string_drop".to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::AggregateRecursive,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
@@ -43293,7 +43284,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(1),
                         ty: trait_obj.clone(),
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::TraitObject {
                             storage: TraitObjectStorage::FrameOwned,
                         },

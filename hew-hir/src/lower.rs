@@ -17266,7 +17266,13 @@ impl LowerCtx {
                     is_opaque: false,
                 };
                 let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
+                // Register `Result<Option<T>, TimeoutError>` and its nested
+                // `Option<T>` instantiation with the enum layout registry so
+                // that MIR/codegen can resolve the tagged-union struct layout.
+                // `try_register_enum_instantiation(span)` looks up the type by
+                // span in the checker's type map, which holds the pre-deadline
+                // plain type — so call _ty directly instead.
+                self.try_register_enum_instantiation_ty(&result_ty, span);
                 return HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -17311,7 +17317,8 @@ impl LowerCtx {
                     is_opaque: false,
                 };
                 let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
+                // Same registration as ChannelRecvAwait above.
+                self.try_register_enum_instantiation_ty(&result_ty, span);
                 return HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),

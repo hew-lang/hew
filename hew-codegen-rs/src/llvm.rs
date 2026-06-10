@@ -1681,6 +1681,17 @@ fn intern_runtime_decl<'ctx>(
         "hew_channel_await_recv" => {
             i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
         }
+        // hew_channel_recv_cancel_cleanup(source: *mut c_void, status: i32) -> void
+        // (`hew-runtime/src/channel.rs`). HewAwaitCleanup callback: cancels the
+        // read slot and detaches the channel core's in-flight consumer reference.
+        // ABI is identical to `hew_read_slot_cancel_cleanup` (the general read
+        // callback). Passed as `cleanup` to `hew_await_cancel_new` for recv deadlines.
+        "hew_channel_recv_cancel_cleanup"
+        // hew_stream_recv_cancel_cleanup(source: *mut c_void, status: i32) -> void
+        // (`hew-runtime/src/stream.rs`). Same callback ABI for stream recv deadlines.
+        | "hew_stream_recv_cancel_cleanup" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_channel_detach_recv(rx: *mut HewChannelReceiver,
         //                         slot: *mut HewReadSlot) -> void. The abandon
         // edge: releases the channel core's in-flight ref on the slot.
@@ -3407,7 +3418,97 @@ fn register_enum_layouts<'ctx>(
     // `set_body` on the predeclared opaque — a second `set_body` against
     // the same struct is invalid LLVM. The first registration wins;
     // `machine_layout_map` retains the per-variant metadata it produced.
-    for layout in enum_layouts {
+    //
+    // Process in dependency order: `build_tagged_union_layout` queries the
+    // ABI size of each variant's LLVM struct via `TargetData::get_abi_size`.
+    // If a variant's field type is itself an enum whose body is not yet set
+    // (still opaque), `get_abi_size` returns 0 and the outer payload array
+    // is under-sized, silently corrupting extraction GEPs. Topological
+    // ordering ensures inner enums (e.g. `Option<i64>`) are fully registered
+    // before outer enums that reference them (e.g.
+    // `Result<Option<i64>, TimeoutError>`).
+    //
+    // WHY the input order is wrong: `try_register_enum_instantiation_ty` in
+    // the HIR uses a LIFO worklist that inserts `Result<Option<T>, E>` before
+    // `Option<T>` because the outer type is popped and inserted first, then
+    // its args are enqueued. This is a pre-existing HIR-side ordering gap;
+    // sorting here is the fail-closed fix rather than a silent mis-size.
+    //
+    // WHEN OBSOLETE: if the HIR registration is changed to emit inner types
+    // before outer types (e.g. by switching to post-order traversal), this
+    // sort remains a no-op (already ordered correctly) and can be removed.
+    //
+    // Algorithm: Kahn's topological sort over the named-enum dependency graph.
+    // Edge A → B means "A's body references B's named struct" (B must be
+    // set before A). The sort is stable within each tier so unrelated layouts
+    // keep their input order, which is important for the first-registration-wins
+    // dedup policy.
+    let names: HashSet<&str> = enum_layouts.iter().map(|l| l.name.as_str()).collect();
+
+    // `deps(i)` = indices of enum_layouts that layout `i` depends on
+    // (i.e., names that appear as variant field types and are themselves
+    // enum layout names).
+    let dep_of: Vec<Vec<usize>> = enum_layouts
+        .iter()
+        .map(|layout| {
+            let mut deps: Vec<usize> = Vec::new();
+            for variant in &layout.variants {
+                for field_ty in &variant.field_tys {
+                    collect_named_enum_deps(field_ty, &names, enum_layouts, &mut deps);
+                }
+            }
+            deps.sort_unstable();
+            deps.dedup();
+            // Drop self-dependency (shouldn't exist for non-recursive enums, but
+            // be defensive).
+            let self_idx = enum_layouts
+                .iter()
+                .position(|l| l.name == layout.name)
+                .unwrap_or(usize::MAX);
+            deps.retain(|&d| d != self_idx);
+            deps
+        })
+        .collect();
+
+    // In-degree for Kahn's: in_degree[i] = number of enum deps layout i still
+    // needs before it can be processed (= dep_of[i].len() initially).
+    let n = enum_layouts.len();
+    let in_degree: Vec<usize> = dep_of.iter().map(|d| d.len()).collect();
+
+    // Build a reverse-adjacency: for each layout d, which layouts depend on d.
+    let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, deps) in dep_of.iter().enumerate() {
+        for &d in deps {
+            reverse[d].push(i);
+        }
+    }
+
+    // Kahn's algorithm with a VecDeque for stable (input-order) processing.
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    {
+        let mut in_deg = in_degree.clone();
+        // Use a stable queue: drain zero-in-degree nodes in input index order.
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..n).filter(|&i| in_deg[i] == 0).collect();
+        while let Some(i) = queue.pop_front() {
+            order.push(i);
+            for &j in &reverse[i] {
+                in_deg[j] -= 1;
+                if in_deg[j] == 0 {
+                    queue.push_back(j);
+                }
+            }
+        }
+        if order.len() != n {
+            // Cycle detected (indirect enum recursion or a bug). Fall back to
+            // input order — the original behaviour — rather than silently
+            // dropping entries.
+            order = (0..n).collect();
+        }
+    }
+
+    for i in order {
+        let layout = &enum_layouts[i];
         if machine_layout_map.contains_key(&layout.name) {
             continue;
         }
@@ -3430,6 +3531,38 @@ fn register_enum_layouts<'ctx>(
         machine_layout_map.insert(layout.name.clone(), enum_cg);
     }
     Ok(())
+}
+
+/// Collect indices into `enum_layouts` that `field_ty` directly or
+/// transitively depends on as named-enum field types. Only top-level
+/// `ResolvedTy::Named` type args are walked — struct fields inside a
+/// record-typed variant are not expanded (records have their bodies set
+/// before any enum layout is processed, so they are never opaque here).
+fn collect_named_enum_deps(
+    field_ty: &ResolvedTy,
+    names: &HashSet<&str>,
+    enum_layouts: &[EnumLayout],
+    out: &mut Vec<usize>,
+) {
+    let ResolvedTy::Named { name, args, .. } = field_ty else {
+        return;
+    };
+    // Compute the mangled lookup key the same way `resolve_ty` does.
+    let key: String = if args.is_empty() {
+        name.clone()
+    } else {
+        mangle(name, args)
+    };
+    if names.contains(key.as_str()) {
+        if let Some(idx) = enum_layouts.iter().position(|l| l.name == key) {
+            out.push(idx);
+        }
+    }
+    // Recurse into type args for nested generics (e.g. `Option<T>` inside
+    // `Result<Option<T>, E>` — the `Option<T>` arg itself may be a named enum).
+    for arg in args {
+        collect_named_enum_deps(arg, names, enum_layouts, out);
+    }
 }
 
 /// Shared builder for the machine-value and event-companion tagged-union
@@ -25587,6 +25720,13 @@ fn emit_suspending_stream_next_terminator<'ctx>(
     // the reactor can fire. Uses `hew_stream_recv_cancel_cleanup` (which calls
     // hew_read_slot_cancel + hew_stream_detach_await) as the one-shot CAS arbiter
     // cleanup callback.
+    //
+    // The cleanup requires a `HewStreamRecvCancelCtx { slot, stream }` struct
+    // (two pointer-sized fields) so it can perform both the slot cancel AND the
+    // stream-core detach in one atomic callback. Allocate that struct on the
+    // coroutine frame (alloca) and populate it before registering the cancel.
+    // The coroutine frame's lifetime spans the suspend point, so the alloca is
+    // live when the deadline timer fires and calls the cleanup.
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
         let cancel_new = intern_runtime_decl(
             fn_ctx.ctx,
@@ -25601,11 +25741,48 @@ fn emit_suspending_stream_next_terminator<'ctx>(
             "hew_stream_recv_cancel_cleanup",
         )?;
         let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
+        // Allocate HewStreamRecvCancelCtx { slot: ptr, stream: ptr }.
+        let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+        let cancel_ctx_ty = fn_ctx
+            .ctx
+            .struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        let cancel_ctx = fn_ctx
+            .builder
+            .build_alloca(cancel_ctx_ty, "suspending_stream_next_cancel_ctx")
+            .llvm_ctx("stream next cancel ctx alloca")?;
+        // Store slot into field 0 of the cancel context.
+        let ctx_slot_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                cancel_ctx_ty,
+                cancel_ctx,
+                0,
+                "suspending_stream_next_cancel_ctx_slot",
+            )
+            .llvm_ctx("stream next cancel ctx slot gep")?;
+        fn_ctx
+            .builder
+            .build_store(ctx_slot_ptr, slot)
+            .llvm_ctx("stream next cancel ctx slot store")?;
+        // Store stream into field 1 of the cancel context.
+        let ctx_stream_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                cancel_ctx_ty,
+                cancel_ctx,
+                1,
+                "suspending_stream_next_cancel_ctx_stream",
+            )
+            .llvm_ctx("stream next cancel ctx stream gep")?;
+        fn_ctx
+            .builder
+            .build_store(ctx_stream_ptr, stream_ptr)
+            .llvm_ctx("stream next cancel ctx stream store")?;
         let reg = fn_ctx
             .builder
             .build_call(
                 cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
+                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
                 "suspending_stream_next_deadline_reg",
             )
             .llvm_ctx("hew_await_cancel_new call")?
@@ -26213,6 +26390,13 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
     // the reactor can fire. Uses `hew_channel_recv_cancel_cleanup` (which calls
     // hew_read_slot_cancel + hew_channel_detach_recv) as the one-shot CAS arbiter
     // cleanup callback.
+    //
+    // The cleanup requires a `HewChannelRecvCancelCtx { slot, receiver }` struct
+    // (two pointer-sized fields) so it can perform both the slot cancel AND the
+    // channel-core detach in one atomic callback. Allocate that struct on the
+    // coroutine frame (alloca) and populate it before registering the cancel.
+    // The coroutine frame's lifetime spans the suspend point, so the alloca is
+    // live when the deadline timer fires and calls the cleanup.
     let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
         let cancel_new = intern_runtime_decl(
             fn_ctx.ctx,
@@ -26227,11 +26411,48 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
             "hew_channel_recv_cancel_cleanup",
         )?;
         let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
+        // Allocate HewChannelRecvCancelCtx { slot: ptr, receiver: ptr }.
+        let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+        let cancel_ctx_ty = fn_ctx
+            .ctx
+            .struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+        let cancel_ctx = fn_ctx
+            .builder
+            .build_alloca(cancel_ctx_ty, "suspending_channel_recv_cancel_ctx")
+            .llvm_ctx("channel recv cancel ctx alloca")?;
+        // Store slot into field 0 of the cancel context.
+        let ctx_slot_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                cancel_ctx_ty,
+                cancel_ctx,
+                0,
+                "suspending_channel_recv_cancel_ctx_slot",
+            )
+            .llvm_ctx("channel recv cancel ctx slot gep")?;
+        fn_ctx
+            .builder
+            .build_store(ctx_slot_ptr, slot)
+            .llvm_ctx("channel recv cancel ctx slot store")?;
+        // Store receiver into field 1 of the cancel context.
+        let ctx_rx_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                cancel_ctx_ty,
+                cancel_ctx,
+                1,
+                "suspending_channel_recv_cancel_ctx_rx",
+            )
+            .llvm_ctx("channel recv cancel ctx rx gep")?;
+        fn_ctx
+            .builder
+            .build_store(ctx_rx_ptr, rx_ptr)
+            .llvm_ctx("channel recv cancel ctx rx store")?;
         let reg = fn_ctx
             .builder
             .build_call(
                 cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
+                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
                 "suspending_channel_recv_deadline_reg",
             )
             .llvm_ctx("hew_await_cancel_new call")?

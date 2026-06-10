@@ -1,0 +1,22 @@
+// MIR-corpus fixture: blocking stream recv/try_recv from a
+// context-free caller.
+//
+// `main` carries no execution context, so `input.recv()` keeps the
+// blocking layout-witness call (`hew_stream_next_layout` as a
+// Terminator::Call) instead of the suspending terminator, and
+// `input.try_recv()` lowers to `hew_stream_try_next_layout`.
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(2);
+    sink.close();
+    match input.recv() {
+        Some(b) => println(b.to_string()),
+        None => println("eof"),
+    }
+    match input.try_recv() {
+        Some(b) => println(b.to_string()),
+        None => println("empty"),
+    }
+    input.close();
+}

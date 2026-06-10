@@ -107,6 +107,15 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "hew_tcp_attach_local",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",
+        // Channel/stream element-layout-witness entries: codegen
+        // intercepts the `Terminator::Call` and emits the layout-witness
+        // ABI (`hew-codegen-rs/src/llvm.rs` recv/send intercept arms).
+        "hew_channel_recv_layout",
+        "hew_channel_try_recv_layout",
+        "hew_channel_send_layout",
+        "hew_stream_next_layout",
+        "hew_stream_try_next_layout",
+        "hew_stream_send_layout",
     ]
     .into_iter()
     .collect();

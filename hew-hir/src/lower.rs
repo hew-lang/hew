@@ -8970,23 +8970,25 @@ impl LowerCtx {
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
-    /// `recv()` over a `Stream<T>` — i.e. the checker wired the method call
-    /// to the layout-witness `hew_stream_next_layout` runtime entry (one
-    /// symbol for every describable element type). `await stream.recv()` is
+    /// `recv()` over a `Stream<T>` — i.e. the checker-resolved descriptor's
+    /// family classifies as `AsyncSuspendKind::StreamRecv` (the layout-witness
+    /// `hew_stream_next_layout` entry). `await stream.recv()` is
     /// a bindable, value-producing await (NEW-7): it lowers to the inner
     /// recv call whose `Option<T>` result the MIR `SuspendingStreamNext`
     /// resume edge binds.
     fn is_stream_recv_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_stream_next_layout"
+            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
+                if d.is_async_suspending()
+                    == Some(hew_types::runtime_call::AsyncSuspendKind::StreamRecv)
         )
     }
 
     /// True when the `await`'s inner expression is a suspending `std::channel`
-    /// `recv()` over a `Receiver<T>` — i.e. the checker wired the method call
-    /// to the layout-witness `hew_channel_recv_layout` runtime entry.
+    /// `recv()` over a `Receiver<T>` — i.e. the checker-resolved descriptor's
+    /// family classifies as `AsyncSuspendKind::ChannelRecv` (the layout-witness
+    /// `hew_channel_recv_layout` entry).
     /// `await rx.recv()` is a bindable, value-producing await (NEW-4):
     /// it lowers to the inner recv call whose `Option<T>` result the MIR
     /// `SuspendingChannelRecv` resume edge binds (or the blocking call for a
@@ -8994,20 +8996,22 @@ impl LowerCtx {
     fn is_channel_recv_await(&self, inner_key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(inner_key),
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_channel_recv_layout"
+            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
+                if d.is_async_suspending()
+                    == Some(hew_types::runtime_call::AsyncSuspendKind::ChannelRecv)
         )
     }
 
-    /// True when the method call at `key` is a channel `recv` (the checker
-    /// wired it to `hew_channel_recv_layout`). The element type is carried
+    /// True when the method call at `key` is a channel `recv` (the
+    /// checker-resolved descriptor family is `ChannelRecvLayout`). The
+    /// element type is carried
     /// by the checker-resolved `Receiver<T>` receiver type, not by the
     /// symbol name.
     fn is_channel_recv_rewrite(&self, key: &SpanKey) -> bool {
         matches!(
             self.method_call_rewrites.get(key),
-            Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                if c_symbol == "hew_channel_recv_layout"
+            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
+                if d.family() == hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout
         )
     }
 

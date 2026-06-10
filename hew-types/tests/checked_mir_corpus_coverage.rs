@@ -46,7 +46,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_reply_wait",
     "hew_select_first",
     "hew_sink_write_bytes",
-    "hew_sink_write_string",
     "hew_sink_try_write_bytes",
     "hew_sink_try_write_string",
     "hew_hashmap_new_with_layout",
@@ -132,6 +131,11 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_regex_compile",
     "hew_regex_free_capture",
     "hew_string_char_count",
+    // -- Layout-witness entry with no probed source producer: bytes
+    //    sends ride hew_sink_write_bytes and string pipe sends ride
+    //    hew_sink_write_string, so no surface emits the stream send
+    //    layout entry today.
+    "hew_stream_send_layout",
     // -- Pre-staged codegen intercept with no in-corpus producer
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",

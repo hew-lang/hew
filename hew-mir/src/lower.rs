@@ -7529,10 +7529,10 @@ impl Builder {
                 // callee name membership in `module_fn_names` until HIR threads
                 // resolved item/builtin variants through the bridge.
                 let callee_name = match &callee.kind {
-                    HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
+                    HirExprKind::BindingRef { name, resolved } => Some((name.as_str(), *resolved)),
                     _ => None,
                 };
-                if let Some(name) = callee_name {
+                if let Some((name, callee_resolved)) = callee_name {
                     // Generic top-level user fn: HIR recorded
                     // `call_site_type_args[expr.site]` with the type
                     // arguments observed at this call site (possibly
@@ -7556,14 +7556,22 @@ impl Builder {
                         // with a HirModule that bypassed the producer).
                         if self.module_fn_names.contains(&mangled) {
                             let ret_ty = self.subst_ty(&expr.ty);
-                            return self.lower_direct_call(&mangled, args, &ret_ty, expr.site);
+                            return self
+                                .lower_direct_call(&mangled, None, args, &ret_ty, expr.site);
                         }
                     }
                     // User-defined function in the same module: emit a call terminator.
                     // The callee symbol is the bare function name as declared;
                     // codegen resolves it against the module's fn_symbols table.
                     if self.module_fn_names.contains(name) {
-                        return self.lower_direct_call(name, args, &expr.ty, expr.site);
+                        // Thread the typed builtin resolution (if any) so the
+                        // suspend-vs-blocking classification keys on the
+                        // checker-resolved family, never on the symbol string.
+                        let builtin = match callee_resolved {
+                            ResolvedRef::Builtin(family) => Some(family),
+                            _ => None,
+                        };
+                        return self.lower_direct_call(name, builtin, args, &expr.ty, expr.site);
                     }
                 }
                 if matches!(
@@ -15229,6 +15237,7 @@ impl Builder {
     fn lower_direct_call(
         &mut self,
         callee_symbol: &str,
+        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
         hir_args: &[hew_hir::HirExpr],
         ret_ty: &ResolvedTy,
         _site: hew_hir::SiteId,
@@ -15267,7 +15276,7 @@ impl Builder {
         // codegen `Terminator::Call` intercept materialises `Option<T>`).
         // This reuses the SAME `carries_execution_context` discriminator as
         // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
-        if callee_symbol == "hew_stream_next_layout"
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let (Some(result_dest), [stream], Some(elem_ty)) =
@@ -15304,7 +15313,7 @@ impl Builder {
         // `Option<T>`). `try_recv` never suspends and always keeps the blocking
         // (immediate) call. This reuses the SAME `carries_execution_context`
         // discriminator as the stream-recv flip above (DI-019/DI-020).
-        if callee_symbol == "hew_channel_recv_layout"
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let (Some(result_dest), [receiver], Some(elem_ty)) =
@@ -15330,7 +15339,8 @@ impl Builder {
         // instead of blocking the worker — emit
         // `Terminator::SuspendingStreamSend`. A non-full ring binds immediately
         // (fast path, no suspend). Context-free callers keep the blocking call.
-        if callee_symbol == "hew_sink_write_bytes"
+        if builtin.as_ref().and_then(|f| f.is_async_suspending())
+            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let [sink, value] = arg_places.as_slice() {
@@ -17338,6 +17348,7 @@ impl Builder {
             // `LocalPid<Sup>` from `expr.ty`) and emits the call terminator.
             return self.lower_direct_call(
                 &sup_layout.bootstrap_symbol,
+                None,
                 &[], // bootstrap takes no arguments
                 &expr.ty,
                 expr.site,

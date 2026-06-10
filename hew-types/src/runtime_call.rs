@@ -191,9 +191,14 @@ pub enum RuntimeCallFamily {
 
     // --- Channel<T> (std::channel) ------------------------------------------
     // recv/try_recv/send ride the element-layout-witness `*_layout`
-    // entries, which bypass `RuntimeCallFamily` (codegen `Terminator::Call`
-    // intercept; not in `MIR_EMITTER_RUNTIME_SYMBOLS`). Only the close
-    // releases remain enumerable here.
+    // entries (one symbol per operation for every describable element
+    // type; the elem identity travels on the checker-resolved
+    // `Option<T>` / value type, never on the symbol). They are
+    // pre-staged: codegen intercepts the `Terminator::Call` by callee
+    // identity, so they are not in `MIR_EMITTER_RUNTIME_SYMBOLS`.
+    ChannelRecvLayout,
+    ChannelSendLayout,
+    ChannelTryRecvLayout,
     ChannelSenderClose,
     ChannelReceiverClose,
 
@@ -365,10 +370,14 @@ pub enum RuntimeCallFamily {
     SinkTryWrite(StreamElementKind),
 
     // --- Stream<T> ---------------------------------------------------------
-    // recv/try_recv ride the element-layout-witness `*_layout` entries
-    // (see the Channel note above). `consumes_receiver()` is `true` for
-    // `StreamClose`/`SinkClose` to mirror `runtime_symbol_consumes_receiver`.
+    // recv/try_recv/send ride the element-layout-witness `*_layout`
+    // entries (see the Channel note above). `consumes_receiver()` is
+    // `true` for `StreamClose`/`SinkClose` to mirror
+    // `runtime_symbol_consumes_receiver`.
     StreamClose,
+    StreamNextLayout,
+    StreamSendLayout,
+    StreamTryNextLayout,
 
     // --- String runtime helpers --------------------------------------------
     StringCharCount,
@@ -457,6 +466,9 @@ impl RuntimeCallFamily {
             Self::CancelTokenRelease => "hew_cancel_token_release",
             Self::CancelTokenRetain => "hew_cancel_token_retain",
             // Channel (pre-staged)
+            Self::ChannelRecvLayout => "hew_channel_recv_layout",
+            Self::ChannelSendLayout => "hew_channel_send_layout",
+            Self::ChannelTryRecvLayout => "hew_channel_try_recv_layout",
             Self::ChannelSenderClose => "hew_channel_sender_close",
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
             // Duplex
@@ -584,9 +596,11 @@ impl RuntimeCallFamily {
             Self::SinkWrite(StreamElementKind::String) => "hew_sink_write_string",
             Self::SinkTryWrite(StreamElementKind::Bytes) => "hew_sink_try_write_bytes",
             Self::SinkTryWrite(StreamElementKind::String) => "hew_sink_try_write_string",
-            // Stream (recv/try_recv ride the layout-witness `*_layout`
-            // entries outside this enum; only close remains here)
+            // Stream
             Self::StreamClose => "hew_stream_close",
+            Self::StreamNextLayout => "hew_stream_next_layout",
+            Self::StreamSendLayout => "hew_stream_send_layout",
+            Self::StreamTryNextLayout => "hew_stream_try_next_layout",
             // String
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
@@ -678,6 +692,9 @@ impl RuntimeCallFamily {
             "hew_cancel_token_release" => Self::CancelTokenRelease,
             "hew_cancel_token_retain" => Self::CancelTokenRetain,
             // Channel
+            "hew_channel_recv_layout" => Self::ChannelRecvLayout,
+            "hew_channel_send_layout" => Self::ChannelSendLayout,
+            "hew_channel_try_recv_layout" => Self::ChannelTryRecvLayout,
             "hew_channel_sender_close" => Self::ChannelSenderClose,
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
             // Duplex
@@ -806,6 +823,9 @@ impl RuntimeCallFamily {
             "hew_sink_try_write_string" => Self::SinkTryWrite(StreamElementKind::String),
             // Stream
             "hew_stream_close" => Self::StreamClose,
+            "hew_stream_next_layout" => Self::StreamNextLayout,
+            "hew_stream_send_layout" => Self::StreamSendLayout,
+            "hew_stream_try_next_layout" => Self::StreamTryNextLayout,
             // String
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
@@ -910,13 +930,19 @@ impl RuntimeCallFamily {
             // The suspending symbols (HIR await-classifier source of truth).
             F::SinkWrite(StreamElementKind::Bytes) => Some(AsyncSuspendKind::SinkSendBytes),
             F::DuplexClose => Some(AsyncSuspendKind::DuplexClose),
+            F::ChannelRecvLayout => Some(AsyncSuspendKind::ChannelRecv),
+            F::StreamNextLayout => Some(AsyncSuspendKind::StreamRecv),
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
             F::StreamClose
+            | F::StreamSendLayout
+            | F::StreamTryNextLayout
             | F::SinkWrite(StreamElementKind::String)
             | F::SinkTryWrite(_)
             | F::SinkClose
+            | F::ChannelSendLayout
+            | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::DuplexClone
@@ -1090,6 +1116,13 @@ pub enum AsyncSuspendKind {
     /// `await actor.close()` over a lambda-actor `Duplex` →
     /// `hew_duplex_close`.
     DuplexClose,
+    /// `await rx.recv()` over a `std::channel` `Receiver<T>` →
+    /// `hew_channel_recv_layout`. Suspends only in execution-context
+    /// callers; a context-free caller keeps the blocking call.
+    ChannelRecv,
+    /// `await stream.recv()` over a `Stream<T>` →
+    /// `hew_stream_next_layout`. Same context gating as `ChannelRecv`.
+    StreamRecv,
 }
 
 // =============================================================================
@@ -1341,6 +1374,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::CancelTokenRelease,
         F::CancelTokenRetain,
         // Channel
+        F::ChannelRecvLayout,
+        F::ChannelSendLayout,
+        F::ChannelTryRecvLayout,
         F::ChannelSenderClose,
         F::ChannelReceiverClose,
         // Duplex
@@ -1471,6 +1507,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::SinkTryWrite(StreamElementKind::String),
         // Stream
         F::StreamClose,
+        F::StreamNextLayout,
+        F::StreamSendLayout,
+        F::StreamTryNextLayout,
         // String
         F::StringCharCount,
         F::StringConcat,
@@ -1551,7 +1590,10 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,
-        F::ChannelSenderClose
+        F::ChannelRecvLayout
+            | F::ChannelSendLayout
+            | F::ChannelTryRecvLayout
+            | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::MathIntrinsic(_)
             | F::NodeLookup
@@ -1560,6 +1602,9 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::SinkWrite(_)
             | F::SinkTryWrite(_)
             | F::StreamClose
+            | F::StreamNextLayout
+            | F::StreamSendLayout
+            | F::StreamTryNextLayout
             | F::TcpAttachLocal
     )
 }
@@ -1699,6 +1744,8 @@ mod tests {
                 AsyncSuspendKind::SinkSendBytes,
             ),
             (F::DuplexClose, AsyncSuspendKind::DuplexClose),
+            (F::ChannelRecvLayout, AsyncSuspendKind::ChannelRecv),
+            (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
         ];
         for (family, kind) in positives {
             assert_eq!(
@@ -1713,6 +1760,10 @@ mod tests {
         // SinkWrite(String)) plus the try_* peers the classifier never
         // touches.
         let must_not_suspend: &[RuntimeCallFamily] = &[
+            F::ChannelTryRecvLayout,
+            F::ChannelSendLayout,
+            F::StreamTryNextLayout,
+            F::StreamSendLayout,
             F::DuplexRecv,
             F::DuplexSend,
             F::DuplexTryRecv,
@@ -1733,9 +1784,8 @@ mod tests {
         }
 
         // Coverage: walking the full family enumeration, the size of
-        // the suspending set is exactly 2 (sink bytes write + duplex
-        // close; channel/stream recv ride the `*_layout` symbols outside
-        // this enum). Adding a new family without a corresponding
+        // the suspending set is exactly 4 (sink bytes write, duplex
+        // close, channel recv, stream recv). Adding a new family without a corresponding
         // decision is caught by the exhaustive match in
         // `is_async_suspending`; the count assertion below is the belt
         // to that suspenders.
@@ -1744,8 +1794,9 @@ mod tests {
             .filter(|f| f.is_async_suspending().is_some())
             .count();
         assert_eq!(
-            suspending_count, 2,
-            "exactly 2 families should be suspending today; declare any \
+            suspending_count, 4,
+            "exactly 4 families should be suspending today (sink bytes \
+             write, duplex close, channel recv, stream recv); declare any \
              new suspending family explicitly in is_async_suspending"
         );
     }

@@ -1685,7 +1685,7 @@ pub fn lower_hir_module_with_facts(
     // stdlib catalog and from `extern "C"` blocks in `.hew` source (their
     // real ABI carries an out-parameter and/or an element-layout witness
     // pointer). Adding them here routes a
-    // `BindingRef { name: "hew_channel_recv_layout", resolved: Item(_) }`
+    // `BindingRef { name: "hew_channel_recv_layout", resolved: Builtin(family) }`
     // call through `lower_direct_call` → `Terminator::Call` (not through
     // `lower_runtime_call` / `Instr::CallRuntimeAbi`, which would require
     // these to be in `runtime_symbols::MIR_EMITTER_RUNTIME_SYMBOLS`).

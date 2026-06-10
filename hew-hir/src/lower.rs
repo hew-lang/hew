@@ -2494,6 +2494,44 @@ pub fn lower_program_with_mono_cap(
                 _ => None,
             })
             .collect();
+        // Impl blocks already emitted by the source-order third pass — both
+        // root-program impls and FILE-import impls that `flatten_file_import_items`
+        // spliced into `program.items`. The module-graph walk below ALSO visits
+        // file-import modules (they ARE in `mg.topo_order`) and would call
+        // `lower_impl_block` again, producing duplicate `HirItem::Function`
+        // entries with the same unqualified `<SelfType>::<method>` symbol.
+        // Two `RawMirFunction` entries with the same name cause codegen to
+        // declare the LLVM function twice; the second `add_function` with
+        // identical type returns the same `FunctionValue`, so `lower_function`
+        // is called twice on the same LLVM function, appending duplicate basic
+        // blocks. For file-import impls the resulting LLVM module fails
+        // verification with "Global is external, but doesn't have external or
+        // weak linkage!" (the internal-linkage bodyless declaration that the
+        // rename collision produces). This dedup mirrors the `root_actor_names`
+        // guard above: package imports are NOT in `program.items`, so they are
+        // emitted exactly once by this walk. The identity key is
+        // `"<self_type_name>:<trait_name_or_empty>"` — the same precision as the
+        // checker uses for impl registration.
+        let root_impl_blocks: HashSet<String> = program
+            .items
+            .iter()
+            .filter_map(|(item, _)| {
+                if let Item::Impl(impl_decl) = item {
+                    if let TypeExpr::Named {
+                        name: self_type_name,
+                        ..
+                    } = &impl_decl.target_type.0
+                    {
+                        let trait_part = impl_decl
+                            .trait_bound
+                            .as_ref()
+                            .map_or(String::new(), |tb| tb.name.clone());
+                        return Some(format!("{self_type_name}:{trait_part}"));
+                    }
+                }
+                None
+            })
+            .collect();
         // Mirror the checker's 1-based non-root module index. The checker
         // increments `current_module_idx` before each non-root topo-order
         // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
@@ -2732,6 +2770,22 @@ pub fn lower_program_with_mono_cap(
                                 ..
                             } = &impl_decl.target_type.0
                             {
+                                // Dedup: skip this impl block if it was already
+                                // emitted in the source-order third pass (because
+                                // the module is file-imported and its items were
+                                // spliced into `program.items` by
+                                // `flatten_file_import_items`). Package-imported
+                                // modules are NOT in `program.items`, so their
+                                // impl blocks are absent from `root_impl_blocks`
+                                // and are emitted here exactly once.
+                                let trait_part = impl_decl
+                                    .trait_bound
+                                    .as_ref()
+                                    .map_or(String::new(), |tb| tb.name.clone());
+                                let impl_key = format!("{self_type_name}:{trait_part}");
+                                if root_impl_blocks.contains(&impl_key) {
+                                    continue;
+                                }
                                 // Conservatively lower only the imported impl
                                 // methods that are provably safe cross-module;
                                 // skip the rest so they stay dropped exactly as

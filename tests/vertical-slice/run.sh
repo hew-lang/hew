@@ -1977,3 +1977,11 @@ if "${HEW}" check \
   exit 1
 fi
 grep -q 'guarded record/tuple match destructure' "${reject_output}"
+
+# Regression: file-imported trait impl methods emit as definitions, not
+# external declarations. The fourth-pass (module-graph walk) previously
+# re-lowered file-import impl blocks, producing duplicate HirItem::Function
+# entries for the same unqualified method symbol and causing LLVM module
+# verification to fail with "Global is external, but doesn't have external
+# or weak linkage!".
+run_check_run_expect_stdout file_import_trait_impl

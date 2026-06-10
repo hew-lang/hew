@@ -1,0 +1,21 @@
+// Library module: defines a type, a trait, and an impl.
+// Used by file_import_trait_impl.hew to verify that file-imported impl
+// method bodies emit as definitions (not external declarations) in codegen.
+type Rect {
+    width: i64,
+    height: i64,
+}
+
+trait Area {
+    fn area(self) -> i64;
+    fn perimeter(self) -> i64;
+}
+
+impl Area for Rect {
+    fn area(self) -> i64 {
+        self.width * self.height
+    }
+    fn perimeter(self) -> i64 {
+        (self.width + self.height) * 2
+    }
+}

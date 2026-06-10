@@ -607,6 +607,29 @@ struct InternalChildSpec {
 impl Drop for InternalChildSpec {
     fn drop(&mut self) {
         if !self.init_state.is_null() {
+            // Call the user-provided drop callback before freeing the wrapper so
+            // owned inner fields (e.g. heap-backed payload buffers) are released
+            // before the wrapper allocation is reclaimed.
+            //
+            // ONLY call when state_clone_fn is registered: registering a clone fn
+            // re-clones spec.init_state in place, giving it an independently-owned
+            // allocation. Without a clone fn the spec's init_state is a byte-alias
+            // of the initial actor's init_state; the actor's lifecycle drops the
+            // shared inner payload, so calling state_drop_fn here would double-free.
+            //
+            // WHY: init_state is a C heap wrapper whose inner fields may own malloc'd
+            // memory; the wrapper-level libc::free below does not recurse into those
+            // fields. state_drop_fn is the one authority on releasing them.
+            // WHEN obsolete: if init_state becomes a Rust-managed type with a proper
+            // Drop impl this call is no longer needed.
+            if self.state_clone_fn.is_some() {
+                if let Some(drop_fn) = self.state_drop_fn {
+                    // SAFETY: state_drop_fn was registered by the caller for this
+                    // exact init_state allocation; init_state is valid and
+                    // independently owned (re-cloned at clone-fn registration time).
+                    unsafe { drop_fn(self.init_state) };
+                }
+            }
             // SAFETY: init_state was allocated with libc::malloc in
             // hew_supervisor_add_child_spec.
             unsafe { libc::free(self.init_state) }; // ALLOCATOR-PAIRING: libc
@@ -3298,6 +3321,13 @@ mod tests {
             );
 
             CLONE_FORCE_NULL.store(false, Ordering::SeqCst);
+            // Null the already-freed spec payload so that InternalChildSpec::drop
+            // (which now calls state_drop_fn before libc::free) does not double-free
+            // the dangling pointer.  The falsifier assertion above already verified
+            // it was in place; the test's correctness doesn't depend on it surviving
+            // past that point.
+            (&mut *(&(*sup).child_specs)[0].init_state.cast::<HeapState>()).payload =
+                ptr::null_mut();
             assert_eq!(actor::hew_actor_free(child), 0);
             hew_supervisor_stop(sup);
         }

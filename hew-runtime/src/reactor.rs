@@ -2343,7 +2343,11 @@ mod tests {
             "a cancelled accept slot must not receive a handle deposit"
         );
 
-        // Creator ref free reclaims the slot (no leak).
+        // Release the simulated reactor ref (from read_slot_retain above) and
+        // then the creator ref. In production the reactor releases its ref via
+        // Drop for Registration; the test bypasses that path so we balance here.
+        // SAFETY: reactor ref held (from read_slot_retain above).
+        unsafe { crate::read_slot::hew_read_slot_free(slot) };
         // SAFETY: creator ref held.
         unsafe { crate::read_slot::hew_read_slot_free(slot) };
 

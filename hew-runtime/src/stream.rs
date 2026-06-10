@@ -554,6 +554,8 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
         let _ = ptr::read(&raw const (*stream).closed);
         let _ = ptr::read(&raw const (*stream).pending_read);
         drop(ptr::read(&raw const (*stream).pending_state));
+        #[cfg(test)]
+        drop(ptr::read(&raw const (*stream).park_exit_gen));
         drop(ptr::read(&raw const (*stream).channel));
     }
     // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),

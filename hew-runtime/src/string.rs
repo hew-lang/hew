@@ -2194,11 +2194,14 @@ mod tests {
         // SAFETY: v is a valid HewVec from hew_string_split.
         assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
         // SAFETY: index 1 is within bounds.
+        // hew_vec_get_str retains the element for the caller — must be dropped.
         let part = unsafe { crate::vec::hew_vec_get_str(v, 1) };
         assert!(!part.is_null());
         // SAFETY: part is a valid C string.
-        let s = unsafe { CStr::from_ptr(part) }.to_str().unwrap();
-        assert_eq!(s, "b");
+        let elem_str = unsafe { CStr::from_ptr(part) }.to_str().unwrap();
+        assert_eq!(elem_str, "b");
+        // SAFETY: release the caller's retained ref from hew_vec_get_str.
+        unsafe { hew_string_drop(part.cast_mut()) };
         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
     }
@@ -2212,9 +2215,12 @@ mod tests {
         // SAFETY: v is a valid HewVec from hew_string_lines.
         assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
         // SAFETY: index 0 is within bounds.
+        // hew_vec_get_str retains the element for the caller — must be dropped.
         let part = unsafe { crate::vec::hew_vec_get_str(v, 0) };
         // SAFETY: part is a valid C string.
         assert_eq!(unsafe { CStr::from_ptr(part) }.to_str().unwrap(), "line1");
+        // SAFETY: release the caller's retained ref from hew_vec_get_str.
+        unsafe { hew_string_drop(part.cast_mut()) };
         // SAFETY: v is a valid HewVec.
         unsafe { crate::vec::hew_vec_free(v) };
     }

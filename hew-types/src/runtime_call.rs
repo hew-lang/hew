@@ -48,6 +48,7 @@
 //! and clippy-gated.
 
 use crate::ResolvedTy;
+use strum::{EnumIter, IntoEnumIterator};
 
 // =============================================================================
 // Element-type discriminators
@@ -62,8 +63,9 @@ use crate::ResolvedTy;
 /// elements. The pending Vec genericisation work will collapse most of
 /// these onto a single `Generic` variant that reads the descriptor's
 /// `elem` field — out of scope here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum VecGetElem {
+    #[default]
     Bool,
     F64,
     I32,
@@ -78,8 +80,9 @@ pub enum VecGetElem {
 /// (`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice
 /// does not have a bool path today and the layout/owned paths are not
 /// yet wired in the runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum VecSliceElem {
+    #[default]
     F64,
     I32,
     I64,
@@ -89,8 +92,9 @@ pub enum VecSliceElem {
 
 /// Numeric width discriminator for `Option<T>` / `Result<T, E>` unwrap
 /// runtime helpers (`hew_option_unwrap_*`, `hew_result_unwrap_*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum NumericElem {
+    #[default]
     F64,
     I32,
     I64,
@@ -99,8 +103,9 @@ pub enum NumericElem {
 /// Integer width discriminator for the `unwrap_or` family
 /// (`hew_result_unwrap_or_*` is i32/i64 only today; `hew_option_unwrap_or_*`
 /// is f64/i32/i64).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum IntegerElem {
+    #[default]
     I32,
     I64,
 }
@@ -110,8 +115,9 @@ pub enum IntegerElem {
 /// recv retired their per-element symbols in favour of the
 /// element-layout-witness `*_layout` entries, which bypass
 /// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum StreamElementKind {
+    #[default]
     Bytes,
     String,
 }
@@ -121,8 +127,9 @@ pub enum StreamElementKind {
 /// today (the names appear as `BindingRef.name` in HIR — `"sqrt"`, `"sin"`,
 /// …). Pre-staged: a follow-up migrates the callee-name match in codegen
 /// onto a typed `RuntimeCallFamily::MathIntrinsic(...)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum MathIntrinsic {
+    #[default]
     Sqrt,
     Exp,
     Log,
@@ -159,7 +166,7 @@ pub enum MathIntrinsic {
 /// `match-fail-closed`). A future contributor cannot silently extend it
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
 pub enum RuntimeCallFamily {
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
@@ -1384,236 +1391,47 @@ impl RuntimeDropDescriptor {
 // Test-only enumeration helpers
 // =============================================================================
 
-/// Enumerate every legal [`RuntimeCallFamily`] variant.
+/// Enumerate every legal [`RuntimeCallFamily`] value — compiler-complete.
+///
+/// The outer variant set is sourced from the `EnumIter` derive, so a new
+/// `RuntimeCallFamily` variant is enumerated automatically and cannot be
+/// silently dropped from the catalog. The no-wildcard `match` below expands
+/// each payload-bearing variant to its full cross-product via the inner
+/// enum's own `EnumIter`; adding a payload variant makes that match
+/// non-exhaustive (a compile error) until it is expanded here.
+///
+/// This is what closes focal-7's pre-staged-family gap: a family that rides
+/// `Terminator::Call` (its `c_symbol()` absent from
+/// `MIR_EMITTER_RUNTIME_SYMBOLS`, so untouched by
+/// `every_allowlist_symbol_has_a_family`) is still counted by this catalog,
+/// hence by the corpus-coverage and bijection tests below. No hand-maintained
+/// row to forget.
 ///
 /// The bijection / round-trip tests in `tests` below and in
-/// `hew-mir/tests/runtime_call_allowlist.rs` iterate this list to
-/// assert every variant has a unique `c_symbol()` and (where
-/// applicable) lies in `MIR_EMITTER_RUNTIME_SYMBOLS`.
-///
-/// Adding a new variant to [`RuntimeCallFamily`] requires adding the
-/// constructor row(s) here OR the bijection test fails (coverage
-/// invariant). This is the substrate's correctness anchor.
+/// `hew-mir/tests/runtime_call_allowlist.rs` iterate this list to assert
+/// every variant has a unique `c_symbol()` and (where applicable) lies in
+/// `MIR_EMITTER_RUNTIME_SYMBOLS`.
 #[must_use]
-#[allow(
-    clippy::too_many_lines,
-    reason = "coverage enumeration IS the substrate; one row per variant"
-)]
 pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     use RuntimeCallFamily as F;
-    vec![
-        // Actor
-        F::ActorAsk,
-        F::ActorAskWithChannel,
-        F::ActorCooperate,
-        F::ActorLink,
-        F::ActorMonitor,
-        F::ActorSelf,
-        F::ActorSendById,
-        F::ActorSpawn,
-        F::ActorUnlink,
-        // Auto-mutex
-        F::AutoMutexAlloc,
-        F::AutoMutexFree,
-        F::AutoMutexLock,
-        F::AutoMutexUnlock,
-        // Bytes
-        F::BytesIndex,
-        F::BytesLen,
-        F::BytesPush,
-        F::BytesSlice,
-        // CancellationToken
-        F::CancelTokenIsRequested,
-        F::CancelTokenRelease,
-        F::CancelTokenRetain,
-        // Channel
-        F::ChannelRecvLayout,
-        F::ChannelSendLayout,
-        F::ChannelTryRecvLayout,
-        F::ChannelSenderClose,
-        F::ChannelReceiverClose,
-        // Duplex
-        F::DuplexClone,
-        F::DuplexClose,
-        F::DuplexCloseHalf,
-        F::DuplexPair,
-        F::DuplexPayloadFree,
-        F::DuplexRecv,
-        F::DuplexRecvHalf,
-        F::DuplexSend,
-        F::DuplexSendHalf,
-        F::DuplexTryRecv,
-        F::DuplexTrySend,
-        // Duration
-        F::DurationAbs,
-        F::DurationHours,
-        F::DurationIsZero,
-        F::DurationMicros,
-        F::DurationMillis,
-        F::DurationMins,
-        F::DurationNanos,
-        F::DurationSecs,
-        // Dyn box
-        F::DynBoxAlloc,
-        F::DynBoxFree,
-        // HashMap
-        F::HashMapContainsKeyLayout,
-        F::HashMapFreeLayout,
-        F::HashMapGetLayout,
-        F::HashMapInsertLayout,
-        F::HashMapKeysLayout,
-        F::HashMapLenLayout,
-        F::HashMapNew,
-        F::HashMapNewWithLayout,
-        F::HashMapRemoveLayout,
-        F::HashMapValuesLayout,
-        // HashSet
-        F::HashSetContainsLayout,
-        F::HashSetFreeLayout,
-        F::HashSetInsertLayout,
-        F::HashSetIsEmptyLayout,
-        F::HashSetLenLayout,
-        F::HashSetNew,
-        F::HashSetNewWithLayout,
-        F::HashSetRemoveLayout,
-        // Instant
-        F::InstantDurationSince,
-        F::InstantElapsed,
-        F::InstantNow,
-        // Lambda actor
-        F::LambdaActorAsk,
-        F::LambdaBodyAllocReplyBuf,
-        F::LambdaActorClone,
-        F::LambdaActorDowngrade,
-        F::LambdaDrainAll,
-        F::LambdaActorNew,
-        F::LambdaActorRelease,
-        F::LambdaActorSend,
-        F::LambdaActorWeakClone,
-        F::LambdaActorWeakDrop,
-        F::LambdaActorWeakSend,
-        // Math intrinsics
-        F::MathIntrinsic(MathIntrinsic::Sqrt),
-        F::MathIntrinsic(MathIntrinsic::Exp),
-        F::MathIntrinsic(MathIntrinsic::Log),
-        F::MathIntrinsic(MathIntrinsic::Sin),
-        F::MathIntrinsic(MathIntrinsic::Cos),
-        F::MathIntrinsic(MathIntrinsic::AbsI64),
-        F::MathIntrinsic(MathIntrinsic::MinI64),
-        F::MathIntrinsic(MathIntrinsic::MaxI64),
-        F::MathIntrinsic(MathIntrinsic::AbsF64),
-        F::MathIntrinsic(MathIntrinsic::MinF64),
-        F::MathIntrinsic(MathIntrinsic::MaxF64),
-        F::MathIntrinsic(MathIntrinsic::Pow),
-        F::MathIntrinsic(MathIntrinsic::Floor),
-        F::MathIntrinsic(MathIntrinsic::Ceil),
-        F::MathIntrinsic(MathIntrinsic::Round),
-        // Node
-        F::NodeLookup,
-        // Observe
-        F::ObserveReadU64,
-        F::ObserveScrape,
-        F::ObserveSeries,
-        // Option helpers
-        F::OptionIsNone,
-        F::OptionIsSome,
-        F::OptionUnwrap(NumericElem::F64),
-        F::OptionUnwrap(NumericElem::I32),
-        F::OptionUnwrap(NumericElem::I64),
-        F::OptionUnwrapOr(NumericElem::F64),
-        F::OptionUnwrapOr(NumericElem::I32),
-        F::OptionUnwrapOr(NumericElem::I64),
-        // Rc
-        F::RcNew,
-        // RecvHalf
-        F::RecvHalfRecv,
-        F::RecvHalfTryRecv,
-        // Regex
-        F::RegexCapture,
-        F::RegexCompile,
-        F::RegexFreeCapture,
-        F::RegexMatch,
-        // RemotePid<T>::tell intercept (RemoteActorAsk is structurally
-        // typed via `Terminator::RemoteAsk` — no callee string — and
-        // intentionally absent from this catalog)
-        F::RemotePidTell,
-        // Reply channel
-        F::ReplyChannelCancel,
-        F::ReplyChannelFree,
-        F::ReplyChannelNew,
-        F::ReplyPayloadFree,
-        F::ReplyWait,
-        // Result helpers
-        F::ResultIsErr,
-        F::ResultIsOk,
-        F::ResultUnwrap(NumericElem::F64),
-        F::ResultUnwrap(NumericElem::I32),
-        F::ResultUnwrap(NumericElem::I64),
-        F::ResultUnwrapOr(IntegerElem::I32),
-        F::ResultUnwrapOr(IntegerElem::I64),
-        // Select
-        F::SelectFirst,
-        // SendHalf
-        F::SendHalfSend,
-        F::SendHalfTrySend,
-        // Sink
-        F::SinkClose,
-        F::SinkWrite(StreamElementKind::Bytes),
-        F::SinkWrite(StreamElementKind::String),
-        F::SinkTryWrite(StreamElementKind::Bytes),
-        F::SinkTryWrite(StreamElementKind::String),
-        // Stream
-        F::StreamClose,
-        F::StreamNextLayout,
-        F::StreamSendLayout,
-        F::StreamTryNextLayout,
-        // String
-        F::StringCharCount,
-        F::StringConcat,
-        F::StringIndex,
-        F::StringSliceCodepoints,
-        // Supervisor
-        F::SupervisorChildGet,
-        F::SupervisorNestedGet,
-        F::SupervisorStop,
-        // TCP attach
-        F::TcpAttachLocal,
-        // Task
-        F::TaskAwaitBlocking,
-        F::TaskCompleteThreaded,
-        F::TaskCompletionObserve,
-        F::TaskCompletionUnobserve,
-        F::TaskFree,
-        F::TaskGetEnv,
-        F::TaskGetError,
-        F::TaskGetResult,
-        F::TaskNew,
-        F::TaskScopeCancelAfterNs,
-        F::TaskScopeDestroy,
-        F::TaskScopeJoinAll,
-        F::TaskScopeNew,
-        F::TaskScopeSetCurrent,
-        F::TaskScopeSpawn,
-        F::TaskSetEnv,
-        F::TaskSpawnThread,
-        // Vec
-        F::VecGet(VecGetElem::Bool),
-        F::VecGet(VecGetElem::F64),
-        F::VecGet(VecGetElem::I32),
-        F::VecGet(VecGetElem::I64),
-        F::VecGet(VecGetElem::Layout),
-        F::VecGet(VecGetElem::Owned),
-        F::VecGet(VecGetElem::Ptr),
-        F::VecGet(VecGetElem::Str),
-        F::VecLen,
-        F::VecSliceRange(VecSliceElem::F64),
-        F::VecSliceRange(VecSliceElem::I32),
-        F::VecSliceRange(VecSliceElem::I64),
-        F::VecSliceRange(VecSliceElem::Ptr),
-        F::VecSliceRange(VecSliceElem::Str),
-        // Vtable
-        F::VtableDispatchPanicOnOob,
-    ]
+    let mut out = Vec::new();
+    for repr in F::iter() {
+        match repr {
+            F::MathIntrinsic(_) => out.extend(MathIntrinsic::iter().map(F::MathIntrinsic)),
+            F::OptionUnwrap(_) => out.extend(NumericElem::iter().map(F::OptionUnwrap)),
+            F::OptionUnwrapOr(_) => out.extend(NumericElem::iter().map(F::OptionUnwrapOr)),
+            F::ResultUnwrap(_) => out.extend(NumericElem::iter().map(F::ResultUnwrap)),
+            F::ResultUnwrapOr(_) => out.extend(IntegerElem::iter().map(F::ResultUnwrapOr)),
+            F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
+            F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
+            F::VecGet(_) => out.extend(VecGetElem::iter().map(F::VecGet)),
+            F::VecSliceRange(_) => out.extend(VecSliceElem::iter().map(F::VecSliceRange)),
+            // Nullary variants carry no payload: emit `EnumIter`'s single
+            // representative as-is.
+            nullary => out.push(nullary),
+        }
+    }
+    out
 }
 
 /// Enumerate every legal [`RuntimeDropDescriptor`] variant.

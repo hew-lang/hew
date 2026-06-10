@@ -277,7 +277,7 @@ fn compare_pre_id(a: string, b: string) -> i64 {
     // Lexicographic comparison for non-numeric identifiers.
     // `<`/`>` on strings uses IntCmp which only handles integers; route through
     // the runtime strcmp shim instead.
-    let cmp_r = unsafe { hew_string_compare(a, b) };
+    let cmp_r = unsafe { hew_string_compare(a, b) } as i64;
     if cmp_r < 0 {
         return -1;
     }
@@ -388,5 +388,5 @@ fn matches_single(v: Version, constraint: string) -> bool {
 // Declared here rather than via `import std::string` to avoid the module
 // compile path that `impl string { ... }` currently blocks on C2.
 extern "C" {
-    fn hew_string_compare(a: string, b: string) -> i64;
+    fn hew_string_compare(a: string, b: string) -> i32;
 }

@@ -26,10 +26,31 @@ LANE_REASON=""
 CHANGED_FILES=()
 COMMANDS=()
 PROFILE_JSON_PATH=""
+LIST_CI_REQUIRED=0
+
+# ── CI-required command patterns (single source of truth) ─────────────────────
+# These are the command substrings that the fallback lane MUST include so that
+# a local `make ci-preflight` predicts the merge-queue outcome.  The
+# check-preflight-ci-parity.sh script reads these via --ci-required rather than
+# maintaining its own independent list.  Update here when the CI workflows or
+# the fallback lane change.
+#
+# Each entry is a tab-separated pair: LABEL<TAB>PATTERN
+# PATTERN is a substring matched against the dispatcher's fallback-lane output.
+CI_REQUIRED_CHECKS=(
+    "Rust fmt check (ci.yml: cargo fmt --all -- --check)	make ci-preflight-smoke"
+    "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make ci-preflight-smoke"
+    "verify-ffi (ci.yml: make verify-ffi)	make lint"
+    "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
+    "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
+    "playground-check (release-gate.yml: make playground-check)	make playground-check"
+    "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
+    "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
+)
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--ci-required] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
@@ -40,6 +61,8 @@ Dispatch a conservative local CI preflight based on changed files.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
 - --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
                         command, with "cmd", "elapsed_s", "status" fields).
+- --ci-required         Print the CI-required check patterns (LABEL<TAB>PATTERN) and exit 0.
+                        Used by check-preflight-ci-parity.sh to avoid a second source of truth.
 EOF
 }
 
@@ -304,6 +327,10 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 0
             ;;
+        --ci-required)
+            LIST_CI_REQUIRED=1
+            shift
+            ;;
         --)
             shift
             EXPLICIT_PATHS=1
@@ -322,6 +349,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if (( LIST_CI_REQUIRED == 1 )); then
+    for entry in "${CI_REQUIRED_CHECKS[@]}"; do
+        printf '%s\n' "$entry"
+    done
+    exit 0
+fi
 
 if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     die "unknown base ref: $BASE_REF"

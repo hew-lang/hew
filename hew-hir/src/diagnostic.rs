@@ -261,6 +261,22 @@ pub enum HirDiagnosticKind {
         machine_name: String,
         event_name: String,
     },
+    /// A transition body reads `event.<field>` but `<field>` is not declared
+    /// on the triggering event type. This is a user type error — the field
+    /// does not exist — not a compiler limitation. The available field names
+    /// for the event are included in the note so the user can correct the
+    /// access without inspecting the machine declaration.
+    MachineEventFieldNotFound {
+        /// The machine name (e.g. `"TrafficLight"`).
+        machine_name: String,
+        /// The event type name (e.g. `"TrafficLightEvent"`).
+        event_name: String,
+        /// The field name the user wrote (e.g. `"wrong_field"`).
+        field_name: String,
+        /// Fields actually declared on this event (empty if the event
+        /// has no payload fields).
+        available_fields: Vec<String>,
+    },
     /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
     /// AND no entry in `TypeCheckOutput.resolved_calls` for its span. Fail-closed
     /// per the `checker-output-boundary` invariant: HIR lowering never re-infers

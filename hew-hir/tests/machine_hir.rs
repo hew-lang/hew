@@ -1252,3 +1252,84 @@ machine Counter<T> {
         machine.type_param_bounds
     );
 }
+
+// ---------------------------------------------------------------------------
+// S-14 regression: event.undeclared_field must emit E_HIR (MachineEventFieldNotFound),
+// not E_NOT_YET_IMPLEMENTED.
+// ---------------------------------------------------------------------------
+
+/// `event.wrong_field` in a machine transition body must produce
+/// `MachineEventFieldNotFound` with the machine name, event name, wrong
+/// field name, and the list of actual event fields — NOT `NotYetImplemented`.
+#[test]
+fn machine_event_undeclared_field_emits_field_not_found_not_nyi() {
+    let source = r"
+        machine Light {
+            events {
+                Switch { brightness: i64; }
+            }
+
+            state Off;
+            state On;
+
+            on Switch: Off => On {
+                let _ = event.wrong_field;
+                On
+            }
+
+            default { state }
+        }
+
+        fn main() {}
+    ";
+    let output = lower(source);
+
+    // Must emit exactly MachineEventFieldNotFound — not NotYetImplemented.
+    let nyi = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(&d.kind, HirDiagnosticKind::NotYetImplemented { .. }));
+    assert!(
+        !nyi,
+        "event.wrong_field must NOT emit NotYetImplemented; got: {:?}",
+        output.diagnostics
+    );
+
+    let field_not_found = output.diagnostics.iter().find(|d| {
+        matches!(
+            &d.kind,
+            HirDiagnosticKind::MachineEventFieldNotFound {
+                field_name,
+                ..
+            } if field_name == "wrong_field"
+        )
+    });
+    let diag = field_not_found.unwrap_or_else(|| {
+        panic!(
+            "expected MachineEventFieldNotFound for `wrong_field`; got: {:?}",
+            output.diagnostics
+        )
+    });
+
+    // The available-fields list must include the declared field.
+    match &diag.kind {
+        HirDiagnosticKind::MachineEventFieldNotFound {
+            machine_name,
+            event_name,
+            field_name,
+            available_fields,
+        } => {
+            assert_eq!(machine_name, "Light");
+            assert_eq!(field_name, "wrong_field");
+            assert!(
+                event_name.contains("Switch") || event_name.contains("Light"),
+                "event_name should identify the triggering event; got `{event_name}`"
+            );
+            assert!(
+                available_fields.contains(&"brightness".to_string()),
+                "available_fields must include declared field `brightness`; got: {available_fields:?}"
+            );
+        }
+        other => panic!("unexpected diagnostic kind: {other:?}"),
+    }
+}

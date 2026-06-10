@@ -142,22 +142,18 @@ pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed ali
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
 pub fn first_f64(v: Vec<f64>) -> Option<f64> {
-    var i = 0;
-    let n = v.len();
-    if n == 0 {
+    if v.len() == 0 {
         return None;
     }
-    Some(v.get(i))
+    Some(v.get(0))
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
 pub fn first_str(v: Vec<string>) -> Option<string> {
-    var i = 0;
-    let n = v.len();
-    if n == 0 {
+    if v.len() == 0 {
         return None;
     }
-    Some(v.get(i))
+    Some(v.get(0))
 }
 
 /// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
@@ -171,28 +167,20 @@ pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alia
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
 pub fn last_f64(v: Vec<f64>) -> Option<f64> {
-    var i = 0;
     let n = v.len();
     if n == 0 {
         return None;
     }
-    while i + 1 < n {
-        i = i + 1;
-    }
-    Some(v.get(i))
+    Some(v.get(n - 1))
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
 pub fn last_str(v: Vec<string>) -> Option<string> {
-    var i = 0;
     let n = v.len();
     if n == 0 {
         return None;
     }
-    while i + 1 < n {
-        i = i + 1;
-    }
-    Some(v.get(i))
+    Some(v.get(n - 1))
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────

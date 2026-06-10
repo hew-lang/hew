@@ -317,7 +317,7 @@ pub fn any(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
 /// ```
 pub fn all(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }
@@ -439,7 +439,7 @@ pub fn any_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
 /// ```
 pub fn all_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }
@@ -544,7 +544,7 @@ pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
 /// ```
 pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }

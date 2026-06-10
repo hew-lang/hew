@@ -16,6 +16,8 @@
 //! }
 //! ```
 
+import std::string;
+
 // ── Number-to-string conversions ─────────────────────────────────────
 /// Convert an integer to its lowercase hexadecimal string representation.
 ///
@@ -128,6 +130,8 @@ fn hex_digit(d: i64) -> string {
 /// Pad a string on the left to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
+/// Delegates to `string.pad_left` — prefer that form when importing `std::string`
+/// directly; `fmt.pad_left` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples
 ///
@@ -136,16 +140,14 @@ fn hex_digit(d: i64) -> string {
 /// fmt.pad_left("42", 5, "0")   // "00042"
 /// ```
 pub fn pad_left(s: string, width: i64, fill: string) -> string {
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    repeat(fill, width - slen) + s
+    string.pad_left(s, width, fill)
 }
 
 /// Pad a string on the right to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
+/// Delegates to `string.pad_right` — prefer that form when importing `std::string`
+/// directly; `fmt.pad_right` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples
 ///
@@ -153,11 +155,7 @@ pub fn pad_left(s: string, width: i64, fill: string) -> string {
 /// fmt.pad_right("hi", 5, ".")   // "hi..."
 /// ```
 pub fn pad_right(s: string, width: i64, fill: string) -> string {
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    s + repeat(fill, width - slen)
+    string.pad_right(s, width, fill)
 }
 
 /// Repeat a string `count` times.

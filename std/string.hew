@@ -336,14 +336,13 @@ fn parse_float_exponent(s: string, start: i64, end: i64) -> i64 {
 
 fn apply_float_exponent(value: f64, exponent: i64) -> f64 {
     var scale = 1.0;
-    var remaining = if exponent < 0 {
+    let exp_abs = if exponent < 0 {
         0 - exponent
     } else {
         exponent
     };
-    while remaining > 0 {
+    for i in 0 .. exp_abs {
         scale = scale * 10.0;
-        remaining = remaining - 1;
     }
     if exponent < 0 {
         value / scale

@@ -314,21 +314,16 @@ const SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 15);
 const SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
 const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 
-/// Inclusive floor of the synthetic-builtin sentinel `ItemId` band.
-///
-/// `seed_stdlib_fn_registry` mints checker-registered runtime builtins that
-/// have no AST `fn` item into the high `u32` range: the stdlib catalog at
-/// `u32::MAX - index`, and the no-AST-item builtins (`supervisor_stop`,
-/// `link`, `monitor`, the `hew_duplex_*` family) in the `u32::MAX / 2` band.
-/// Source items count up from 0, so this floor (chosen well below the lowest
-/// sentinel and far above any realistic source-item count) cleanly separates
-/// synthetic sentinels from user items.
-///
-/// The band is documentation/segregation only since `ResolvedRef::Builtin`
-/// landed: MIR no longer consults a band predicate to decide whether an
-/// Item-resolved name may reach a user-name → C-symbol bridge (that bridge
-/// is deleted; the typed family travels on the resolution itself).
-pub const SYNTHETIC_BUILTIN_ITEM_FLOOR: u32 = u32::MAX / 2 - 4096;
+// NB the synthetic-builtin sentinel band (`u32::MAX / 2 - N`) is
+// documentation/segregation only since `ResolvedRef::Builtin` landed: MIR
+// no longer consults a band predicate to decide whether an Item-resolved
+// name may reach a user-name → C-symbol bridge (that bridge is deleted;
+// the typed family travels on the resolution itself). The former
+// `SYNTHETIC_BUILTIN_ITEM_FLOOR` constant had no remaining consumers and
+// was removed; the load-bearing invariant — every minted sentinel id is
+// pairwise distinct (two colliding ids silently overwrite each other's
+// `fn_registry` row) — is pinned by
+// `synthetic_builtin_sentinel_ids_are_pairwise_distinct`.
 
 /// Bare-name variants of built-in tagged unions. Counted into the pre-pass's
 /// `bare_counts` so a user enum that redeclares one of them correctly marks
@@ -23437,6 +23432,61 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    /// Every synthetic-builtin sentinel `ItemId` minted into the
+    /// `u32::MAX / 2` band is pairwise distinct. A collision is SILENT —
+    /// two `FnEntry` rows simply overwrite each other in `fn_registry`
+    /// (the `unlink` × stream-layout alias was caught by inspection, not
+    /// by a test). This list mirrors the seeding sites exactly:
+    /// `seed_typed_builtin_fn_registry` (the `supervisor_stop` inline id,
+    /// the duplex family loop, link/monitor/unlink, `duplex_pair`) and
+    /// `seed_channel_recv_fn_registry` (the six layout-witness entries).
+    /// Adding a sentinel without extending this list leaves the new id
+    /// unguarded — extend both together.
+    #[test]
+    fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
+        let mut ids: Vec<(&str, ItemId)> = vec![
+            ("supervisor_stop", ItemId(u32::MAX / 2)),
+            ("link", SYNTHETIC_LINK_ITEM),
+            ("monitor", SYNTHETIC_MONITOR_ITEM),
+            ("unlink", SYNTHETIC_UNLINK_ITEM),
+            ("duplex_pair", SYNTHETIC_DUPLEX_PAIR_ITEM),
+            (
+                "hew_channel_recv_layout",
+                SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM,
+            ),
+            (
+                "hew_channel_try_recv_layout",
+                SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM,
+            ),
+            (
+                "hew_channel_send_layout",
+                SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM,
+            ),
+            ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
+            (
+                "hew_stream_try_next_layout",
+                SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM,
+            ),
+            ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
+        ];
+        // The duplex rewrite-target family (offsets 0..=7 below
+        // supervisor_stop), exactly as `seed_typed_builtin_fn_registry`
+        // computes them.
+        for offset in 0u32..=7 {
+            ids.push(("hew_duplex_* family", ItemId(u32::MAX / 2 - 1 - offset)));
+        }
+        for (i, (name_a, id_a)) in ids.iter().enumerate() {
+            for (name_b, id_b) in &ids[i + 1..] {
+                assert_ne!(
+                    id_a, id_b,
+                    "synthetic sentinel ItemId collision: `{name_a}` and \
+                     `{name_b}` share {id_a:?} — colliding rows silently \
+                     overwrite each other in fn_registry"
+                );
+            }
+        }
+    }
 
     fn parse_typecheck_and_lower(
         source: &str,

@@ -1741,15 +1741,17 @@ mod tests {
         assert!(RuntimeCallFamily::from_c_symbol("MyType::greet").is_none());
     }
 
-    /// `consumes_receiver` parity with
-    /// `hew-types/src/builtin_names.rs::runtime_symbol_consumes_receiver`
-    /// for the 7-symbol set. Hard-coded mirror so a future change to
-    /// either side surfaces here.
+    /// `consumes_receiver` is anchored by an INDEPENDENT hard-coded
+    /// 7-symbol set. `builtin_names::runtime_symbol_consumes_receiver`
+    /// now delegates to this catalog, so asserting against that function
+    /// would be circular — the literal set below is the sole external
+    /// anchor: a close family losing its consume mark (leak) or a
+    /// non-close family gaining one (double-free) fails here.
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
-        // The canonical 7-set from
-        // `hew_types::builtin_names::runtime_symbol_consumes_receiver`.
+        // The canonical 7-set, written out literally (NOT derived from
+        // any function under test).
         let expected: HashSet<&'static str> = [
             "hew_stream_close",
             "hew_sink_close",
@@ -1769,14 +1771,8 @@ mod tests {
             assert_eq!(
                 consumes, expected_consumes,
                 "consumes_receiver mismatch for {family:?} → {sym}: \
-                 descriptor says {consumes}, builtin_names says \
+                 descriptor says {consumes}, the hard-coded anchor says \
                  {expected_consumes}"
-            );
-            // Also assert parity with the canonical authority directly.
-            assert_eq!(
-                consumes,
-                crate::builtin_names::runtime_symbol_consumes_receiver(sym),
-                "consumes_receiver disagrees with builtin_names for {sym}"
             );
         }
     }

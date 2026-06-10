@@ -29,7 +29,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
-HEW_BIN="$REPO_ROOT/target/debug/hew"
+# HEW_BIN is overridable for parser tests (point it at a stub that replays
+# captured runner output); production callers use the default.
+HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
 TESTS_DIR="$REPO_ROOT/tests/hew"
 
 usage() {
@@ -103,23 +105,44 @@ done < "$EXPECTED_FAILURES_FILE"
 RAW_OUTPUT=""
 RAW_OUTPUT=$("$HEW_BIN" test "$TESTS_DIR" 2>&1) || true
 
-# Extract names of failing tests from lines matching:
-#   "test <name> ... FAILED"  (plain)
-#   "test <name> ... [31mFAILED[0m"  (ANSI colour)
+# hew test colours its output even when not attached to a TTY; strip ANSI
+# escape sequences before parsing so "FAILED" matches literally.
+CLEAN_OUTPUT="$(printf '%s\n' "$RAW_OUTPUT" | sed $'s/\x1b\\[[0-9;]*m//g')"
+
+# Fail closed if the runner produced no summary line: a runner crash or an
+# output-format change must never read as success.
+if ! printf '%s\n' "$CLEAN_OUTPUT" | grep -q "^test result:"; then
+    echo "error: no 'test result:' summary in hew test output; refusing to ratchet" >&2
+    printf '%s\n' "$RAW_OUTPUT"
+    exit 1
+fi
+
+# Extract names of failing tests from lines matching "test <name> ... FAILED".
 ACTUAL_STR=""
 while IFS= read -r line; do
     case "$line" in
-        "test "*)
-            case "$line" in
-                *"... FAILED"*|*"... "[*"FAILED"*)
-                    name="${line#test }"
-                    name="${name%% ...*}"
-                    [[ -n "$name" ]] && ACTUAL_STR="${ACTUAL_STR}${name}"$'\n'
-                    ;;
-            esac
+        "test "*"... FAILED"*)
+            name="${line#test }"
+            name="${name%% ...*}"
+            [[ -n "$name" ]] && ACTUAL_STR="${ACTUAL_STR}${name}"$'\n'
             ;;
     esac
-done <<< "$RAW_OUTPUT"
+done <<< "$CLEAN_OUTPUT"
+
+# Cross-check the parsed failure count against the runner's own summary.
+# A mismatch means the per-test parse missed lines (format drift) — fail
+# closed rather than ratcheting against an undercounted set.
+summary_failed="$(printf '%s\n' "$CLEAN_OUTPUT" | sed -n 's/^test result:.*[^0-9]\([0-9][0-9]*\) failed.*/\1/p' | tail -1)"
+[[ -z "$summary_failed" ]] && summary_failed=0
+parsed_failed=0
+if [[ -n "$ACTUAL_STR" ]]; then
+    parsed_failed="$(printf '%s' "$ACTUAL_STR" | grep -c .)"
+fi
+if [[ "$parsed_failed" -ne "$summary_failed" ]]; then
+    echo "error: parsed $parsed_failed FAILED line(s) but runner summary reports $summary_failed failed; refusing to ratchet" >&2
+    printf '%s\n' "$RAW_OUTPUT"
+    exit 1
+fi
 
 # Sort actual for deterministic display.
 sorted_actual=""

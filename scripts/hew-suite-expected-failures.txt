@@ -26,7 +26,10 @@
 #   - tests/hew/toml_test.hew       (E_MIR in toml stdlib)
 #   - tests/hew/xml_test.hew        (E_MIR in xml stdlib)
 #
-# Total: 184 unique failing test function names.
+# Individual runtime failures (file compiles; the test fails when run):
+#   - tests/hew/process_test.hew: test_child_drop_reaps_running_process
+#
+# Total: 187 unique failing test function names.
 
 test_abs_dispatches_by_numeric_type  # fn main() collision in test runner; converging lane: math stdlib fix
 test_array_of_tables_walk  # E_MIR in toml stdlib; converging lane: L25
@@ -34,6 +37,7 @@ test_array_round_trip_elements  # E_MIR in msgpack stdlib; converging lane: L25
 test_array_round_trip_length  # E_MIR in msgpack stdlib; converging lane: L25
 test_builder_push_consumes_element  # E_MIR in toml stdlib; converging lane: L25
 test_builder_with_consumes_child  # E_MIR in toml stdlib; converging lane: L25
+test_child_drop_reaps_running_process  # runtime: dropped child handle is not reaped; converging lane: process stdlib fix
 test_compare_equal_versions_returns_zero  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
 test_compare_greater_major_returns_one  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
 test_compare_lesser_major_returns_neg_one  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
@@ -128,6 +132,8 @@ test_parse_no_headers_generates_synthetic_headers  # E_HIR in csv stdlib; conver
 test_parse_no_headers_three_cols_get_by_name  # E_HIR in csv stdlib; converging lane: L25
 test_parse_no_headers_three_rows_three_cols_data  # E_HIR in csv stdlib; converging lane: L25
 test_parse_no_pre_release_returns_empty_string  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_panics_on_missing_first_dot  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_panics_on_missing_second_dot  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
 test_parse_pre_release_label  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
 test_parse_quoted_field_with_comma_parses_as_one_field  # E_HIR in csv stdlib; converging lane: L25
 test_parse_root_tag  # E_MIR in xml stdlib; converging lane: L25

@@ -6,8 +6,8 @@
 //! `libc::malloc` and must be freed with [`hew_msgpack_free`]. All returned
 //! strings are allocated with `libc::malloc` and NUL-terminated.
 
-// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
+// Force-link hew-runtime so the linker can resolve hew_vec_* and
+// hew_bytes_* symbols referenced by hew-cabi and hew-runtime's object code.
 #[cfg(test)]
 extern crate hew_runtime;
 
@@ -389,14 +389,21 @@ pub unsafe extern "C" fn hew_msgpack_from_json_hew(
 
 /// Decode a `bytes` `HewVec` of `MessagePack` data to a JSON string.
 ///
-/// Returns an empty string on error.
+/// Returns an empty string on error or null/empty input.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `v` must be null or a valid non-null pointer to a `HewVec` (i32 elements).
+/// A null pointer is treated as empty bytes and returns an empty string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
-    // SAFETY: v validity forwarded to hwvec_to_u8.
+    if v.is_null() {
+        // bytes [] literal produces a null HewVec pointer (empty BytesTriple
+        // ptr field passed as the HewVec* argument). Return empty string
+        // rather than panicking.
+        return str_to_malloc("");
+    }
+    // SAFETY: v is non-null per the guard above; hwvec_to_u8 forwards validity.
     let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
     // SAFETY: bytes slice is valid for its length.
     unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) }

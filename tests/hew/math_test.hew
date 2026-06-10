@@ -2,12 +2,6 @@
 import std::math;
 import std::testing;
 
-fn main() {
-    test_abs_dispatches_by_numeric_type();
-    test_min_returns_the_smaller_value();
-    test_max_returns_the_larger_value();
-}
-
 #[test]
 fn test_abs_dispatches_by_numeric_type() {
     let i: i64 = -5;

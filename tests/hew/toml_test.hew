@@ -268,7 +268,7 @@ fn test_from_string_get_string_round_trip() {
 fn test_from_bool_get_bool_round_trip() {
     // from_bool(true) → get_bool() == 1 (INTERNAL-ABI: C ABI returns bool as i32).
     let val = toml.from_bool(true);
-    testing.assert_eq(val.get_bool(), 1);
+    testing.assert_eq(val.get_bool() as i64, 1);
     val.free();
 }
 

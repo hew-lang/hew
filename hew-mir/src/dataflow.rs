@@ -590,6 +590,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::ContextField { dest, .. }
         | Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
+        | Instr::BytesLit { dest, .. }
         | Instr::ConstGlobalLoad { dest, .. }
         | Instr::FloatLit { dest, .. }
         | Instr::CharLit { dest, .. }

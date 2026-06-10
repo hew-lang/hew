@@ -11883,6 +11883,74 @@ fn lower_instruction(
                 .llvm_ctx("StringLit store")?;
             let _ = ctx;
         }
+        Instr::BytesLit { bytes, dest } => {
+            // Emit an LLVM global constant for the raw byte data and call
+            // `hew_bytes_from_static_raw(ptr, len, out)` to build the
+            // refcounted `BytesTriple` into the dest slot.
+            //
+            // The dest local carries `ResolvedTy::Bytes` —
+            // `primitive_to_llvm` maps it to the struct `{ptr, i32, i32}`.
+            // `hew_bytes_from_static_raw` writes the completed triple through
+            // the out-pointer directly (Windows x64 MSVC sret-safe variant),
+            // so no post-call struct copy is needed.
+            //
+            // For the empty literal (`bytes[]` or `b""`) we store the zero
+            // struct directly, matching `bytes::new` and avoiding a null-ptr
+            // runtime call (the runtime returns the same zero triple for len=0
+            // anyway, but a direct store is cheaper).
+            let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, *dest)?;
+            let BasicTypeEnum::StructType(triple_ty) = dest_slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::BytesLit dest must be a BytesTriple struct, got {dest_slot_ty:?}"
+                )));
+            };
+            if bytes.is_empty() {
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, triple_ty.const_zero())
+                    .llvm_ctx("BytesLit store zero BytesTriple")?;
+            } else {
+                // Emit: @.bytes_lit.N = private unnamed_addr constant [len x i8] c"..."
+                let i8_ty = ctx.i8_type();
+                let i8_vals: Vec<_> = bytes
+                    .iter()
+                    .map(|&b| i8_ty.const_int(u64::from(b), false))
+                    .collect();
+                let arr_val = i8_ty.const_array(&i8_vals);
+                let global = fn_ctx.llvm_mod.add_global(
+                    i8_ty.array_type(bytes.len() as u32),
+                    None,
+                    "bytes_lit",
+                );
+                global.set_initializer(&arr_val);
+                global.set_constant(true);
+                global.set_linkage(inkwell::module::Linkage::Private);
+                global.set_unnamed_address(inkwell::values::UnnamedAddress::Global);
+                let data_ptr = global.as_pointer_value();
+                let len_val = ctx.i32_type().const_int(bytes.len() as u64, false);
+                let ptr_ty = ctx.ptr_type(AddressSpace::default());
+                let i32_ty = ctx.i32_type();
+                let from_static_raw = fn_ctx
+                    .llvm_mod
+                    .get_function("hew_bytes_from_static_raw")
+                    .unwrap_or_else(|| {
+                        fn_ctx.llvm_mod.add_function(
+                            "hew_bytes_from_static_raw",
+                            ctx.void_type()
+                                .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+                            None,
+                        )
+                    });
+                fn_ctx
+                    .builder
+                    .build_call(
+                        from_static_raw,
+                        &[data_ptr.into(), len_val.into(), dest_ptr.into()],
+                        "bytes_lit_init",
+                    )
+                    .llvm_ctx("BytesLit hew_bytes_from_static_raw")?;
+            }
+        }
         Instr::ConstGlobalLoad { item_id, dest } => {
             let const_global = fn_ctx.const_globals.get(item_id).ok_or_else(|| {
                 CodegenError::FailClosed(format!(

@@ -105,7 +105,23 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
         // Same authority as `RuntimeCallingConvention::for_ty`'s
         // Function/Closure → Pointer arm — keep the two in agreement.
-        crate::Ty::Function { .. } | crate::Ty::Closure { .. } => Some("ptr"),
+        // Nested collection builtins (Vec<T>, HashMap<K,V>, HashSet<T>) are
+        // heap-allocated and pointer-shaped at runtime. The lowerer in
+        // `hew-hir/src/lower.rs` (vec_push_symbol_for_elem) already routes
+        // these to `hew_vec_push_ptr`; the checker suffix must agree so the
+        // method_call_rewrite entry is recorded and HIR lowering doesn't fail
+        // with "no checker-produced rewrite entry".
+        crate::Ty::Function { .. }
+        | crate::Ty::Closure { .. }
+        | crate::Ty::Named {
+            builtin:
+                Some(
+                    crate::builtin_type::BuiltinType::Vec
+                    | crate::builtin_type::BuiltinType::HashMap
+                    | crate::builtin_type::BuiltinType::HashSet,
+                ),
+            ..
+        } => Some("ptr"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
         // share the pointer-shaped ABI; value-record nominals
         // (`is_indirect = false`) lower through the layout-descriptor

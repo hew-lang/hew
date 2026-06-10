@@ -17323,6 +17323,9 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_channel_recv_layout".to_string(),
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "hew_channel_recv_layout",
+                ),
                 args: vec![receiver_place],
                 dest: Some(result_dest),
                 next,
@@ -17421,6 +17424,9 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_stream_next_layout".to_string(),
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "hew_stream_next_layout",
+                ),
                 args: vec![stream_place],
                 dest: Some(result_dest),
                 next,

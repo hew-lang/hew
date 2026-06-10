@@ -202,7 +202,7 @@ builtin_named_types! {
         qualified: "stream.Stream",
         methods: [
             // Channel-family naming: recv/close mirror Duplex and RecvHalf.
-            // Iterator-style aliases (.next, .lines, .collect) are removed from
+            // Iterator-style aliases (.next, .lines) are removed from
             // the fundamental surface; they land via trait impls in stdlib work.
             // Layout-witness recv entries: one symbol per operation for every
             // describable element type (mirrors Receiver<T> above). The
@@ -236,6 +236,14 @@ builtin_named_types! {
                 signature: PredicateToSelf,
                 runtime: BuiltinMethodRuntime::None
             },
+            // String-specific collect: drains a Stream<string> into a single
+            // string. Only string elements have a runtime symbol; other element
+            // types are rejected by the checker's element-type gate before this
+            // table is consulted.
+            "collect" => {
+                signature: ReturnString,
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_collect_string")
+            },
         ]
     },
     Sink {
@@ -245,8 +253,10 @@ builtin_named_types! {
         qualified: "stream.Sink",
         methods: [
             // Channel-family naming: send/close mirror Duplex and SendHalf.
-            // .write and .flush are removed from the fundamental surface; they
-            // may re-surface via an I/O-sink trait in stdlib work.
+            // .flush is removed from the fundamental surface; it may re-surface
+            // via an I/O-sink trait in stdlib work.
+            // .write is retained as an I/O-flavoured alias for .send, routing to
+            // the same runtime symbols (hew_sink_write_string / hew_sink_write_bytes).
             "send" => {
                 signature: ValueToUnit,
                 runtime: BuiltinMethodRuntime::ElementOverload {
@@ -259,6 +269,16 @@ builtin_named_types! {
                 runtime: BuiltinMethodRuntime::ElementOverload {
                     string_symbol: "hew_sink_try_write_string",
                     bytes_symbol: "hew_sink_try_write_bytes",
+                }
+            },
+            // I/O-flavoured alias for .send: routes to the same byte-sink
+            // write symbols so that file/socket sinks feel like I/O writers
+            // while channel sinks feel like message producers.
+            "write" => {
+                signature: ValueToUnit,
+                runtime: BuiltinMethodRuntime::ElementOverload {
+                    string_symbol: "hew_sink_write_string",
+                    bytes_symbol: "hew_sink_write_bytes",
                 }
             },
             "close" => {

@@ -2298,9 +2298,12 @@ impl Checker {
             // recv surface (routes to the layout-witness `hew_stream_next_layout`
             // entry for every describable element type).
             // .try_recv() routes to hew_stream_try_next_layout (non-blocking).
-            // .lines() and .collect() are iterator-style ops removed from the
-            // fundamental surface; they will land via trait impls in stdlib work.
-            "recv" | "try_recv" | "close" => {
+            // .lines() is an iterator-style op removed from the fundamental
+            // surface; it will land via trait impls in stdlib work.
+            // .collect() drains a Stream<string> into a string via
+            // hew_stream_collect_string; the element-type gate above ensures
+            // only string elements reach this arm.
+            "recv" | "try_recv" | "close" | "collect" => {
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
                     BuiltinNamedType::Stream.canonical_name(),
@@ -5384,18 +5387,21 @@ impl Checker {
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
-                    // Channel-family naming: .send() replaced .write() as the
-                    // fundamental send surface. string/bytes elements keep the
-                    // platform byte-sink writes (`hew_sink_write_*` — the bytes
-                    // form carries the suspendable backpressure ramp); every
-                    // other describable element rides the typed-serialise
-                    // layout entry `hew_stream_send_layout`, which the runtime
-                    // accepts on in-memory channel sinks (fail-closed on byte
-                    // sinks for owned elements). .try_send() keeps the
-                    // non-blocking string/bytes writes; a non-blocking typed
-                    // send entry does not exist yet, so widened-element
-                    // try_send fails closed with a specific diagnostic.
-                    "send" | "try_send" => {
+                    // Channel-family naming: .send() is the fundamental send
+                    // surface. string/bytes elements keep the platform byte-sink
+                    // writes (`hew_sink_write_*` — the bytes form carries the
+                    // suspendable backpressure ramp); every other describable
+                    // element rides the typed-serialise layout entry
+                    // `hew_stream_send_layout`, which the runtime accepts on
+                    // in-memory channel sinks (fail-closed on byte sinks for
+                    // owned elements). .try_send() keeps the non-blocking
+                    // string/bytes writes; a non-blocking typed send entry does
+                    // not exist yet, so widened-element try_send fails closed
+                    // with a specific diagnostic.
+                    // .write() is an I/O-flavoured alias for .send(), routing to
+                    // the same hew_sink_write_* symbols; it is accepted as a
+                    // secondary surface on file/socket sinks.
+                    "send" | "try_send" | "write" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
                             &receiver_ty,
@@ -5426,7 +5432,7 @@ impl Checker {
                                 return Ty::Error;
                             };
                             c_symbol
-                        } else if method == "send" {
+                        } else if matches!(method, "send" | "write") {
                             "hew_stream_send_layout"
                         } else {
                             self.report_error(

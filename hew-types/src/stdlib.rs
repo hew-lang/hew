@@ -348,10 +348,13 @@ mod tests {
             resolve_stream_method(STREAM, "close", None),
             Some("hew_stream_close")
         );
-        // Iterator-style aliases (.next, .collect, .lines) no longer resolve
-        // via the fundamental method table.
+        // Iterator-style aliases (.next, .lines) no longer resolve via the
+        // fundamental method table. .collect is wired for string streams.
         assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
-        assert_eq!(resolve_stream_method(STREAM, "collect", None), None);
+        assert_eq!(
+            resolve_stream_method(STREAM, "collect", None),
+            Some("hew_stream_collect_string")
+        );
         assert_eq!(resolve_stream_method(STREAM, "lines", None), None);
         assert_eq!(
             resolve_stream_method(STREAM, "chunks", None),
@@ -374,8 +377,12 @@ mod tests {
             resolve_stream_method(SINK, "send", Some("bytes")),
             Some("hew_sink_write_bytes")
         );
-        // .write and .flush no longer resolve via the fundamental method table.
-        assert_eq!(resolve_stream_method(SINK, "write", Some("string")), None);
+        // .write is wired as an I/O-flavoured alias for .send.
+        // .flush no longer resolves via the fundamental method table.
+        assert_eq!(
+            resolve_stream_method(SINK, "write", Some("string")),
+            Some("hew_sink_write_string")
+        );
         assert_eq!(resolve_stream_method(SINK, "flush", None), None);
         assert_eq!(
             resolve_stream_method(SINK, "close", None),

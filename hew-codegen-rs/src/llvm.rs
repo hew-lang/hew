@@ -16233,6 +16233,14 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
             | "hew_bytes_to_string"
             | "hew_bytes_len"
             | "hew_file_write_bytes"
+            // Ed25519 sign: all _hew wrappers that accept `bytes` inputs pass
+            // them as *const BytesTriple (by-pointer consumer convention).
+            | "hew_ed25519_public_key_from_pkcs8_hew"
+            | "hew_ed25519_sign_hew"
+            | "hew_ed25519_verify_hew"
+            // QUIC send: `data: bytes` passed as *const BytesTriple.
+            | "hew_quic_stream_send"
+            | "hew_quic_stream_send_timeout_hew"
     )
 }
 
@@ -16247,6 +16255,13 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
 /// return would silently reinterpret a `HewVec` pointer as a triple — turning a
 /// loud fail-closed codegen error into wrong runtime output. Only the symbols
 /// whose Rust impl actually returns `BytesTriple` belong here.
+/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": encoding / tls
+/// bytes runtime entries still return a legacy `*mut HewVec` (their migration
+/// to BytesTriple is separate, follow-on work). Declaring those with a
+/// `[2 x i64]` return would silently reinterpret a `HewVec` pointer as a
+/// triple — turning a loud fail-closed codegen error into wrong runtime
+/// output. Only the symbols whose Rust impl actually returns `BytesTriple`
+/// belong here.
 fn is_bytes_triple_return_producer(symbol: &str) -> bool {
     matches!(
         symbol,
@@ -16262,6 +16277,13 @@ fn is_bytes_triple_return_producer(symbol: &str) -> bool {
             | "hew_bytes_concat"
             | "hew_bytes_slice"
             | "hew_file_read_bytes"
+            // Ed25519 sign: _hew wrappers that return `bytes` use BytesTriple ABI.
+            | "hew_ed25519_generate_pkcs8_hew"
+            | "hew_ed25519_public_key_from_pkcs8_hew"
+            | "hew_ed25519_sign_hew"
+            // QUIC recv: `-> bytes` FFI wrappers return BytesTriple by value.
+            | "hew_quic_stream_recv"
+            | "hew_quic_stream_recv_timeout_hew"
     )
 }
 

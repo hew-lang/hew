@@ -56,7 +56,7 @@ pub fn keypair() -> Ed25519KeyPair {
 /// Panics if `private_key` is not a valid 83-byte Ed25519 PKCS#8 document.
 pub fn sign(message: bytes, private_key: bytes) -> bytes {
     unsafe {
-        hew_ed25519_sign_hew(private_key, message)
+        hew_ed25519_sign_hew(message, private_key)
     }
 }
 
@@ -68,7 +68,7 @@ pub fn sign(message: bytes, private_key: bytes) -> bytes {
 /// returns `false` — never panics.
 pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
     unsafe {
-        hew_ed25519_verify_hew(public_key, message, signature)
+        hew_ed25519_verify_hew(message, signature, public_key)
     } == 1
 }
 
@@ -76,6 +76,6 @@ pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
 extern "C" {
     fn hew_ed25519_generate_pkcs8_hew() -> bytes;
     fn hew_ed25519_public_key_from_pkcs8_hew(pkcs8: bytes) -> bytes;
-    fn hew_ed25519_sign_hew(private_key: bytes, message: bytes) -> bytes;
-    fn hew_ed25519_verify_hew(public_key: bytes, message: bytes, signature: bytes) -> i32;
+    fn hew_ed25519_sign_hew(message: bytes, private_key: bytes) -> bytes;
+    fn hew_ed25519_verify_hew(message: bytes, signature: bytes, public_key: bytes) -> i32;
 }

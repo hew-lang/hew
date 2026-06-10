@@ -1869,7 +1869,6 @@ dependencies = [
 name = "hew-std-crypto-sign"
 version = "0.5.0-pre"
 dependencies = [
- "hew-cabi",
  "hew-runtime",
  "libc",
  "ring",

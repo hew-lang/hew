@@ -646,6 +646,26 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  listener-await-accept").expect("write to string");
             dump_expr(out, listener, indent + 2);
         }
+        HirExprKind::ChannelRecvAwait {
+            receiver,
+            deadline_ns,
+        } => {
+            let deadline = deadline_ns
+                .map(|ns| format!(" | after {ns}ns"))
+                .unwrap_or_default();
+            writeln!(out, "{pad}  channel-recv-await{deadline}").expect("write to string");
+            dump_expr(out, receiver, indent + 2);
+        }
+        HirExprKind::StreamRecvAwait {
+            stream,
+            deadline_ns,
+        } => {
+            let deadline = deadline_ns
+                .map(|ns| format!(" | after {ns}ns"))
+                .unwrap_or_default();
+            writeln!(out, "{pad}  stream-recv-await{deadline}").expect("write to string");
+            dump_expr(out, stream, indent + 2);
+        }
         HirExprKind::Select(select) => {
             writeln!(out, "{pad}  select arms={}", select.arms.len()).expect("write to string");
             for arm in &select.arms {

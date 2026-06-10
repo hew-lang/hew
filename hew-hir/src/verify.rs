@@ -203,6 +203,8 @@ impl Verifier {
             HirExprKind::Unary { operand, .. } => self.expr(operand),
             HirExprKind::ConnAwaitRead { conn, .. } => self.expr(conn),
             HirExprKind::ListenerAwaitAccept { listener, .. } => self.expr(listener),
+            HirExprKind::ChannelRecvAwait { receiver, .. } => self.expr(receiver),
+            HirExprKind::StreamRecvAwait { stream, .. } => self.expr(stream),
             HirExprKind::NumericCast {
                 value,
                 from_ty,

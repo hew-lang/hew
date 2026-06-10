@@ -1209,6 +1209,34 @@ pub enum HirExprKind {
         /// `IoError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
         deadline_ns: Option<i64>,
     },
+    /// `await rx.recv() | after d` — a suspending channel recv with a deadline
+    /// (NEW-6b).  Produced by [`super::lower::lower_await_deadline`] when the
+    /// inner expression is a `Receiver<T>::recv()` call.  A suspendable caller
+    /// lowers this to `Terminator::SuspendingChannelRecv` with a live
+    /// `deadline_result_dest`; a `Default` caller fails closed at MIR time.
+    ///
+    /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>` (set by the
+    /// deadline lowering path).
+    ChannelRecvAwait {
+        /// The channel receiver expression (`rx`).
+        receiver: Box<HirExpr>,
+        /// Deadline in nanoseconds (always `Some` when this kind is produced;
+        /// present as `Option<i64>` to share the same lowering interface as the
+        /// other deadline kinds).
+        deadline_ns: Option<i64>,
+    },
+    /// `await stream.recv() | after d` — a suspending stream recv with a
+    /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
+    /// when the inner expression is a `Stream<T>::recv()` call.  Symmetric
+    /// with [`HirExprKind::ChannelRecvAwait`].
+    ///
+    /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>`.
+    StreamRecvAwait {
+        /// The stream handle expression.
+        stream: Box<HirExpr>,
+        /// Deadline in nanoseconds.
+        deadline_ns: Option<i64>,
+    },
     /// Sealed `select{}` expression.
     ///
     /// The HIR shape carries the per-arm sealed-form discriminator and

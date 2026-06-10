@@ -1,3 +1,2 @@
-Wire types define serialization schemas.
-Fields have explicit tags (@1, @2) for
-backwards-compatible binary encoding.
+a single point
+a circle with radius 10

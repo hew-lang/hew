@@ -86,8 +86,22 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # machines/traffic_light has a fn main() demonstration and the sandbox VM
     # implements machine.new/step/state.
     "machines/traffic_light": "runnable",
-    # concurrency/supervisor uses supervisor_stop (native-only builtin); remains
-    # unsupported_native_only until that builtin is added to the sandbox profile.
+    # concurrency/supervisor: rewritten to remove supervisor_stop (native-only);
+    # spawn + child method calls are sandbox-admitted via the actor/supervisor
+    # profile extension added in this release.
+    "concurrency/supervisor": "runnable",
+    # basics/higher_order_functions: rewritten from lambda-based to enum dispatch;
+    # unit-variant construction as call arguments is now supported via enum.new.
+    "basics/higher_order_functions": "runnable",
+    # types/collections: rewritten to use indexed for-loop (range-based) rather
+    # than for-in Vec; sandbox bytecode emission verified via parity test.
+    "types/collections": "runnable",
+    # types/wire_types: rewritten from #[wire] struct/enum (profile-rejected) to
+    # plain record types with enum dispatch; all constructs are sandbox-admitted.
+    "types/wire_types": "runnable",
+    # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
+    # to plain record types with conditional dispatch.
+    "types/structural_bounds": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
@@ -101,8 +115,6 @@ WASI_CAPABILITY: dict[str, str] = {
     # traffic_light now has fn main() but the machine runtime is not yet wired
     # into the WASI/LLVM path; remains unsupported in WASI until that lands.
     "machines/traffic_light": "unsupported",
-    # wire enum lowering for the WASI playground path is tracked by #1822.
-    "types/wire_types": "unsupported",
 }
 
 

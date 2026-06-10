@@ -2164,6 +2164,7 @@ name = "hew-wasm"
 version = "0.5.0-pre"
 dependencies = [
  "hew-analysis",
+ "hew-hir",
  "hew-lexer",
  "hew-parser",
  "hew-types",

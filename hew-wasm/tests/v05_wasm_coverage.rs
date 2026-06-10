@@ -75,6 +75,14 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // rejects them.  The corresponding fail-closed LSP test is
     // `v05_async_await_is_rejected_with_parse_errors`.
     "v05_async_await",
+    // hir-rejected: nested closure captures are not yet materialised in the
+    // checker side-table.  The type checker accepts the fixture, but HIR
+    // lowering surfaces a `CheckerBoundaryViolation` for `twice` (which
+    // captures `inc`, itself a closure variable).  The browser editor must not
+    // show green for code the native compiler rejects at HIR.  Fail-closed per
+    // checker-authority doctrine.  Dedicated test:
+    // `v05_wasm_coverage_closure_hir_gap_surfaces_error`.
+    "v05_closures",
     // accepted (intentional type error): `obj[key]` on a type that does not
     // implement Indexable — type error by design, exercising error-recovery in
     // the index-expression checker.
@@ -110,6 +118,14 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // channel syntax, not full lowering.  Stage 4 should add fail-closed
     // type-error assertions for generic channel params.
     "v05_std_channels",
+    // hir-rejected: `println(holder.value)` inside `impl<T> Holder<T> where T:
+    // Display` — the type checker accepts the constraint but HIR lowering cannot
+    // resolve a monomorphic overload for `println` with a generic-typed argument.
+    // HIR also fires UnresolvedSymbol on the `println` call site.  Native
+    // `hew check` rejects with the same two HIR errors.  The browser editor must
+    // not show green for this code.  Fail-closed per checker-authority doctrine.
+    // Dedicated test: `v05_wasm_coverage_impl_where_clause_hir_gap_surfaces_error`.
+    "v05_impl_where_clause",
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -166,8 +182,8 @@ fn v05_wasm_coverage_fixture_count() {
     );
     assert_eq!(
         ANALYSIS_ERROR_FIXTURES.len(),
-        9,
-        "ANALYSIS_ERROR_FIXTURES must list exactly 9 known-error fixtures"
+        11,
+        "ANALYSIS_ERROR_FIXTURES must list exactly 11 known-error fixtures"
     );
 }
 
@@ -250,6 +266,83 @@ fn v05_wasm_coverage_async_await_api_valid() {
         "fixture {FIXTURE}: expected ≥1 parse-phase error diagnostic; \
          got {} diagnostics: {diags:?}",
         diags.len()
+    );
+}
+
+/// Nested closure captures that the type-checker leaves unresolved surface as
+/// a `CheckerBoundaryViolation` at HIR lowering.  The browser editor must show
+/// an error for this code: accepting it silently would present the editor as
+/// green for a program that `hew run` rejects.
+///
+/// Specific repro: `let twice = |x: i32| -> i32 { inc(inc(x)) }` where `inc`
+/// is itself a closure variable — the checker does not materialise capture
+/// metadata for the nested `inc` call, and HIR lowering fires
+/// `CheckerBoundaryViolation`.  Fail-closed per checker-authority doctrine.
+#[test]
+fn v05_wasm_coverage_closure_hir_gap_surfaces_error() {
+    const FIXTURE: &str = "v05_closures";
+    let source = include_str!("../../hew-lsp/tests/fixtures/v05_closures.hew");
+    let json = hew_wasm::analyze(source)
+        .unwrap_or_else(|_| panic!("fixture {FIXTURE}: analyze() export error"));
+    let parsed = parse_json(FIXTURE, "analyze", &json);
+    let diags = parsed["diagnostics"]
+        .as_array()
+        .unwrap_or_else(|| panic!("fixture {FIXTURE}: missing diagnostics array"));
+
+    let hir_errors: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| {
+            d["severity"].as_str() == Some("error")
+                && d["phase"].as_str() == Some("hir")
+                && d["kind"].as_str() == Some("CheckerBoundaryViolation")
+        })
+        .collect();
+    assert!(
+        !hir_errors.is_empty(),
+        "fixture {FIXTURE}: expected ≥1 hir-phase CheckerBoundaryViolation error diagnostic \
+         for nested closure capture; got {} diagnostics: {diags:?}",
+        diags.len()
+    );
+}
+
+/// `impl<T> Holder<T> where T: Display` — HIR lowering cannot resolve a
+/// monomorphic overload for `println` called with a generic-typed `holder.value`
+/// argument.  It also fires `UnresolvedSymbol` on the `println` call site.
+/// Native `hew check` rejects this fixture with the same two HIR diagnostics.
+/// The browser editor must show errors; silently greening it would be a
+/// false-green for code that `hew run` rejects.  Fail-closed per
+/// checker-authority doctrine.
+#[test]
+fn v05_wasm_coverage_impl_where_clause_hir_gap_surfaces_error() {
+    const FIXTURE: &str = "v05_impl_where_clause";
+    let source = include_str!("../../hew-lsp/tests/fixtures/v05_impl_where_clause.hew");
+    let json = hew_wasm::analyze(source)
+        .unwrap_or_else(|_| panic!("fixture {FIXTURE}: analyze() export error"));
+    let parsed = parse_json(FIXTURE, "analyze", &json);
+    let diags = parsed["diagnostics"]
+        .as_array()
+        .unwrap_or_else(|| panic!("fixture {FIXTURE}: missing diagnostics array"));
+
+    let hir_errors: Vec<&serde_json::Value> = diags
+        .iter()
+        .filter(|d| d["severity"].as_str() == Some("error") && d["phase"].as_str() == Some("hir"))
+        .collect();
+    assert!(
+        !hir_errors.is_empty(),
+        "fixture {FIXTURE}: expected ≥1 hir-phase error diagnostic for unresolved \
+         monomorphic overload in generic impl; got {} diagnostics: {diags:?}",
+        diags.len()
+    );
+    // At least one must be UnresolvedBuiltinOverload — the primary HIR gap.
+    let overload_errors: Vec<&serde_json::Value> = hir_errors
+        .iter()
+        .filter(|d| d["kind"].as_str() == Some("UnresolvedBuiltinOverload"))
+        .copied()
+        .collect();
+    assert!(
+        !overload_errors.is_empty(),
+        "fixture {FIXTURE}: expected ≥1 hir-phase UnresolvedBuiltinOverload diagnostic; \
+         got hir errors: {hir_errors:?}"
     );
 }
 

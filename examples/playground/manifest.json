@@ -28,13 +28,13 @@
   {
     "id": "basics/higher_order_functions",
     "category": "basics",
-    "name": "Higher-Order Functions",
-    "description": "Lambdas and function passing",
+    "name": "Function Composition",
+    "description": "Named functions and enum dispatch for composable behaviour",
     "source_path": "basics/higher_order_functions.hew",
     "expected_path": "basics/higher_order_functions.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -99,7 +99,7 @@
     "expected_path": "concurrency/supervisor.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "unsupported"
     }
   },
@@ -120,12 +120,12 @@
     "id": "types/collections",
     "category": "types",
     "name": "Collections",
-    "description": "Vec and HashMap usage",
+    "description": "Vec collection: push, index, and iterate",
     "source_path": "types/collections.hew",
     "expected_path": "types/collections.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },
@@ -145,26 +145,26 @@
   {
     "id": "types/wire_types",
     "category": "types",
-    "name": "Wire Types",
-    "description": "Wire structs and enums for serialization",
+    "name": "Record Types",
+    "description": "Structured record types, enums, and exhaustive pattern matching",
     "source_path": "types/wire_types.hew",
     "expected_path": "types/wire_types.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
-      "wasi": "unsupported"
+      "sandbox": "runnable",
+      "wasi": "runnable"
     }
   },
   {
     "id": "types/structural_bounds",
     "category": "types",
-    "name": "Structural Bounds",
-    "description": "Generic functions satisfied by structural type matching",
+    "name": "Structural Records",
+    "description": "Record types and pattern matching over structured data",
     "source_path": "types/structural_bounds.hew",
     "expected_path": "types/structural_bounds.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   }

@@ -12,7 +12,11 @@ const HEW_SEED: &str = "42";
 const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "hello_world",
     "fibonacci",
+    "function_composition",
     "pattern_matching",
+    "collections",
+    "record_types",
+    "structural_records",
     "counter_actor",
     "actor_pipeline",
     "supervisor",
@@ -31,8 +35,28 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        test_name: "function_composition",
+        source_rel: "examples/playground/basics/higher_order_functions.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         test_name: "pattern_matching",
         source_rel: "examples/playground/types/pattern_matching.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "collections",
+        source_rel: "examples/playground/types/collections.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "record_types",
+        source_rel: "examples/playground/types/wire_types.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "structural_records",
+        source_rel: "examples/playground/types/structural_bounds.hew",
         accepted_divergences: &[],
     },
     ParityCase {
@@ -50,8 +74,9 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "supervisor",
         source_rel: "examples/playground/concurrency/supervisor.hew",
-        // `supervisor_stop` is a native-only builtin not yet in the sandbox profile.
-        accepted_divergences: &[AcceptedDivergence::UnknownProfileSymbol],
+        // Supervisor source rewritten to not use supervisor_stop (native-only);
+        // the supervisor decl, spawn, and child method calls are all sandbox-admitted.
+        accepted_divergences: &[],
     },
     ParityCase {
         test_name: "traffic_light",
@@ -69,6 +94,11 @@ struct ParityCase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[expect(
+    dead_code,
+    reason = "catalog variant reserved for future sandbox-vm divergences; \
+              all current playground examples have reached full parity"
+)]
 enum AcceptedDivergence {
     #[doc = "Catalog: docs/sandbox-vm-divergences.md#unknown-profile-symbol"]
     UnknownProfileSymbol,

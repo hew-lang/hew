@@ -1500,6 +1500,26 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if let Some((type_id, tag, _)) =
+                    self.package.enum_variant_tags.get(name).cloned()
+                {
+                    // Bare unit-variant identifier in expression position (e.g.
+                    // `Double` in `apply(Double, 5)`).  Hew treats unit variants as
+                    // zero-argument constructors; the parser may produce either
+                    // `Expr::Identifier` or `Expr::Call { args: [] }` depending on
+                    // whether call-parens are present.  Emit `enum.new` with no
+                    // payload arguments, matching the `lower_call` path for
+                    // `Expr::Call { function: Identifier(variant), args: [] }`.
+                    let ty = self.ty_for_expr(expr);
+                    let dst = self.temp_local(&ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "enum.new",
+                        Some(dst.clone()),
+                        vec![Operand::ty(type_id), Operand::literal(tag as u64)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    Ok(dst)
                 } else if let Some((machine, state)) = self.machine_state_path(name) {
                     // `Machine::State` constructs a machine value in that state.
                     let type_id = self.package.type_id_for_named(&machine, &[]);

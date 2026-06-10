@@ -1251,6 +1251,43 @@ fn main() {
     }
 
     #[test]
+    fn bare_unit_enum_variant_as_call_arg_emits_enum_new() {
+        // Regression: bare unit-variant identifiers in expression position (e.g.
+        // `apply(Double, 5)` where Double is a unit variant) were previously
+        // lowered as `const.unit` instead of `enum.new`, causing a runtime trap.
+        // Verify that passing a unit variant as a call argument emits `enum.new`.
+        set_test_hewpath();
+        let source = r#"
+enum Op { Add; Sub; }
+fn apply(op: Op, x: i64, y: i64) -> i64 {
+    match op {
+        Add => x + y,
+        Sub => x - y,
+    }
+}
+fn main() {
+    println(f"{apply(Add, 10, 3)}");
+    println(f"{apply(Sub, 10, 3)}");
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode must be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        // `enum.new` must appear: the bare `Add` and `Sub` identifiers used as
+        // call arguments must be lowered as unit-variant constructions, not const.unit.
+        assert!(
+            ops.contains(&"enum.new"),
+            "bare unit-variant as call arg must emit enum.new; ops: {ops:?}"
+        );
+    }
+
+    #[test]
     fn other_profile_gates_still_reject_after_early_return_fix() {
         // Smoke-check: relaxing the receive-handler `return` gate must not
         // accidentally disable any adjacent profile gate.  Uses the same

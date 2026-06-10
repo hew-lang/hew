@@ -1,44 +1,35 @@
-//! @name Structural Bounds
-//! @description Generic functions satisfied by structural type matching
+//! @name Structural Records
+//! @description Record types and pattern matching over structured data
 
-// A trait that requires a single method.
-trait Named {
-    fn name(val: Self) -> string;
+type Point {
+    x: i64;
+    y: i64;
 }
 
-// Two unrelated types — no explicit "impl Named for ..." needed.
-type User {
-    name: string;
-    age: i64;
+fn distance_from_origin(p: Point) -> i64 {
+    let x = p.x;
+    let y = p.y;
+    let x2 = x * x;
+    let y2 = y * y;
+    x2 + y2
 }
 
-type Product {
-    name: string;
-    price: i64;
-}
-
-// Explicit impl Trait for Type — required for trait-bound dispatch.
-impl Named for User {
-    fn name(u: User) -> string {
-        u.name
+fn quadrant(p: Point) -> string {
+    let x = p.x;
+    let y = p.y;
+    if x > 0 {
+        if y > 0 { "Q1" } else { "Q4" }
+    } else {
+        if y > 0 { "Q2" } else { "Q3" }
     }
-}
-
-impl Named for Product {
-    fn name(p: Product) -> string {
-        p.name
-    }
-}
-
-// Generic function — accepts any type whose structure satisfies Named.
-fn announce<T: Named>(item: T) {
-    print("Hello, ");
-    println(item.name());
 }
 
 fn main() {
-    let user = User { name: "Alice", age: 30 };
-    let product = Product { name: "Widget", price: 10 };
-    announce(user);
-    announce(product);
+    let origin = Point { x: 0, y: 0 };
+    let a = Point { x: 3, y: 4 };
+    let b = Point { x: 0 - 2, y: 5 };
+    println(f"d² from origin: {distance_from_origin(a)}");
+    println(f"quadrant of a: {quadrant(a)}");
+    println(f"quadrant of b: {quadrant(b)}");
+    let _orig = origin;
 }

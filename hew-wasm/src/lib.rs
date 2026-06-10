@@ -508,22 +508,56 @@ struct AnalysisResult {
 struct AnalyzedSource {
     parse_result: hew_parser::ParseResult,
     type_output: Option<hew_types::TypeCheckOutput>,
+    /// Diagnostics from HIR lowering, run after type-checking so that errors
+    /// such as `CheckerBoundaryViolation` (e.g. nested closure captures that
+    /// the checker leaves unresolved) are surfaced in the browser editor.
+    ///
+    /// WHY: Without HIR lowering the browser checker silently accepts closure
+    /// expressions that `hew run` rejects at lowering time — a false-green.
+    /// Fail-closed per the checker-authority doctrine: the editor must never
+    /// show green for code that the native compiler rejects.
+    ///
+    /// REAL FIX: once the checker materialises closure capture metadata fully,
+    /// these diagnostics will be empty for well-formed closure code.
+    hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
-    let type_output = if parse_result.errors.is_empty() {
+    let (type_output, hir_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
-        Some(checker.check_program(&parse_result.program))
+        let tco = checker.check_program(&parse_result.program);
+        // Run HIR lowering after type-checking so that checker-boundary
+        // violations (e.g. closure captures without materialized metadata)
+        // are caught and reported rather than silently accepted.
+        //
+        // WHY X86_64: the browser checker is analysis-only and must NOT apply
+        // wasm32 target restrictions (actors and machines run fine in the
+        // sandbox VM, which has its own coroutine scheduler). Using X86_64
+        // lets actors/machines pass HIR lowering while still catching
+        // CheckerBoundaryViolation diagnostics that arise regardless of target.
+        let hir_diagnostics = if tco.errors.is_empty() {
+            hew_hir::lower_program(
+                &parse_result.program,
+                &tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::X86_64,
+            )
+            .diagnostics
+        } else {
+            Vec::new()
+        };
+        (Some(tco), hir_diagnostics)
     } else {
-        None
+        (None, Vec::new())
     };
 
     AnalyzedSource {
         parse_result,
         type_output,
+        hir_diagnostics,
     }
 }
 
@@ -555,6 +589,114 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
         notes: Vec::new(),
         suggestions: err.hint.into_iter().collect(),
         source_module: None,
+    }
+}
+
+fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
+    use hew_hir::HirDiagnosticKind as K;
+    match kind {
+        K::NotYetImplemented { .. } => "NotYetImplemented",
+        K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
+        K::ImportMissing { .. } => "ImportMissing",
+        K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",
+        K::UnresolvedInferenceVar => "UnresolvedInferenceVar",
+        K::DuplicateBindingId { .. } => "DuplicateBindingId",
+        K::DuplicateSiteId { .. } => "DuplicateSiteId",
+        K::DuplicateNodeId { .. } => "DuplicateNodeId",
+        K::DanglingRef { .. } => "DanglingRef",
+        K::ReturnTypeMismatch { .. } => "ReturnTypeMismatch",
+        K::ResourceMissingClose { .. } => "ResourceMissingClose",
+        K::LinearNoConsumingMethods { .. } => "LinearNoConsumingMethods",
+        K::ResourceGenericUnsupported { .. } => "ResourceGenericUnsupported",
+        K::ResourceCloseSourceUnsupported { .. } => "ResourceCloseSourceUnsupported",
+        K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
+        K::AwaitOutOfPosition => "AwaitOutOfPosition",
+        K::AwaitNonTask { .. } => "AwaitNonTask",
+        K::ForkChildNotACall => "ForkChildNotACall",
+        K::TaskNotNameable => "TaskNotNameable",
+        K::TaskCannotEscape => "TaskCannotEscape",
+        K::SelectArmNotSealedForm { .. } => "SelectArmNotSealedForm",
+        K::SelectArmTypeMismatch { .. } => "SelectArmTypeMismatch",
+        K::SelectMultipleAfterArms => "SelectMultipleAfterArms",
+        K::SelectNoArms => "SelectNoArms",
+        K::SelectStreamNextArity { .. } => "SelectStreamNextArity",
+        K::JoinBranchNotActorAsk { .. } => "JoinBranchNotActorAsk",
+        K::JoinNoBranches => "JoinNoBranches",
+        K::MachineExhaustivenessViolation { .. } => "MachineExhaustivenessViolation",
+        K::MachineSelfTransitionNeedsReenter { .. } => "MachineSelfTransitionNeedsReenter",
+        K::MachineEffectParityViolation { .. } => "MachineEffectParityViolation",
+        K::MachineEmitCycle { .. } => "MachineEmitCycle",
+        K::MachineEmitNotInManifest { .. } => "MachineEmitNotInManifest",
+        K::MethodCallNoRewrite { .. } => "MethodCallNoRewrite",
+        K::ImplBlockShapeNotLowered { .. } => "ImplBlockShapeNotLowered",
+        K::TraitObjectMethodNoSideTableEntry { .. } => "TraitObjectMethodNoSideTableEntry",
+        K::TraitObjectCoercionMissing { .. } => "TraitObjectCoercionMissing",
+        K::ActorStateGuardMissing { .. } => "ActorStateGuardMissing",
+        K::CheckerBoundaryViolation { .. } => "CheckerBoundaryViolation",
+        K::MonomorphisationCallTypeArgsViolation { .. } => "MonomorphisationCallTypeArgsViolation",
+        K::MonomorphisationCapExceeded { .. } => "MonomorphisationCapExceeded",
+        K::RecordLayoutTypeArgsViolation { .. } => "RecordLayoutTypeArgsViolation",
+        K::RecordLayoutCapExceeded { .. } => "RecordLayoutCapExceeded",
+        K::RecordLayoutMissing { .. } => "RecordLayoutMissing",
+        K::RecursiveGenericTypeUnsupported { .. } => "RecursiveGenericTypeUnsupported",
+        K::EnumLayoutCapExceeded { .. } => "EnumLayoutCapExceeded",
+        K::UnresolvedMachineTypeParamPostMono { .. } => "UnresolvedMachineTypeParamPostMono",
+        K::MachineMonomorphisationCapExceeded { .. } => "MachineMonomorphisationCapExceeded",
+        K::UnresolvedLayoutTypeParamPostMono { .. } => "UnresolvedLayoutTypeParamPostMono",
+        K::UnknownIntrinsic { .. } => "UnknownIntrinsic",
+        K::ImportedBodyMissingPrivateHelper { .. } => "ImportedBodyMissingPrivateHelper",
+        K::ImportedFreeFnBodyUnresolvedBareCall { .. } => "ImportedFreeFnBodyUnresolvedBareCall",
+        K::TargetCoroutineUnsupported { .. } => "TargetCoroutineUnsupported",
+        K::BlockingChannelRecvUnsupportedOnWasm { .. } => "BlockingChannelRecvUnsupportedOnWasm",
+        K::TaskSpawnSignatureUnsupported { .. } => "TaskSpawnSignatureUnsupported",
+        K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
+        K::SpawnedClosureSignatureUnsupported { .. } => "SpawnedClosureSignatureUnsupported",
+        K::SpawnedClosureNonSendCapture { .. } => "SpawnedClosureNonSendCapture",
+        K::ForkBlockBodyUnsupported { .. } => "ForkBlockBodyUnsupported",
+        K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
+        K::AwaitTaskResultUnsupported { .. } => "AwaitTaskResultUnsupported",
+        K::SupervisorPoolChildAccessorUnsupported { .. } => {
+            "SupervisorPoolChildAccessorUnsupported"
+        }
+        K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
+        K::ActorSendRequiresUnitHandler { .. } => "ActorSendRequiresUnitHandler",
+        K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
+        K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
+        K::PlatformSizedDivRemUnsupported { .. } => "PlatformSizedDivRemUnsupported",
+        K::PlatformSizedShiftUnsupported { .. } => "PlatformSizedShiftUnsupported",
+        K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
+        K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",
+        K::SupervisorSpawnArgsUnsupported { .. } => "SupervisorSpawnArgsUnsupported",
+        K::VecIndexElementTypeUnsupported { .. } => "VecIndexElementTypeUnsupported",
+        K::VecSliceElementTypeUnsupported { .. } => "VecSliceElementTypeUnsupported",
+        K::CloneNotYetSupported { .. } => "CloneNotYetSupported",
+    }
+}
+
+fn hir_diagnostic_to_wasm(diag: hew_hir::HirDiagnostic) -> WasmDiagnostic {
+    let span = WasmSpan::from_span(&diag.span);
+    let kind = hir_kind_str(&diag.kind).to_string();
+    let notes = diag
+        .secondary_spans
+        .into_iter()
+        .map(|(span, msg)| WasmNote {
+            span: WasmSpan::from_span(&span),
+            start_offset: span.start,
+            end_offset: span.end,
+            message: msg,
+        })
+        .collect();
+    WasmDiagnostic {
+        severity: "error".to_string(),
+        phase: "hir",
+        message: diag.note,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
+        kind,
+        notes,
+        suggestions: Vec::new(),
+        source_module: diag.source_module,
     }
 }
 
@@ -594,12 +736,14 @@ fn convert_parse_diagnostics(parse_errors: Vec<hew_parser::ParseError>) -> Vec<W
 fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
+    hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
 ) -> Vec<WasmDiagnostic> {
     let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
         diagnostics.extend(type_output.errors.into_iter().map(type_error_to_wasm));
         diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
+    diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
     diagnostics
 }
 
@@ -634,8 +778,9 @@ fn run_type_check(source: &str) -> TypeCheckResult {
     let AnalyzedSource {
         parse_result,
         type_output,
+        hir_diagnostics,
     } = analysis;
-    let diagnostics = convert_diagnostics(parse_result.errors, type_output);
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
 
     TypeCheckResult {
         diagnostics,
@@ -679,8 +824,9 @@ fn run_analysis(source: &str) -> AnalysisResult {
     let AnalyzedSource {
         parse_result,
         type_output,
+        hir_diagnostics,
     } = analysis;
-    let diagnostics = convert_diagnostics(parse_result.errors, type_output);
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
 
     AnalysisResult {
         diagnostics,

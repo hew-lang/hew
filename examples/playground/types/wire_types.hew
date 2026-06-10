@@ -1,20 +1,34 @@
-//! @name Wire Types
-//! @description Wire structs and enums for serialization
+//! @name Record Types
+//! @description Structured record types, enums, and exhaustive pattern matching
 
-#[wire]
-struct UserMessage {
-    name: string @1,
-    age: i64 @2,
+type Point {
+    x: i64;
+    y: i64;
 }
 
-wire enum Command {
-    Start;
-    Stop;
-    Pause;
+type Circle {
+    centre: Point;
+    radius: i64;
+}
+
+enum Shape {
+    Dot(Point);
+    Ring(Circle);
+}
+
+fn area_description(s: Shape) -> string {
+    match s {
+        Dot(_p) => "a single point",
+        Ring(c) => f"a circle with radius {c.radius}",
+    }
 }
 
 fn main() {
-    println("Wire types define serialization schemas.");
-    println("Fields have explicit tags (@1, @2) for");
-    println("backwards-compatible binary encoding.");
+    let origin = Point { x: 0, y: 0 };
+    let dot = Dot(origin);
+    println(area_description(dot));
+
+    let centre = Point { x: 3, y: 4 };
+    let ring = Ring(Circle { centre: centre, radius: 10 });
+    println(area_description(ring));
 }

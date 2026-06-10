@@ -115,7 +115,9 @@ fn collection_overwrite_source(frames: usize) -> String {
 /// (must be released every frame). Pins both directions at once: a
 /// missed release leaks one node per frame; an over-eager release of the
 /// aliased `label` is a use-after-free the poisoned-allocator triple
-/// crashes on.
+/// crashes on. The durable `label` is built on the HEAP at spawn
+/// (`.to_uppercase()`) so `hew_string_drop` would actually free it — a
+/// static literal would make the alias guard vacuous.
 fn record_functional_update_source(frames: usize) -> String {
     format!(
         "record Inner {{\n\
@@ -148,7 +150,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \n\
          fn main() -> i64 {{\n\
          \x20   let k = spawn Keeper(cur: Outer {{\n\
-         \x20       label: \"durable-label\",\n\
+         \x20       label: \"durable-label\".to_uppercase(),\n\
          \x20       payload: bytes::new(),\n\
          \x20       inner: Inner {{ note: \"first\" }},\n\
          \x20       count: 0,\n\
@@ -215,8 +217,11 @@ fn enum_overwrite_source(frames: usize) -> String {
 }
 
 /// Whole-value self-store: `prof = prof` byte-copies every leaf, so the
-/// release must neutralise them ALL (drop nothing). The trailing read
-/// crashes under the poisoned triple if the buffer was freed.
+/// release must neutralise them ALL (drop nothing). The aliased `name`
+/// leaf is HEAP-allocated at spawn (`.to_uppercase()`) so an over-eager
+/// release would actually free it; the trailing read then crashes under
+/// the poisoned triple (a static literal would never be freed, making
+/// the pin vacuous). `"self-store-name".to_uppercase()` stays length 15.
 const RECORD_SELF_STORE_SOURCE: &str = "\
 record Profile {
     name: string,
@@ -236,7 +241,7 @@ actor Keeper {
 }
 
 fn main() -> i64 {
-    let k = spawn Keeper(prof: Profile { name: \"self-store-name\", hits: 1 });
+    let k = spawn Keeper(prof: Profile { name: \"self-store-name\".to_uppercase(), hits: 1 });
     var i: i64 = 0;
     while i < 25 {
         k.refresh();
@@ -252,8 +257,10 @@ fn main() -> i64 {
 
 /// Cross-position swap: the new value reuses BOTH old leaves at swapped
 /// positions. A per-position-only guard would free `a` while the new `b`
-/// still points at it; the full-set neutralise keeps both alive. After an
-/// odd number of swaps `a` holds the original `b` string.
+/// still points at it; the full-set neutralise keeps both alive. Both
+/// leaves are HEAP-allocated at spawn (`.to_uppercase()`) so a wrongful
+/// release actually frees them. After an odd number of swaps `a` holds
+/// the original `b` string (`"RIGHT-SIDE"`, length 10).
 const RECORD_SWAP_SOURCE: &str = "\
 record Pair {
     a: string,
@@ -273,7 +280,7 @@ actor Swapper {
 }
 
 fn main() -> i64 {
-    let s = spawn Swapper(pair: Pair { a: \"left\", b: \"right-side\" });
+    let s = spawn Swapper(pair: Pair { a: \"left\".to_uppercase(), b: \"right-side\".to_uppercase() });
     var i: i64 = 0;
     while i < 25 {
         s.swap();
@@ -495,7 +502,7 @@ fn enum_state_overwrite_no_per_frame_leak_slope() {
 
 /// UAF pin — whole-value self-store: every leaf of the incoming value
 /// aliases the old value; the release must free nothing and the final
-/// read must see the original string (len 15).
+/// read must see the heap-built name (`"SELF-STORE-NAME"`, len 15).
 #[test]
 fn record_self_store_keeps_aliased_leaves_alive() {
     assert_scribbled_run_exit("record_self_store", RECORD_SELF_STORE_SOURCE, 15);
@@ -503,7 +510,7 @@ fn record_self_store_keeps_aliased_leaves_alive() {
 
 /// UAF pin — cross-position swap: both old leaves reappear at swapped
 /// positions. After an odd swap count `a` holds the original `b`
-/// ("right-side", len 10). A per-position-only alias guard frees them.
+/// ("RIGHT-SIDE", len 10). A per-position-only alias guard frees them.
 #[test]
 fn record_swap_keeps_cross_position_leaves_alive() {
     assert_scribbled_run_exit("record_swap", RECORD_SWAP_SOURCE, 10);

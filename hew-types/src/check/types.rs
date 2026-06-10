@@ -1064,6 +1064,23 @@ pub enum AssignTargetKind {
     Index,
 }
 
+/// Checker-side record of one actor state field while its actor is being
+/// checked.
+///
+/// Carries the declared mutability (`var` = mutable; `let` and bare
+/// declarations = immutable, matching the parser's `FieldDecl::is_mutable`)
+/// and the declaration site so the immutable-field assignment diagnostic can
+/// point back at the field declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ActorFieldInfo {
+    /// Field name as declared in the actor body.
+    pub name: String,
+    /// `true` when declared with `var`; `false` for `let` and bare fields.
+    pub is_mutable: bool,
+    /// Span of the field's type annotation (the declaration line).
+    pub decl_span: Span,
+}
+
 /// Position context for `synthesize_index` (`obj[k]`).
 ///
 /// The result type and recorded runtime call differ between a read (`let x =
@@ -2247,8 +2264,12 @@ pub struct Checker {
     pub(super) current_self_type: Option<(String, Vec<Ty>)>,
     /// The actor type currently being checked (for `this` keyword resolution).
     pub(super) current_actor_type: Option<Ty>,
-    /// Field names of the current actor (for purity checks on bare field assignment).
-    pub(super) current_actor_fields: Vec<String>,
+    /// State fields of the current actor: name, declared mutability, and
+    /// declaration site. Drives the purity checks on bare field assignment
+    /// and the immutable-field assignment diagnostic (a `let` or bare field
+    /// may only be assigned inside `init`; handlers and methods must declare
+    /// the field with `var` to write it).
+    pub(super) current_actor_fields: Vec<ActorFieldInfo>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an

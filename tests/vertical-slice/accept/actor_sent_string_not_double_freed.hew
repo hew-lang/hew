@@ -19,7 +19,7 @@
 //! never reclaims a buffer it handed to the mailbox.
 
 actor Echoer {
-    let seen: i64;
+    var seen: i64;
 
     init() {
         seen = 0;

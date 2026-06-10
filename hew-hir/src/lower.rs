@@ -7733,6 +7733,7 @@ impl LowerCtx {
                     name: name.clone(),
                     ty: self.lower_type(ty),
                     default: None,
+                    is_mutable: false,
                     span: field_span.clone(),
                 });
             }
@@ -7832,6 +7833,7 @@ impl LowerCtx {
                     name: rf.name.clone(),
                     ty: self.lower_type(&rf.ty),
                     default: None,
+                    is_mutable: false,
                     span: rf.span.clone(),
                 })
                 .collect(),
@@ -8039,6 +8041,9 @@ impl LowerCtx {
                         name: name.clone(),
                         ty: self.lower_type(ty),
                         default: None,
+                        // Machine state fields are written by transition
+                        // bodies; there is no `let`/`var` surface on them.
+                        is_mutable: true,
                         span: ty.1.clone(),
                     })
                     .collect();
@@ -8114,6 +8119,7 @@ impl LowerCtx {
                         name: name.clone(),
                         ty: self.lower_type(ty),
                         default: None,
+                        is_mutable: false,
                         span: ty.1.clone(),
                     })
                     .collect();
@@ -8616,6 +8622,10 @@ impl LowerCtx {
                         .default
                         .as_ref()
                         .map(|default| self.lower_expr(default, IntentKind::Read)),
+                    // Surface `var` vs `let`/bare declaration — the checker
+                    // already rejected writes to immutable fields outside
+                    // `init`, so this is the enforced mutability.
+                    is_mutable: f.is_mutable,
                     span: f.ty.1.clone(),
                 }
             })

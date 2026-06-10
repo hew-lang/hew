@@ -1,6 +1,6 @@
 // Simple counter actor
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment(n: i64) {
         count = count + n;
     }

@@ -857,6 +857,17 @@ pub struct HirField {
     pub name: String,
     pub ty: ResolvedTy,
     pub default: Option<HirExpr>,
+    /// Declared mutability of the field.
+    ///
+    /// Meaningful for `HirActorDecl::state_fields`, where it carries the
+    /// surface `var` (true) vs `let`/bare (false) declaration so downstream
+    /// consumers see the same mutability the checker enforced (immutable
+    /// fields are assignable only inside `init { }`). Other constructors
+    /// pass the context's effective writability: machine state fields are
+    /// `true` (written by transition bodies); record, type-decl, and machine
+    /// event fields are `false` (writes are governed by the binding root,
+    /// not the field).
+    pub is_mutable: bool,
     pub span: Span,
 }
 

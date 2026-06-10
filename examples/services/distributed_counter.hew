@@ -25,8 +25,8 @@
 actor Coordinator {
     let replica_names: Vec<string>;
     let replica_totals: Vec<i64>;
-    let global_total: i64;
-    let sync_count: i64;
+    var global_total: i64;
+    var sync_count: i64;
     receive fn register_replica(name: string) {
         replica_names.push(name);
         replica_totals.push(0);
@@ -61,7 +61,7 @@ actor Coordinator {
 actor Replica {
     let name: string;
     let coordinator: LocalPid<Coordinator>;
-    let local_count: i64;
+    var local_count: i64;
     init() {
         println(f"[{name}] replica started");
     }

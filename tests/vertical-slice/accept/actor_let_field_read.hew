@@ -1,0 +1,24 @@
+// A `let` actor state field set at spawn time is readable from every
+// handler; only `var` fields accept writes outside `init`.
+actor Counter {
+    let step: i64;
+    var count: i64;
+
+    receive fn bump() {
+        count = count + step;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(step: 7, count: 0);
+    counter.bump();
+    counter.bump();
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

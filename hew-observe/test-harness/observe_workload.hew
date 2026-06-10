@@ -4,7 +4,7 @@
 
 actor Counter {
     let name: string;
-    let count: Int;
+    var count: Int;
 
     receive fn tick() {
         count += 1;
@@ -32,7 +32,7 @@ actor Monitor {
     let c1: Counter;
     let c2: Counter;
     let c3: Counter;
-    let checks: Int;
+    var checks: Int;
 
     receive fn check() {
         let a = await c1.get_count();

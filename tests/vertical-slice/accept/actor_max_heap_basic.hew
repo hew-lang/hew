@@ -12,7 +12,7 @@
 // reaches the runtime ABI is sufficient for the P0 wire-through.
 #[max_heap(64 kb)]
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;

@@ -23,7 +23,7 @@ actor Worker {
 }
 
 actor Collector {
-    let count: i32;
+    var count: i32;
     receive fn tick() {
         count = count + 1;
     }

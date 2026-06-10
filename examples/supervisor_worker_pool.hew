@@ -21,7 +21,7 @@
 // In Hew, the same thing is 5 lines:
 actor Worker {
     let id: i32;
-    let processed: i32;
+    var processed: i32;
     receive fn process(item: i32) {
         processed = processed + 1;
         print("worker ");

@@ -86,7 +86,7 @@ fn dispatch_trampoline_emits_dormant_borrow_load_receipt() {
     // dispatch trampoline are emitted from the definition regardless of use.
     let source = r#"
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     init(initial: i64) {
         count = initial;
@@ -238,7 +238,7 @@ fn define_body<'a>(ll: &'a str, fn_name: &str) -> Vec<&'a str> {
 fn receive_handler_does_not_drop_borrowed_payload() {
     let source = r#"
 actor Inbox {
-    let count: i64;
+    var count: i64;
 
     init() {
         count = 0;
@@ -315,7 +315,7 @@ fn main() -> i64 {
 fn receive_handler_field_store_emits_borrow_gated_retain() {
     let source = r#"
 actor Inbox {
-    let last: string;
+    var last: string;
 
     init() {
         last = "";
@@ -410,7 +410,7 @@ fn main() -> i64 {
 fn receive_handler_discarded_owned_local_suppresses_drop() {
     let source = r#"
 actor Sink {
-    let n: i64;
+    var n: i64;
 
     init() {
         n = 0;
@@ -473,7 +473,7 @@ fn id(x: string) -> string {
 }
 
 actor Relay {
-    let last: string;
+    var last: string;
 
     init() {
         last = "";
@@ -521,7 +521,7 @@ record Wrap {
 }
 
 actor Builder {
-    let last: string;
+    var last: string;
 
     init() {
         last = "";
@@ -558,7 +558,7 @@ fn main() -> i64 {
 fn receive_handler_handled_sink_has_no_escape_trap() {
     let source = r#"
 actor Inbox {
-    let last: string;
+    var last: string;
 
     init() {
         last = "";

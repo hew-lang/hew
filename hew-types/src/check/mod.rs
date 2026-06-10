@@ -44,6 +44,13 @@ mod tests;
 mod types;
 mod util;
 
+use self::types::{
+    ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
+    DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
+    DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
+    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope, WasmUnsupportedFeature,
+};
 pub use self::types::{
     ActorMethodKind, ActorSendAliasing, ActorSendCopyReason, ActorStateGuard, AllocationClass,
     ArmResolution, AssignTargetKind, AssignTargetShape, CaptureModeOrigin, Checker, ChildKind,
@@ -53,13 +60,6 @@ pub use self::types::{
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
     StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
-};
-use self::types::{
-    ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,
-    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
-    IndexContext, IntegerTypeInfo, PendingLoweringFact, TraitAssociatedTypeInfo, TraitInfo,
-    TypeParamScope, WasmUnsupportedFeature,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

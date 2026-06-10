@@ -26,7 +26,7 @@
 // High-throughput counter — drives the msg/s rate and sparklines.
 actor Counter {
     let name: i32;
-    let value: i32;
+    var value: i32;
     receive fn increment(amount: i32) {
         value = value + amount;
     }
@@ -39,7 +39,7 @@ actor Counter {
 // showing non-zero mailbox depth in the Actors tab.
 actor SlowProcessor {
     let id: i32;
-    let processed: i32;
+    var processed: i32;
     receive fn process(item: i32) {
         processed = processed + 1;
         sleep_ms(100);
@@ -52,7 +52,7 @@ actor SlowProcessor {
 // Logger that stays mostly idle — low message count contrasts with
 // the high-throughput counters when sorting the Actors tab.
 actor Logger {
-    let entries: i32;
+    var entries: i32;
     receive fn log(level: i32) {
         entries = entries + 1;
     }
@@ -61,7 +61,7 @@ actor Logger {
 // Accumulator with periodic resets — creates a sawtooth pattern
 // visible in the message rate sparkline.
 actor Accumulator {
-    let total: i32;
+    var total: i32;
     receive fn add(value: i32) {
         total = total + value;
     }

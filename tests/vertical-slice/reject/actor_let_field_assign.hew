@@ -1,0 +1,16 @@
+// A `let` actor state field is immutable outside `init`: a receive-fn
+// write must be rejected at check time with a diagnostic that names the
+// declaration site and the `var` fix.
+actor Counter {
+    let count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    counter.increment(1);
+    0
+}

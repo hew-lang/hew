@@ -27,7 +27,7 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
     let pipeline = lower_checked(
         r"
         actor Counter {
-            let count: i64;
+            var count: i64;
 
             receive fn increment(n: i64) {
                 count = count + n;

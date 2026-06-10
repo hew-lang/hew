@@ -5,7 +5,7 @@ record Ping {
 }
 
 actor Worker {
-    let count: i64;
+    var count: i64;
 
     receive fn ping(msg: Ping) {
         count = count + msg.n;

@@ -3,7 +3,7 @@
 // the dispatch trampoline unpacks each at its field offset, and the reply
 // rides the existing single-value ask channel.
 actor Adder {
-    let calls: i64;
+    var calls: i64;
     receive fn compute(a: i64, b: i64) -> i64 {
         calls = calls + 1;
         a + b

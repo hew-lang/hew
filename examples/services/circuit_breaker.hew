@@ -17,7 +17,7 @@
 // Returns request_id * 10 on success, -1 on failure.
 // Failure is triggered by setting the actor to "degraded" mode.
 actor Backend {
-    let healthy: i64; // 1 = healthy, 0 = degraded
+    var healthy: i64; // 1 = healthy, 0 = degraded
     receive fn call(request_id: i64) -> i64 {
         if healthy == 0 {
             -1
@@ -43,8 +43,8 @@ actor Backend {
 //   2 = HalfOpen (allowing one probe)
 actor CircuitBreaker {
     let backend: LocalPid<Backend>;
-    let state: i64; // 0=Closed, 1=Open, 2=HalfOpen
-    let failure_count: i64;
+    var state: i64; // 0=Closed, 1=Open, 2=HalfOpen
+    var failure_count: i64;
     let max_failures: i64; // trip threshold
     init() {
         println(f"[breaker] init: max_failures={max_failures}");

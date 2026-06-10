@@ -4,7 +4,7 @@
 // Test: Actors and Messaging
 // Exercises: actor definition, receive fn, spawn, message send, actor state, stop
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment(amount: i64) {
         count = count + amount;
     }

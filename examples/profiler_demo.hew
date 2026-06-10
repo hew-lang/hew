@@ -11,7 +11,7 @@
 // Usage:
 //   HEW_PPROF=:6060 hew run profiler_demo.hew
 actor Counter {
-    let count: i32;
+    var count: i32;
     receive fn tick() {
         count = count + 1;
     }

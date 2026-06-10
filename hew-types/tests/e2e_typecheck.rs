@@ -432,7 +432,7 @@ fn mutate() {
 }
 
 actor Counter {
-    let total: i64;
+    var total: i64;
 
     receive fn set(v: i64) {
         total = v;
@@ -561,7 +561,7 @@ fn mutate() {
 }
 
 actor Counter {
-    let total: i64;
+    var total: i64;
 
     receive fn set(v: i64) {
         total = v;

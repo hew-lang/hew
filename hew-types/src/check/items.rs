@@ -740,7 +740,14 @@ impl Checker {
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
         let prev_actor_fields = std::mem::replace(
             &mut self.current_actor_fields,
-            ad.fields.iter().map(|f| f.name.clone()).collect(),
+            ad.fields
+                .iter()
+                .map(|f| ActorFieldInfo {
+                    name: f.name.clone(),
+                    is_mutable: f.is_mutable,
+                    decl_span: f.ty.1.clone(),
+                })
+                .collect(),
         );
 
         // Record the per-actor arena cap from `#[max_heap(N)]` if present.
@@ -935,7 +942,24 @@ impl Checker {
         ));
     }
 
+    /// Bind actor fields as bare names with their *declared* mutability:
+    /// `var` fields are writable, `let` and bare fields are read-only.
+    /// Handler, method, and lifecycle-hook bodies use this binding so that
+    /// assignment to an immutable field is rejected at the assignment site.
     pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty);
+            self.env
+                .define(field.name.clone(), field_ty, field.is_mutable);
+        }
+    }
+
+    /// Bind actor fields as writable regardless of declared mutability.
+    ///
+    /// `init { }` is the actor's constructor: it must be able to assign
+    /// `let` fields their initial values, so the immutable-field rule does
+    /// not apply inside the init body.
+    pub(super) fn bind_actor_fields_for_init(&mut self, fields: &[FieldDecl]) {
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty);
             self.env.define(field.name.clone(), field_ty, true);
@@ -957,9 +981,10 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
-        // Bind actor fields directly in scope (bare field access, mutable
-        // in init body). Hew uses bare names, not `self.field`.
-        self.bind_actor_fields(fields);
+        // Bind actor fields directly in scope (bare field access, all
+        // writable in the init body — init is where `let` fields receive
+        // their initial values). Hew uses bare names, not `self.field`.
+        self.bind_actor_fields_for_init(fields);
 
         // Bind init parameters
         for p in &init.params {
@@ -987,8 +1012,9 @@ impl Checker {
     /// - no `where` clause
     /// - return type `()` (omitted or explicitly unit)
     ///
-    /// Hooks bind actor fields as bare names in scope (mutable) so the
-    /// body can read and modify fields exactly like an `init { }` body.
+    /// Hooks bind actor fields as bare names in scope with their declared
+    /// mutability — `var` fields can be modified, `let` fields are
+    /// read-only (only `init { }` may assign them).
     /// Diagnostics emitted here cover both signature shape (rejected
     /// statically) and body type-checking (delegated to `check_block`).
     pub(super) fn check_lifecycle_hook(
@@ -1067,8 +1093,8 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
-        // Bind actor fields directly in scope as bare names (mutable so
-        // the hook can read/modify them).
+        // Bind actor fields directly in scope as bare names with their
+        // declared mutability (`var` writable, `let` read-only).
         self.bind_actor_fields(fields);
 
         self.current_return_type = Some(Ty::Unit);
@@ -1242,9 +1268,9 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
-        // Bind actor fields as bare names (mutable), then the `info`
-        // parameter on top of them.  Field-shadowing by the param name
-        // is intentionally permitted — same precedent as `init` and
+        // Bind actor fields as bare names (declared mutability), then the
+        // `info` parameter on top of them.  Field-shadowing by the param
+        // name is intentionally permitted — same precedent as `init` and
         // receive fn parameters (HEW-SPEC-2026 §9.1.1).
         self.bind_actor_fields(fields);
         if let Some(p) = hook.params.first() {

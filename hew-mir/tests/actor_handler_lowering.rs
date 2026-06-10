@@ -184,6 +184,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
             name: "count".to_string(),
             ty: ResolvedTy::I64,
             default: None,
+            is_mutable: true,
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {

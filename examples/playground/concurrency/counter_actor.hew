@@ -2,7 +2,7 @@
 //! @description A simple actor that counts messages
 
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     receive fn increment(n: i64) -> i64 {
         count = count + n;

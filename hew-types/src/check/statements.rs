@@ -599,7 +599,7 @@ impl Checker {
                 // valid, regardless of whether subsequent type-checking finds errors.
                 let assign_target_kind: Option<AssignTargetKind> = match &target.0 {
                     Expr::Identifier(name) => {
-                        if self.current_actor_fields.contains(name) {
+                        if self.current_actor_fields.iter().any(|f| &f.name == name) {
                             Some(AssignTargetKind::ActorField)
                         } else if self.env.lookup_ref(name).is_some() {
                             Some(AssignTargetKind::LocalVar)
@@ -637,7 +637,7 @@ impl Checker {
                     if let Ty::Named { name, .. } = &resolved {
                         let root_is_mutable = Self::assignment_root_binding_name(&target.0)
                             .is_some_and(|root| {
-                                self.current_actor_fields.iter().any(|field| field == root)
+                                self.current_actor_fields.iter().any(|f| f.name == root)
                                     || self
                                         .env
                                         .lookup_ref(root)
@@ -709,8 +709,24 @@ impl Checker {
                 if let Some(name) = root_binding_name {
                     if let Some(binding) = self.env.lookup_ref(name) {
                         if !binding.is_mutable {
-                            self.errors
-                                .push(TypeError::mutability_error(span.clone(), name));
+                            // Actor state fields get a field-specific
+                            // diagnostic pointing at the declaration site;
+                            // plain locals keep the variable-shaped error.
+                            // In `init { }` fields are bound writable, so
+                            // this arm only fires in handler/method/hook
+                            // bodies.
+                            if let Some(field) =
+                                self.current_actor_fields.iter().find(|f| f.name == *name)
+                            {
+                                self.errors.push(TypeError::immutable_field_assignment(
+                                    span.clone(),
+                                    name,
+                                    field.decl_span.clone(),
+                                ));
+                            } else {
+                                self.errors
+                                    .push(TypeError::mutability_error(span.clone(), name));
+                            }
                         }
                     }
                     // Plain assignment (=) is a write-only, not a read.

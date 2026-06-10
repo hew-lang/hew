@@ -182,7 +182,7 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 ```hew
 actor HealthChecker {
     let endpoint: string;
-    let failures: i64;
+    var failures: i64;
 
     #[every(5s)]
     receive fn check() {
@@ -558,6 +558,8 @@ actor Counter {
     let name: string;        // immutable field, set by init
 }
 ```
+
+A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
 
 This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while struct fields are data layout declarations.
 

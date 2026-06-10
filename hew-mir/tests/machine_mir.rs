@@ -485,6 +485,7 @@ fn resource_field_transition_out_drops() {
             name: "handle".to_string(),
             ty: handle_ty.clone(),
             default: None,
+            is_mutable: true,
             span: 0..0,
         }],
     );
@@ -534,6 +535,7 @@ fn resource_field_transition_out_drops() {
             name: "raw".to_string(),
             ty: ResolvedTy::I64,
             default: None,
+            is_mutable: false,
             span: 0..0,
         }],
         span: 0..0,

@@ -284,7 +284,7 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
         r"import std::observe;
 
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     receive fn increment(n: i64) {
         count = count + n;

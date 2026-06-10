@@ -8,7 +8,7 @@
 // Run:  hew run examples/quic_mesh/server.hew
 // Then: hew run examples/quic_mesh/client.hew
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment(n: i64) {
         count = count + n;
         println(f"[server] counter incremented by {n} → {count}");

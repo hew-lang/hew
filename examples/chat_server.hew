@@ -17,8 +17,8 @@ import std::net;
 import std::os;
 
 actor ChatRoom {
-    let handlers: Vec<LocalPid<ClientHandler>>;
-    let names: Vec<string>;
+    var handlers: Vec<LocalPid<ClientHandler>>;
+    var names: Vec<string>;
     receive fn register(handler: LocalPid<ClientHandler>, name: string) {
         handlers.push(handler);
         names.push(name);

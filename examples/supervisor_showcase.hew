@@ -25,7 +25,7 @@ actor Counter {
     // After restart, the counter has fresh state (value=100 from init → 110)
 
     // ── Part 3: StrictPool with one_for_all ──
-    let value: i32 = 100;
+    var value: i32 = 100;
     init() {
         print("Counter started at ");
         println(value);

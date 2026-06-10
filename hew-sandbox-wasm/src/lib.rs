@@ -1192,7 +1192,7 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Pair {
-    let a: i64;
+    var a: i64;
     let b: i64;
     receive fn set_a_return_b(x: i64) -> i64 {
         a = x;

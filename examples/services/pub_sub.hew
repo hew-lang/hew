@@ -18,7 +18,7 @@
 // Subscriber actor — receives messages on topics it cares about.
 actor Subscriber {
     let name: string;
-    let received: i64;
+    var received: i64;
     receive fn on_message(topic: string, payload: string) {
         received = received + 1;
         println(f"  [{name}] #{received} topic={topic}: {payload}");
@@ -36,7 +36,7 @@ actor Subscriber {
 actor Broker {
     let sub_topics: Vec<string>;
     let sub_actors: Vec<LocalPid<Subscriber>>;
-    let published: i64;
+    var published: i64;
 
     // Register a subscriber for a topic.
     receive fn subscribe(topic: string, subscriber: LocalPid<Subscriber>) {

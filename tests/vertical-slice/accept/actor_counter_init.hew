@@ -1,5 +1,5 @@
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     init(initial: i64) {
         count = initial;

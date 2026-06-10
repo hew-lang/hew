@@ -122,8 +122,8 @@ fn body_of<'a>(ir: &'a str, define_prefix: &str) -> &'a str {
 fn generic_enum_state_fields_route_through_enum_clone_drop_helpers() {
     let source = r#"
 actor Mailbox {
-    let pending: Option<string>;
-    let last: Result<i64, string>;
+    var pending: Option<string>;
+    var last: Result<i64, string>;
 
     init(seed: string) {
         pending = Some(seed);

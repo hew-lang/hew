@@ -3021,6 +3021,7 @@ pub fn lower_program_with_mono_cap(
                             let lowered = ctx.lower_imported_actor(
                                 actor,
                                 span.clone(),
+                                module_short,
                                 &same_module_fn_rewrites,
                             );
                             items.push(HirItem::Actor(lowered));
@@ -7357,17 +7358,24 @@ impl LowerCtx {
     /// reachable private) function inside the actor body resolves to that
     /// function's qualified, native-symbol-safe name — the same contract the
     /// imported free-fn and impl-method paths use. State-field defaults and
-    /// types lower the same way as a local actor; the resulting `HirActorDecl`
-    /// is keyed by the actor's bare name so MIR's layout pass treats it exactly
-    /// like a locally-declared actor.
+    /// types lower the same way as a local actor.
+    ///
+    /// The resulting `HirActorDecl` carries `defining_module =
+    /// Some(module_short)` — the `(defining-module, name)` identity that lets
+    /// MIR layout keys and codegen symbols distinguish two same-named actors
+    /// from different modules. The decl's `name` stays bare and all symbol
+    /// mangling still derives from the bare name; switching keys/symbols to
+    /// `qualified_name()` is the downstream re-key that this carrier enables.
     fn lower_imported_actor(
         &mut self,
         decl: &ActorDecl,
         span: Span,
+        module_short: &str,
         rewrites: &HashMap<String, String>,
     ) -> HirActorDecl {
         let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let lowered = self.lower_actor(decl, span);
+        let mut lowered = self.lower_actor(decl, span);
+        lowered.defining_module = Some(module_short.to_string());
         self.imported_fn_rewrites = previous_rewrites;
         lowered
     }
@@ -8626,6 +8634,10 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root-program identity. Package-module actors get their
+            // defining module stamped by `lower_imported_actor`; file-import
+            // spliced actors lower through this path and stay root-identical.
+            defining_module: None,
             state_fields,
             init,
             receive_handlers,

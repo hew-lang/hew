@@ -179,6 +179,7 @@ fn actor(ids: &mut IdGen, name: &str, receive_handlers: Vec<HirActorReceiveFn>) 
         id: ids.item(),
         node: ids.node(),
         name: name.to_string(),
+        defining_module: None,
         state_fields: vec![HirField {
             name: "count".to_string(),
             ty: ResolvedTy::I64,
@@ -321,6 +322,66 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
                 } if actor_name == "Counter"
             )
         }));
+}
+
+/// The defining-module identity carried on `HirActorDecl` must survive the
+/// HIR→MIR boundary into `ActorLayout` — every downstream qualified re-key
+/// of layout maps and symbols is a no-op unless this discriminator arrives.
+/// Equally load-bearing: carrying it must NOT change behaviour yet — the
+/// layout key and every mangled symbol still derive from the bare name.
+#[test]
+fn defining_module_survives_to_actor_layout_with_symbols_still_bare() {
+    let mut ids = IdGen::default();
+    let bump_body = block(&mut ids, vec![], None, ResolvedTy::Unit);
+    let mut imported = actor(
+        &mut ids,
+        "Account",
+        vec![receive("bump", false, vec![], ResolvedTy::Unit, bump_body)],
+    );
+    imported.defining_module = Some("bank".to_string());
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(imported)]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "carrier-only actor should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let layout = &pipeline.actor_layouts[0];
+    assert_eq!(
+        layout.defining_module.as_deref(),
+        Some("bank"),
+        "ActorLayout must preserve HirActorDecl.defining_module"
+    );
+    // No behaviour change with the carrier present: bare-name keys/symbols.
+    assert_eq!(layout.name, "Account");
+    assert_eq!(
+        layout.state_clone_fn_symbol.as_deref(),
+        Some("__hew_state_clone_Account")
+    );
+    assert_eq!(
+        layout.state_drop_fn_symbol.as_deref(),
+        Some("__hew_state_drop_Account")
+    );
+    assert_eq!(layout.init_symbol.as_deref(), Some("Account__init"));
+    assert_eq!(layout.handlers[0].symbol, "Account__recv__bump");
+}
+
+/// A root-program actor (no defining module) lowers with `None` in the
+/// layout — the bare/root identity the qualified key maps to itself.
+#[test]
+fn root_actor_layout_carries_no_defining_module() {
+    let mut ids = IdGen::default();
+    let root = actor(&mut ids, "Counter", vec![]);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(root)]));
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "root actor should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    assert_eq!(pipeline.actor_layouts[0].defining_module, None);
 }
 
 #[test]

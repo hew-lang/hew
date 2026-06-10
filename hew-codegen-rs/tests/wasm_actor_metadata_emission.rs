@@ -86,6 +86,7 @@ fn spawn_pipeline() -> IrPipeline {
 
     let actor_layout = ActorLayout {
         name: actor_name.to_string(),
+        defining_module: None,
         state_field_names: vec![],
         state_field_tys: vec![],
         state_field_defaults: vec![],

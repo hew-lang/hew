@@ -1264,6 +1264,7 @@ pub fn lower_hir_module_with_facts(
         };
         actor_layouts.push(crate::model::ActorLayout {
             name: actor.name.clone(),
+            defining_module: actor.defining_module.clone(),
             state_field_names: actor
                 .state_fields
                 .iter()

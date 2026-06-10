@@ -78,6 +78,7 @@ fn classified_actor(
     assert_eq!(state_field_tys.len(), kinds.len());
     ActorLayout {
         name: name.to_string(),
+        defining_module: None,
         state_field_names: state_field_names.into_iter().map(String::from).collect(),
         state_field_tys,
         state_field_defaults: vec![],
@@ -905,6 +906,7 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
 fn state_clone_zero_state_actor_emits_trivial_bodies() {
     let actor = ActorLayout {
         name: "Empty".into(),
+        defining_module: None,
         state_field_names: vec![],
         state_field_tys: vec![],
         state_field_defaults: vec![],

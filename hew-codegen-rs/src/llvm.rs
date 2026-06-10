@@ -43475,6 +43475,7 @@ mod tests {
         let actor_layouts = if with_actor {
             vec![ActorLayout {
                 name: "StubActor".to_string(),
+                defining_module: None,
                 state_field_names: vec![],
                 state_field_tys: vec![],
                 state_field_defaults: vec![],
@@ -43575,6 +43576,7 @@ mod tests {
         let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
         let actor = ActorLayout {
             name: "ConnActor".to_string(),
+            defining_module: None,
             state_field_names: vec!["conn".to_string()],
             state_field_tys: vec![conn_ty.clone()],
             state_field_defaults: vec![None],
@@ -44212,6 +44214,7 @@ mod tests {
         }
         let actor = ActorLayout {
             name: actor_name.to_string(),
+            defining_module: None,
             state_field_names: vec![],
             state_field_tys: vec![],
             state_field_defaults: vec![],
@@ -44678,6 +44681,7 @@ mod tests {
 
         let actor = ActorLayout {
             name: "GapActor".to_string(),
+            defining_module: None,
             state_field_names: vec![],
             state_field_tys: vec![],
             state_field_defaults: vec![],

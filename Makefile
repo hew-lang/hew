@@ -57,7 +57,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -560,6 +560,22 @@ test-stdlib: hew
 test-hew: hew runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
+
+# Ratcheted wrappers for the Hew-language test suites.
+#
+# These targets run the suites through scripts/hew-suite-ratchet.sh and
+# scripts/stdlib-ratchet.sh, which compare the set of failing tests against
+# an exhaustive tracked-failures list.  Any unexpected failure or unexpected
+# pass causes the gate to exit 1.  When the converging lanes land and the
+# tracked failures drop to zero, delete the list entries; the ratchets then
+# pass with no tracking overhead.
+test-hew-ratchet: hew runtime stdlib
+	@echo "==> Running Hew test suite (ratcheted)"
+	scripts/hew-suite-ratchet.sh
+
+test-stdlib-ratchet: hew
+	@echo "==> Type-checking stdlib (ratcheted)"
+	scripts/stdlib-ratchet.sh
 
 # Run every examples/ux and examples/progressive tutorial against its paired
 # .expected file.  Any tutorial whose .expected output diverges from `hew run`

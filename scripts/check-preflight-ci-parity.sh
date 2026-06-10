@@ -54,6 +54,18 @@ CI_CHECKS_PATTERN[i]="make test"; ((i++))
 
 CI_CHECKS_LABEL[i]="playground-check (release-gate.yml: make playground-check)";
 CI_CHECKS_PATTERN[i]="make playground-check"; ((i++))
+
+CI_CHECKS_LABEL[i]="Hew test suite ratchet (ci.yml: make test-hew-ratchet)";
+CI_CHECKS_PATTERN[i]="make test-hew-ratchet"; ((i++))
+# ↑ ci.yml build-and-test: make test-hew-ratchet (runs scripts/hew-suite-ratchet.sh).
+# Also in dispatcher fallback lane.  The ratchet gates on the tracked-failures list;
+# unexpected failures or unexpected passes both cause exit 1.
+
+CI_CHECKS_LABEL[i]="Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)";
+CI_CHECKS_PATTERN[i]="make test-stdlib-ratchet"; ((i++))
+# ↑ ci.yml build-and-test: make test-stdlib-ratchet (runs scripts/stdlib-ratchet.sh).
+# Also in dispatcher fallback lane.
+
 CI_CHECKS_COUNT=$i
 
 # ── Capture fallback-lane command set via --dry-run ────────────────────────────

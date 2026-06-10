@@ -1150,14 +1150,16 @@ mod tests {
             labels.contains(&"try_recv"),
             "expected method 'try_recv' in completions, got: {labels:?}"
         );
-        // .next, .collect, .lines are retired; channel-family naming uses .recv
+        // .next and .lines are retired; channel-family naming uses .recv.
+        // .collect returned to the stream surface (hew_stream_collect_string)
+        // and is a legitimate completion.
         assert!(
             !labels.contains(&"next"),
             "method 'next' should not appear in completions, got: {labels:?}"
         );
         assert!(
-            !labels.contains(&"collect"),
-            "method 'collect' should not appear in completions, got: {labels:?}"
+            labels.contains(&"collect"),
+            "expected method 'collect' in completions, got: {labels:?}"
         );
         assert!(
             !labels.contains(&"lines"),

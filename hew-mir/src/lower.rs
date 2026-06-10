@@ -31374,6 +31374,7 @@ mod plain_vec_drop_interior_alias_and_escape {
     fn push_str(receiver: u32, value: u32, next: u32) -> Terminator {
         Terminator::Call {
             callee: "hew_vec_push_str".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("hew_vec_push_str"),
             args: vec![Place::Local(receiver), Place::Local(value)],
             dest: None,
             next,
@@ -31575,6 +31576,9 @@ mod plain_vec_drop_interior_alias_and_escape {
                 }],
                 terminator: Terminator::Call {
                     callee: "hew_vec_get_ptr".to_string(),
+                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                        "hew_vec_get_ptr",
+                    ),
                     args: vec![Place::Local(11), Place::Local(1)],
                     dest: Some(Place::Local(12)),
                     next: 1,
@@ -31590,6 +31594,9 @@ mod plain_vec_drop_interior_alias_and_escape {
                 }],
                 terminator: Terminator::Call {
                     callee: "hew_vec_len".to_string(),
+                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                        "hew_vec_len",
+                    ),
                     args: vec![Place::Local(13)],
                     dest: Some(Place::Local(18)),
                     next: 2,
@@ -31683,6 +31690,9 @@ mod plain_vec_drop_interior_alias_and_escape {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: "hew_vec_len".to_string(),
+                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                        "hew_vec_len",
+                    ),
                     args: vec![Place::Local(1)],
                     dest: Some(Place::Local(2)),
                     next: 2,

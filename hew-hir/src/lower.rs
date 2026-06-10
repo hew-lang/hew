@@ -299,15 +299,16 @@ const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 /// By seeding them here:
 ///   1. The import filter admits `recv`/`try_recv` (the body calls are now
 ///      resolvable via `fn_registry`).
-///   2. `lower_identifier` resolves them to `ResolvedRef::Item(_)` rather than
-///      `Unresolved`, so the HIR callable-set gate fires `CallableUnsupportedInMir`
-///      (which `build_callable_set` then silences) rather than the premature
-///      `IndirectCallUnsupported`.
-///   3. MIR's `runtime_symbol_for_call_expr` returns `None` for them (they
-///      are Item-resolved, not `ResolvedRef::Builtin`, and not in the
+///   2. Each `FnEntry` carries `builtin_family`, so `lower_identifier`
+///      resolves them to `ResolvedRef::Builtin(family)` rather than
+///      `Unresolved`; the HIR callable-set gate then accepts them
+///      unconditionally (a typed runtime-builtin reference is callable by
+///      construction) instead of raising the premature `IndirectCallUnsupported`.
+///   3. MIR's `runtime_symbol_for_call_expr` returns `None` for them (their
+///      `family.c_symbol()` is a pre-staged symbol absent from the
 ///      `MIR_EMITTER_RUNTIME_SYMBOLS` allowlist), so MIR falls through to
 ///      `module_fn_names` (which this seeding also populates) →
-///      `lower_direct_call` → `Terminator::Call`.
+///      `lower_direct_call` → `Terminator::Call`, carrying the typed family.
 ///   4. Codegen intercepts the `Terminator::Call` by callee name and emits the
 ///      layout-witness ABI (`i32 sym(handle, out, witness)` for recv;
 ///      `void sym(handle, data_ptr, witness)` for send), deriving the element

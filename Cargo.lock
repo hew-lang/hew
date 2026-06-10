@@ -2156,6 +2156,7 @@ dependencies = [
  "serde_json",
  "siphasher",
  "stacker",
+ "strum",
 ]
 
 [[package]]

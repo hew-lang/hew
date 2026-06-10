@@ -24301,7 +24301,12 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
 ///      - construct decomposition: a `TupleConstruct` / `RecordInit` whose dest
 ///        is in the set adds each element/field source local — including owned
 ///        handle-place members — (so a returned aggregate's members, and
-///        recursively a nested aggregate's members, enter the set).
+///        recursively a nested aggregate's members, enter the set);
+///      - variant-payload decomposition: a `Move { dest:
+///        Place::{Machine,Enum}Variant { local in set, .. }, src }` adds `src`'s
+///        local (an enum/Result variant constructor stores its owned payload
+///        through an interior-projection dest, not a `TupleConstruct` /
+///        `RecordInit`, so the returned `Ok(handle)` member enters the set).
 ///   3. Map back: every `owned_locals` binding whose backing local (resolved by
 ///      [`base_local`], which also resolves the handle places) is in
 ///      `flows_to_return` is a returned member and is excluded from drop.
@@ -24401,6 +24406,30 @@ fn derive_returned_aggregate_member_bindings(
                         for (_offset, field) in fields {
                             changed |= add_member(field, &mut flows_to_return);
                         }
+                    }
+                    // Enum / machine variant payload store whose carrier
+                    // aggregate reaches the return: the stored source is an
+                    // owned member handed to the caller through that variant.
+                    //
+                    // A variant constructor (`Ok(s)`, a user enum variant with
+                    // an owned payload) does NOT lower to `TupleConstruct` /
+                    // `RecordInit`; it lowers to a tag store plus a
+                    // `Move { dest: Place::{Machine,Enum}Variant { local, .. },
+                    // src }` payload store into the aggregate's backing local.
+                    // That dest is an interior projection (not `Place::Local`),
+                    // so the whole-value back-prop arm above never sees it —
+                    // without this arm the returned variant's payload (the
+                    // `stream$try_to_file` Sink moved into `Result::Ok`) stays
+                    // drop-eligible and is freed by the callee before the caller
+                    // receives it (the Bug-B double-free).
+                    Instr::Move { dest, src }
+                        if matches!(
+                            dest,
+                            Place::MachineVariant { .. } | Place::EnumVariant { .. }
+                        ) && base_local(*dest)
+                            .is_some_and(|dl| flows_to_return.contains(&dl)) =>
+                    {
+                        changed |= add_member(src, &mut flows_to_return);
                     }
                     _ => {}
                 }
@@ -26659,35 +26688,6 @@ fn enumerate_exits(
             .collect()
     };
 
-    // Variant of `drops_for_exit` for `Terminator::Return`: excludes
-    // `AliasedIntoAggregate` bindings because on a normal return the
-    // aggregate IS the return value — the caller now owns the handle.
-    // Dropping the source binding here would free the handle BEFORE the
-    // caller receives it, producing a use-after-free.
-    //
-    // On `Terminator::Trap` / cancel the aggregate is being abandoned, so
-    // `drops_for_exit` (which includes `AliasedIntoAggregate`) is correct
-    // for those paths.
-    let drops_for_return = |block_id: u32| -> Vec<ElabDrop> {
-        let Some(state_map) = exit_states.get(&block_id) else {
-            return drops_template.clone();
-        };
-        drops_template
-            .iter()
-            .filter(|drop| match place_to_binding.get(&drop.place) {
-                Some(binding) => matches!(
-                    state_map
-                        .get(binding)
-                        .copied()
-                        .unwrap_or(dataflow::BindingState::Uninit),
-                    dataflow::BindingState::Live | dataflow::BindingState::MaybeConsumed(_)
-                ),
-                None => true,
-            })
-            .cloned()
-            .collect()
-    };
-
     // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
     // `drops_for_exit` to bindings declared in this loop body's scope so the
     // back-edge releases ONLY per-iteration bindings (`let opt = await
@@ -26728,12 +26728,7 @@ fn enumerate_exits(
             Terminator::Return => (
                 ExitPath::Return { block: block_id },
                 DropPlan {
-                    // Use `drops_for_return` (not `drops_for_exit`) so that
-                    // bindings in `AliasedIntoAggregate` state are excluded:
-                    // the aggregate being returned owns the handle; dropping
-                    // the source binding here would free it before the caller
-                    // receives the return value (use-after-free).
-                    drops: drops_for_return(block_id),
+                    drops: drops_for_exit(block_id),
                 },
             ),
             Terminator::Goto { target } => {

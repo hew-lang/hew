@@ -1,0 +1,34 @@
+// Reject fixture (NEW-7): `await rx.recv() | after d` with a NON-LITERAL
+// duration. The deadline is embedded as a compile-time constant nanosecond value;
+// a variable or computed duration is not constant-foldable and fails CLOSED at
+// CHECK time — a precise compile-time diagnostic, NOT a runtime error or hang.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-literal duration"
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        let d = 50ms;
+        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after d;
+        let _ = tx;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(v) => v,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

@@ -1,0 +1,35 @@
+// Accept fixture (NEW-7): `await rx.recv() | after d` with a record element type.
+// Proves the generic recv deadline path works for struct/record payloads — non-
+// bitcopy types that require layout-witness ABI. The sender writes one Point, the
+// actor awakes with Ok(Some(p)) before the deadline fires.
+//
+// Exit-code contract: Ok(Some(Point { x: 10, y: 20 })) — returns x + y = 30.
+import std::channel::channel;
+
+record Point { x: i64, y: i64 }
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<Point>, channel.Receiver<Point>) = channel.new(1);
+        tx.send(Point { x: 10, y: 20 });
+        let got: Result<Option<Point>, TimeoutError> = await rx.recv() | after 5000ms;
+        let _ = tx;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(p) => p.x + p.y,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

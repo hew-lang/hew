@@ -452,8 +452,66 @@ def test_ci_parity_script_passes() -> None:
         f"CI parity check failed — the fallback lane is missing a CI-required step.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert "6/6 checks present" in result.stdout, (
-        f"Expected '6/6 checks present' in parity output.\nstdout:\n{result.stdout}"
+    assert "8/8 checks present" in result.stdout, (
+        f"Expected '8/8 checks present' in parity output.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
+    """Changes in tests/hew/ route to the hew-tests lane with both ratchets."""
+    result = run_dispatcher("tests/hew/vec_test.hew")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: hew-tests" in result.stdout, result.stdout
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_std_hew_file_adds_hew_suite_addon() -> None:
+    """A .hew change under std/ appends both hew-suite ratchets as addons.
+
+    The lane is determined by the non-hew parts of the diff; the ratchets are
+    appended regardless of which lane was selected.  Use a pure std/.hew change,
+    which routes to the runtime-net lane (std/net/*.hew) or may route to
+    another lane — the key assertion is that the ratchets appear in the command
+    list.
+    """
+    result = run_dispatcher("std/string.hew")
+    assert result.returncode == 0, result.stderr
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' appended for std/ .hew change.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' appended for std/ .hew change.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_fallback_lane_includes_hew_suite_ratchets() -> None:
+    """Fallback (comprehensive) lane includes both Hew-language suite ratchets."""
+    result = run_dispatcher("some-unclassified-root-file.txt")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
+    )
+    # Ratchets must appear after make test (Rust suite runs first).
+    # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
+    test_pos = result.stdout.index("  - make test")
+    hew_pos = result.stdout.index("make test-hew-ratchet")
+    stdlib_pos = result.stdout.index("make test-stdlib-ratchet")
+    assert test_pos < hew_pos, (
+        f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
+    )
+    assert test_pos < stdlib_pos, (
+        f"Expected make test before make test-stdlib-ratchet.\nstdout:\n{result.stdout}"
     )
 
 
@@ -507,6 +565,9 @@ _TESTS = [
     test_docs_only_change_does_not_include_vertical_slice_oracle,
     test_fallback_lane_includes_smoke_tier_before_heavy,
     test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
+    test_hew_tests_path_routes_to_hew_tests_lane,
+    test_std_hew_file_adds_hew_suite_addon,
+    test_fallback_lane_includes_hew_suite_ratchets,
     test_ci_parity_script_passes,
 ]
 

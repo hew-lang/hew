@@ -380,6 +380,7 @@ has_scripts_config=0
 has_wasm=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
+needs_hew_suite=0
 needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
 
@@ -391,6 +392,10 @@ for path in "${CHANGED_FILES[@]}"; do
             case "$path" in
                 *.hew)
                     needs_stdlib_lint=1
+                    # Any .hew stdlib change can affect test-hew or test-stdlib
+                    # outcomes; run both suites via the ratchet so regressions
+                    # surface before push.
+                    needs_hew_suite=1
                     ;;
                 *)
                     if ! is_stdlib_net_path "$path"; then
@@ -583,7 +588,8 @@ case "$LANE" in
     hew-tests)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-hew"
+        add_command "make test-hew-ratchet"
+        add_command "make test-stdlib-ratchet"
         ;;
     runtime-net)
         add_command "cargo fmt --all -- --check"
@@ -617,10 +623,15 @@ case "$LANE" in
         # make lint follows smoke because it adds hew-fmt-check (Hew file
         # formatting), runtime-poison-safe-lint, lint-wasm-todo, and verify-ffi
         # which the smoke tier does not include.
+        #
+        # Hew-language suites run after the Rust workspace to keep the ratchet
+        # verdict separate from the Rust test verdict.
         add_command "make ci-preflight-smoke"
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"
+        add_command "make test-hew-ratchet"
+        add_command "make test-stdlib-ratchet"
         ;;
     *)
         die "unhandled lane: $LANE"
@@ -637,6 +648,14 @@ fi
 
 if (( needs_stdlib_lint == 1 )); then
     add_command "make stdlib-lint"
+fi
+
+if (( needs_hew_suite == 1 )); then
+    # A .hew file under std/ changed: run both suites through their ratchets.
+    # This catches breakage in test-hew (which imports stdlib) and in test-stdlib
+    # (type-check of the modified file itself) before the diff reaches CI.
+    add_command "make test-hew-ratchet"
+    add_command "make test-stdlib-ratchet"
 fi
 
 if (( needs_sandbox_fixture_check == 1 )); then

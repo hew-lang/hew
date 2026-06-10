@@ -288,6 +288,21 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: make test-pkg-import
 
+      - name: Run Hew language test suite (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
+        # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
+        # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
+        # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
+        # When all entries in the expected-failures file are cleared, this step
+        # gates on a fully-green suite with no special handling.
+        run: make test-hew-ratchet
+
+      - name: Run stdlib type-check suite (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
+        # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
+        # Known failures tracked in scripts/stdlib-expected-failures.txt.
+        run: make test-stdlib-ratchet
+
       - name: Setup Node.js for sandbox parity
         if: env.RUN_CODE_PATH == 'true'
         uses: actions/setup-node@v4

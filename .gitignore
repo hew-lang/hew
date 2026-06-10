@@ -71,6 +71,11 @@ hew-lsp/.test-artifacts/
 # Scratchpad output directory (local tooling, not committed)
 out/
 
+# Hew test runner temp files (hew test writes hew_test_XXXXXX.hew + emit dirs
+# into the test source tree; never commit these)
+tests/hew/hew_test_*.hew
+tests/hew/hew_test_emit_*/
+
 # Retired local C++/MLIR codegen checkout and clangd residue. The active v0.5
 # compiler substrate is `hew-codegen-rs`; keep any machine-local `hew-codegen/`
 # directory untracked without deleting it.

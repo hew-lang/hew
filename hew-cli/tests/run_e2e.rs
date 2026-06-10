@@ -3997,6 +3997,91 @@ fn run_root_and_package_same_actor_name_route_independently() {
     );
 }
 
+/// Qualified actor identity (c): a supervisor over two same-named module
+/// actors (`child b: bank.Account` / `child s: store.Account`, the dotted
+/// child-type form) spawns both, routes asks per child, and a crash+restart
+/// of one child rebinds ITS OWN qualified dispatch/state glue — the restarted
+/// bank child still answers 1 and the untouched store child still answers 2.
+#[test]
+fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    for (pkg, tag) in [("bank", 1_i64), ("store", 2_i64)] {
+        let pkg_dir = dir.path().join("hew").join(pkg);
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join(format!("{pkg}.hew")),
+            format!(
+                "pub actor Account {{\n\
+                 \x20   var n: i64 = 0;\n\
+                 \x20   receive fn who() -> i64 {{ {tag} }}\n\
+                 \x20   receive fn boom() {{ panic(\"{pkg} crash\"); }}\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import hew::bank;\n\
+         import hew::store;\n\
+         supervisor Pair {\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 5 within 60s;\n\
+         \n\
+         \x20   child b: bank.Account;\n\
+         \x20   child s: store.Account;\n\
+         }\n\
+         fn main() {\n\
+         \x20   let p = spawn Pair;\n\
+         \x20   sleep_ms(50);\n\
+         \x20   let b = p.b;\n\
+         \x20   let s = p.s;\n\
+         \x20   match await b.who() {\n\
+         \x20       Ok(v) => println(f\"b={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         \x20   match await s.who() {\n\
+         \x20       Ok(v) => println(f\"s={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         \x20   b.boom();\n\
+         \x20   sleep_ms(200);\n\
+         \x20   let b2 = p.b;\n\
+         \x20   match await b2.who() {\n\
+         \x20       Ok(v) => println(f\"b2={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         \x20   let s2 = p.s;\n\
+         \x20   match await s2.who() {\n\
+         \x20       Ok(v) => println(f\"s2={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "supervisor over two same-named module actors must run; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("b=1")
+            && stdout.contains("s=2")
+            && stdout.contains("b2=1")
+            && stdout.contains("s2=2"),
+        "per-child qualified routing must survive a restart \
+         (b=1, s=2, b2=1, s2=2); got: {stdout}"
+    );
+}
+
 /// Security regression (private-actor routing): a root/pub actor `Account` and
 /// a *private* (non-pub) imported actor `secret.Account` must NOT let
 /// `spawn secret.Account()` silently route to the root actor. Module-qualified

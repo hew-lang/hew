@@ -54,6 +54,21 @@ impl Checker {
     ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        // A dotted child type (`child a: bank.Account`) references the
+        // module's actor; mark the import used so the program does not get a
+        // spurious unused-import warning when the supervisor is the only
+        // reference.
+        for child in &sd.children {
+            if let Some((module, _)) = child.actor_type.split_once('.') {
+                if self.modules.contains(module) {
+                    self.used_modules.borrow_mut().insert(ImportKey::new(
+                        self.current_module.clone(),
+                        module.to_string(),
+                    ));
+                }
+            }
+        }
+
         // ── 1. Duplicate child names ─────────────────────────────────────────
         self.check_supervisor_duplicate_children(sd, span);
 

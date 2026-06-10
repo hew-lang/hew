@@ -3,6 +3,7 @@
 pub type LambdaActorHandle {
 }
 
+#[opaque]
 pub type LambdaActorWeakHandle {
 }
 

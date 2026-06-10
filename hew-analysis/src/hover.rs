@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, Expr, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem,
-    TypeExpr,
+    Block, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound, TraitItem,
+    TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
@@ -221,38 +221,66 @@ fn hover_field_declaration_at_offset(
     offset: usize,
 ) -> Option<HoverResult> {
     for (item, item_span) in &parse_result.program.items {
-        let Item::TypeDecl(type_decl) = item else {
-            continue;
-        };
-        let mut search_from = item_span.start;
-        for body_item in &type_decl.body {
-            match body_item {
-                TypeBodyItem::Field { name, ty, .. } => {
-                    let span = crate::util::find_name_span(source, search_from, name);
-                    if span.start <= offset && offset < span.end {
-                        let ty_text = method_resolution::lookup_type_def(
-                            &type_output.type_defs,
-                            &type_decl.name,
-                        )
-                        .and_then(|type_def| {
-                            type_def
-                                .fields
-                                .get(name)
-                                .map(|ty| ty.user_facing().to_string())
-                        })
-                        .unwrap_or_else(|| format_type_expr_hover(&ty.0));
-                        return Some(field_hover_result(name, &ty_text, span));
+        match item {
+            Item::TypeDecl(type_decl) => {
+                let mut search_from = item_span.start;
+                for body_item in &type_decl.body {
+                    match body_item {
+                        TypeBodyItem::Field { name, ty, .. } => {
+                            let span = crate::util::find_name_span(source, search_from, name);
+                            if span.start <= offset && offset < span.end {
+                                let ty_text = method_resolution::lookup_type_def(
+                                    &type_output.type_defs,
+                                    &type_decl.name,
+                                )
+                                .and_then(|type_def| {
+                                    type_def
+                                        .fields
+                                        .get(name)
+                                        .map(|ty| ty.user_facing().to_string())
+                                })
+                                .unwrap_or_else(|| format_type_expr_hover(&ty.0));
+                                return Some(field_hover_result(name, &ty_text, span));
+                            }
+                            search_from = ty.1.end.max(span.end);
+                        }
+                        TypeBodyItem::Variant(variant) => {
+                            search_from =
+                                crate::util::find_name_span(source, search_from, &variant.name).end;
+                        }
+                        TypeBodyItem::Method(method) => {
+                            search_from = search_from.max(method.decl_span.end);
+                        }
                     }
-                    search_from = ty.1.end.max(span.end);
-                }
-                TypeBodyItem::Variant(variant) => {
-                    search_from =
-                        crate::util::find_name_span(source, search_from, &variant.name).end;
-                }
-                TypeBodyItem::Method(method) => {
-                    search_from = search_from.max(method.decl_span.end);
                 }
             }
+            Item::Record(record_decl) => {
+                // `record Foo { … }` produces Item::Record, not Item::TypeDecl.
+                // Named-form record fields are in RecordKind::Named; tuple-form
+                // records have no named fields and are intentionally skipped.
+                if let RecordKind::Named(fields) = &record_decl.kind {
+                    let mut search_from = item_span.start;
+                    for field in fields {
+                        let span = crate::util::find_name_span(source, search_from, &field.name);
+                        if span.start <= offset && offset < span.end {
+                            let ty_text = method_resolution::lookup_type_def(
+                                &type_output.type_defs,
+                                &record_decl.name,
+                            )
+                            .and_then(|type_def| {
+                                type_def
+                                    .fields
+                                    .get(&field.name)
+                                    .map(|ty| ty.user_facing().to_string())
+                            })
+                            .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
+                            return Some(field_hover_result(&field.name, &ty_text, span));
+                        }
+                        search_from = field.ty.1.end.max(span.end);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     None

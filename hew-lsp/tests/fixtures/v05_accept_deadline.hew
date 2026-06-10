@@ -1,0 +1,26 @@
+// LSP smoke fixture for `await ln.accept() | after duration`.
+//
+// Exercises the listener accept deadline form (NEW-6d).
+// The import is left unresolved in the unit-test registry; the parser
+// must accept the form and the LSP must not surface false parse errors.
+import std::net;
+
+actor AcceptDeadline {
+    let port: i32;
+
+    receive fn go() {
+        let ln = net.listen(f"127.0.0.1:{port}");
+        let _result = match await ln.accept() | after 60ms {
+            Ok(_conn) => 42,
+            Err(_e) => 7,
+        };
+    }
+}
+
+fn accept_deadline_probe() -> i32 {
+    7
+}
+
+fn accept_deadline_coverage() -> i32 {
+    accept_deadline_probe()
+}

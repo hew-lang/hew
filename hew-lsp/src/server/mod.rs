@@ -341,18 +341,37 @@ pub struct HewLanguageServer {
     workspace_roots: RwLock<Vec<PathBuf>>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
+    /// Extra package-search directories passed via `--pkg-path` (or the
+    /// `hew.pkgPath` vscode setting).  Appended to the default search roots
+    /// so that `hew check --pkg-path DIR` and editor diagnostics agree on
+    /// which `hew::…` imports resolve.
+    extra_pkg_paths: Vec<PathBuf>,
 }
 
 impl HewLanguageServer {
     /// Create a new language server with the given LSP client.
+    ///
+    /// `extra_pkg_paths` mirrors `hew check --pkg-path`: each directory is
+    /// appended to the module search roots so that `hew::pkg` imports that
+    /// resolve via `--pkg-path` in the CLI also resolve in the LSP.
     #[must_use]
-    pub fn new(client: Client) -> Self {
+    pub fn new_with_options(client: Client, extra_pkg_paths: Vec<PathBuf>) -> Self {
         Self {
             client,
             documents: Arc::new(DashMap::new()),
             workspace_roots: RwLock::new(Vec::new()),
             analysis_versions: Arc::new(DashMap::new()),
+            extra_pkg_paths,
         }
+    }
+
+    /// Create a new language server with no extra package paths.
+    ///
+    /// Equivalent to `new_with_options(client, vec![])`.  Satisfies the
+    /// `tower_lsp::LspService::new(HewLanguageServer::new)` closure contract.
+    #[must_use]
+    pub fn new(client: Client) -> Self {
+        Self::new_with_options(client, vec![])
     }
 
     fn workspace_root(&self) -> Option<PathBuf> {
@@ -395,6 +414,7 @@ impl HewLanguageServer {
         let versions = Arc::clone(&self.analysis_versions);
         let uri = uri.clone();
         let source = source.to_owned();
+        let extra_pkg_paths = self.extra_pkg_paths.clone();
 
         tokio::spawn(async move {
             // Debounce: wait for the window to expire before running the pipeline.
@@ -406,7 +426,7 @@ impl HewLanguageServer {
             }
 
             for (updated_uri, diagnostics) in
-                refresh_document_and_dependents(&uri, &source, &documents)
+                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths)
             {
                 client
                     .publish_diagnostics(updated_uri, diagnostics, None)
@@ -2464,11 +2484,15 @@ machine Traffic {
             TypeErrorKind::PlatformLimitation,
             TypeErrorKind::OnUpgradeNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
+            TypeErrorKind::BlockingCallInReceiveFn,
         ];
         for kind in &kinds {
             let data = diagnostic_data(kind, &[]);
             let kind_str = data["kind"].as_str().unwrap();
-            assert!(!kind_str.is_empty(), "kind string should not be empty");
+            assert!(
+                !kind_str.is_empty(),
+                "diagnostic_data kind string must not be empty for {kind:?}"
+            );
         }
     }
 
@@ -2571,7 +2595,7 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url.clone(), make_doc(circle_source));
 
-        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         let main_diags = refreshed
             .iter()
             .find(|(uri, _)| uri == &main_url)
@@ -2606,7 +2630,7 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(dep_url.clone(), make_doc(dep_source));
 
-        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         let dep_diag = refreshed
             .iter()
             .find(|(uri, _)| uri == &dep_url)
@@ -4399,7 +4423,7 @@ machine Traffic {
             "unexpected parse errors in main_source: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         // The import should now have resolved_items populated from the in-memory buffer.
         let import_decl = parse_result
@@ -4448,7 +4472,7 @@ machine Traffic {
             "unexpected parse errors in main_source: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let import_decl = parse_result
             .program
@@ -4498,7 +4522,7 @@ machine Traffic {
         );
 
         // Populate resolved_items from the documents map.
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4534,7 +4558,7 @@ machine Traffic {
             parse_result.errors
         );
 
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4560,7 +4584,7 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert_eq!(
             initial.len(),
             1,
@@ -4571,7 +4595,7 @@ machine Traffic {
             "importer should start with UnresolvedImport before foo.hew is open"
         );
 
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "opening foo.hew should refresh diagnostics for the open importer"
@@ -4593,19 +4617,19 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before foo.hew is valid"
         );
 
-        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents);
+        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should stay unresolved while foo.hew has parse errors"
         );
 
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "editing foo.hew should refresh diagnostics for the open importer"
@@ -4626,19 +4650,19 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before foo.hew is open"
         );
 
-        refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             !has_unresolved_import(&documents, &main_url),
             "opening foo.hew should clear the importer's stale UnresolvedImport"
         );
 
-        let refreshed = close_document_and_dependents(&foo_url, &documents);
+        let refreshed = close_document_and_dependents(&foo_url, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "closing foo.hew should refresh diagnostics for the open importer"
@@ -4663,7 +4687,7 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert_eq!(
             initial.len(),
             1,
@@ -4674,7 +4698,8 @@ machine Traffic {
             "importer should start with UnresolvedImport before shapes/circle/circle.hew is open"
         );
 
-        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        let refreshed =
+            refresh_document_and_dependents(&circle_url, circle_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "opening shapes/circle/circle.hew should refresh diagnostics for the open importer"
@@ -4696,19 +4721,20 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before shapes/circle/circle.hew is valid"
         );
 
-        refresh_document_and_dependents(&circle_url, invalid_circle_source, &documents);
+        refresh_document_and_dependents(&circle_url, invalid_circle_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should stay unresolved while shapes/circle/circle.hew has parse errors"
         );
 
-        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        let refreshed =
+            refresh_document_and_dependents(&circle_url, circle_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "editing shapes/circle/circle.hew should refresh diagnostics for the open importer"
@@ -4736,7 +4762,7 @@ machine Traffic {
             parse_result.errors
         );
 
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4757,7 +4783,7 @@ machine Traffic {
         let util_url = make_test_uri("/project/util.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let refreshed = refresh_document_and_dependents(&util_url, util_source, &documents);
+        let refreshed = refresh_document_and_dependents(&util_url, util_source, &documents, &[]);
         let util_diags = refreshed
             .into_iter()
             .find(|(uri, _)| *uri == util_url)
@@ -4780,8 +4806,8 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
 
         for expected_uri in [&main_url, &foo_url] {
             let diagnostics = refreshed
@@ -4824,7 +4850,7 @@ machine Traffic {
             "unexpected parse errors: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let import_decl = parse_result
             .program
@@ -4869,14 +4895,14 @@ machine Traffic {
 
         // Open A first — B and C are not yet in the store, so A has stale
         // diagnostics (UnresolvedImport for b.hew).
-        refresh_document_and_dependents(&a_url, a_source, &documents);
+        refresh_document_and_dependents(&a_url, a_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &a_url),
             "A should have UnresolvedImport before B is open"
         );
 
         // Open B — C is still missing, but A should now be re-analysed.
-        refresh_document_and_dependents(&b_url, b_source, &documents);
+        refresh_document_and_dependents(&b_url, b_source, &documents, &[]);
         // B itself will have an UnresolvedImport (c.hew not open yet).
         assert!(
             has_unresolved_import(&documents, &b_url),
@@ -4884,7 +4910,7 @@ machine Traffic {
         );
 
         // Open C — this should transitively refresh B and then A.
-        let refreshed = refresh_document_and_dependents(&c_url, c_source, &documents);
+        let refreshed = refresh_document_and_dependents(&c_url, c_source, &documents, &[]);
 
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &b_url),
@@ -4921,12 +4947,12 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&a_url, a_source, &documents);
-        refresh_document_and_dependents(&b_url, b_source, &documents);
-        refresh_document_and_dependents(&c_url, c_source, &documents);
+        refresh_document_and_dependents(&a_url, a_source, &documents, &[]);
+        refresh_document_and_dependents(&b_url, b_source, &documents, &[]);
+        refresh_document_and_dependents(&c_url, c_source, &documents, &[]);
 
         // Opening D triggers the refresh.  This must not panic or loop.
-        let refreshed = refresh_document_and_dependents(&d_url, d_source, &documents);
+        let refreshed = refresh_document_and_dependents(&d_url, d_source, &documents, &[]);
 
         for url in [&b_url, &c_url, &a_url] {
             assert!(
@@ -4967,7 +4993,7 @@ machine Traffic {
             "unexpected parse errors: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -6200,7 +6226,7 @@ machine Traffic {
     //  Test name                               | Decision        | Rationale
     //  ──────────────────────────────────────────────────────────────────────────────────────────────
     //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
-    //  v05_spawn_lambda_actor_lsp_coverage     | remain-ignored  | Compiler-substrate dependency (unassigned lambda-spawn lane); do not unignore until parser/analysis support lambda-actor spawn.
+    //  v05_spawn_lambda_actor_lsp_coverage     | re-enabled (passing) | `actor |…| { }` is the landed syntax; the prior fixture used `spawn |…|` which was wrong. Test is now #[test] at mod.rs:7146 and passes.
     //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
     //
     // ─── ResolvedTy::user_facing() verification ──────────────────────────
@@ -6214,13 +6240,13 @@ machine Traffic {
     // ─── Fixture count notes ─────────────────────────────────────────────
     //
     //  Total v05_*.hew fixtures: 31
-    //    accepted:                          27 (all have passing native LSP tests;
+    //    accepted:                          28 (all have passing native LSP tests;
     //                                          v05_std_channels accepted at
-    //                                          syntax/smoke tier — see row note)
+    //                                          syntax/smoke tier — see row note;
+    //                                          v05_spawn_lambda_actor re-enabled)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
     //    known-rejected:                     1 (v05_async_await)
-    //    pending-upstream-substrate:         2 (v05_record_tuple_literal,
-    //                                           v05_spawn_lambda_actor)
+    //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
     //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
     //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==9 in v05_wasm_coverage.rs.
 
@@ -6494,7 +6520,7 @@ machine Traffic {
     ) {
         let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
-        let published = refresh_document_and_dependents(&uri, source, &documents);
+        let published = refresh_document_and_dependents(&uri, source, &documents, &[]);
         let diagnostics = published
             .iter()
             .find(|(published_uri, _)| published_uri == &uri)
@@ -6627,7 +6653,7 @@ machine Traffic {
 
         let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
         let documents: DashMap<Url, DocumentState> = DashMap::new();
-        let published = refresh_document_and_dependents(&uri, source, &documents);
+        let published = refresh_document_and_dependents(&uri, source, &documents, &[]);
         let diagnostics = published
             .iter()
             .find(|(published_uri, _)| published_uri == &uri)
@@ -6889,8 +6915,8 @@ machine Traffic {
         let defs_uri = make_test_uri("/v05/cross_module/machines/toggle.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&defs_uri, defs_source, &documents);
-        refresh_document_and_dependents(&main_uri, main_source, &documents);
+        refresh_document_and_dependents(&defs_uri, defs_source, &documents, &[]);
+        refresh_document_and_dependents(&main_uri, main_source, &documents, &[]);
 
         let main_doc = documents
             .get(&main_uri)
@@ -7009,13 +7035,82 @@ machine Traffic {
         let uri = Url::from_file_path(repo_root.join("hew-lsp/tests/fixtures/v05_select_arms.hew"))
             .expect("fixture path is absolute");
         let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let doc = analyze_document(&uri, source, &docs);
+        let doc = analyze_document(&uri, source, &docs, &[]);
         assert_no_hard_type_errors("v05_select_arms", &doc);
         assert_v05_lsp_fixture(
             "v05_select_arms",
             source,
             "select_probe",
             &["Responder", "ask", "select_probe", "select_arms"],
+        );
+    }
+
+    /// `await expr | after duration` (`Expr::Timeout`) parses and is accepted
+    /// by the LSP without false diagnostics.  Uses actor ask so no `std::net`
+    /// import is required.  Verifies parse-clean symbol coverage and hover.
+    #[test]
+    fn v05_await_deadline_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_await_deadline",
+            include_str!("../../tests/fixtures/v05_await_deadline.hew"),
+            "await_deadline_probe",
+            &[
+                "Responder",
+                "ask",
+                "await_deadline_probe",
+                "await_deadline_coverage",
+            ],
+        );
+    }
+
+    /// `await conn.read_string() | after duration` deadline form (NEW-6c).
+    /// Checks that the parser accepts the form and the LSP produces no false
+    /// parse-level diagnostics.  Hover and goto-definition are tested on the
+    /// probe function; the unresolved net import is expected in unit-test context.
+    #[test]
+    fn v05_read_string_deadline_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_read_string_deadline.hew");
+        // Verify: no parse errors (the deadline form must parse cleanly).
+        let parse_result = hew_parser::parse(source);
+        let parse_errors: Vec<_> = parse_result
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_parser::Severity::Error)
+            .collect();
+        assert!(
+            parse_errors.is_empty(),
+            "v05_read_string_deadline must have no parse errors; got: {parse_errors:?}"
+        );
+        // Verify: document symbols include the probe function (parse-level coverage).
+        assert_v05_document_symbols(
+            "v05_read_string_deadline",
+            source,
+            &[
+                "read_string_deadline_probe",
+                "read_string_deadline_coverage",
+            ],
+        );
+    }
+
+    /// `await ln.accept() | after duration` deadline form (NEW-6d).
+    /// Same contract as `v05_read_string_deadline_lsp_coverage`.
+    #[test]
+    fn v05_accept_deadline_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_accept_deadline.hew");
+        let parse_result = hew_parser::parse(source);
+        let parse_errors: Vec<_> = parse_result
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_parser::Severity::Error)
+            .collect();
+        assert!(
+            parse_errors.is_empty(),
+            "v05_accept_deadline must have no parse errors; got: {parse_errors:?}"
+        );
+        assert_v05_document_symbols(
+            "v05_accept_deadline",
+            source,
+            &["accept_deadline_probe", "accept_deadline_coverage"],
         );
     }
 
@@ -7044,11 +7139,10 @@ machine Traffic {
         );
     }
 
-    // W4.023 Stage 0: pending-upstream-substrate — unassigned lambda-actor-spawn lane
-    // Do not unignore until a dedicated lane lands parser/analysis support for
-    // inline lambda-actor spawn syntax (`spawn |msg: T| { … }`).
+    // `actor |params| { body }` is the landed lambda-actor syntax.
+    // The earlier `spawn |…| { … }` form was removed before v0.5.0; the
+    // fixture now uses the correct `actor` keyword so the parser accepts it.
     #[test]
-    #[ignore = "pending-upstream-substrate unassigned: lambda-actor spawn syntax (`spawn |…| { … }`) not yet supported"]
     fn v05_spawn_lambda_actor_lsp_coverage() {
         assert_v05_lsp_fixture(
             "v05_spawn_lambda_actor",
@@ -7235,14 +7329,9 @@ machine Traffic {
     /// Hovering on the field name tokens inside a `record` type declaration
     /// must surface the declared field type via `hover_field_declaration_at_offset`.
     ///
-    /// Substrate-owned: `record AutoRecord { … }` is parsed as `Item::Record`
-    /// (a separate AST node), not as `Item::TypeDecl`.
-    /// `hover_field_declaration_at_offset` only iterates `Item::TypeDecl` items
-    /// and therefore returns `None` for `record`-keyword field names.
-    /// When that substrate gap is closed, this test should unignore and pass
-    /// without code changes here.
+    /// `record AutoRecord { … }` is parsed as `Item::Record` (a separate AST
+    /// node from `Item::TypeDecl`).  The hover walk now handles both forms.
     #[test]
-    #[ignore = "substrate-owned: record keyword produces Item::Record; hover_field_declaration_at_offset only handles Item::TypeDecl"]
     fn v05_record_decl_field_declaration_hover_pins_types() {
         let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
         // `count` in `count: i64,` → `count: i64`

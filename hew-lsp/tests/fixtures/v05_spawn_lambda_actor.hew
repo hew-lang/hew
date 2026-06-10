@@ -3,7 +3,7 @@ fn spawn_lambda_probe() -> i32 {
 }
 
 fn spawn_lambda_actor() -> i32 {
-    let worker = spawn |msg: i32| {
+    let worker = actor |msg: i32| {
         spawn_lambda_probe();
         msg
     };

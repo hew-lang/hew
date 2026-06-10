@@ -55,6 +55,7 @@ pub(super) fn populate_user_module_imports(
     source_uri: &Url,
     items: &mut [hew_parser::ast::Spanned<hew_parser::ast::Item>],
     documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) -> Vec<AmbiguousImport> {
     let Ok(source_path) = source_uri.to_file_path() else {
         return Vec::new(); // Non-file URI — nothing to resolve.
@@ -62,7 +63,16 @@ pub(super) fn populate_user_module_imports(
     let Some(source_dir) = source_path.parent() else {
         return Vec::new();
     };
-    let search_roots = build_module_search_paths_for(Some(&source_path));
+    let mut search_roots = build_module_search_paths_for(Some(&source_path));
+    // Append explicit package-search paths (from `--pkg-path` / `hew.pkgPath`
+    // setting) so that `hew check --pkg-path DIR` and LSP import resolution
+    // agree on which modules resolve.  Appended after stdlib roots so that
+    // a user package does not shadow the standard library.
+    for pkg_path in extra_pkg_paths {
+        if pkg_path.exists() && !search_roots.contains(pkg_path) {
+            search_roots.push(pkg_path.clone());
+        }
+    }
     let mut ambiguities = Vec::new();
     populate_user_module_imports_impl(
         &source_path,
@@ -72,6 +82,7 @@ pub(super) fn populate_user_module_imports(
         documents,
         0,
         &mut ambiguities,
+        extra_pkg_paths,
     );
     ambiguities
 }
@@ -94,6 +105,10 @@ pub(super) struct AmbiguousImport {
     paths: Vec<std::path::PathBuf>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the compiler's resolution signature; the parameters are all distinct and structural grouping would obscure the parity with hew-compile/src/lib.rs"
+)]
 pub(super) fn populate_user_module_imports_impl(
     current_source: &std::path::Path,
     source_dir: &std::path::Path,
@@ -102,6 +117,7 @@ pub(super) fn populate_user_module_imports_impl(
     documents: &DashMap<Url, DocumentState>,
     depth: usize,
     ambiguities: &mut Vec<AmbiguousImport>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) {
     if depth >= MAX_IMPORT_DEPTH {
         return;
@@ -137,6 +153,16 @@ pub(super) fn populate_user_module_imports_impl(
             // exactly as the compiler's module graph does.
             for root in search_roots {
                 candidates.extend(import_candidate_paths_from_dir(root, decl));
+            }
+
+            // For explicit package-search roots (--pkg-path / hew.pkgPath),
+            // mirror the compiler's extra-candidate generation: leading-segment
+            // stripping and `hew::` prefix stripping are applied so that
+            // `import hew::template` finds `<root>/template/template.hew`
+            // just as `hew check --pkg-path <root>` does
+            // (hew-compile/src/lib.rs:1085-1110).
+            for pkg_path in extra_pkg_paths {
+                candidates.extend(import_candidate_paths_from_pkg_path(pkg_path, decl));
             }
 
             // Fail closed on ambiguity, matching the compiler's resolver
@@ -189,6 +215,7 @@ pub(super) fn populate_user_module_imports_impl(
                         documents,
                         depth + 1,
                         ambiguities,
+                        extra_pkg_paths,
                     );
                     let item_count = module_items.len();
                     decl.resolved_source_paths = vec![candidate.clone()];
@@ -231,6 +258,74 @@ pub(super) fn import_candidate_paths_from_dir(
         .join(format!("{last}.hew"));
 
     vec![source_dir.join(&dir_path), source_dir.join(&rel_path)]
+}
+
+/// Generate the full set of candidate paths for an import against an
+/// explicit package-search root (a `--pkg-path` / `hew.pkgPath` directory).
+///
+/// This mirrors the candidate generation the compiler performs at
+/// `hew-compile/src/lib.rs` for `ctx.extra_pkg_path`:
+///
+/// 1. Full-path candidates — `<root>/<a>/<b>/<b>.hew` and `<root>/<a>/<b>.hew`
+///    (same as `import_candidate_paths_from_dir`).
+/// 2. Leading-segment-stripped candidates — for any import with more than one
+///    segment, `<root>/<b>/<b>.hew` and `<root>/<b>.hew` (compiler lines
+///    1088-1098).  This lets `import acme::widgets` find `<root>/widgets.hew`.
+/// 3. `hew::`-prefix-stripped candidates — for imports whose first segment is
+///    `hew`, `<root>/<tail>/<last>.hew` and `<root>/<tail>.hew` (compiler lines
+///    1102-1110).  This is what makes `import hew::template` resolve to
+///    `<root>/template/template.hew` rather than the wrong full-path
+///    `<root>/hew/template/template.hew`.
+///
+/// The candidates are ordered to match the compiler's insertion order so that
+/// the first on-disk hit is the same file the compiler would choose.
+pub(super) fn import_candidate_paths_from_pkg_path(
+    pkg_root: &std::path::Path,
+    import: &ImportDecl,
+) -> Vec<std::path::PathBuf> {
+    let Some(last) = import.path.last() else {
+        return vec![];
+    };
+
+    let rel_path: std::path::PathBuf = import
+        .path
+        .iter()
+        .collect::<std::path::PathBuf>()
+        .with_extension("hew");
+    let dir_path: std::path::PathBuf = import
+        .path
+        .iter()
+        .collect::<std::path::PathBuf>()
+        .join(format!("{last}.hew"));
+
+    let mut candidates = vec![pkg_root.join(&dir_path), pkg_root.join(&rel_path)];
+
+    // Leading-segment-stripped candidates (compiler lines 1088-1098).
+    if import.path.len() > 1 {
+        let rest_dir = import.path[1..]
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .join(format!("{last}.hew"));
+        let rest_flat = import.path[1..]
+            .iter()
+            .collect::<std::path::PathBuf>()
+            .with_extension("hew");
+        candidates.push(pkg_root.join(&rest_dir));
+        candidates.push(pkg_root.join(&rest_flat));
+    }
+
+    // `hew::`-prefix-stripped candidates (compiler lines 1102-1110).
+    let module_str = import.path.join("::");
+    if module_str.starts_with("hew::") && import.path.len() > 1 {
+        let tail = import.path[1..].iter().collect::<std::path::PathBuf>();
+        let tail_last = import.path.last().expect("path is non-empty");
+        let tail_dir = tail.join(format!("{tail_last}.hew"));
+        let tail_rel = tail.with_extension("hew");
+        candidates.push(pkg_root.join(&tail_dir));
+        candidates.push(pkg_root.join(&tail_rel));
+    }
+
+    candidates
 }
 
 pub(super) fn import_candidate_paths(uri: &Url, import: &ImportDecl) -> Vec<std::path::PathBuf> {
@@ -732,6 +827,7 @@ pub(super) fn analyze_document(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) -> DocumentState {
     let parse_result = hew_parser::parse(source);
     let line_offsets = compute_line_offsets(source);
@@ -758,14 +854,28 @@ pub(super) fn analyze_document(
             HashMap::new(),
         )
     } else {
+        // Build the module registry with both the standard search paths and any
+        // explicit package-search roots so the type-checker sees handle types,
+        // drop types, and module-qualified call resolution for packages supplied
+        // via `--pkg-path` / `hew.pkgPath` (F3: previously only the import
+        // resolver received the extra paths; the type-checker's registry missed
+        // them, making `--pkg-path` packages invisible to type analysis even
+        // after their imports resolved).
+        let mut registry_search_paths = build_module_search_paths();
+        for pkg_path in extra_pkg_paths {
+            if pkg_path.exists() && !registry_search_paths.contains(pkg_path) {
+                registry_search_paths.push(pkg_path.clone());
+            }
+        }
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(
-            build_module_search_paths(),
+            registry_search_paths,
         ));
         // Clone the program so we can inject resolved_items for user-module
         // imports without mutating the parse_result stored in DocumentState
         // (other LSP features use the raw AST and do not need resolved_items).
         let mut program = parse_result.program.clone();
-        let ambiguous_imports = populate_user_module_imports(uri, &mut program.items, documents);
+        let ambiguous_imports =
+            populate_user_module_imports(uri, &mut program.items, documents, extra_pkg_paths);
         let ambiguous_import_diagnostics = build_ambiguous_import_diagnostics(
             source,
             &line_offsets,
@@ -876,6 +986,7 @@ pub(super) fn refresh_open_importers(
     target_uri: &Url,
     documents: &DashMap<Url, DocumentState>,
     publish_uris: &mut HashSet<Url>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) {
     // BFS over the open-document importer graph so that transitive importers
     // (e.g. A -> B -> C when C changes) are also re-analysed.
@@ -911,7 +1022,8 @@ pub(super) fn refresh_open_importers(
             visited.insert(importer_uri.clone());
             publish_uris.insert(importer_uri.clone());
             publish_uris.extend(previous_diagnostic_uris);
-            let document = analyze_document(&importer_uri, &importer_source, documents);
+            let document =
+                analyze_document(&importer_uri, &importer_source, documents, extra_pkg_paths);
             documents.insert(importer_uri.clone(), document);
             // Enqueue this importer so its own importers are refreshed too.
             queue.push_back(importer_uri);
@@ -923,16 +1035,17 @@ pub(super) fn refresh_document_and_dependents(
     uri: &Url,
     source: &str,
     documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) -> Vec<(Url, Vec<Diagnostic>)> {
     let mut publish_uris = HashSet::from([uri.clone()]);
     if let Some(previous) = documents.get(uri) {
         publish_uris.extend(previous.diagnostics_by_uri.keys().cloned());
     }
 
-    let document = analyze_document(uri, source, documents);
+    let document = analyze_document(uri, source, documents, extra_pkg_paths);
     documents.insert(uri.clone(), document);
 
-    refresh_open_importers(uri, documents, &mut publish_uris);
+    refresh_open_importers(uri, documents, &mut publish_uris, extra_pkg_paths);
 
     collect_published_diagnostics(documents, publish_uris)
 }
@@ -940,6 +1053,7 @@ pub(super) fn refresh_document_and_dependents(
 pub(super) fn close_document_and_dependents(
     uri: &Url,
     documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
 ) -> Vec<(Url, Vec<Diagnostic>)> {
     let Some((_removed_uri, removed_document)) = documents.remove(uri) else {
         return vec![];
@@ -948,7 +1062,7 @@ pub(super) fn close_document_and_dependents(
     let mut publish_uris = HashSet::from([uri.clone()]);
     publish_uris.extend(removed_document.diagnostics_by_uri.keys().cloned());
 
-    refresh_open_importers(uri, documents, &mut publish_uris);
+    refresh_open_importers(uri, documents, &mut publish_uris, extra_pkg_paths);
 
     collect_published_diagnostics(documents, publish_uris)
 }
@@ -1467,7 +1581,7 @@ mod tests {
     #[test]
     fn analyze_document_skips_hir_when_typecheck_fails() {
         let uri = Url::parse("file:///test.hew").unwrap();
-        let document = analyze_document(&uri, "fn main() -> i32 { missing }", &DashMap::new());
+        let document = analyze_document(&uri, "fn main() -> i32 { missing }", &DashMap::new(), &[]);
 
         let root_diags = document
             .diagnostics_by_uri
@@ -1489,6 +1603,7 @@ mod tests {
             &main_uri,
             "fn main() { let r = select { }; }\n",
             &DashMap::new(),
+            &[],
         );
         let root_diags = document
             .diagnostics_by_uri
@@ -1635,7 +1750,7 @@ mod tests {
         let path = repo_root.join(format!("{file_stem}.hew"));
         let uri = Url::from_file_path(&path).expect("repo-rooted path is absolute");
         let docs: DashMap<Url, DocumentState> = DashMap::new();
-        analyze_document(&uri, source, &docs)
+        analyze_document(&uri, source, &docs, &[])
     }
 
     fn surface_hover(doc: &DocumentState, source: &str, needle: &str) -> String {
@@ -2078,7 +2193,7 @@ mod tests {
             Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
 
         let docs: DashMap<Url, DocumentState> = DashMap::new();
-        let doc = analyze_document(&main_uri, main_src, &docs);
+        let doc = analyze_document(&main_uri, main_src, &docs, &[]);
 
         let diags = doc
             .diagnostics_by_uri
@@ -2094,7 +2209,7 @@ mod tests {
 
         // The import must be left UNRESOLVED — no silent local-first pick.
         let mut program = hew_parser::parse(main_src).program;
-        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs);
+        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
         assert_eq!(
             ambiguities.len(),
             1,
@@ -2127,7 +2242,7 @@ mod tests {
 
         let docs: DashMap<Url, DocumentState> = DashMap::new();
         let mut program = hew_parser::parse(main_src).program;
-        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs);
+        let ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
         assert!(
             ambiguities.is_empty(),
             "single-candidate import must not be flagged ambiguous, got {ambiguities:?}"
@@ -2170,6 +2285,7 @@ mod tests {
             &docs,
             0,
             &mut ambiguities,
+            &[],
         );
 
         assert!(
@@ -2214,6 +2330,7 @@ mod tests {
             &docs,
             0,
             &mut ambiguities,
+            &[],
         );
 
         assert!(
@@ -2235,5 +2352,128 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&local);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `extra_pkg_paths` allows an import that does not resolve in the default
+    /// search roots to be found in an explicitly-added directory, mirroring
+    /// `hew check --pkg-path DIR`.
+    ///
+    /// The LSP appends `extra_pkg_paths` to its search roots and generates
+    /// candidate paths as `<root>/<import_path>.hew` and
+    /// `<root>/<import_path>/<last>.hew` — the same flat-path logic as for any
+    /// other search root.  The test uses `acme::widgets` (a plain two-segment
+    /// path) so the candidate is `<pkg_dir>/acme/widgets.hew`.
+    #[test]
+    fn extra_pkg_path_resolves_import_from_added_search_root() {
+        let pkg_source = "pub fn widget_fn() -> i64 { 42 }\n";
+        let main_src = "import acme::widgets;\nfn main() -> i64 { 0 }\n";
+
+        // Package dir has acme/widgets.hew (flat-form candidate).
+        let pkg_dir = make_temp_workspace_dir(&[("acme/widgets.hew", pkg_source)]);
+        let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
+        let main_uri =
+            Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
+
+        let docs: DashMap<Url, DocumentState> = DashMap::new();
+
+        // Without the extra pkg path, the import is unresolved.
+        let mut program = hew_parser::parse(main_src).program;
+        let _ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
+        let without_extra = program.items.iter().any(|(item, _)| {
+            matches!(item, Item::Import(d) if d.path.join("::") == "acme::widgets" && d.resolved_items.is_none())
+        });
+        assert!(
+            without_extra,
+            "without --pkg-path the import must not resolve from an unknown directory"
+        );
+
+        // With the extra pkg path, the import resolves.
+        let mut program2 = hew_parser::parse(main_src).program;
+        let ambiguities2 = populate_user_module_imports(
+            &main_uri,
+            &mut program2.items,
+            &docs,
+            std::slice::from_ref(&pkg_dir),
+        );
+        assert!(
+            ambiguities2.is_empty(),
+            "extra_pkg_path import must not be reported ambiguous: {ambiguities2:?}"
+        );
+        let with_extra = program2.items.iter().any(|(item, _)| {
+            matches!(item, Item::Import(d) if d.path.join("::") == "acme::widgets" && d.resolved_items.is_some())
+        });
+        assert!(
+            with_extra,
+            "with --pkg-path, acme::widgets must resolve from the added package directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&pkg_dir);
+        let _ = std::fs::remove_dir_all(&project_dir);
+    }
+
+    /// Parity test: `import hew::template` must resolve against `--pkg-path`
+    /// identically to `hew check --pkg-path DIR`.
+    ///
+    /// The compiler strips the `hew::` prefix when building candidates against
+    /// `extra_pkg_path` (`hew-compile/src/lib.rs:1102-1110`), so it resolves
+    /// `<pkg_root>/template/template.hew` for `import hew::template`.  The LSP
+    /// must do the same; if it only generates the full-path candidate
+    /// `<pkg_root>/hew/template/template.hew` the import silently stays
+    /// unresolved while `hew check` accepts it — the lying-LSP class this lane
+    /// exists to eliminate.
+    ///
+    /// Layout mirrors how `hew package add hew::template` would install into a
+    /// local package directory: `<pkg_root>/template/template.hew` with a bare
+    /// Hew source file (no manifest needed for this resolution layer).
+    #[test]
+    fn extra_pkg_path_resolves_hew_prefixed_import_with_prefix_stripping() {
+        let template_src = "pub fn apply() -> i64 { 1 }\n";
+        let main_src = "import hew::template;\nfn main() -> i64 { 0 }\n";
+
+        // Package dir layout: template/template.hew (directory form after
+        // hew:: prefix is stripped, matching `hew-compile/src/lib.rs:1104-1105`).
+        let pkg_dir = make_temp_workspace_dir(&[("template/template.hew", template_src)]);
+        let project_dir = make_temp_workspace_dir(&[("main.hew", main_src)]);
+        let main_uri =
+            Url::from_file_path(project_dir.join("main.hew")).expect("project path is absolute");
+
+        let docs: DashMap<Url, DocumentState> = DashMap::new();
+
+        // Without --pkg-path: import must remain unresolved (no local template/ tree).
+        let mut program = hew_parser::parse(main_src).program;
+        let _ambiguities = populate_user_module_imports(&main_uri, &mut program.items, &docs, &[]);
+        let without_extra = program.items.iter().any(|(item, _)| {
+            matches!(item, Item::Import(d) if d.path.join("::") == "hew::template" && d.resolved_items.is_none())
+        });
+        assert!(
+            without_extra,
+            "without --pkg-path, hew::template must not resolve — no local template/ tree"
+        );
+
+        // With --pkg-path pointing at pkg_dir: the hew:: prefix is stripped and
+        // the import resolves to <pkg_dir>/template/template.hew, exactly as
+        // `hew check --pkg-path <pkg_dir>` does.
+        let mut program2 = hew_parser::parse(main_src).program;
+        let ambiguities2 = populate_user_module_imports(
+            &main_uri,
+            &mut program2.items,
+            &docs,
+            std::slice::from_ref(&pkg_dir),
+        );
+        assert!(
+            ambiguities2.is_empty(),
+            "hew::template with --pkg-path must not be reported ambiguous: {ambiguities2:?}"
+        );
+        let with_extra = program2.items.iter().any(|(item, _)| {
+            matches!(item, Item::Import(d) if d.path.join("::") == "hew::template" && d.resolved_items.is_some())
+        });
+        assert!(
+            with_extra,
+            "with --pkg-path, import hew::template must resolve via hew:: prefix stripping \
+             (candidate: <pkg_dir>/template/template.hew), matching hew check --pkg-path behaviour"
+        );
+
+        let _ = std::fs::remove_dir_all(&pkg_dir);
+        let _ = std::fs::remove_dir_all(&project_dir);
     }
 }

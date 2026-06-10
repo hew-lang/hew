@@ -398,13 +398,13 @@ pub unsafe extern "C" fn hew_ed25519_public_key_from_pkcs8_hew_raw(
 ///
 /// # Safety
 ///
-/// - `private_key` must be a valid, non-null pointer to a `BytesTriple`.
 /// - `message` must be a valid, non-null pointer to a `BytesTriple` (may be
 ///   zero-length).
+/// - `private_key` must be a valid, non-null pointer to a `BytesTriple`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_ed25519_sign_hew(
-    private_key: *const BytesTriple,
     message: *const BytesTriple,
+    private_key: *const BytesTriple,
 ) -> BytesTriple {
     // SAFETY: caller guarantees private_key is non-null and valid.
     let Some(key_bytes) = (unsafe { bytes_from_triple(private_key) }) else {
@@ -435,17 +435,17 @@ pub unsafe extern "C" fn hew_ed25519_sign_hew(
 ///
 /// # Safety
 ///
-/// - `private_key` must be a valid, non-null pointer to a `BytesTriple`.
 /// - `message` must be a valid, non-null pointer to a `BytesTriple`.
+/// - `private_key` must be a valid, non-null pointer to a `BytesTriple`.
 /// - `out` must be a valid, writable pointer to a `BytesTriple` slot.
 #[no_mangle]
 pub unsafe extern "C" fn hew_ed25519_sign_hew_raw(
-    private_key: *const BytesTriple,
     message: *const BytesTriple,
+    private_key: *const BytesTriple,
     out: *mut BytesTriple,
 ) {
     // SAFETY: preconditions forwarded from caller contract above.
-    let triple = unsafe { hew_ed25519_sign_hew(private_key, message) };
+    let triple = unsafe { hew_ed25519_sign_hew(message, private_key) };
     // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
     unsafe { out.write(triple) };
 }
@@ -457,14 +457,14 @@ pub unsafe extern "C" fn hew_ed25519_sign_hew_raw(
 ///
 /// # Safety
 ///
-/// - `public_key`, `message`, and `signature` must each be either null or a
+/// - `message`, `signature`, and `public_key` must each be either null or a
 ///   valid pointer to a live `BytesTriple`.  Dangling non-null pointers are
 ///   undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn hew_ed25519_verify_hew(
-    public_key: *const BytesTriple,
     message: *const BytesTriple,
     signature: *const BytesTriple,
+    public_key: *const BytesTriple,
 ) -> i32 {
     // Treat null inputs as empty/missing → return 0 (fail-closed).
     // SAFETY: each pointer is either null or a valid BytesTriple per caller contract.
@@ -970,7 +970,7 @@ mod tests {
         let msg_triple = make_bytes_triple(b"test message");
         // SAFETY: both triples are valid BytesTriples.
         let sig_triple =
-            unsafe { hew_ed25519_sign_hew(&raw const pkcs8_triple, &raw const msg_triple) };
+            unsafe { hew_ed25519_sign_hew(&raw const msg_triple, &raw const pkcs8_triple) };
         assert_eq!(
             sig_triple.len,
             u32::try_from(ED25519_SIG_LEN).unwrap(),
@@ -990,14 +990,14 @@ mod tests {
         let pub_triple = unsafe { hew_ed25519_public_key_from_pkcs8_hew(&raw const pkcs8_triple) };
         let msg_triple = make_bytes_triple(b"hew sign roundtrip");
         let sig_triple =
-            unsafe { hew_ed25519_sign_hew(&raw const pkcs8_triple, &raw const msg_triple) };
+            unsafe { hew_ed25519_sign_hew(&raw const msg_triple, &raw const pkcs8_triple) };
 
         // verify with correct key and message
         let verified = unsafe {
             hew_ed25519_verify_hew(
-                &raw const pub_triple,
                 &raw const msg_triple,
                 &raw const sig_triple,
+                &raw const pub_triple,
             )
         };
         assert_eq!(verified, 1, "signature must verify");
@@ -1006,9 +1006,9 @@ mod tests {
         let tampered = make_bytes_triple(b"hew sign roundtrip!");
         let rejected = unsafe {
             hew_ed25519_verify_hew(
-                &raw const pub_triple,
                 &raw const tampered,
                 &raw const sig_triple,
+                &raw const pub_triple,
             )
         };
         assert_eq!(rejected, 0, "tampered message must not verify");
@@ -1029,9 +1029,9 @@ mod tests {
         // SAFETY: msg_triple and sig_triple are valid; public_key is intentionally null.
         let result = unsafe {
             hew_ed25519_verify_hew(
-                std::ptr::null(),
                 &raw const msg_triple,
                 &raw const sig_triple,
+                std::ptr::null(),
             )
         };
         assert_eq!(result, 0, "null public_key must return 0");
@@ -1048,9 +1048,9 @@ mod tests {
         // SAFETY: pub_triple and msg_triple are valid; signature is intentionally null.
         let result = unsafe {
             hew_ed25519_verify_hew(
-                &raw const pub_triple,
                 &raw const msg_triple,
                 std::ptr::null(),
+                &raw const pub_triple,
             )
         };
         assert_eq!(result, 0, "null signature must return 0");
@@ -1065,13 +1065,13 @@ mod tests {
         let msg_triple = make_bytes_triple(b"raw variant test");
 
         let by_value =
-            unsafe { hew_ed25519_sign_hew(&raw const pkcs8_triple, &raw const msg_triple) };
+            unsafe { hew_ed25519_sign_hew(&raw const msg_triple, &raw const pkcs8_triple) };
 
         let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
         unsafe {
             hew_ed25519_sign_hew_raw(
-                &raw const pkcs8_triple,
                 &raw const msg_triple,
+                &raw const pkcs8_triple,
                 out.as_mut_ptr(),
             );
         };

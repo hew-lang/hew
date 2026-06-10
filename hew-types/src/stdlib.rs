@@ -105,7 +105,23 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
         // Same authority as `RuntimeCallingConvention::for_ty`'s
         // Function/Closure → Pointer arm — keep the two in agreement.
-        crate::Ty::Function { .. } | crate::Ty::Closure { .. } => Some("ptr"),
+        // Nested collection builtins (Vec<T>, HashMap<K,V>, HashSet<T>) are
+        // heap-allocated and pointer-shaped at runtime. The lowerer in
+        // `hew-hir/src/lower.rs` (vec_push_symbol_for_elem) already routes
+        // these to `hew_vec_push_ptr`; the checker suffix must agree so the
+        // method_call_rewrite entry is recorded and HIR lowering doesn't fail
+        // with "no checker-produced rewrite entry".
+        crate::Ty::Function { .. }
+        | crate::Ty::Closure { .. }
+        | crate::Ty::Named {
+            builtin:
+                Some(
+                    crate::builtin_type::BuiltinType::Vec
+                    | crate::builtin_type::BuiltinType::HashMap
+                    | crate::builtin_type::BuiltinType::HashSet,
+                ),
+            ..
+        } => Some("ptr"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
         // share the pointer-shaped ABI; value-record nominals
         // (`is_indirect = false`) lower through the layout-descriptor
@@ -332,10 +348,13 @@ mod tests {
             resolve_stream_method(STREAM, "close", None),
             Some("hew_stream_close")
         );
-        // Iterator-style aliases (.next, .collect, .lines) no longer resolve
-        // via the fundamental method table.
+        // Iterator-style aliases (.next, .lines) no longer resolve via the
+        // fundamental method table. .collect is wired for string streams.
         assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
-        assert_eq!(resolve_stream_method(STREAM, "collect", None), None);
+        assert_eq!(
+            resolve_stream_method(STREAM, "collect", None),
+            Some("hew_stream_collect_string")
+        );
         assert_eq!(resolve_stream_method(STREAM, "lines", None), None);
         assert_eq!(
             resolve_stream_method(STREAM, "chunks", None),
@@ -358,8 +377,12 @@ mod tests {
             resolve_stream_method(SINK, "send", Some("bytes")),
             Some("hew_sink_write_bytes")
         );
-        // .write and .flush no longer resolve via the fundamental method table.
-        assert_eq!(resolve_stream_method(SINK, "write", Some("string")), None);
+        // .write is wired as an I/O-flavoured alias for .send.
+        // .flush no longer resolves via the fundamental method table.
+        assert_eq!(
+            resolve_stream_method(SINK, "write", Some("string")),
+            Some("hew_sink_write_string")
+        );
         assert_eq!(resolve_stream_method(SINK, "flush", None), None);
         assert_eq!(
             resolve_stream_method(SINK, "close", None),

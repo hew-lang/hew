@@ -1253,6 +1253,11 @@ fn intern_runtime_decl<'ctx>(
         // hew_string_equals(a: *const c_char, b: *const c_char) -> i32
         // (`hew-runtime/src/string.rs`). Returns 1 when equal, 0 otherwise.
         "hew_string_equals" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_string_compare(a: *const c_char, b: *const c_char) -> i32
+        // (`hew-runtime/src/string.rs`). strcmp-style: negative when a < b,
+        // 0 when equal, positive when a > b.  Used by string ordering (`<`,
+        // `<=`, `>`, `>=`) in the IntCmp codegen arm.
+        "hew_string_compare" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char
         // (`hew-runtime/src/string.rs`). Returns a fresh owned string.
         "hew_string_concat" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
@@ -11254,6 +11259,92 @@ fn lower_instruction(
                     .builder
                     .build_store(dest_ptr, widened)
                     .llvm_ctx("string cmp store")?;
+                let _ = ctx;
+                return Ok(());
+            }
+            // String ordering: `<`, `<=`, `>`, `>=` on string operands.
+            // `hew_string_compare(a, b)` returns an i32 with the same sign
+            // convention as C `strcmp`: negative when a < b, 0 when equal,
+            // positive when a > b.  We compare the i32 result against zero
+            // with the appropriate signed integer predicate to produce the
+            // boolean bit.
+            if matches!(lhs_ty, BasicTypeEnum::PointerType(_))
+                && rhs_ty == lhs_ty
+                && matches!(
+                    pred,
+                    CmpPred::SignedLess
+                        | CmpPred::SignedLessEq
+                        | CmpPred::SignedGreater
+                        | CmpPred::SignedGreaterEq
+                )
+            {
+                let lhs_resolved_ty = place_resolved_ty(fn_ctx, *lhs)?;
+                let rhs_resolved_ty = place_resolved_ty(fn_ctx, *rhs)?;
+                if !matches!(
+                    (lhs_resolved_ty, rhs_resolved_ty),
+                    (ResolvedTy::String, ResolvedTy::String)
+                ) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "IntCmp pointer operands must be string-typed for ordering; \
+                         got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
+                    )));
+                }
+                let dest_int = match dest_ty {
+                    BasicTypeEnum::IntType(t) => t,
+                    _ => {
+                        return Err(CodegenError::FailClosed(
+                            "IntCmp dest is not an integer".into(),
+                        ))
+                    }
+                };
+                let lhs_v = fn_ctx
+                    .builder
+                    .build_load(lhs_ty, lhs_ptr, "string_ord_lhs")
+                    .llvm_ctx("string ord lhs load")?
+                    .into_pointer_value();
+                let rhs_v = fn_ctx
+                    .builder
+                    .build_load(lhs_ty, rhs_ptr, "string_ord_rhs")
+                    .llvm_ctx("string ord rhs load")?
+                    .into_pointer_value();
+                let callee = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_string_compare",
+                )?;
+                let cmp_i32 = fn_ctx
+                    .builder
+                    .build_call(callee, &[lhs_v.into(), rhs_v.into()], "hew_string_compare")
+                    .llvm_ctx("hew_string_compare call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "hew_string_compare unexpectedly returned void".into(),
+                        )
+                    })?
+                    .into_int_value();
+                let zero = cmp_i32.get_type().const_zero();
+                let int_pred = match pred {
+                    CmpPred::SignedLess => IntPredicate::SLT,
+                    CmpPred::SignedLessEq => IntPredicate::SLE,
+                    CmpPred::SignedGreater => IntPredicate::SGT,
+                    CmpPred::SignedGreaterEq => IntPredicate::SGE,
+                    _ => unreachable!("guarded above"),
+                };
+                let bit = fn_ctx
+                    .builder
+                    .build_int_compare(int_pred, cmp_i32, zero, "string_ord_bit")
+                    .llvm_ctx("string ord icmp")?;
+                let widened = fn_ctx
+                    .builder
+                    .build_int_z_extend_or_bit_cast(bit, dest_int, "string_ord_zext")
+                    .llvm_ctx("string ord zext")?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, widened)
+                    .llvm_ctx("string ord store")?;
                 let _ = ctx;
                 return Ok(());
             }
@@ -32788,15 +32879,24 @@ fn lower_function<'ctx>(
         // slot is pointer-sized and the `hew_alloc` prologue below can store
         // the heap pointer without type-mismatch.
         let llvm_ty = {
-            let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
-            if let ResolvedTy::Named { name, .. } = ty {
-                if is_indirect_enum(name, enum_layouts) {
-                    ctx.ptr_type(inkwell::AddressSpace::default()).into()
+            // Never-typed locals are produced for diverging expressions
+            // (e.g. the result slot of `panic(...)`). The diverging path
+            // never returns so no instruction ever reads or writes this
+            // local. Allocate an i8 stand-in so the slot exists without
+            // calling `resolve_ty` which fails on `Never`.
+            if matches!(ty, ResolvedTy::Never) {
+                ctx.i8_type().into()
+            } else {
+                let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
+                if let ResolvedTy::Named { name, .. } = ty {
+                    if is_indirect_enum(name, enum_layouts) {
+                        ctx.ptr_type(inkwell::AddressSpace::default()).into()
+                    } else {
+                        raw_ty
+                    }
                 } else {
                     raw_ty
                 }
-            } else {
-                raw_ty
             }
         };
         let idx_u32 = u32::try_from(idx).map_err(|_| {
@@ -38215,6 +38315,72 @@ mod tests {
             !ir.contains("hew_string_equals"),
             "non-string pointer equality must not declare or call hew_string_equals; ir:\n{ir}"
         );
+    }
+
+    #[test]
+    fn string_intcmp_ordering_uses_hew_string_compare() {
+        // Verify that `<`, `<=`, `>`, `>=` on string operands call
+        // `hew_string_compare` rather than failing closed with
+        // "IntCmp lhs is not an integer".  Tests all four ordering predicates
+        // to confirm the dispatch table is exhaustive.
+        for pred in [
+            CmpPred::SignedLess,
+            CmpPred::SignedLessEq,
+            CmpPred::SignedGreater,
+            CmpPred::SignedGreaterEq,
+        ] {
+            let ctx = Context::create();
+            let m = ctx.create_module("string_intcmp_ord");
+            let harness = build_harness(&ctx, &[], &[]);
+            let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "string_intcmp_ord_fn");
+            alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+            alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+            alloc_local(&mut fn_ctx, 2, ResolvedTy::I64);
+
+            lower_instruction(
+                &fn_ctx,
+                &Instr::StringLit {
+                    bytes: b"apple".to_vec(),
+                    dest: Place::Local(0),
+                },
+                0,
+                &[],
+            )
+            .expect("left StringLit must lower");
+            lower_instruction(
+                &fn_ctx,
+                &Instr::StringLit {
+                    bytes: b"banana".to_vec(),
+                    dest: Place::Local(1),
+                },
+                0,
+                &[],
+            )
+            .expect("right StringLit must lower");
+            lower_instruction(
+                &fn_ctx,
+                &Instr::IntCmp {
+                    dest: Place::Local(2),
+                    pred,
+                    lhs: Place::Local(0),
+                    rhs: Place::Local(1),
+                },
+                0,
+                &[],
+            )
+            .expect("string ordering IntCmp must lower via hew_string_compare");
+            finish_test_fn(&fn_ctx);
+
+            assert!(
+                m.verify().is_ok(),
+                "string ordering IntCmp module must verify (pred={pred:?})"
+            );
+            let ir = m.print_to_string().to_string();
+            assert!(
+                ir.contains("hew_string_compare"),
+                "string ordering must call hew_string_compare (pred={pred:?}); ir:\n{ir}"
+            );
+        }
     }
 
     #[test]

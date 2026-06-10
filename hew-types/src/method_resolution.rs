@@ -407,7 +407,8 @@ mod tests {
         assert!(type_def.methods.contains_key("recv"));
         // Iterator-style aliases are removed from the fundamental method table.
         assert!(!type_def.methods.contains_key("next"));
-        assert!(!type_def.methods.contains_key("collect"));
+        // `.collect` is now wired into the fundamental surface (Stream<string>).
+        assert!(type_def.methods.contains_key("collect"));
         assert!(!type_def.methods.contains_key("decode"));
     }
 

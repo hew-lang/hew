@@ -16,6 +16,8 @@
 //! }
 //! ```
 
+import std::fs;
+
 /// A parsed CSV table with headers and data rows.
 type Table {
     hdrs: Vec<string>;
@@ -99,7 +101,7 @@ pub fn parse_no_headers(data: string) -> Table {
 ///
 /// Panics if the file cannot be read.
 pub fn parse_file(path: string) -> Table {
-    let content = read_file(path);
+    let content = fs.read(path);
     parse_impl(content, true)
 }
 

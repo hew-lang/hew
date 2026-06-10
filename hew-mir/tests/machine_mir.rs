@@ -593,7 +593,9 @@ fn resource_field_transition_out_drops() {
             .filter_map(|instr| match instr {
                 Instr::Drop { place, drop_fn, .. } => Some(format!(
                     "{place:?} via {}",
-                    drop_fn.as_deref().unwrap_or("<none>")
+                    drop_fn
+                        .as_ref()
+                        .map_or("<none>".to_string(), |spec| format!("{spec:?}"))
                 )),
                 _ => None,
             })

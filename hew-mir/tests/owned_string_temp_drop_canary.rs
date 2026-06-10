@@ -74,7 +74,7 @@ fn inline_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
                     ty: ResolvedTy::String,
                     drop_fn: Some(s),
                     ..
-                } if s == "hew_string_drop"
+                } if *s == hew_mir::DropFnSpec::Release("hew_string_drop")
             )
         })
         .count()

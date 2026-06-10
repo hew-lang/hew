@@ -549,16 +549,14 @@ pub fn resolve_builtin_method_symbol(
 /// handle), it never double-frees.
 #[must_use]
 pub fn runtime_symbol_consumes_receiver(c_symbol: &str) -> bool {
-    matches!(
-        c_symbol,
-        "hew_stream_close"
-            | "hew_sink_close"
-            | "hew_channel_sender_close"
-            | "hew_channel_receiver_close"
-            | "hew_duplex_close"
-            | "hew_duplex_close_half"
-            | "hew_lambda_actor_release"
-    )
+    // Family-keyed: the closed-set verdict lives on
+    // `RuntimeCallFamily::consumes_receiver` (one authority, exhaustively
+    // matchable). A string outside the catalog maps to `None` → borrowing,
+    // preserving the fail-closed leak-not-double-free default for open-set
+    // `#[extern_symbol]` strings. The independent 7-symbol anchor lives in
+    // the `consumes_receiver_mirrors_builtin_names` parity test.
+    crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
+        .is_some_and(crate::runtime_call::RuntimeCallFamily::consumes_receiver)
 }
 
 static BUILTIN_METHOD_SIGS: OnceLock<HashMap<BuiltinNamedType, HashMap<String, FnSig>>> =

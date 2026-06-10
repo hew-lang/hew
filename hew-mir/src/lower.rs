@@ -5474,25 +5474,30 @@ fn runtime_symbol_for_call_expr(
     let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
         return None;
     };
+    // Typed path: HIR resolved a checker-known runtime builtin (the
+    // no-AST-item builtins and every closed-set method-call rewrite) to
+    // its catalog family. The C symbol is derived from the catalog
+    // bijection — no user-name reverse-mapping. A real user function
+    // that shadows a builtin name resolves to `ResolvedRef::Item` in
+    // HIR and never reaches this arm.
+    //
+    // The allowlist gate preserves the producer routing split: families
+    // whose symbol is in `MIR_EMITTER_RUNTIME_SYMBOLS` lower to
+    // `Instr::CallRuntimeAbi`; pre-staged families (codegen
+    // `Terminator::Call` callee-name intercepts such as
+    // `hew_remote_pid_tell`) fall through to `module_fn_names` →
+    // `lower_direct_call`, exactly as their name-resolved form did.
+    if let ResolvedRef::Builtin(family) = resolved {
+        let symbol = family.c_symbol();
+        if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
+            return Some((symbol.to_string(), args, expr.site));
+        }
+        return None;
+    }
     if crate::runtime_symbols::is_known_runtime_symbol(name) {
         return Some((name.clone(), args, expr.site));
     }
-    // The guard short-circuits the user-name → C-symbol bridge for
-    // `Item`-resolved calls so a *real* user function item that shadows a
-    // builtin name (e.g. a user `fn link(..)`, low `ItemId`) routes to its
-    // own definition rather than the runtime ABI.  Synthetic-builtin
-    // sentinels (`link`/`monitor`/`supervisor_stop`/the `hew_duplex_*`
-    // family, seeded in the `u32::MAX / 2` band) must stay exempt so they
-    // continue to the bridge below — `user_name_to_c_symbol` is the narrow
-    // second gate, so exempting the whole sentinel band cannot mis-route any
-    // name outside its allowlist.
-    if let ResolvedRef::Item(id) = resolved {
-        if !hew_hir::lower::is_synthetic_builtin_item(*id) {
-            return None;
-        }
-    }
-    crate::runtime_symbols::user_name_to_c_symbol(name)
-        .map(|symbol| (symbol.to_string(), args.as_slice(), expr.site))
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -5787,7 +5792,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             });
         }
     }
@@ -5887,7 +5892,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             });
         }
     }
@@ -5963,7 +5968,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some(symbol.to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
         }
     }
@@ -7074,8 +7079,13 @@ impl Builder {
                     return;
                 };
                 let next = self.alloc_block();
+                // The callee identity is the typed family; the symbol string
+                // is derived from the catalog bijection at construction so
+                // the two can never drift.
+                let family = hew_types::runtime_call::RuntimeCallFamily::HashMapInsertLayout;
                 self.finish_current_block(Terminator::Call {
-                    callee: "hew_hashmap_insert_layout".to_string(),
+                    callee: family.c_symbol().to_string(),
+                    builtin: Some(family),
                     args: vec![map_place, key_place, src],
                     dest: None,
                     next,
@@ -7272,6 +7282,31 @@ impl Builder {
                     env_mode: crate::model::ClosureEnvMode::Null,
                 });
                 Some(dest)
+            }
+            // A typed runtime builtin used as a first-class value
+            // (`let f = link;`). There is no fn-pointer ABI for catalog
+            // builtins (their lowering synthesizes extra ABI args such as
+            // the implicit self handle), so this fails closed with an
+            // explicit diagnostic instead of silently producing no value.
+            HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Builtin(family),
+            } => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "runtime builtin `{name}` ({symbol}) used as a value; builtins \
+                             are callable only in direct call position",
+                            symbol = family.c_symbol(),
+                        ),
+                        site: expr.site,
+                    },
+                    note: "runtime builtins have no fn-pointer ABI: their call lowering \
+                           synthesizes implicit ABI arguments that a first-class value \
+                           cannot carry"
+                        .to_string(),
+                });
+                None
             }
             // Catch-all for any other BindingRef shape not explicitly handled
             // above (e.g. unresolved refs, struct items used in expression
@@ -7499,10 +7534,10 @@ impl Builder {
                 // callee name membership in `module_fn_names` until HIR threads
                 // resolved item/builtin variants through the bridge.
                 let callee_name = match &callee.kind {
-                    HirExprKind::BindingRef { name, .. } => Some(name.as_str()),
+                    HirExprKind::BindingRef { name, resolved } => Some((name.as_str(), *resolved)),
                     _ => None,
                 };
-                if let Some(name) = callee_name {
+                if let Some((name, callee_resolved)) = callee_name {
                     // Generic top-level user fn: HIR recorded
                     // `call_site_type_args[expr.site]` with the type
                     // arguments observed at this call site (possibly
@@ -7526,20 +7561,28 @@ impl Builder {
                         // with a HirModule that bypassed the producer).
                         if self.module_fn_names.contains(&mangled) {
                             let ret_ty = self.subst_ty(&expr.ty);
-                            return self.lower_direct_call(&mangled, args, &ret_ty, expr.site);
+                            return self
+                                .lower_direct_call(&mangled, None, args, &ret_ty, expr.site);
                         }
                     }
                     // User-defined function in the same module: emit a call terminator.
                     // The callee symbol is the bare function name as declared;
                     // codegen resolves it against the module's fn_symbols table.
                     if self.module_fn_names.contains(name) {
-                        return self.lower_direct_call(name, args, &expr.ty, expr.site);
+                        // Thread the typed builtin resolution (if any) so the
+                        // suspend-vs-blocking classification keys on the
+                        // checker-resolved family, never on the symbol string.
+                        let builtin = match callee_resolved {
+                            ResolvedRef::Builtin(family) => Some(family),
+                            _ => None,
+                        };
+                        return self.lower_direct_call(name, builtin, args, &expr.ty, expr.site);
                     }
                 }
                 if matches!(
                     callee.kind,
                     HirExprKind::BindingRef {
-                        resolved: ResolvedRef::Item(_),
+                        resolved: ResolvedRef::Item(_) | ResolvedRef::Builtin(_),
                         ..
                     }
                 ) {
@@ -8439,8 +8482,18 @@ impl Builder {
                     Some(self.alloc_local(ret_ty.clone()))
                 };
                 let next = self.alloc_block();
+                // Catalog lift: the checker resolved this collection op to a
+                // concrete runtime symbol; recover the typed family through
+                // the sanctioned `from_c_symbol` bijection (the same lift
+                // `record_runtime_method_call_rewrite` performs) so the
+                // codegen layout-fact walker dispatches on the family.
+                // Non-catalog symbols (e.g. the per-element Vec push
+                // variants) carry `None` until their families are
+                // enumerated.
+                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&callee);
                 self.finish_current_block(Terminator::Call {
                     callee,
+                    builtin,
                     args: arg_places,
                     dest,
                     next,
@@ -8605,6 +8658,7 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: callee_symbol,
+                    builtin: None,
                     args: arg_places,
                     dest,
                     next,
@@ -8910,6 +8964,7 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: mangle_machine_step(short_name(machine_name)),
+                    builtin: None,
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
                     next,
@@ -10314,7 +10369,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty: ty.clone(),
-                drop_fn: Some("hew_string_drop".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
             });
         }
         // else: the retained element escapes the body (moved/stored/returned).
@@ -10434,7 +10489,7 @@ impl Builder {
             self.instructions.push(Instr::Drop {
                 place,
                 ty: ty.clone(),
-                drop_fn: Some(symbol.to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
             });
         }
         // else: the value escapes the consuming body — leak-not-double-free.
@@ -11319,7 +11374,7 @@ impl Builder {
                 self.instructions.push(Instr::Drop {
                     place: temp,
                     ty: field_ty,
-                    drop_fn: Some(drop_symbol.to_string()),
+                    drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
                 });
             }
         }
@@ -14563,6 +14618,7 @@ impl Builder {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: callee_symbol.to_string(),
+                    builtin: None,
                     args: vec![],
                     dest: None,
                     next: 1,
@@ -15164,6 +15220,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol,
+            builtin: None,
             args: arg_places,
             dest: Some(tuple_place),
             next,
@@ -15199,10 +15256,23 @@ impl Builder {
     fn lower_direct_call(
         &mut self,
         callee_symbol: &str,
+        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
         hir_args: &[hew_hir::HirExpr],
         ret_ty: &ResolvedTy,
         _site: hew_hir::SiteId,
     ) -> Option<Place> {
+        // `Terminator::Call` invariant (model.rs): a carried family IS the
+        // callee identity — the symbol string must be its catalog
+        // presentation. Enforced in all build profiles; a violation here
+        // means a HIR resolution stored the wrong family for the callee
+        // name it minted (LESSONS `boundary-fail-closed`).
+        assert!(
+            builtin.is_none_or(|f| f.c_symbol() == callee_symbol),
+            "lower_direct_call: builtin family {:?} does not match callee \
+             `{callee_symbol}` (family c_symbol is `{}`)",
+            builtin,
+            builtin.map_or("", |f| f.c_symbol()),
+        );
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
@@ -15237,7 +15307,7 @@ impl Builder {
         // codegen `Terminator::Call` intercept materialises `Option<T>`).
         // This reuses the SAME `carries_execution_context` discriminator as
         // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
-        if callee_symbol == "hew_stream_next_layout"
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let (Some(result_dest), [stream], Some(elem_ty)) =
@@ -15274,7 +15344,7 @@ impl Builder {
         // `Option<T>`). `try_recv` never suspends and always keeps the blocking
         // (immediate) call. This reuses the SAME `carries_execution_context`
         // discriminator as the stream-recv flip above (DI-019/DI-020).
-        if callee_symbol == "hew_channel_recv_layout"
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let (Some(result_dest), [receiver], Some(elem_ty)) =
@@ -15300,7 +15370,8 @@ impl Builder {
         // instead of blocking the worker — emit
         // `Terminator::SuspendingStreamSend`. A non-full ring binds immediately
         // (fast path, no suspend). Context-free callers keep the blocking call.
-        if callee_symbol == "hew_sink_write_bytes"
+        if builtin.as_ref().and_then(|f| f.is_async_suspending())
+            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
             && self.current_function_call_conv.carries_execution_context()
         {
             if let [sink, value] = arg_places.as_slice() {
@@ -15319,6 +15390,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
+            builtin,
             args: arg_places,
             dest,
             next,
@@ -17006,6 +17078,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_read".to_string(),
+                builtin: None,
                 args: vec![conn_place],
                 dest: Some(bytes_dest),
                 next,
@@ -17021,6 +17094,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_bytes_to_string".to_string(),
+            builtin: None,
             args: vec![bytes_dest],
             dest: Some(string_dest),
             next,
@@ -17118,6 +17192,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_accept".to_string(),
+                builtin: None,
                 args: vec![listener_place],
                 dest: Some(conn_dest),
                 next,
@@ -17308,6 +17383,7 @@ impl Builder {
             // `LocalPid<Sup>` from `expr.ty`) and emits the call terminator.
             return self.lower_direct_call(
                 &sup_layout.bootstrap_symbol,
+                None,
                 &[], // bootstrap takes no arguments
                 &expr.ty,
                 expr.site,
@@ -17942,6 +18018,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: fn_symbol.to_string(),
+            builtin: None,
             args: arg_places.clone(),
             dest: Some(Place::ReturnSlot),
             next: ret_block_id,
@@ -22660,7 +22737,7 @@ fn apply_nested_fresh_string_temp_drops(
                 Instr::Drop {
                     place,
                     ty,
-                    drop_fn: Some("hew_string_drop".to_string()),
+                    drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
                 },
             );
         }
@@ -25212,29 +25289,35 @@ fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
               of the borrowed actor-pid / timeout operands stays explicit"
 )]
 fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<Place> {
-    let arg_is_borrowed = |callee: &str, place: &Place| -> bool {
-        let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
-        // A no-close actor-pid leaf is a borrow under ANY callee; the
-        // `is_borrowing_call_abi` allowlist additionally borrows the callee's
-        // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
-        // LocalPid handler — but its `conn` is consumed, so the per-arg
-        // owned-handle-leaf guard keeps `conn` poisoned). The
-        // `is_handle_borrowing_call_abi` allowlist promotes the stricter
-        // shape: the callee borrows EVERY arg including owned-handle leaves
-        // (the stream recv / try_recv runtime entries borrow the stream
-        // handle to read one item — the handle continues to live in the
-        // caller's slot afterwards, identical drop semantics to the
-        // suspending `Terminator::SuspendingStreamNext` path).
-        arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
-            || (is_borrowing_call_abi(callee)
-                && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
-            || is_handle_borrowing_call_abi(callee)
-    };
+    let arg_is_borrowed =
+        |builtin: Option<hew_types::runtime_call::RuntimeCallFamily>, place: &Place| -> bool {
+            let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
+            // A no-close actor-pid leaf is a borrow under ANY callee; the
+            // `is_borrowing_call_abi` allowlist additionally borrows the callee's
+            // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
+            // LocalPid handler — but its `conn` is consumed, so the per-arg
+            // owned-handle-leaf guard keeps `conn` poisoned). The
+            // `is_handle_borrowing_call_abi` allowlist promotes the stricter
+            // shape: the callee borrows EVERY arg including owned-handle leaves
+            // (the stream recv / try_recv runtime entries borrow the stream
+            // handle to read one item — the handle continues to live in the
+            // caller's slot afterwards, identical drop semantics to the
+            // suspending `Terminator::SuspendingStreamNext` path).
+            //
+            // Both allowlists key on the call's carried typed family — a
+            // callee that arrives without its family (`None`) is never
+            // exempted, which fails CLOSED: the arg stays poisoned and the
+            // gate over-refuses rather than ever admitting a phantom borrow.
+            arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
+                || (is_borrowing_call_abi(builtin)
+                    && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
+                || is_handle_borrowing_call_abi(builtin)
+        };
     match term {
-        Terminator::Call { callee, args, .. } => args
+        Terminator::Call { builtin, args, .. } => args
             .iter()
             .copied()
-            .filter(|place| !arg_is_borrowed(callee, place))
+            .filter(|place| !arg_is_borrowed(*builtin, place))
             .collect(),
         Terminator::Yield { value, .. } => vec![*value],
         Terminator::Send { value, .. }
@@ -25317,8 +25400,11 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
 /// non-handle-leaf args are borrowed; owned-handle-leaf args are still poisoned
 /// (e.g. `hew_tcp_attach_local`'s `conn`). For callees that borrow EVERY arg
 /// including owned-handle leaves, see [`is_handle_borrowing_call_abi`].
-fn is_borrowing_call_abi(callee: &str) -> bool {
-    matches!(callee, "hew_tcp_attach_local")
+fn is_borrowing_call_abi(builtin: Option<hew_types::runtime_call::RuntimeCallFamily>) -> bool {
+    matches!(
+        builtin,
+        Some(hew_types::runtime_call::RuntimeCallFamily::TcpAttachLocal)
+    )
 }
 
 /// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just
@@ -25339,11 +25425,11 @@ fn is_borrowing_call_abi(callee: &str) -> bool {
 /// one queued item without mutating the handle's ownership; adding a callee
 /// that actually consumes the handle here would silently disable the
 /// double-free gate for its caller.
-fn is_handle_borrowing_call_abi(callee: &str) -> bool {
-    matches!(
-        callee,
-        "hew_stream_next_layout" | "hew_stream_try_next_layout"
-    )
+fn is_handle_borrowing_call_abi(
+    builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+    matches!(builtin, Some(F::StreamNextLayout | F::StreamTryNextLayout))
 }
 
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
@@ -25725,13 +25811,30 @@ fn drop_kind_for(
     }
 }
 
-fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> Option<String> {
+fn resource_drop_fn(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> Option<crate::model::DropFnSpec> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
     match ty {
-        ResolvedTy::CancellationToken => Some("hew_cancel_token_release".to_string()),
+        ResolvedTy::CancellationToken => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::CancellationTokenRelease,
+        )),
         ResolvedTy::Named { name, .. } => type_classes
             .get(name)
             .and_then(|(_, close)| close.as_ref())
-            .map(|m| format!("{name}::{m}")),
+            .map(|m| {
+                // Classify the close ritual at production: the type-class
+                // table's `<Type>::<method>` spelling lifts onto the typed
+                // runtime drop descriptor for the closed builtin set; user
+                // `#[resource]` close methods stay on the open-set
+                // generated-symbol arm.
+                let qualified = format!("{name}::{m}");
+                RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
+                    crate::model::DropFnSpec::UserClose(qualified),
+                    crate::model::DropFnSpec::Runtime,
+                )
+            }),
         // Task<T> and all other types have no user-visible close method.
         _ => None,
     }
@@ -25752,11 +25855,21 @@ fn resource_drop_fn(ty: &ResolvedTy, type_classes: &hew_hir::TypeClassTable) -> 
 /// `Duplex::close` / `Stream::close` / etc.
 ///
 /// LESSONS: producer-bridge-before-codegen, lifecycle-symmetry.
-fn place_aware_drop_fn(place: Place, ty_derived: Option<String>) -> Option<String> {
+fn place_aware_drop_fn(
+    place: Place,
+    ty_derived: Option<crate::model::DropFnSpec>,
+) -> Option<crate::model::DropFnSpec> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
     match place {
-        Place::LambdaActorHandle(_) => Some("LambdaActorHandle::close".to_string()),
-        Place::SendHalf(_) => Some("SendHalf::close".to_string()),
-        Place::RecvHalf(_) => Some("RecvHalf::close".to_string()),
+        Place::LambdaActorHandle(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::LambdaActorHandleClose,
+        )),
+        Place::SendHalf(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::SendHalfClose,
+        )),
+        Place::RecvHalf(_) => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::RecvHalfClose,
+        )),
         _ => ty_derived,
     }
 }
@@ -26767,6 +26880,7 @@ fn enumerate_exits(
                 args: _,
                 dest: _,
                 next,
+                ..
             } => (
                 ExitPath::Call {
                     block: block_id,
@@ -27249,7 +27363,9 @@ mod slice3_invariants {
         let drops = vec![ElabDrop {
             place: Place::DuplexHandle(7),
             ty: duplex_int_int_ty(),
-            drop_fn: Some("Duplex::close".to_string()),
+            drop_fn: Some(crate::model::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+            )),
             kind: DropKind::Resource,
         }];
         let elab = make_elab_with_drops(drops);
@@ -29540,7 +29656,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(10),
                 ty: generator_ty(),
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             },
         ];
         let owned = vec![
@@ -29666,7 +29782,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(6),
                 ty: generator_ty(),
-                drop_fn: Some("hew_gen_free".to_string()),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
             },
         ];
         let owned = vec![
@@ -29717,6 +29833,10 @@ mod w3053_aggregate_handle_double_free_gate {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: callee.to_string(),
+                // Mirror the producer lift: hand-built escape-gate MIR
+                // carries the typed family exactly as the real lowering
+                // does, so family-keyed borrow classification is exercised.
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
                 args,
                 dest: None,
                 next: 0,
@@ -30235,6 +30355,7 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Call {
                 callee: "hew_hashmap_len_layout".to_string(),
+                builtin: Some(hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout),
                 args: vec![Place::Local(2)],
                 dest: Some(Place::Local(3)),
                 next: 1,

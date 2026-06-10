@@ -191,9 +191,14 @@ pub enum RuntimeCallFamily {
 
     // --- Channel<T> (std::channel) ------------------------------------------
     // recv/try_recv/send ride the element-layout-witness `*_layout`
-    // entries, which bypass `RuntimeCallFamily` (codegen `Terminator::Call`
-    // intercept; not in `MIR_EMITTER_RUNTIME_SYMBOLS`). Only the close
-    // releases remain enumerable here.
+    // entries (one symbol per operation for every describable element
+    // type; the elem identity travels on the checker-resolved
+    // `Option<T>` / value type, never on the symbol). They are
+    // pre-staged: codegen intercepts the `Terminator::Call` by callee
+    // identity, so they are not in `MIR_EMITTER_RUNTIME_SYMBOLS`.
+    ChannelRecvLayout,
+    ChannelSendLayout,
+    ChannelTryRecvLayout,
     ChannelSenderClose,
     ChannelReceiverClose,
 
@@ -229,9 +234,25 @@ pub enum RuntimeCallFamily {
     HashMapFreeLayout,
     HashMapGetLayout,
     HashMapInsertLayout,
+    /// `m.keys()` / `m.values()` projection ops. Pre-staged: they ride
+    /// the `Terminator::Call` route (checker `MethodTarget.symbol_name`),
+    /// not `Instr::CallRuntimeAbi`, so their symbols are not in
+    /// `MIR_EMITTER_RUNTIME_SYMBOLS`. Catalogued so the codegen
+    /// layout-fact walker classifies them by family, not symbol prefix.
+    HashMapKeysLayout,
     HashMapLenLayout,
+    /// The `HashMap::new` constructor surface form. A distinct callee
+    /// identity from [`Self::HashMapNewWithLayout`]: the catalog row
+    /// `"HashMap::new"` (`BuiltinLinkage::CalleeNameDispatchOnly`)
+    /// survives to codegen as the literal callee name when the checker
+    /// did not rewrite the construction to the synthesized
+    /// `hew_hashmap_new_with_layout` form. Both identities are real at
+    /// the `Terminator::Call` intercept; the bijection demands one
+    /// variant per callee identity.
+    HashMapNew,
     HashMapNewWithLayout,
     HashMapRemoveLayout,
+    HashMapValuesLayout,
 
     // --- Layout-backed HashSet ---------------------------------------------
     HashSetContainsLayout,
@@ -239,6 +260,9 @@ pub enum RuntimeCallFamily {
     HashSetInsertLayout,
     HashSetIsEmptyLayout,
     HashSetLenLayout,
+    /// The `HashSet::new` constructor surface form; see
+    /// [`Self::HashMapNew`] for the two-identity rationale.
+    HashSetNew,
     HashSetNewWithLayout,
     HashSetRemoveLayout,
 
@@ -365,10 +389,14 @@ pub enum RuntimeCallFamily {
     SinkTryWrite(StreamElementKind),
 
     // --- Stream<T> ---------------------------------------------------------
-    // recv/try_recv ride the element-layout-witness `*_layout` entries
-    // (see the Channel note above). `consumes_receiver()` is `true` for
-    // `StreamClose`/`SinkClose` to mirror `runtime_symbol_consumes_receiver`.
+    // recv/try_recv/send ride the element-layout-witness `*_layout`
+    // entries (see the Channel note above). `consumes_receiver()` is
+    // `true` for `StreamClose`/`SinkClose` to mirror
+    // `runtime_symbol_consumes_receiver`.
     StreamClose,
+    StreamNextLayout,
+    StreamSendLayout,
+    StreamTryNextLayout,
 
     // --- String runtime helpers --------------------------------------------
     StringCharCount,
@@ -457,6 +485,9 @@ impl RuntimeCallFamily {
             Self::CancelTokenRelease => "hew_cancel_token_release",
             Self::CancelTokenRetain => "hew_cancel_token_retain",
             // Channel (pre-staged)
+            Self::ChannelRecvLayout => "hew_channel_recv_layout",
+            Self::ChannelSendLayout => "hew_channel_send_layout",
+            Self::ChannelTryRecvLayout => "hew_channel_try_recv_layout",
             Self::ChannelSenderClose => "hew_channel_sender_close",
             Self::ChannelReceiverClose => "hew_channel_receiver_close",
             // Duplex
@@ -488,15 +519,19 @@ impl RuntimeCallFamily {
             Self::HashMapFreeLayout => "hew_hashmap_free_layout",
             Self::HashMapGetLayout => "hew_hashmap_get_layout",
             Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
+            Self::HashMapKeysLayout => "hew_hashmap_keys_layout",
             Self::HashMapLenLayout => "hew_hashmap_len_layout",
+            Self::HashMapNew => "HashMap::new",
             Self::HashMapNewWithLayout => "hew_hashmap_new_with_layout",
             Self::HashMapRemoveLayout => "hew_hashmap_remove_layout",
+            Self::HashMapValuesLayout => "hew_hashmap_values_layout",
             // HashSet
             Self::HashSetContainsLayout => "hew_hashset_contains_layout",
             Self::HashSetFreeLayout => "hew_hashset_free_layout",
             Self::HashSetInsertLayout => "hew_hashset_insert_layout",
             Self::HashSetIsEmptyLayout => "hew_hashset_is_empty_layout",
             Self::HashSetLenLayout => "hew_hashset_len_layout",
+            Self::HashSetNew => "HashSet::new",
             Self::HashSetNewWithLayout => "hew_hashset_new_with_layout",
             Self::HashSetRemoveLayout => "hew_hashset_remove_layout",
             // Instant
@@ -584,9 +619,11 @@ impl RuntimeCallFamily {
             Self::SinkWrite(StreamElementKind::String) => "hew_sink_write_string",
             Self::SinkTryWrite(StreamElementKind::Bytes) => "hew_sink_try_write_bytes",
             Self::SinkTryWrite(StreamElementKind::String) => "hew_sink_try_write_string",
-            // Stream (recv/try_recv ride the layout-witness `*_layout`
-            // entries outside this enum; only close remains here)
+            // Stream
             Self::StreamClose => "hew_stream_close",
+            Self::StreamNextLayout => "hew_stream_next_layout",
+            Self::StreamSendLayout => "hew_stream_send_layout",
+            Self::StreamTryNextLayout => "hew_stream_try_next_layout",
             // String
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
@@ -678,6 +715,9 @@ impl RuntimeCallFamily {
             "hew_cancel_token_release" => Self::CancelTokenRelease,
             "hew_cancel_token_retain" => Self::CancelTokenRetain,
             // Channel
+            "hew_channel_recv_layout" => Self::ChannelRecvLayout,
+            "hew_channel_send_layout" => Self::ChannelSendLayout,
+            "hew_channel_try_recv_layout" => Self::ChannelTryRecvLayout,
             "hew_channel_sender_close" => Self::ChannelSenderClose,
             "hew_channel_receiver_close" => Self::ChannelReceiverClose,
             // Duplex
@@ -709,15 +749,19 @@ impl RuntimeCallFamily {
             "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
             "hew_hashmap_get_layout" => Self::HashMapGetLayout,
             "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
+            "hew_hashmap_keys_layout" => Self::HashMapKeysLayout,
             "hew_hashmap_len_layout" => Self::HashMapLenLayout,
+            "HashMap::new" => Self::HashMapNew,
             "hew_hashmap_new_with_layout" => Self::HashMapNewWithLayout,
             "hew_hashmap_remove_layout" => Self::HashMapRemoveLayout,
+            "hew_hashmap_values_layout" => Self::HashMapValuesLayout,
             // HashSet
             "hew_hashset_contains_layout" => Self::HashSetContainsLayout,
             "hew_hashset_free_layout" => Self::HashSetFreeLayout,
             "hew_hashset_insert_layout" => Self::HashSetInsertLayout,
             "hew_hashset_is_empty_layout" => Self::HashSetIsEmptyLayout,
             "hew_hashset_len_layout" => Self::HashSetLenLayout,
+            "HashSet::new" => Self::HashSetNew,
             "hew_hashset_new_with_layout" => Self::HashSetNewWithLayout,
             "hew_hashset_remove_layout" => Self::HashSetRemoveLayout,
             // Instant
@@ -806,6 +850,9 @@ impl RuntimeCallFamily {
             "hew_sink_try_write_string" => Self::SinkTryWrite(StreamElementKind::String),
             // Stream
             "hew_stream_close" => Self::StreamClose,
+            "hew_stream_next_layout" => Self::StreamNextLayout,
+            "hew_stream_send_layout" => Self::StreamSendLayout,
+            "hew_stream_try_next_layout" => Self::StreamTryNextLayout,
             // String
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
@@ -910,13 +957,19 @@ impl RuntimeCallFamily {
             // The suspending symbols (HIR await-classifier source of truth).
             F::SinkWrite(StreamElementKind::Bytes) => Some(AsyncSuspendKind::SinkSendBytes),
             F::DuplexClose => Some(AsyncSuspendKind::DuplexClose),
+            F::ChannelRecvLayout => Some(AsyncSuspendKind::ChannelRecv),
+            F::StreamNextLayout => Some(AsyncSuspendKind::StreamRecv),
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
             F::StreamClose
+            | F::StreamSendLayout
+            | F::StreamTryNextLayout
             | F::SinkWrite(StreamElementKind::String)
             | F::SinkTryWrite(_)
             | F::SinkClose
+            | F::ChannelSendLayout
+            | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
             | F::DuplexClone
@@ -963,14 +1016,18 @@ impl RuntimeCallFamily {
             | F::HashMapFreeLayout
             | F::HashMapGetLayout
             | F::HashMapInsertLayout
+            | F::HashMapKeysLayout
             | F::HashMapLenLayout
+            | F::HashMapNew
             | F::HashMapNewWithLayout
             | F::HashMapRemoveLayout
+            | F::HashMapValuesLayout
             | F::HashSetContainsLayout
             | F::HashSetFreeLayout
             | F::HashSetInsertLayout
             | F::HashSetIsEmptyLayout
             | F::HashSetLenLayout
+            | F::HashSetNew
             | F::HashSetNewWithLayout
             | F::HashSetRemoveLayout
             | F::InstantDurationSince
@@ -1090,6 +1147,13 @@ pub enum AsyncSuspendKind {
     /// `await actor.close()` over a lambda-actor `Duplex` →
     /// `hew_duplex_close`.
     DuplexClose,
+    /// `await rx.recv()` over a `std::channel` `Receiver<T>` →
+    /// `hew_channel_recv_layout`. Suspends only in execution-context
+    /// callers; a context-free caller keeps the blocking call.
+    ChannelRecv,
+    /// `await stream.recv()` over a `Stream<T>` →
+    /// `hew_stream_next_layout`. Same context gating as `ChannelRecv`.
+    StreamRecv,
 }
 
 // =============================================================================
@@ -1276,10 +1340,11 @@ impl RuntimeDropDescriptor {
         }
     }
 
-    /// The producer-side method-name spelling consumed by today's
-    /// `runtime_drop_symbol(&str)`. Round-trip key for the migration
-    /// (a follow-up deletes the string-keyed lookup; until then this method
-    /// lets the bijection test pin parity with the existing table).
+    /// The producer-side method-name spelling (`<Type>::<method>`), the
+    /// round-trip key of the descriptor: unlike `c_symbol()` (where the
+    /// two half-close variants share a symbol), every variant has a
+    /// unique name, so [`RuntimeDropDescriptor::from_drop_fn_name`] is a
+    /// true inverse.
     #[must_use]
     pub fn drop_fn_name(self) -> &'static str {
         match self {
@@ -1290,6 +1355,27 @@ impl RuntimeDropDescriptor {
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
+        }
+    }
+
+    /// Inverse of [`RuntimeDropDescriptor::drop_fn_name`]: lift a
+    /// type-class-derived `<Type>::<method>` close name into the typed
+    /// descriptor. Returns `None` for user `#[resource]` close methods
+    /// (`MyType::close`) — the open-set arm of the drop-dispatch split.
+    /// MIR's drop elaboration uses this lift to classify every close
+    /// ritual at production; the `c_symbol` is then born at codegen from
+    /// the descriptor.
+    #[must_use]
+    pub fn from_drop_fn_name(name: &str) -> Option<Self> {
+        match name {
+            "Duplex::close" => Some(Self::DuplexClose),
+            "Stream::close" => Some(Self::StreamClose),
+            "Sink::close" => Some(Self::SinkClose),
+            "LambdaActorHandle::close" => Some(Self::LambdaActorHandleClose),
+            "SendHalf::close" => Some(Self::SendHalfClose),
+            "RecvHalf::close" => Some(Self::RecvHalfClose),
+            "CancellationToken::release" => Some(Self::CancellationTokenRelease),
+            _ => None,
         }
     }
 }
@@ -1341,6 +1427,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::CancelTokenRelease,
         F::CancelTokenRetain,
         // Channel
+        F::ChannelRecvLayout,
+        F::ChannelSendLayout,
+        F::ChannelTryRecvLayout,
         F::ChannelSenderClose,
         F::ChannelReceiverClose,
         // Duplex
@@ -1372,15 +1461,19 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::HashMapFreeLayout,
         F::HashMapGetLayout,
         F::HashMapInsertLayout,
+        F::HashMapKeysLayout,
         F::HashMapLenLayout,
+        F::HashMapNew,
         F::HashMapNewWithLayout,
         F::HashMapRemoveLayout,
+        F::HashMapValuesLayout,
         // HashSet
         F::HashSetContainsLayout,
         F::HashSetFreeLayout,
         F::HashSetInsertLayout,
         F::HashSetIsEmptyLayout,
         F::HashSetLenLayout,
+        F::HashSetNew,
         F::HashSetNewWithLayout,
         F::HashSetRemoveLayout,
         // Instant
@@ -1471,6 +1564,9 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::SinkTryWrite(StreamElementKind::String),
         // Stream
         F::StreamClose,
+        F::StreamNextLayout,
+        F::StreamSendLayout,
+        F::StreamTryNextLayout,
         // String
         F::StringCharCount,
         F::StringConcat,
@@ -1538,7 +1634,9 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 7] {
 }
 
 /// Families pre-staged (Channel, Stream, Sink, `Node::lookup`,
-/// math intrinsics, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`).
+/// math intrinsics, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`,
+/// the `HashMap::new` / `HashSet::new` constructor surface forms, and
+/// the `keys()` / `values()` projection ops).
 /// Their `c_symbol()` is NOT in `MIR_EMITTER_RUNTIME_SYMBOLS` today
 /// because they go through `Terminator::Call` callee-name intercepts
 /// (codegen callee-name intercept), not `Instr::CallRuntimeAbi`. The bijection test
@@ -1551,8 +1649,15 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
     use RuntimeCallFamily as F;
     matches!(
         family,
-        F::ChannelSenderClose
+        F::ChannelRecvLayout
+            | F::ChannelSendLayout
+            | F::ChannelTryRecvLayout
+            | F::ChannelSenderClose
             | F::ChannelReceiverClose
+            | F::HashMapKeysLayout
+            | F::HashMapNew
+            | F::HashMapValuesLayout
+            | F::HashSetNew
             | F::MathIntrinsic(_)
             | F::NodeLookup
             | F::RemotePidTell
@@ -1560,6 +1665,9 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::SinkWrite(_)
             | F::SinkTryWrite(_)
             | F::StreamClose
+            | F::StreamNextLayout
+            | F::StreamSendLayout
+            | F::StreamTryNextLayout
             | F::TcpAttachLocal
     )
 }
@@ -1633,15 +1741,17 @@ mod tests {
         assert!(RuntimeCallFamily::from_c_symbol("MyType::greet").is_none());
     }
 
-    /// `consumes_receiver` parity with
-    /// `hew-types/src/builtin_names.rs::runtime_symbol_consumes_receiver`
-    /// for the 7-symbol set. Hard-coded mirror so a future change to
-    /// either side surfaces here.
+    /// `consumes_receiver` is anchored by an INDEPENDENT hard-coded
+    /// 7-symbol set. `builtin_names::runtime_symbol_consumes_receiver`
+    /// now delegates to this catalog, so asserting against that function
+    /// would be circular — the literal set below is the sole external
+    /// anchor: a close family losing its consume mark (leak) or a
+    /// non-close family gaining one (double-free) fails here.
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
-        // The canonical 7-set from
-        // `hew_types::builtin_names::runtime_symbol_consumes_receiver`.
+        // The canonical 7-set, written out literally (NOT derived from
+        // any function under test).
         let expected: HashSet<&'static str> = [
             "hew_stream_close",
             "hew_sink_close",
@@ -1661,14 +1771,8 @@ mod tests {
             assert_eq!(
                 consumes, expected_consumes,
                 "consumes_receiver mismatch for {family:?} → {sym}: \
-                 descriptor says {consumes}, builtin_names says \
+                 descriptor says {consumes}, the hard-coded anchor says \
                  {expected_consumes}"
-            );
-            // Also assert parity with the canonical authority directly.
-            assert_eq!(
-                consumes,
-                crate::builtin_names::runtime_symbol_consumes_receiver(sym),
-                "consumes_receiver disagrees with builtin_names for {sym}"
             );
         }
     }
@@ -1699,6 +1803,8 @@ mod tests {
                 AsyncSuspendKind::SinkSendBytes,
             ),
             (F::DuplexClose, AsyncSuspendKind::DuplexClose),
+            (F::ChannelRecvLayout, AsyncSuspendKind::ChannelRecv),
+            (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
         ];
         for (family, kind) in positives {
             assert_eq!(
@@ -1713,6 +1819,10 @@ mod tests {
         // SinkWrite(String)) plus the try_* peers the classifier never
         // touches.
         let must_not_suspend: &[RuntimeCallFamily] = &[
+            F::ChannelTryRecvLayout,
+            F::ChannelSendLayout,
+            F::StreamTryNextLayout,
+            F::StreamSendLayout,
             F::DuplexRecv,
             F::DuplexSend,
             F::DuplexTryRecv,
@@ -1733,9 +1843,8 @@ mod tests {
         }
 
         // Coverage: walking the full family enumeration, the size of
-        // the suspending set is exactly 2 (sink bytes write + duplex
-        // close; channel/stream recv ride the `*_layout` symbols outside
-        // this enum). Adding a new family without a corresponding
+        // the suspending set is exactly 4 (sink bytes write, duplex
+        // close, channel recv, stream recv). Adding a new family without a corresponding
         // decision is caught by the exhaustive match in
         // `is_async_suspending`; the count assertion below is the belt
         // to that suspenders.
@@ -1744,8 +1853,9 @@ mod tests {
             .filter(|f| f.is_async_suspending().is_some())
             .count();
         assert_eq!(
-            suspending_count, 2,
-            "exactly 2 families should be suspending today; declare any \
+            suspending_count, 4,
+            "exactly 4 families should be suspending today (sink bytes \
+             write, duplex close, channel recv, stream recv); declare any \
              new suspending family explicitly in is_async_suspending"
         );
     }
@@ -1849,6 +1959,23 @@ mod tests {
                  both or remove the variant"
             );
         }
+    }
+
+    /// `from_drop_fn_name` is a true inverse of `drop_fn_name` (every
+    /// variant has a unique name), and rejects user `<Type>::close`
+    /// spellings so the open-set arm stays open.
+    #[test]
+    fn drop_descriptor_name_round_trips() {
+        for d in all_runtime_drop_descriptors() {
+            assert_eq!(
+                RuntimeDropDescriptor::from_drop_fn_name(d.drop_fn_name()),
+                Some(d),
+                "drop_fn_name round-trip failed for {d:?}"
+            );
+        }
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("MyType::close").is_none());
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("hew_duplex_close").is_none());
+        assert!(RuntimeDropDescriptor::from_drop_fn_name("").is_none());
     }
 
     // The allowlist-coverage parity tests

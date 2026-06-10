@@ -40,6 +40,7 @@ fn pipeline_discard_extern(
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
+                builtin: None,
                 args,
                 dest: None, // intentional discard — the arm under test
                 next: 1,

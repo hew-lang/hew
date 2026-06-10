@@ -168,7 +168,7 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
     }
     assert_eq!(
         string_drops,
-        vec!["hew_string_drop".to_string()],
+        vec![hew_mir::DropFnSpec::Release("hew_string_drop")],
         "hew_vec_get_str returns a retained owner; the for-in word binding must \
         receive exactly one explicit hew_string_drop after the body, not leak \
         or double-drop. Full drop list: {string_drops:?}; diagnostics: {:?}",
@@ -196,7 +196,7 @@ fn string_drop_count(pl: &IrPipeline) -> usize {
                     ..
                 } = instr
                 {
-                    if drop_fn == "hew_string_drop" {
+                    if *drop_fn == hew_mir::DropFnSpec::Release("hew_string_drop") {
                         n += 1;
                     }
                 }

@@ -1,0 +1,18 @@
+// MIR-corpus fixture: regex literals in match-arm predicate position.
+//
+// Pins the `hew_regex_match` CallRuntimeAbi lowering for `re"..."`
+// match arms.
+fn classify(s: string) -> i64 {
+    match s {
+        re"^[0-9]+$" => 0,
+        re"^[a-zA-Z]+$" => 1,
+        _ => 2,
+    }
+}
+
+fn main() -> i64 {
+    println(classify("123"));
+    println(classify("abc"));
+    println(classify("a1"));
+    0
+}

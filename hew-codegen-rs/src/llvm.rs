@@ -531,40 +531,32 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
         for block in &func.blocks {
             for instr in &block.instructions {
                 let excluded = match instr {
+                    // Excluded families (see `wasm_excluded_call_family`): the
+                    // Duplex group (`hew-runtime/src/duplex.rs:54`,
+                    // `#![cfg(not(target_arch = "wasm32"))]`, WASM-TODO(#1451)),
+                    // the Supervisor group (requires the native preemptive
+                    // scheduler; WASM builds use a cooperative single-threaded
+                    // executor — WASM-TODO(#1475)), and the TaskScope group
+                    // (`hew-runtime/src/task_scope.rs` is native-only via
+                    // `hew-runtime/src/lib.rs:466`; the type checker already
+                    // rejects `scope {}` on WASM targets, this scan is the
+                    // defence-in-depth catch for direct-MIR paths — W2.006,
+                    // WASM-TODO(#1451)).
+                    //
+                    // `hew_tcp_stream_from_conn` was historically listed here
+                    // but is unreachable through `Instr::CallRuntimeAbi`: it
+                    // is not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
+                    // `RuntimeCall::new` refuses it at construction; std/net's
+                    // extern-block calls bypass this scan entirely and rely on
+                    // the wasm32 runtime stub (the original note already said
+                    // so). WASM-TODO(#1451): TCP transport gap.
                     Instr::CallRuntimeAbi(call) => {
-                        let sym = call.symbol();
-                        // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
-                        //   `#![cfg(not(target_arch = "wasm32"))]`.
-                        //   WASM-TODO(#1451).
-                        // hew_supervisor_* — the supervisor family requires the native
-                        //   preemptive scheduler; WASM builds use a cooperative
-                        //   single-threaded executor that does not support supervisor
-                        //   restart machinery.
-                        //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
-                        // hew_tcp_stream_from_conn — TCP transport is unavailable on
-                        //   wasm32; the runtime stub returns null but codegen surfaces
-                        //   a structured diagnostic instead of a silent null.
-                        //   WASM-TODO(#1451): TCP transport gap.
-                        // hew_task_scope_* — structured-concurrency substrate
-                        //   (`hew-runtime/src/task_scope.rs`) is native-only via
-                        //   `hew-runtime/src/lib.rs:466`. Defence in depth: the
-                        //   type checker rejects `scope {}` on WASM targets at
-                        //   `hew-types/src/check/expressions.rs` via
-                        //   `WasmUnsupportedFeature::StructuredConcurrency`. This
-                        //   scan catches any direct-MIR path that bypasses the
-                        //   type-checker gate. W2.006.
-                        //   WASM-TODO(#1451): task-scope sub-task under the
-                        //   WASM parity umbrella issue.
-                        (sym.starts_with("hew_duplex_")
-                            || sym.starts_with("hew_supervisor_")
-                            || sym.starts_with("hew_task_scope_")
-                            || sym == "hew_tcp_stream_from_conn")
-                            .then(|| sym.to_string())
+                        wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
                     }
                     Instr::Drop {
-                        drop_fn: Some(fn_name),
+                        drop_fn: Some(spec),
                         ..
-                    } => fn_name.starts_with("hew_duplex_").then(|| fn_name.clone()),
+                    } => wasm_excluded_drop_symbol(spec),
                     _ => None,
                 };
                 if let Some(sym) = excluded {
@@ -660,17 +652,207 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     for elab_func in &pipeline.elaborated_mir {
         for (_, plan) in &elab_func.drop_plans {
             for drop in &plan.drops {
-                if let Some(ref drop_fn) = drop.drop_fn {
-                    if let Some(sym) = runtime_drop_symbol(drop_fn) {
-                        if sym.starts_with("hew_duplex_") {
-                            return Some(sym.to_string());
-                        }
+                if let Some(ref spec) = drop.drop_fn {
+                    if let Some(sym) = wasm_excluded_drop_symbol(spec) {
+                        return Some(sym);
                     }
                 }
             }
         }
     }
     None
+}
+
+/// WASM-excluded drop rituals: the Duplex close family rides the
+/// native-only duplex substrate (`hew-runtime/src/duplex.rs:54`,
+/// WASM-TODO(#1451)). Keyed on the typed descriptor — exhaustive over
+/// [`RuntimeDropDescriptor`], NO wildcard, so a new close ritual cannot
+/// land without an explicit wasm32 decision. `Release` symbols come from
+/// the closed cow-heap set (none duplex-backed) and `UserClose` bodies
+/// are pure Hew code; both compile on wasm32.
+///
+/// [`RuntimeDropDescriptor`]: hew_types::runtime_call::RuntimeDropDescriptor
+fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
+    use hew_types::runtime_call::RuntimeDropDescriptor as D;
+    match spec {
+        hew_mir::DropFnSpec::Runtime(d) => match d {
+            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
+            D::StreamClose
+            | D::SinkClose
+            | D::LambdaActorHandleClose
+            | D::CancellationTokenRelease => None,
+        },
+        hew_mir::DropFnSpec::Release(_) | hew_mir::DropFnSpec::UserClose(_) => None,
+    }
+}
+
+/// True iff `family` is a wasm32-EXCLUDED runtime-call family: its native
+/// implementation is `cfg(not(target_arch = "wasm32"))` and a wasm build
+/// reaching `wasm-ld` with the symbol would fail with a confusing dangling
+/// reference instead of a structured `WasmUnsupportedSubstrate` diagnostic.
+///
+/// Exhaustive over [`RuntimeCallFamily`] — NO wildcard arm. Every future
+/// family addition forces an explicit wasm32 decision here (LESSONS P0
+/// `boundary-fail-closed`; the string-prefix predecessor of this match
+/// silently stopped firing when a symbol was renamed).
+///
+/// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
+fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+    match family {
+        // Duplex dual-queue substrate: hew-runtime/src/duplex.rs:54 is
+        // `#![cfg(not(target_arch = "wasm32"))]`. WASM-TODO(#1451).
+        F::DuplexClone
+        | F::DuplexClose
+        | F::DuplexCloseHalf
+        | F::DuplexPair
+        | F::DuplexPayloadFree
+        | F::DuplexRecv
+        | F::DuplexRecvHalf
+        | F::DuplexSend
+        | F::DuplexSendHalf
+        | F::DuplexTryRecv
+        | F::DuplexTrySend
+        // Supervisor restart machinery requires the native preemptive
+        // scheduler. WASM-TODO(#1475).
+        | F::SupervisorChildGet
+        | F::SupervisorNestedGet
+        | F::SupervisorStop
+        // Structured-concurrency task scopes are native-only
+        // (hew-runtime/src/lib.rs:466). WASM-TODO(#1451).
+        | F::TaskScopeCancelAfterNs
+        | F::TaskScopeDestroy
+        | F::TaskScopeJoinAll
+        | F::TaskScopeNew
+        | F::TaskScopeSetCurrent
+        | F::TaskScopeSpawn => true,
+        // Everything else links and runs on wasm32 (or is gated earlier by
+        // its own structured check). Exhaustively enumerated so a new
+        // family cannot land without a wasm32 decision.
+        F::ActorAsk
+        | F::ActorAskWithChannel
+        | F::ActorCooperate
+        | F::ActorLink
+        | F::ActorMonitor
+        | F::ActorSelf
+        | F::ActorSendById
+        | F::ActorSpawn
+        | F::ActorUnlink
+        | F::AutoMutexAlloc
+        | F::AutoMutexFree
+        | F::AutoMutexLock
+        | F::AutoMutexUnlock
+        | F::BytesIndex
+        | F::BytesLen
+        | F::BytesPush
+        | F::BytesSlice
+        | F::CancelTokenIsRequested
+        | F::CancelTokenRelease
+        | F::CancelTokenRetain
+        | F::ChannelRecvLayout
+        | F::ChannelSendLayout
+        | F::ChannelTryRecvLayout
+        | F::ChannelSenderClose
+        | F::ChannelReceiverClose
+        | F::DurationAbs
+        | F::DurationHours
+        | F::DurationIsZero
+        | F::DurationMicros
+        | F::DurationMillis
+        | F::DurationMins
+        | F::DurationNanos
+        | F::DurationSecs
+        | F::DynBoxAlloc
+        | F::DynBoxFree
+        | F::HashMapContainsKeyLayout
+        | F::HashMapFreeLayout
+        | F::HashMapGetLayout
+        | F::HashMapInsertLayout
+        | F::HashMapKeysLayout
+        | F::HashMapLenLayout
+        | F::HashMapNew
+        | F::HashMapNewWithLayout
+        | F::HashMapRemoveLayout
+        | F::HashMapValuesLayout
+        | F::HashSetContainsLayout
+        | F::HashSetFreeLayout
+        | F::HashSetInsertLayout
+        | F::HashSetIsEmptyLayout
+        | F::HashSetLenLayout
+        | F::HashSetNew
+        | F::HashSetNewWithLayout
+        | F::HashSetRemoveLayout
+        | F::InstantDurationSince
+        | F::InstantElapsed
+        | F::InstantNow
+        | F::LambdaActorAsk
+        | F::LambdaBodyAllocReplyBuf
+        | F::LambdaActorClone
+        | F::LambdaActorDowngrade
+        | F::LambdaDrainAll
+        | F::LambdaActorNew
+        | F::LambdaActorRelease
+        | F::LambdaActorSend
+        | F::LambdaActorWeakClone
+        | F::LambdaActorWeakDrop
+        | F::LambdaActorWeakSend
+        | F::MathIntrinsic(_)
+        | F::NodeLookup
+        | F::ObserveReadU64
+        | F::ObserveScrape
+        | F::ObserveSeries
+        | F::OptionIsNone
+        | F::OptionIsSome
+        | F::OptionUnwrap(_)
+        | F::OptionUnwrapOr(_)
+        | F::RcNew
+        | F::RecvHalfRecv
+        | F::RecvHalfTryRecv
+        | F::RegexCapture
+        | F::RegexCompile
+        | F::RegexFreeCapture
+        | F::RegexMatch
+        | F::RemotePidTell
+        | F::ReplyChannelCancel
+        | F::ReplyChannelFree
+        | F::ReplyChannelNew
+        | F::ReplyPayloadFree
+        | F::ReplyWait
+        | F::ResultIsErr
+        | F::ResultIsOk
+        | F::ResultUnwrap(_)
+        | F::ResultUnwrapOr(_)
+        | F::SelectFirst
+        | F::SendHalfSend
+        | F::SendHalfTrySend
+        | F::SinkClose
+        | F::SinkWrite(_)
+        | F::SinkTryWrite(_)
+        | F::StreamClose
+        | F::StreamNextLayout
+        | F::StreamSendLayout
+        | F::StreamTryNextLayout
+        | F::StringCharCount
+        | F::StringConcat
+        | F::StringIndex
+        | F::StringSliceCodepoints
+        | F::TcpAttachLocal
+        | F::TaskAwaitBlocking
+        | F::TaskCompleteThreaded
+        | F::TaskCompletionObserve
+        | F::TaskCompletionUnobserve
+        | F::TaskFree
+        | F::TaskGetEnv
+        | F::TaskGetError
+        | F::TaskGetResult
+        | F::TaskNew
+        | F::TaskSetEnv
+        | F::TaskSpawnThread
+        | F::VecGet(_)
+        | F::VecLen
+        | F::VecSliceRange(_)
+        | F::VtableDispatchPanicOnOob => false,
+    }
 }
 
 fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
@@ -6609,10 +6791,21 @@ fn emit_lambda_env_dropper<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed(format!("env dropper `{name}` missing env param")))?
         .into_pointer_value();
     for (idx, class) in field_drops.iter().enumerate() {
-        let drop_symbol = match class {
+        // Symbol AND declared signature both derive from the typed field
+        // class in one match — no string self-compare to re-derive what
+        // the class already knows.
+        // `hew_string_drop(s: *mut c_char)` returns void;
+        // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
+        let (drop_symbol, sig) = match class {
             LambdaEnvFieldDrop::None => continue,
-            LambdaEnvFieldDrop::String => "hew_string_drop",
-            LambdaEnvFieldDrop::WeakSelfHandle => "hew_lambda_actor_weak_drop",
+            LambdaEnvFieldDrop::String => (
+                "hew_string_drop",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ),
+            LambdaEnvFieldDrop::WeakSelfHandle => (
+                "hew_lambda_actor_weak_drop",
+                ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+            ),
         };
         let field_idx = u32::try_from(idx).map_err(|_| {
             CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
@@ -6628,16 +6821,9 @@ fn emit_lambda_env_dropper<'ctx>(
         let field_val = builder
             .build_load(ptr_ty, field_ptr, &format!("env_drop_field_{idx}"))
             .llvm_ctx("lambda env dropper field load")?;
-        let drop_fn = llvm_mod.get_function(drop_symbol).unwrap_or_else(|| {
-            // `hew_string_drop(s: *mut c_char)` returns void;
-            // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
-            let sig = if drop_symbol == "hew_lambda_actor_weak_drop" {
-                ctx.i32_type().fn_type(&[ptr_ty.into()], false)
-            } else {
-                ctx.void_type().fn_type(&[ptr_ty.into()], false)
-            };
-            llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External))
-        });
+        let drop_fn = llvm_mod
+            .get_function(drop_symbol)
+            .unwrap_or_else(|| llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External)));
         builder
             .build_call(drop_fn, &[field_val.into()], &format!("env_drop_{idx}"))
             .llvm_ctx("lambda env dropper field drop call")?;
@@ -15929,61 +16115,100 @@ fn finalize_layout_facts_against_pipeline(
 ) {
     use hew_types::{HashMapAbi, HashMapLoweringFactState, HashSetAbi};
 
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+
     for mir_fn in &pipeline.raw_mir {
         for block in &mir_fn.blocks {
             let Terminator::Call {
-                callee, args, dest, ..
+                builtin: Some(family),
+                args,
+                dest,
+                ..
             } = &block.terminator
             else {
                 continue;
             };
 
             // Two classes of call sites finalize a `Pending` fact:
-            //   (a) The 9 op-call arms from slice-i/iii — handle is `args[0]`.
-            //   (b) The 2 constructor arms from slice-ii — handle is the
+            //   (a) The op-call families from slice-i/iii (insert / get /
+            //       remove / contains / len / is_empty / keys / values) —
+            //       handle is `args[0]`.
+            //   (b) The constructor families from slice-ii — handle is the
             //       return value (`dest`); arg list is empty.
-            // Probe callees and `*_free_layout` are NOT
+            // Probe callees and the `*FreeLayout` families are NOT
             // included here; their fact-lifecycle wiring is either
             // already done (probes) or drops are dispatched through the
             // `drop_helper_for_kind` path, not through this walker.
-            let (key_or_elem_name, is_hashset) = if is_hashmap_layout_runtime_symbol(callee)
-                || is_hashmap_layout_get_symbol(callee)
-            {
-                if args.is_empty() {
-                    continue;
+            // Classification keys on the carried typed family — a layout
+            // op minted without its family never finalizes a fact, and the
+            // stuck `Pending` fact fails closed at
+            // `verify_hashmap_lowering_facts_consistent`.
+            let (key_or_elem_name, is_hashset) = match family {
+                F::HashMapInsertLayout
+                | F::HashMapContainsKeyLayout
+                | F::HashMapRemoveLayout
+                | F::HashMapLenLayout
+                | F::HashMapKeysLayout
+                | F::HashMapValuesLayout
+                | F::HashMapGetLayout
+                | F::HashSetInsertLayout
+                | F::HashSetContainsLayout
+                | F::HashSetRemoveLayout
+                | F::HashSetLenLayout
+                | F::HashSetIsEmptyLayout => {
+                    if args.is_empty() {
+                        continue;
+                    }
+                    let arg0_ty = match args[0] {
+                        Place::Local(id) => mir_fn.locals.get(id as usize),
+                        _ => None,
+                    };
+                    let Some(resolved_ty) = arg0_ty else {
+                        continue;
+                    };
+                    let is_set = matches!(
+                        family,
+                        F::HashSetInsertLayout
+                            | F::HashSetContainsLayout
+                            | F::HashSetRemoveLayout
+                            | F::HashSetLenLayout
+                            | F::HashSetIsEmptyLayout
+                    );
+                    let expected_outer = if is_set { "HashSet" } else { "HashMap" };
+                    let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
+                        continue;
+                    };
+                    (name, is_set)
                 }
-                let arg0_ty = match args[0] {
-                    Place::Local(id) => mir_fn.locals.get(id as usize),
-                    _ => None,
-                };
-                let Some(resolved_ty) = arg0_ty else {
-                    continue;
-                };
-                let is_set = callee.starts_with("hew_hashset_");
-                let expected_outer = if is_set { "HashSet" } else { "HashMap" };
-                let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
-                    continue;
-                };
-                (name, is_set)
-            } else if is_hashmap_constructor_symbol(callee) {
-                let Some(dest_place) = dest else {
-                    continue;
-                };
-                let dest_ty = match dest_place {
-                    Place::Local(id) => mir_fn.locals.get(*id as usize),
-                    _ => None,
-                };
-                let Some(resolved_ty) = dest_ty else {
-                    continue;
-                };
-                let is_set = callee == "hew_hashset_new_with_layout";
-                let expected_outer = if is_set { "HashSet" } else { "HashMap" };
-                let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
-                    continue;
-                };
-                (name, is_set)
-            } else {
-                continue;
+                F::HashMapNewWithLayout
+                | F::HashSetNewWithLayout
+                | F::HashMapNew
+                | F::HashSetNew => {
+                    let Some(dest_place) = dest else {
+                        continue;
+                    };
+                    let dest_ty = match dest_place {
+                        Place::Local(id) => mir_fn.locals.get(*id as usize),
+                        _ => None,
+                    };
+                    let Some(resolved_ty) = dest_ty else {
+                        continue;
+                    };
+                    // Faithful transcription of the historical string compare
+                    // (`callee == "hew_hashset_new_with_layout"`): the
+                    // `HashSet::new` surface form was NOT classified as a set
+                    // constructor (its dest then fails the `HashMap` outer
+                    // check below and the site never finalizes a fact).
+                    // Preserved byte-identically; reclassifying it is a
+                    // behaviour change owned by the layout-fact lane.
+                    let is_set = matches!(family, F::HashSetNewWithLayout);
+                    let expected_outer = if is_set { "HashSet" } else { "HashMap" };
+                    let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
+                        continue;
+                    };
+                    (name, is_set)
+                }
+                _ => continue,
             };
 
             if is_hashset {
@@ -18211,6 +18436,11 @@ fn lower_call_runtime_abi(
     fn_ctx: &FnCtx<'_, '_>,
     call: &hew_mir::RuntimeCall,
 ) -> CodegenResult<()> {
+    use hew_types::runtime_call::{RuntimeCallFamily as F, VecGetElem};
+    // `symbol` is DERIVED from the family at the codegen edge — kept as a
+    // binding because the arm bodies use it for diagnostics, sub-dispatch
+    // within a multi-family arm, and `intern_runtime_decl` (the LLVM
+    // declare edge, where the C name is a name by nature).
     let symbol = call.symbol();
     let args = call.args();
     let dest = call.dest();
@@ -18218,8 +18448,8 @@ fn lower_call_runtime_abi(
     let i64_ty = fn_ctx.ctx.i64_type();
     let i8_ty = fn_ctx.ctx.i8_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    match symbol {
-        "hew_option_is_some" | "hew_option_is_none" => {
+    match call.family() {
+        F::OptionIsSome | F::OptionIsNone => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 1 arg (option), got {}",
@@ -18284,7 +18514,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, i64_ty, i8_ty, ptr_ty);
         }
-        "hew_duplex_pair" => {
+        F::DuplexPair => {
             if args.len() != 4 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_duplex_pair): expected 4 args \
@@ -18327,7 +18557,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_duplex_send" => {
+        F::DuplexSend => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_duplex_send): expected 3 args \
@@ -18391,7 +18621,7 @@ fn lower_call_runtime_abi(
         // i32 status is discarded in statement context and materialized
         // into `Result<(), SendError>` in value context (see the `dest`
         // branch below).
-        "hew_lambda_actor_send" | "hew_lambda_actor_weak_send" => {
+        F::LambdaActorSend | F::LambdaActorWeakSend => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 3 args \
@@ -18442,7 +18672,7 @@ fn lower_call_runtime_abi(
         // in this MVP (reply-decode and reply-buffer-free are a
         // follow-on slice — `hew_reply_payload_free` must run on
         // *reply_out when non-null).
-        "hew_lambda_actor_ask" => {
+        F::LambdaActorAsk => {
             if args.len() != 6 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_lambda_actor_ask): expected 6 args \
@@ -18878,7 +19108,7 @@ fn lower_call_runtime_abi(
         // is the producer surface for the same release call when a
         // future slice (e.g. explicit `.release()` on a handle) wants
         // it inline). Result discarded.
-        "hew_lambda_actor_release" => {
+        F::LambdaActorRelease => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_lambda_actor_release): expected 1 arg \
@@ -18918,7 +19148,7 @@ fn lower_call_runtime_abi(
         // fail-closed sentinel so the producer surface and codegen
         // surface stay in lock-step (the M2 allowlist accepts the
         // symbol; codegen rejects it from the wrong producer surface).
-        "hew_lambda_actor_new" => {
+        F::LambdaActorNew => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(hew_lambda_actor_new): the lambda-actor \
                  construction surface is `Terminator::MakeLambdaActor` (function- \
@@ -18935,7 +19165,7 @@ fn lower_call_runtime_abi(
         // directly so the runtime can write back ptr/offset/len after CoW/grow.
         // args[1]: Hew API accepts i32 for convenience; truncate to u8 at the
         // runtime ABI boundary.
-        "hew_bytes_len" => {
+        F::BytesLen => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_len): expected 1 arg (bytes), got {}",
@@ -18983,7 +19213,7 @@ fn lower_call_runtime_abi(
         // sret pointer, which conflicts with hew's `[2 x i64]` register-pair
         // codegen.  The `_raw` variant is `void(ptr, i32, i32, i64, i64, *mut
         // BytesTriple)` and writes the result directly into the dest alloca.
-        "hew_bytes_slice" => {
+        F::BytesSlice => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_slice): expected 3 args \
@@ -19070,7 +19300,7 @@ fn lower_call_runtime_abi(
             // build_store needed.
             let _ = (i8_ty, i64_ty);
         }
-        "hew_bytes_push" => {
+        F::BytesPush => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_push): expected 2 args \
@@ -19116,7 +19346,7 @@ fn lower_call_runtime_abi(
         // bounds-checks and aborts on OOB (boundary-fail-closed); no compiler-
         // emitted trap CFG. The dest int type is widened from the runtime's i8
         // return (i8 for `b[i]`'s `u8` dest; i32 for `bytes.get`'s `i32` dest).
-        "hew_bytes_index" => {
+        F::BytesIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_index): expected 2 args \
@@ -19220,9 +19450,10 @@ fn lower_call_runtime_abi(
         // LLVM IR, which the Cluster 1 spine does not yet support.
         //
         // WHY this shim exists: the producer (MIR lower.rs) calls
-        // `lower_runtime_call("hew_actor_link", ...)` via
-        // `user_name_to_c_symbol("link")`.  Codegen must not silently discard
-        // the call, but also cannot construct the composite return today.
+        // `lower_runtime_call("hew_actor_link", ...)` off the HIR
+        // `ResolvedRef::Builtin(ActorLink)` resolution.  Codegen must not
+        // silently discard the call, but also cannot construct the
+        // composite return today.
         // The FFI call is emitted; return wrapping is deferred.
         //
         // WHEN obsolete: when the Cluster 2 spine lands enum-variant and
@@ -19234,7 +19465,7 @@ fn lower_call_runtime_abi(
         //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
         //                     discriminant 0 (Ok), zero-length payload.
         //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
-        "hew_actor_link" => {
+        F::ActorLink => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_actor_link): expected 2 args \
@@ -19270,7 +19501,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_actor_monitor" => {
+        F::ActorMonitor => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_actor_monitor): expected 2 args \
@@ -19309,7 +19540,7 @@ fn lower_call_runtime_abi(
         // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
         // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
         // the producer always supplies `dest: None`.
-        "hew_supervisor_stop" => {
+        F::SupervisorStop => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_supervisor_stop): expected 1 arg \
@@ -19341,7 +19572,7 @@ fn lower_call_runtime_abi(
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
         // means a producer mis-routed a destructor through the
         // generic call path. Fail-closed.
-        "hew_duplex_close" => {
+        F::DuplexClose => {
             return Err(CodegenError::FailClosed(
                 "Instr::CallRuntimeAbi(hew_duplex_close): close is the drop \
                  ritual's responsibility — emit Instr::Drop { drop_fn: \
@@ -19356,7 +19587,7 @@ fn lower_call_runtime_abi(
         // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
         // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
         //
-        "hew_vec_len" => {
+        F::VecLen => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
@@ -19432,8 +19663,14 @@ fn lower_call_runtime_abi(
         // index i64 from arg1, call, store result into dest. The result type
         // differs per variant and is encoded in the function return type from
         // `intern_runtime_decl`.
-        "hew_vec_get_bool" | "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64"
-        | "hew_vec_get_ptr" | "hew_vec_get_str" => {
+        F::VecGet(
+            VecGetElem::Bool
+            | VecGetElem::I32
+            | VecGetElem::I64
+            | VecGetElem::F64
+            | VecGetElem::Ptr
+            | VecGetElem::Str,
+        ) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
@@ -19505,7 +19742,7 @@ fn lower_call_runtime_abi(
         // (same as the `lower_layout_vec_direct_call` path for `.get()`).
         // The runtime returns a `*const c_void` pointing into the vec buffer;
         // codegen loads the full element value through that pointer into dest.
-        "hew_vec_get_layout" => {
+        F::VecGet(VecGetElem::Layout) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_get_layout): expected 2 args \
@@ -19558,7 +19795,7 @@ fn lower_call_runtime_abi(
         // element value through it into dest. The borrowed element stays owned
         // by the Vec — the dest is NOT scheduled for an independent drop (the
         // for-in binding is a borrow, F5 discipline).
-        "hew_vec_get_owned" => {
+        F::VecGet(VecGetElem::Owned) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_get_owned): expected 2 args \
@@ -19608,11 +19845,9 @@ fn lower_call_runtime_abi(
         // start/end i64 from args 1..2, call, store the returned `*mut
         // HewVec` into dest (a ptr-typed Vec<T> alloca). The element type
         // is encoded in the suffix and selected by the MIR producer.
-        "hew_vec_slice_range_i32"
-        | "hew_vec_slice_range_i64"
-        | "hew_vec_slice_range_f64"
-        | "hew_vec_slice_range_ptr"
-        | "hew_vec_slice_range_str" => {
+        // Every VecSliceElem variant shares the arm; the per-element
+        // symbol is already in `symbol` (the family's c_symbol).
+        F::VecSliceRange(_) => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 3 args (vec, start, end), got {}",
@@ -19660,7 +19895,7 @@ fn lower_call_runtime_abi(
         // dest. The runtime entries themselves enforce invalid-input bounds.
         //
         // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char.
-        "hew_string_concat" => {
+        F::StringConcat => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_concat): expected 2 args (a, b), got {}",
@@ -19698,7 +19933,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_string_concat store")?;
             let _ = i32_ty;
         }
-        "hew_observe_read_u64" => {
+        F::ObserveReadU64 => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_observe_read_u64): expected 1 arg (name), got {}",
@@ -19728,7 +19963,7 @@ fn lower_call_runtime_abi(
             }
             let _ = i32_ty;
         }
-        "hew_observe_scrape" | "hew_observe_series" => {
+        F::ObserveScrape | F::ObserveSeries => {
             let (call_name, call_ctx, returned_void_ctx, store_ctx) = match symbol {
                 "hew_observe_scrape" => (
                     "hew_observe_scrape_call",
@@ -19773,7 +20008,7 @@ fn lower_call_runtime_abi(
             }
             let _ = i32_ty;
         }
-        "hew_string_char_count" => {
+        F::StringCharCount => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_char_count): expected 1 arg (s), got {}",
@@ -19803,7 +20038,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i64_ty, ptr_ty);
         }
-        "hew_string_index" => {
+        F::StringIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_index): expected 2 args (s, i), got {}",
@@ -19840,7 +20075,7 @@ fn lower_call_runtime_abi(
         }
         // hew_string_slice_codepoints(s: *const c_char, start: i64, end: i64)
         //   -> *mut c_char (fresh owned slice)
-        "hew_string_slice_codepoints" => {
+        F::StringSliceCodepoints => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_slice_codepoints): expected 3 args \
@@ -19884,7 +20119,7 @@ fn lower_call_runtime_abi(
         }
         // hew_task_new() -> *mut HewTask
         // No args. dest: Place holding the task pointer.
-        "hew_task_new" => {
+        F::TaskNew => {
             if !args.is_empty() {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_new): expected 0 args, got {}",
@@ -19917,7 +20152,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_new" => {
+        F::TaskScopeNew => {
             if !args.is_empty() {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_new): expected 0 args, got {}",
@@ -19947,7 +20182,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_scope_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_set_current" => {
+        F::TaskScopeSetCurrent => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_set_current): expected 1 arg, got {}",
@@ -19977,7 +20212,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+        F::TaskScopeDestroy | F::TaskScopeJoinAll => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 1 arg, got {}",
@@ -20002,7 +20237,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_spawn" => {
+        F::TaskScopeSpawn => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_spawn): expected 2 args, got {}",
@@ -20027,7 +20262,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_scope_spawn call")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_cancel_after_ns" => {
+        F::TaskScopeCancelAfterNs => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_cancel_after_ns): expected 2 args, got {}",
@@ -20074,7 +20309,7 @@ fn lower_call_runtime_abi(
         // this shim with a real two-arg call matching that convention. WHAT: load
         // task ptr from args[0], load fn-ptr from args[1] using the chosen Place
         // shape, call void hew_task_spawn_thread(task, fn_ptr).
-        "hew_task_spawn_thread" => {
+        F::TaskSpawnThread => {
             return Err(CodegenError::FailClosed(
                 "Instr::CallRuntimeAbi(hew_task_spawn_thread): no MIR producer for \
                  spawn fn(...) has landed yet (inventory row 3). The fn-ptr Place \
@@ -20086,7 +20321,7 @@ fn lower_call_runtime_abi(
         // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
         // args[0]: task ptr. dest: Place for the result pointer (may be None for
         // void-result tasks; the blocking guarantee is unconditional).
-        "hew_task_await_blocking" => {
+        F::TaskAwaitBlocking => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_await_blocking): expected 1 arg \
@@ -20121,7 +20356,7 @@ fn lower_call_runtime_abi(
         // hew_task_get_result(task: *mut HewTask) -> *mut c_void
         // args[0]: task ptr. dest: Place for the result pointer.
         // Must be called after hew_task_await_blocking (task is Done).
-        "hew_task_get_result" => {
+        F::TaskGetResult => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_get_result): expected 1 arg \
@@ -20158,7 +20393,7 @@ fn lower_call_runtime_abi(
         }
         // hew_task_free(task: *mut HewTask) -> void
         // args[0]: task ptr. dest: None — frees the task allocation.
-        "hew_task_free" => {
+        F::TaskFree => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_free): expected 1 arg (task), got {}",
@@ -20212,7 +20447,7 @@ fn lower_call_runtime_abi(
         //
         // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
         //   emission; supervisor tree requires the native scheduler runtime.
-        "hew_supervisor_child_get" => {
+        F::SupervisorChildGet => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
@@ -20334,7 +20569,7 @@ fn lower_call_runtime_abi(
         // args[0]: scrutinee (string local; stored as ptr in LLVM)
         // args[1]: literal_id (ConstI64 local; used as GEP index into global array)
         // dest:    i32 local (MIR emits IntCmp(NotEq, result, 0) immediately after)
-        "hew_regex_match" => {
+        F::RegexMatch => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_match): expected 2 args \
@@ -20425,7 +20660,7 @@ fn lower_call_runtime_abi(
         // The returned *mut c_char is converted to i64 via ptrtoint so it fits
         // into the MIR i64 capture place. The MIR null-check (`IntCmp(Eq, cap, 0)`)
         // fires when the capture did not participate (null → 0 → branch to next arm).
-        "hew_regex_capture" => {
+        F::RegexCapture => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_capture): expected 3 args \
@@ -20517,7 +20752,7 @@ fn lower_call_runtime_abi(
         // Emitted by MIR at arm-body exit (success path, after all captures are
         // extracted) and in partial-failure cleanup blocks (captures[0..j] already
         // allocated when capture[j] returned null).
-        "hew_regex_free_capture" => {
+        F::RegexFreeCapture => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_free_capture): expected 1 arg \
@@ -20544,77 +20779,125 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_regex_free_capture call")?;
         }
 
-        other => {
-            // Allowlisted but not wired. Names a missing follow-on
-            // seam so the next implementer can find the gap quickly
-            // (`parity-or-tracked-gap`).
+        // Allowlisted but not wired (no codegen lowering arm yet), plus the
+        // pre-staged intercept families whose calls ride `Terminator::Call`
+        // and can never legally arrive as `Instr::CallRuntimeAbi` (their
+        // symbols are not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
+        // `RuntimeCall::new` refuses them at construction — this arm is
+        // their unreachable-by-construction backstop). Exhaustively
+        // enumerated, NO wildcard: a new family cannot land without an
+        // explicit lowering decision here (`parity-or-tracked-gap`,
+        // LESSONS P0 `match-fail-closed`).
+        F::ActorAsk
+        | F::ActorAskWithChannel
+        | F::ActorCooperate
+        | F::ActorSelf
+        | F::ActorSendById
+        | F::ActorSpawn
+        | F::ActorUnlink
+        | F::AutoMutexAlloc
+        | F::AutoMutexFree
+        | F::AutoMutexLock
+        | F::AutoMutexUnlock
+        | F::CancelTokenIsRequested
+        | F::CancelTokenRelease
+        | F::CancelTokenRetain
+        | F::ChannelRecvLayout
+        | F::ChannelSendLayout
+        | F::ChannelTryRecvLayout
+        | F::ChannelSenderClose
+        | F::ChannelReceiverClose
+        | F::DuplexClone
+        | F::DuplexCloseHalf
+        | F::DuplexPayloadFree
+        | F::DuplexRecv
+        | F::DuplexRecvHalf
+        | F::DuplexSendHalf
+        | F::DuplexTryRecv
+        | F::DuplexTrySend
+        | F::DurationAbs
+        | F::DurationHours
+        | F::DurationIsZero
+        | F::DurationMicros
+        | F::DurationMillis
+        | F::DurationMins
+        | F::DurationNanos
+        | F::DurationSecs
+        | F::DynBoxAlloc
+        | F::DynBoxFree
+        | F::HashMapContainsKeyLayout
+        | F::HashMapFreeLayout
+        | F::HashMapGetLayout
+        | F::HashMapInsertLayout
+        | F::HashMapKeysLayout
+        | F::HashMapLenLayout
+        | F::HashMapNew
+        | F::HashMapNewWithLayout
+        | F::HashMapRemoveLayout
+        | F::HashMapValuesLayout
+        | F::HashSetContainsLayout
+        | F::HashSetFreeLayout
+        | F::HashSetInsertLayout
+        | F::HashSetIsEmptyLayout
+        | F::HashSetLenLayout
+        | F::HashSetNew
+        | F::HashSetNewWithLayout
+        | F::HashSetRemoveLayout
+        | F::InstantDurationSince
+        | F::InstantElapsed
+        | F::InstantNow
+        | F::LambdaBodyAllocReplyBuf
+        | F::LambdaActorClone
+        | F::LambdaActorDowngrade
+        | F::LambdaDrainAll
+        | F::LambdaActorWeakClone
+        | F::LambdaActorWeakDrop
+        | F::MathIntrinsic(_)
+        | F::NodeLookup
+        | F::OptionUnwrap(_)
+        | F::OptionUnwrapOr(_)
+        | F::RcNew
+        | F::RecvHalfRecv
+        | F::RecvHalfTryRecv
+        | F::RegexCompile
+        | F::RemotePidTell
+        | F::ReplyChannelCancel
+        | F::ReplyChannelFree
+        | F::ReplyChannelNew
+        | F::ReplyPayloadFree
+        | F::ReplyWait
+        | F::ResultIsErr
+        | F::ResultIsOk
+        | F::ResultUnwrap(_)
+        | F::ResultUnwrapOr(_)
+        | F::SelectFirst
+        | F::SendHalfSend
+        | F::SendHalfTrySend
+        | F::SinkClose
+        | F::SinkWrite(_)
+        | F::SinkTryWrite(_)
+        | F::StreamClose
+        | F::StreamNextLayout
+        | F::StreamSendLayout
+        | F::StreamTryNextLayout
+        | F::SupervisorNestedGet
+        | F::TcpAttachLocal
+        | F::TaskCompleteThreaded
+        | F::TaskCompletionObserve
+        | F::TaskCompletionUnobserve
+        | F::TaskGetEnv
+        | F::TaskGetError
+        | F::TaskSetEnv
+        | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
-                "Instr::CallRuntimeAbi(symbol={other:?}): codegen has no lowering arm \
-                 for this M2 runtime symbol; wire a per-symbol arm or leave the \
-                 producer fail-closed until the substrate lane lands"
+                "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \
+                 lowering arm for this runtime family; wire a per-family arm or leave \
+                 the producer fail-closed until the substrate lane lands",
+                call.family(),
             )));
         }
     }
     Ok(())
-}
-
-/// Map an elaborator-produced `drop_fn` string to its C-ABI runtime symbol.
-///
-/// The elaborator emits `"<TypeName>::<method>"` strings from
-/// `hew-mir/src/lower.rs::build_lifo_drops` via the `TypeClassTable`.
-/// The C-ABI names in `hew-runtime/` are not always a predictable
-/// transformation of those strings — in particular, `LambdaActorHandle`
-/// uses the method name "close" in the type-class seeding but the
-/// runtime symbol is `hew_lambda_actor_release` (not
-/// `hew_lambda_actor_close`). This table is the authoritative bridge.
-///
-/// Accepts literal C-ABI symbol names (e.g. `"hew_duplex_close"`)
-/// as a backward-compatible pass-through so hand-built test MIR can
-/// use either format. Unknown strings fail closed — no wildcard.
-///
-/// LESSONS: producer-bridge-before-codegen (P1), boundary-fail-closed (P0),
-/// lifecycle-symmetry (P0).
-///
-/// W3.030 Stage 2: this table is now one of *two* dispatch arms. Names that
-/// land here are runtime-substrate drops (Duplex/LambdaActorHandle/SendHalf/
-/// RecvHalf, plus their `hew_*` C-ABI literals). Names of the form
-/// `<UserType>::<method>` that do not appear here are routed to the
-/// user-fn dispatch arm by `resolve_drop_fn`. Truly unknown names — neither
-/// a runtime substrate name nor a recognised `<Type>::<method>` user-fn
-/// candidate — fail closed in `resolve_drop_fn`.
-fn runtime_drop_symbol(drop_fn: &str) -> Option<&'static str> {
-    match drop_fn {
-        // Elaborator-produced names (from builtin_type_classes.rs seeding).
-        // Duplex<S, R> — close-both-directions.
-        "Duplex::close" => Some("hew_duplex_close"),
-        // Stream<T> / Sink<T> handle close.  The runtime symbol is
-        // element-type-independent at the ABI level; the type checker's
-        // builtin-method table (builtin_names.rs) emits "Stream::close" /
-        // "Sink::close" as the drop_fn regardless of element type.
-        "Stream::close" => Some("hew_stream_close"),
-        "Sink::close" => Some("hew_sink_close"),
-        // LambdaActorHandle — NB: the type-class seeding calls the method
-        // "close" but the runtime C-ABI symbol is "release", not "close".
-        // An explicit table entry is required; string-mangling would produce
-        // the wrong symbol.
-        "LambdaActorHandle::close" => Some("hew_lambda_actor_release"),
-        // Half-handle drops (slice-3 DropKind::DuplexHalfClose(Direction)).
-        // Both Send and Recv resolve to the same `hew_duplex_close_half`
-        // C-ABI symbol; the direction discriminant is materialised at the
-        // call site in `lower_drop` from the Place variant (SendHalf vs
-        // RecvHalf), not encoded in the symbol name. This closes the
-        // 6-cell drop gap surfaced by the W2.004 Stage-0 audit (rows #6/#7
-        // SendHalf/RecvHalf × {sync-return, async-cancel, actor-shutdown}).
-        "SendHalf::close" | "RecvHalf::close" => Some("hew_duplex_close_half"),
-        "CancellationToken::release" => Some("hew_cancel_token_release"),
-        // Literal C-ABI symbol pass-through (backward compat for hand-built
-        // test MIR that pre-dates elaborated-drop-plan consumption).
-        "hew_duplex_close" => Some("hew_duplex_close"),
-        "hew_lambda_actor_release" => Some("hew_lambda_actor_release"),
-        "hew_duplex_close_half" => Some("hew_duplex_close_half"),
-        "hew_cancel_token_release" => Some("hew_cancel_token_release"),
-        _ => None,
-    }
 }
 
 /// W3.030 Stage 2: typed dispatch decision for an `ElabDrop { drop_fn:
@@ -20643,76 +20926,74 @@ enum DropDispatch<'ctx> {
     },
 }
 
-/// Resolve an `ElabDrop` `drop_fn` string to a typed `DropDispatch`.
+/// Resolve a typed [`hew_mir::DropFnSpec`] to a `DropDispatch`.
 ///
-/// Resolution order (deterministic, fail-closed on the third path):
-///   1. If `runtime_drop_symbol` recognises the name → `RuntimeSymbol`.
-///   2. Else if the name looks like a `<Type>::<method>` user-method
-///      symbol *and* `fn_symbols` carries a `FnSymbol::Real` entry for it
-///      → `UserFn`. The user function must return Unit (Q-β-C). The
-///      lookup uses the same `<Self>::<method>` mangling as
+/// The MIR producer already classified the ritual; this function only
+/// materialises the codegen-side handles (deterministic, fail-closed):
+///
+///   1. `DropFnSpec::Runtime(d)` → `RuntimeSymbol(d.c_symbol())` — the C
+///      symbol is BORN here, at the codegen edge, from the typed
+///      descriptor's bijection. No name table, no string re-match.
+///   2. `DropFnSpec::UserClose(name)` → `UserFn` when `fn_symbols`
+///      carries a `FnSymbol::Real` entry for the generated
+///      `<Type>::<method>` symbol. The user function must return Unit
+///      (Q-β-C). The lookup uses the same `<Self>::<method>` mangling as
 ///      `HirImplBlock::method_symbol` and `declare_function` — no
 ///      translation glue (E6 in the plan).
-///   3. Else → `CodegenError::FailClosed` naming both arms.
+///   3. `DropFnSpec::Release(_)` → `CodegenError::FailClosed`: release
+///      symbols are consumed by the bytes / cow-heap emitters before the
+///      close-ritual dispatch; one reaching here is producer drift.
 ///
 /// W3.030 Stage 2: this is the single source of truth for drop dispatch
 /// classification. `lower_drop`, the codegen-internal verifier
 /// (`verify_drop_dispatch_resolves`), and any future caller must reach
 /// dispatch through this function.
 fn resolve_drop_fn<'ctx>(
-    drop_fn: &str,
+    drop_fn: &hew_mir::DropFnSpec,
     fn_symbols: &FnSymbolMap<'ctx>,
 ) -> CodegenResult<DropDispatch<'ctx>> {
-    if let Some(symbol) = runtime_drop_symbol(drop_fn) {
-        return Ok(DropDispatch::RuntimeSymbol(symbol));
-    }
-    // User-fn candidate: must be a `<Type>::<method>` mangled symbol. The
-    // `hew_` prefix is reserved for runtime C-ABI literals (already handled
-    // above); reject it here so a typo on a runtime literal does not silently
-    // get reclassified as a user fn.
-    if drop_fn.contains("::") && !drop_fn.starts_with("hew_") {
-        let entry = fn_symbols.get(drop_fn).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "drop_fn={drop_fn:?}: parsed as a qualified user-method \
-                 name but no function with that mangled symbol is \
-                 registered in the codegen function pre-pass. A \
-                 `#[resource]`'s `close` body must be declared in an \
-                 inherent `impl` block whose flattened \
-                 `<Self>::<method>` symbol reaches `declare_function` \
-                 before drop lowering (W3.030 / E6). Recognised runtime \
-                 substrate names: Duplex::close, LambdaActorHandle::close, \
-                 SendHalf::close, RecvHalf::close. Refusing to silently \
-                 no-op a resource drop \
-                 (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
-                 lifecycle-symmetry)."
-            ))
-        })?;
-        let (value, _return_ty, returns_unit) = entry.real(drop_fn, "drop dispatch")?;
-        if !returns_unit {
-            return Err(CodegenError::FailClosed(format!(
-                "drop_fn={drop_fn:?}: user-resource `close` must return \
-                 Unit (Q-β-C, ratified for v0.5 in W3.030). Fallible \
-                 cleanup belongs in a `defer` block, not a drop \
-                 ritual — a non-Unit close on a drop path would either \
-                 leak the result or panic with no recovery. \
-                 (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
-            )));
+    match drop_fn {
+        hew_mir::DropFnSpec::Runtime(descriptor) => {
+            Ok(DropDispatch::RuntimeSymbol(descriptor.c_symbol()))
         }
-        return Ok(DropDispatch::UserFn {
-            value,
-            symbol: drop_fn.to_string(),
-        });
+        hew_mir::DropFnSpec::UserClose(name) => {
+            let entry = fn_symbols.get(name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "drop_fn=UserClose({name:?}): no function with that mangled \
+                     symbol is registered in the codegen function pre-pass. A \
+                     `#[resource]`'s `close` body must be declared in an \
+                     inherent `impl` block whose flattened \
+                     `<Self>::<method>` symbol reaches `declare_function` \
+                     before drop lowering (W3.030 / E6). Refusing to silently \
+                     no-op a resource drop \
+                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                     lifecycle-symmetry)."
+                ))
+            })?;
+            let (value, _return_ty, returns_unit) = entry.real(name, "drop dispatch")?;
+            if !returns_unit {
+                return Err(CodegenError::FailClosed(format!(
+                    "drop_fn=UserClose({name:?}): user-resource `close` must return \
+                     Unit (Q-β-C, ratified for v0.5 in W3.030). Fallible \
+                     cleanup belongs in a `defer` block, not a drop \
+                     ritual — a non-Unit close on a drop path would either \
+                     leak the result or panic with no recovery. \
+                     (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+                )));
+            }
+            Ok(DropDispatch::UserFn {
+                value,
+                symbol: name.clone(),
+            })
+        }
+        hew_mir::DropFnSpec::Release(symbol) => Err(CodegenError::FailClosed(format!(
+            "drop_fn=Release({symbol:?}) reached the close-ritual dispatch; \
+             cow-heap / fresh-value release symbols are consumed by the bytes \
+             and cow-heap emitters, never by the runtime/user close split — \
+             the MIR producer mixed the two domains. Refusing to emit \
+             (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
+        ))),
     }
-    Err(CodegenError::FailClosed(format!(
-        "drop_fn={drop_fn:?}: no C-ABI runtime symbol wired for this \
-         drop_fn string and it does not parse as a `<Type>::<method>` \
-         user-method symbol. Recognised runtime names today: \
-         Duplex::close, LambdaActorHandle::close, SendHalf::close, \
-         RecvHalf::close (and their hew_* C-ABI literals). User \
-         resources must declare `close` in an inherent impl block \
-         (W3.030). Refusing to silently no-op a resource drop \
-         (LESSONS: boundary-fail-closed, lifecycle-symmetry)."
-    )))
 }
 
 /// W3.030 Stage 2 codegen-internal verifier (plan V13).
@@ -20776,7 +21057,11 @@ fn verify_drop_dispatch_resolves<'ctx>(
 /// A third dispatch path is impossible by construction — `resolve_drop_fn`
 /// either returns one of the two arms or fails closed. The verifier
 /// `verify_drop_dispatch_resolves` pins this at module-build time.
-fn lower_drop(fn_ctx: &FnCtx<'_, '_>, place: Place, drop_fn: &str) -> CodegenResult<()> {
+fn lower_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    drop_fn: &hew_mir::DropFnSpec,
+) -> CodegenResult<()> {
     match resolve_drop_fn(drop_fn, fn_ctx.fn_symbols)? {
         DropDispatch::RuntimeSymbol(symbol) => lower_drop_runtime(fn_ctx, place, symbol),
         DropDispatch::UserFn { value, symbol } => lower_drop_user_fn(fn_ctx, place, value, &symbol),
@@ -20787,7 +21072,7 @@ fn lower_inline_drop(
     fn_ctx: &FnCtx<'_, '_>,
     place: Place,
     ty: &ResolvedTy,
-    drop_fn: &str,
+    drop_fn: &hew_mir::DropFnSpec,
 ) -> CodegenResult<()> {
     // Bytes ABI: a native `bytes` value is a stack-resident `BytesTriple
     // { ptr, i32, i32 }`, NOT a single owned pointer. The data buffer's sole
@@ -20807,26 +21092,26 @@ fn lower_inline_drop(
     // fail-closes on a non-ptr slot — surfacing the drift, but with a less
     // direct diagnostic than this arm's targeted message.
     if matches!(ty, ResolvedTy::Bytes) {
-        if drop_fn != "hew_bytes_drop" {
+        if *drop_fn != hew_mir::DropFnSpec::Release("hew_bytes_drop") {
             return Err(CodegenError::FailClosed(format!(
                 "inline Instr::Drop @ {place:?} on type Bytes carries drop_fn \
-                 {drop_fn:?}; the only admissible Bytes inline-drop symbol is \
-                 `hew_bytes_drop` (the MIR `generator_yield_drop_symbol` authority \
-                 — `hew-mir/src/lower.rs`). Refusing to route a Bytes value through \
-                 the generic single-ptr-load drop dispatcher (LESSONS: \
-                 boundary-fail-closed, dedup-semantic-boundary)."
+                 {drop_fn:?}; the only admissible Bytes inline-drop ritual is \
+                 Release(hew_bytes_drop) (the MIR `generator_yield_drop_symbol` \
+                 authority — `hew-mir/src/lower.rs`). Refusing to route a Bytes \
+                 value through the generic single-ptr-load drop dispatcher \
+                 (LESSONS: boundary-fail-closed, dedup-semantic-boundary)."
             )));
         }
         return emit_bytes_inplace_drop(fn_ctx, place);
     }
-    if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
-        if drop_fn == symbol {
+    if let hew_mir::DropFnSpec::Release(symbol) = drop_fn {
+        // A release ritual is only ever congruent with its own type's cow
+        // release symbol; anything else would free through the wrong ABI.
+        if cow_heap_release_symbol(fn_ctx, ty) == Some(symbol) {
             return emit_cow_heap_drop(fn_ctx, place, symbol);
         }
-    }
-    if is_known_cow_heap_drop_symbol(drop_fn) {
         return Err(CodegenError::FailClosed(format!(
-            "inline Instr::Drop @ {place:?} carries CowHeap release symbol {drop_fn:?} \
+            "inline Instr::Drop @ {place:?} carries release ritual {symbol:?} \
              incongruent with its type {ty:?} (whose release symbol is {expected:?}); \
              refusing to route a heap-owning value through the generic drop dispatcher",
             expected = cow_heap_release_symbol(fn_ctx, ty),
@@ -28713,16 +28998,18 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Call {
             callee,
+            builtin,
             args,
             dest,
             next,
         } => {
+            use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
             // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>` in-place
             // from the runtime extern's raw `u64` packed-pid return. The generic
             // FnSymbol::Real arm's `dest_ty == return_ty` check rejects this shape
             // (Result outer struct vs. i64), so we handle it before the symbol
             // lookup. See `emit_node_lookup_call`.
-            if callee == "Node::lookup" {
+            if *builtin == Some(RtFamily::NodeLookup) {
                 emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -28733,14 +29020,14 @@ fn lower_terminator<'ctx>(
             // Membership in MIR's `module_fn_names` comes from the
             // non-`CompilerIntrinsic` filter at `hew-mir/src/lower.rs:761-767`,
             // which inserts every catalog entry whose linkage is not
-            // `CompilerIntrinsic { .. }`.  Codegen intercepts by the string
-            // match `callee_name == "hew_remote_pid_tell"` here (in the
+            // `CompilerIntrinsic { .. }`.  Codegen intercepts on the carried
+            // `RuntimeCallFamily::RemotePidTell` here (in the
             // `Terminator::Call` lowering arm) and emits the real
             // `hew_actor_send_by_id` sequence plus the user-visible
             // `Result<(), SendError>` construction in-place.
-            // Dispatch is callee-name-based (no new `FnSymbol::*Pid*` variant),
+            // Dispatch is family-keyed (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
-            if callee == "hew_remote_pid_tell" {
+            if *builtin == Some(RtFamily::RemotePidTell) {
                 emit_remote_pid_tell_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -28748,10 +29035,11 @@ fn lower_terminator<'ctx>(
             // for `conn.attach(handler)` on a `net.Connection` receiver. Codegen
             // resolves the concrete actor from the handler's `LocalPid<A>`,
             // synthesises the `on_data` / `on_close` msg_ids, and emits the
-            // 4-arg runtime attach ABI. Dispatch is by callee name, matching
-            // the `hew_remote_pid_tell` precedent. `attach` returns Unit, so
-            // any `dest` would be a checker-boundary bug — fail closed.
-            if callee == "hew_tcp_attach_local" {
+            // 4-arg runtime attach ABI. Dispatch is on the carried family,
+            // matching the `hew_remote_pid_tell` precedent. `attach` returns
+            // Unit, so any `dest` would be a checker-boundary bug — fail
+            // closed.
+            if *builtin == Some(RtFamily::TcpAttachLocal) {
                 if dest.is_some() {
                     return Err(CodegenError::FailClosed(
                         "hew_tcp_attach_local (conn.attach) returns Unit and must not carry a \
@@ -28782,14 +29070,16 @@ fn lower_terminator<'ctx>(
             // type comes from the dest local's checker-resolved `Option<T>`
             // payload — never from the symbol name; the runtime decodes the
             // element directly into the Option's Some payload slot and the
-            // return code selects the tag. Dispatch by callee name, mirroring
-            // the `Node::lookup` / `hew_remote_pid_tell` precedent.
+            // return code selects the tag. Dispatch on the carried family,
+            // mirroring the `Node::lookup` / `hew_remote_pid_tell` precedent.
             if matches!(
-                callee.as_str(),
-                "hew_stream_next_layout"
-                    | "hew_stream_try_next_layout"
-                    | "hew_channel_recv_layout"
-                    | "hew_channel_try_recv_layout"
+                builtin,
+                Some(
+                    RtFamily::StreamNextLayout
+                        | RtFamily::StreamTryNextLayout
+                        | RtFamily::ChannelRecvLayout
+                        | RtFamily::ChannelTryRecvLayout
+                )
             ) {
                 let [handle_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
@@ -28832,8 +29122,8 @@ fn lower_terminator<'ctx>(
             // a string slot, a BytesTriple, raw Plain bytes, or the owned
             // representation).
             if matches!(
-                callee.as_str(),
-                "hew_channel_send_layout" | "hew_stream_send_layout"
+                builtin,
+                Some(RtFamily::ChannelSendLayout | RtFamily::StreamSendLayout)
             ) {
                 let [handle_arg, value_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
@@ -28886,6 +29176,37 @@ fn lower_terminator<'ctx>(
                     .build_unconditional_branch(next_bb)
                     .llvm_ctx_with(|| format!("{callee} br next"))?;
                 return Ok(());
+            }
+            // Producer-gap backstop (fail-closed): the five intercepts above
+            // dispatch on the carried `builtin` family. A callee whose NAME
+            // is one of those intercept identities but which arrived with
+            // `builtin: None` means a MIR producer minted the call without
+            // threading the checker-resolved family — refuse loudly here
+            // with the gap named, instead of falling through to the generic
+            // symbol path (which would fail closed too, but with an
+            // unrelated "no declared symbol" / dest-shape message that
+            // hides the real defect). LESSONS `boundary-fail-closed`.
+            if builtin.is_none() {
+                if let Some(family) = RtFamily::from_c_symbol(callee) {
+                    if matches!(
+                        family,
+                        RtFamily::NodeLookup
+                            | RtFamily::RemotePidTell
+                            | RtFamily::TcpAttachLocal
+                            | RtFamily::StreamNextLayout
+                            | RtFamily::StreamTryNextLayout
+                            | RtFamily::ChannelRecvLayout
+                            | RtFamily::ChannelTryRecvLayout
+                            | RtFamily::ChannelSendLayout
+                            | RtFamily::StreamSendLayout
+                    ) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Terminator::Call to intercept callee `{callee}` arrived without \
+                             its typed builtin family ({family:?}); the MIR producer must \
+                             carry the checker-resolved RuntimeCallFamily on the call"
+                        )));
+                    }
+                }
             }
             if let Some(intrinsic) = math_builtin_intrinsic(callee) {
                 if !fn_symbols.contains_key(callee) {
@@ -37736,6 +38057,8 @@ mod tests {
             instructions: Vec::new(),
             terminator: Terminator::Call {
                 callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
+                // Probe callee: codegen-internal synthetic, no catalog family.
+                builtin: None,
                 args: vec![Place::Local(0), Place::Local(1)],
                 dest: None,
                 next: 1,
@@ -39890,8 +40213,8 @@ mod tests {
     // then invoke each helper and assert on the printed LLVM IR.
     //
     // The drop-substrate tests are simpler — they exercise
-    // `runtime_drop_symbol` / `resolve_drop_fn` (W3.030 Stage 2 typed
-    // dispatcher) and `intern_runtime_decl` directly.
+    // `resolve_drop_fn` (the typed DropFnSpec dispatcher) and
+    // `intern_runtime_decl` directly.
     // ========================================================================
 
     use hew_mir::{
@@ -39910,8 +40233,13 @@ mod tests {
     #[test]
     fn drop_fn_send_half_close_resolves_to_hew_duplex_close_half() {
         let syms = empty_fn_symbols();
-        match resolve_drop_fn("SendHalf::close", &syms)
-            .expect("SendHalf::close must resolve after W2.004 Stage 1")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::SendHalfClose,
+            ),
+            &syms,
+        )
+        .expect("SendHalf::close must resolve after W2.004 Stage 1")
         {
             DropDispatch::RuntimeSymbol(sym) => assert_eq!(
                 sym, "hew_duplex_close_half",
@@ -39926,8 +40254,13 @@ mod tests {
     #[test]
     fn drop_fn_recv_half_close_resolves_to_hew_duplex_close_half() {
         let syms = empty_fn_symbols();
-        match resolve_drop_fn("RecvHalf::close", &syms)
-            .expect("RecvHalf::close must resolve after W2.004 Stage 1")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::RecvHalfClose,
+            ),
+            &syms,
+        )
+        .expect("RecvHalf::close must resolve after W2.004 Stage 1")
         {
             DropDispatch::RuntimeSymbol(sym) => assert_eq!(sym, "hew_duplex_close_half"),
             DropDispatch::UserFn { .. } => panic!("RecvHalf::close must take RuntimeSymbol arm"),
@@ -39935,27 +40268,30 @@ mod tests {
     }
 
     #[test]
-    fn drop_fn_literal_hew_duplex_close_half_pass_through() {
-        assert_eq!(
-            runtime_drop_symbol("hew_duplex_close_half"),
-            Some("hew_duplex_close_half"),
-            "hew_duplex_close_half literal must pass through"
-        );
-    }
-
-    #[test]
     fn drop_fn_existing_duplex_close_still_resolves() {
-        // Regression: the existing Duplex::close mapping must not be
-        // disturbed by the half-close additions or the W3.030 Stage 2
-        // typed-dispatch refactor.
-        assert_eq!(
-            runtime_drop_symbol("Duplex::close"),
-            Some("hew_duplex_close")
-        );
-        assert_eq!(
-            runtime_drop_symbol("LambdaActorHandle::close"),
-            Some("hew_lambda_actor_release")
-        );
+        // Regression: the Duplex / lambda-actor close mappings must not be
+        // disturbed by the typed-descriptor migration. The symbol is born
+        // from the descriptor bijection at this dispatch — pin the values.
+        let syms = empty_fn_symbols();
+        for (descriptor, expected) in [
+            (
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                "hew_duplex_close",
+            ),
+            (
+                hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+                "hew_lambda_actor_release",
+            ),
+        ] {
+            match resolve_drop_fn(&hew_mir::DropFnSpec::Runtime(descriptor), &syms)
+                .expect("runtime descriptors must resolve")
+            {
+                DropDispatch::RuntimeSymbol(sym) => assert_eq!(sym, expected),
+                DropDispatch::UserFn { .. } => {
+                    panic!("{descriptor:?} must take the RuntimeSymbol arm")
+                }
+            }
+        }
     }
 
     #[test]
@@ -39965,18 +40301,16 @@ mod tests {
         // candidate, so it reaches the fn_symbols lookup and fails there
         // (no registered function). The diagnostic must still cite both
         // dispatch arms so the next implementer knows where to look.
-        let err = resolve_drop_fn("Mystery::close", &syms)
-            .expect_err("Unknown drop_fn strings must fail closed");
+        let err = resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Mystery::close".to_string()),
+            &syms,
+        )
+        .expect_err("an unregistered user close must fail closed");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
                     msg.contains("Mystery::close"),
-                    "diagnostic must name the offending drop_fn string; got: {msg}"
-                );
-                assert!(
-                    msg.contains("SendHalf::close") && msg.contains("RecvHalf::close"),
-                    "diagnostic must list SendHalf::close + RecvHalf::close as \
-                     recognised runtime substrate names; got: {msg}"
+                    "diagnostic must name the offending close symbol; got: {msg}"
                 );
                 assert!(
                     msg.contains("inherent") || msg.contains("impl"),
@@ -40014,8 +40348,11 @@ mod tests {
                 returns_unit: true,
             },
         );
-        match resolve_drop_fn("Conn::close", &syms)
-            .expect("Conn::close must resolve via the UserFn arm when registered")
+        match resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Conn::close".to_string()),
+            &syms,
+        )
+        .expect("Conn::close must resolve via the UserFn arm when registered")
         {
             DropDispatch::UserFn { value: v, symbol } => {
                 assert_eq!(symbol, "Conn::close");
@@ -40049,8 +40386,11 @@ mod tests {
                 returns_unit: false,
             },
         );
-        let err = resolve_drop_fn("Bad::close", &syms)
-            .expect_err("non-Unit user-resource close must fail closed (Q-β-C)");
+        let err = resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("Bad::close".to_string()),
+            &syms,
+        )
+        .expect_err("non-Unit user-resource close must fail closed (Q-β-C)");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(msg.contains("Bad::close"));
@@ -40081,7 +40421,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("NotARealType::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::UserClose(
+                            "NotARealType::close".to_string(),
+                        )),
                         kind: DropKind::Resource,
                     }],
                 },
@@ -40147,7 +40489,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::DuplexClose,
                     }],
                 },
@@ -40199,7 +40543,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::DuplexClose,
                     }],
                 },
@@ -40648,7 +40994,7 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(0),
                         ty: ResolvedTy::Unit,
-                        drop_fn: Some("Conn::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::UserClose("Conn::close".to_string())),
                         kind: DropKind::Resource,
                     }],
                 },
@@ -41341,7 +41687,7 @@ mod tests {
         let drop = ElabDrop {
             place: Place::Local(0),
             ty: ResolvedTy::String,
-            drop_fn: Some("hew_string_drop".to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::CowHeap {
                 drop_fn: "hew_string_drop",
             },
@@ -41372,7 +41718,7 @@ mod tests {
         let drop = ElabDrop {
             place: Place::Local(0),
             ty: tuple_ty,
-            drop_fn: Some("hew_string_drop".to_string()),
+            drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::AggregateRecursive,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
@@ -42938,7 +43284,9 @@ mod tests {
                     drops: vec![ElabDrop {
                         place: Place::Local(1),
                         ty: trait_obj.clone(),
-                        drop_fn: Some("Duplex::close".to_string()),
+                        drop_fn: Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+                        )),
                         kind: DropKind::TraitObject {
                             storage: TraitObjectStorage::FrameOwned,
                         },

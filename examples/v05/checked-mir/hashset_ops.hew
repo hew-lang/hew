@@ -1,0 +1,23 @@
+// MIR-corpus fixture: layout-backed HashSet runtime surface.
+//
+// Pins `hew_hashset_new_with_layout`, `hew_hashset_insert_layout`,
+// `hew_hashset_contains_layout`, `hew_hashset_remove_layout`,
+// `hew_hashset_len_layout`, `hew_hashset_is_empty_layout`, and the
+// scope-exit `hew_hashset_free_layout` drop.
+fn main() {
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(1);
+    s.insert(2);
+    s.insert(2);
+    let n = s.len();
+    let has1 = s.contains(1);
+    let removed = s.remove(1);
+    println(f"n={n} has1={has1} removed={removed}");
+    let empty = s.is_empty();
+    println(empty);
+    let words: HashSet<string> = HashSet::new();
+    words.insert("colour");
+    words.insert("behaviour");
+    let hasc = words.contains("colour");
+    println(f"words={words.len()} hasc={hasc}");
+}

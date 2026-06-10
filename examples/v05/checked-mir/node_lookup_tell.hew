@@ -1,0 +1,62 @@
+// Accept: Node::lookup(name) -> Result::Ok(RemotePid<T>) -> pid.tell(msg)
+// delivers to a locally registered actor through the in-process send-by-id path.
+record Ping {
+    n: i64
+}
+
+actor Worker {
+    let count: i64;
+    receive fn ping(msg: Ping) {
+        count = count + msg.n;
+    }
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+impl ActorMsg for Worker {
+    type Msg = Ping;
+    type Reply = i64;
+}
+
+fn main() -> i64 {
+    Node::set_transport("tcp");
+    Node::start("127.0.0.1:0");
+    let worker = spawn Worker(count: 0);
+    Node::register("node-lookup-worker", worker);
+    let missing: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-missing");
+    let missing_code = match missing {
+        Result::Ok(pid) => {
+            let unexpected = pid.tell(Ping { n: 1 });
+            match unexpected {
+                Result::Ok(_) => 10,
+                Result::Err(_) => 11,
+            }
+        },
+        Result::Err(_) => 0,
+    };
+    assert_eq(missing_code, 0);
+    let found: Result<RemotePid<Worker>, LookupError> = Node::lookup("node-lookup-worker");
+    let status = match found {
+        Result::Ok(pid) => {
+            let delivered = pid.tell(Ping { n: 42 });
+            let send_code = match delivered {
+                Result::Ok(_) => 0,
+                Result::Err(_) => 20,
+            };
+            if send_code == 0 {
+                let total = match await worker.total() {
+                    Ok(v) => v,
+                    Err(_e) => -1,
+                };
+                assert_eq(total, 42);
+                0
+            } else {
+                send_code
+            }
+        },
+        Result::Err(_) => 30,
+    };
+    Node::shutdown();
+    status
+}

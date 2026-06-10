@@ -1,0 +1,21 @@
+// MIR-corpus fixture: string-element pipe send.
+//
+// A non-awaited `sink.send("hi")` over a `Sink<string>` pipe lowers to
+// the element-overload write entry (`hew_sink_write_string`), not the
+// suspending bytes path.
+import std::stream;
+
+actor Echo {
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.pipe(2);
+        sink.send("hi");
+        sink.close();
+        input.close();
+    }
+}
+
+fn main() {
+    let e = spawn Echo;
+    e.run(0);
+    sleep_ms(100);
+}

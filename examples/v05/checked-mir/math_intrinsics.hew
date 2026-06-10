@@ -1,0 +1,24 @@
+// MIR-corpus fixture: math builtin intrinsics.
+//
+// Pins the user-visible callee names (`sqrt`, `pow`, `floor`, `ceil`,
+// `round`, `abs`, `min`, `max` and the f64 peers) dispatched by
+// codegen's math-intrinsic lookup.
+import std::math;
+
+fn main() {
+    println(math.sqrt(16.0));
+    println(math.pow(2.0, 10.0));
+    println(math.floor(3.7));
+    println(math.ceil(3.2));
+    println(math.round(3.5));
+    println(math.abs(-5.0));
+    println(math.min(3.0, 7.0));
+    println(math.max(3.0, 7.0));
+    println(math.abs(-5));
+    println(math.min(3, 7));
+    println(math.max(3, 7));
+    println(math.sin(0.0));
+    println(math.cos(0.0));
+    println(math.exp(1.0));
+    println(math.log(1.0));
+}

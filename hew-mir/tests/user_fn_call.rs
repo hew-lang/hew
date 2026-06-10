@@ -87,10 +87,7 @@ fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
 
     match calls[0] {
         Terminator::Call {
-            callee,
-            args,
-            dest,
-            next: _,
+            callee, args, dest, ..
         } => {
             assert_eq!(
                 callee, "add",

@@ -1,0 +1,23 @@
+// MIR-corpus fixture: lambda-actor creation, tell, ask, and scope-exit
+// release.
+//
+// Pins `hew_lambda_actor_new`, `hew_lambda_actor_send`, the
+// callable-ask reply path, and the handle release emitted by drop
+// elaboration at scope exit (`hew_lambda_actor_release` family).
+// `await handle.close()` is omitted: the explicit-close MIR producer
+// arm (`hew_duplex_close`) is not wired yet and refuses fail-closed.
+fn main() {
+    let doubler = actor |x: i64| {
+        println(x * 2);
+    };
+    doubler.send(21);
+    let factor = 7;
+    let scale = actor |n: i64| -> i64 {
+        n * factor
+    };
+    let a = scale(3);
+    match a {
+        Ok(v) => println(v),
+        Err(_) => println(-1),
+    }
+}

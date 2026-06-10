@@ -454,10 +454,12 @@ fn duplex_drop_fn_resolves_via_registry() {
 
     for drop in &drops {
         assert_eq!(
-            drop.drop_fn.as_deref(),
-            Some("Duplex::close"),
-            "duplex drop_fn must resolve to \"Duplex::close\" via the \
-             type_classes registry; got {:?}",
+            drop.drop_fn,
+            Some(hew_mir::DropFnSpec::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
+            )),
+            "duplex drop_fn must lift onto the typed DuplexClose descriptor \
+             via the type_classes registry; got {:?}",
             drop.drop_fn
         );
     }

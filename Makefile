@@ -507,6 +507,16 @@ test-vertical-slice: hew runtime stdlib check-libhew-fresh
 test-pkg-import: hew runtime stdlib check-libhew-fresh
 	bash tests/pkg-import/run.sh
 
+# Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
+# oracle for internal retyping work. `checked-mir-verify` re-dumps every
+# fixture and diffs against the committed goldens; `checked-mir-golden`
+# recaptures them (only in a commit that justifies the dump change).
+checked-mir-verify: hew
+	bash scripts/checked-mir-corpus.sh verify
+
+checked-mir-golden: hew
+	bash scripts/checked-mir-corpus.sh golden
+
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \
 		-p hew-runtime \

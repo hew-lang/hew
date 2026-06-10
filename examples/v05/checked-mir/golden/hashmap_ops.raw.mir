@@ -1,0 +1,3396 @@
+RawMirFunction {
+    name: "main",
+    return_ty: Unit,
+    call_conv: Default,
+    params: [],
+    locals: [
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                I64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                I64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        String,
+        I64,
+        String,
+        I64,
+        Unit,
+        String,
+        Named {
+            name: "Option",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        I64,
+        I64,
+        I64,
+        Bool,
+        String,
+        Bool,
+        Bool,
+        String,
+        Bool,
+        Bool,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        I64,
+        String,
+        String,
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                Bool,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                Bool,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        String,
+        Bool,
+        I64,
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                F64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                F64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        String,
+        F64,
+        I64,
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                String,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                String,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        String,
+        String,
+        Unit,
+        String,
+        Named {
+            name: "Option",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        String,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "HashMap::new",
+                builtin: Some(
+                    HashMapNew,
+                ),
+                args: [],
+                dest: Some(
+                    Local(
+                        0,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        3,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        1,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        97,
+                        108,
+                        105,
+                        99,
+                        101,
+                    ],
+                    dest: Local(
+                        2,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        3,
+                    ),
+                    value: 10,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        2,
+                    ),
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: None,
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        2,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        7,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        98,
+                        111,
+                        98,
+                    ],
+                    dest: Local(
+                        4,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        5,
+                    ),
+                    value: 20,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        4,
+                    ),
+                    Local(
+                        5,
+                    ),
+                ],
+                dest: None,
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        6,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        97,
+                        108,
+                        105,
+                        99,
+                        101,
+                    ],
+                    dest: Local(
+                        7,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_get_layout",
+                builtin: Some(
+                    HashMapGetLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        7,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        8,
+                    ),
+                ),
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        9,
+                    ),
+                    src: EnumTag(
+                        8,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        10,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        11,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        9,
+                    ),
+                    rhs: Local(
+                        10,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    11,
+                ),
+                then_target: 6,
+                else_target: 9,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        20,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        22,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        98,
+                        111,
+                        98,
+                    ],
+                    dest: Local(
+                        18,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_contains_key_layout",
+                builtin: Some(
+                    HashMapContainsKeyLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        18,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        19,
+                    ),
+                ),
+                next: 14,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "v",
+                    site: SiteId(
+                        13,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "v",
+                    site: SiteId(
+                        14,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        14,
+                    ),
+                    src: MachineVariant {
+                        local: 8,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        14,
+                    ),
+                ],
+                dest: None,
+                next: 10,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        15,
+                    ),
+                    value: 1,
+                },
+                IntNegChecked {
+                    signed: Signed,
+                    dest: Local(
+                        16,
+                    ),
+                    operand: Local(
+                        15,
+                    ),
+                    overflow_flag: Local(
+                        17,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    17,
+                ),
+                then_target: 11,
+                else_target: 12,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        12,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        13,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        9,
+                    ),
+                    rhs: Local(
+                        12,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    13,
+                ),
+                then_target: 7,
+                else_target: 8,
+            },
+        },
+        BasicBlock {
+            id: 10,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 11,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 12,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        16,
+                    ),
+                ],
+                dest: None,
+                next: 13,
+            },
+        },
+        BasicBlock {
+            id: 13,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 14,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "has",
+                    site: SiteId(
+                        21,
+                    ),
+                    ty: Bool,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        25,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        20,
+                    ),
+                    src: Local(
+                        19,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        98,
+                        111,
+                        98,
+                    ],
+                    dest: Local(
+                        21,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_remove_layout",
+                builtin: Some(
+                    HashMapRemoveLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        21,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        22,
+                    ),
+                ),
+                next: 15,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "removed",
+                    site: SiteId(
+                        24,
+                    ),
+                    ty: Bool,
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "has",
+                    site: SiteId(
+                        30,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        23,
+                    ),
+                    src: Local(
+                        22,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        104,
+                        97,
+                        115,
+                        61,
+                    ],
+                    dest: Local(
+                        24,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        20,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        25,
+                    ),
+                ),
+                next: 16,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        24,
+                    ),
+                    Local(
+                        25,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        26,
+                    ),
+                ),
+                next: 17,
+            },
+        },
+        BasicBlock {
+            id: 17,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        32,
+                        114,
+                        101,
+                        109,
+                        111,
+                        118,
+                        101,
+                        100,
+                        61,
+                    ],
+                    dest: Local(
+                        27,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        26,
+                    ),
+                    Local(
+                        27,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        28,
+                    ),
+                ),
+                next: 18,
+            },
+        },
+        BasicBlock {
+            id: 18,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "removed",
+                    site: SiteId(
+                        34,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        23,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        29,
+                    ),
+                ),
+                next: 19,
+            },
+        },
+        BasicBlock {
+            id: 19,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        28,
+                    ),
+                    Local(
+                        29,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        30,
+                    ),
+                ),
+                next: 20,
+            },
+        },
+        BasicBlock {
+            id: 20,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        32,
+                        108,
+                        101,
+                        110,
+                        61,
+                    ],
+                    dest: Local(
+                        31,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        30,
+                    ),
+                    Local(
+                        31,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        32,
+                    ),
+                ),
+                next: 21,
+            },
+        },
+        BasicBlock {
+            id: 21,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_hashmap_len_layout",
+                builtin: Some(
+                    HashMapLenLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        33,
+                    ),
+                ),
+                next: 22,
+            },
+        },
+        BasicBlock {
+            id: 22,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        33,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        34,
+                    ),
+                ),
+                next: 23,
+            },
+        },
+        BasicBlock {
+            id: 23,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        32,
+                    ),
+                    Local(
+                        34,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        35,
+                    ),
+                ),
+                next: 24,
+            },
+        },
+        BasicBlock {
+            id: 24,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_str",
+                builtin: None,
+                args: [
+                    Local(
+                        35,
+                    ),
+                ],
+                dest: None,
+                next: 25,
+            },
+        },
+        BasicBlock {
+            id: 25,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        27,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "HashMap::new",
+                builtin: Some(
+                    HashMapNew,
+                ),
+                args: [],
+                dest: Some(
+                    Local(
+                        36,
+                    ),
+                ),
+                next: 26,
+            },
+        },
+        BasicBlock {
+            id: 26,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "flags",
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            Bool,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "flags",
+                    site: SiteId(
+                        56,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            Bool,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        37,
+                    ),
+                    src: Local(
+                        36,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        100,
+                        101,
+                        98,
+                        117,
+                        103,
+                    ],
+                    dest: Local(
+                        38,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        39,
+                    ),
+                    value: 1,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        37,
+                    ),
+                    Local(
+                        38,
+                    ),
+                    Local(
+                        39,
+                    ),
+                ],
+                dest: None,
+                next: 27,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        55,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "flags",
+                    site: SiteId(
+                        61,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            Bool,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_hashmap_len_layout",
+                builtin: Some(
+                    HashMapLenLayout,
+                ),
+                args: [
+                    Local(
+                        37,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        40,
+                    ),
+                ),
+                next: 28,
+            },
+        },
+        BasicBlock {
+            id: 28,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        40,
+                    ),
+                ],
+                dest: None,
+                next: 29,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        59,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "HashMap::new",
+                builtin: Some(
+                    HashMapNew,
+                ),
+                args: [],
+                dest: Some(
+                    Local(
+                        41,
+                    ),
+                ),
+                next: 30,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "ratios",
+                    site: SiteId(
+                        63,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            F64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "ratios",
+                    site: SiteId(
+                        66,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            F64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        42,
+                    ),
+                    src: Local(
+                        41,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        112,
+                        105,
+                    ],
+                    dest: Local(
+                        43,
+                    ),
+                },
+                FloatLit {
+                    dest: Local(
+                        44,
+                    ),
+                    value_bits: 4614253070214989087,
+                    width: F64,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        42,
+                    ),
+                    Local(
+                        43,
+                    ),
+                    Local(
+                        44,
+                    ),
+                ],
+                dest: None,
+                next: 31,
+            },
+        },
+        BasicBlock {
+            id: 31,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        65,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "ratios",
+                    site: SiteId(
+                        71,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            F64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_hashmap_len_layout",
+                builtin: Some(
+                    HashMapLenLayout,
+                ),
+                args: [
+                    Local(
+                        42,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        45,
+                    ),
+                ),
+                next: 32,
+            },
+        },
+        BasicBlock {
+            id: 32,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        45,
+                    ),
+                ],
+                dest: None,
+                next: 33,
+            },
+        },
+        BasicBlock {
+            id: 33,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        69,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "HashMap::new",
+                builtin: Some(
+                    HashMapNew,
+                ),
+                args: [],
+                dest: Some(
+                    Local(
+                        46,
+                    ),
+                ),
+                next: 34,
+            },
+        },
+        BasicBlock {
+            id: 34,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "labels",
+                    site: SiteId(
+                        73,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            String,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "labels",
+                    site: SiteId(
+                        76,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            String,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        47,
+                    ),
+                    src: Local(
+                        46,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        107,
+                    ],
+                    dest: Local(
+                        48,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        118,
+                    ],
+                    dest: Local(
+                        49,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        47,
+                    ),
+                    Local(
+                        48,
+                    ),
+                    Local(
+                        49,
+                    ),
+                ],
+                dest: None,
+                next: 35,
+            },
+        },
+        BasicBlock {
+            id: 35,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        75,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "labels",
+                    site: SiteId(
+                        81,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            String,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        107,
+                    ],
+                    dest: Local(
+                        51,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_get_layout",
+                builtin: Some(
+                    HashMapGetLayout,
+                ),
+                args: [
+                    Local(
+                        47,
+                    ),
+                    Local(
+                        51,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        52,
+                    ),
+                ),
+                next: 36,
+            },
+        },
+        BasicBlock {
+            id: 36,
+            statements: [],
+            instructions: [
+                Move {
+                    dest: Local(
+                        53,
+                    ),
+                    src: EnumTag(
+                        52,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        54,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        55,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        53,
+                    ),
+                    rhs: Local(
+                        54,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    55,
+                ),
+                then_target: 38,
+                else_target: 41,
+            },
+        },
+        BasicBlock {
+            id: 37,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            79,
+                        ),
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        50,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 38,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "s",
+                    site: SiteId(
+                        83,
+                    ),
+                    ty: String,
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "s",
+                    site: SiteId(
+                        84,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        58,
+                    ),
+                    src: MachineVariant {
+                        local: 52,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                builtin: None,
+                args: [
+                    Local(
+                        58,
+                    ),
+                ],
+                dest: None,
+                next: 42,
+            },
+        },
+        BasicBlock {
+            id: 39,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        109,
+                        105,
+                        115,
+                        115,
+                        105,
+                        110,
+                        103,
+                    ],
+                    dest: Local(
+                        59,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_str",
+                builtin: None,
+                args: [
+                    Local(
+                        59,
+                    ),
+                ],
+                dest: None,
+                next: 43,
+            },
+        },
+        BasicBlock {
+            id: 40,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 41,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        56,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        57,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        53,
+                    ),
+                    rhs: Local(
+                        56,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    57,
+                ),
+                then_target: 39,
+                else_target: 40,
+            },
+        },
+        BasicBlock {
+            id: 42,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 37,
+            },
+        },
+        BasicBlock {
+            id: 43,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 37,
+            },
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    Bool,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    F64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    String,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                87,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I32,
+    ],
+    locals: [
+        I32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        11,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        118,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            117,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                117,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                118,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        121,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            120,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                120,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                121,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U32,
+    ],
+    locals: [
+        U32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        124,
+                    ),
+                    ty: U32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            123,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                123,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                124,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U64,
+    ],
+    locals: [
+        U64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        127,
+                    ),
+                    ty: U64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            126,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                126,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                127,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Bool,
+    ],
+    locals: [
+        Bool,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        130,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            129,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                129,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                130,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Char,
+    ],
+    locals: [
+        Char,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        133,
+                    ),
+                    ty: Char,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_char",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            132,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                132,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                133,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        F64,
+    ],
+    locals: [
+        F64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        136,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            135,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                135,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                136,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}
+RawMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        String,
+    ],
+    locals: [
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        138,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            138,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        0,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                138,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+}

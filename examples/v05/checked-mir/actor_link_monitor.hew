@@ -1,0 +1,28 @@
+// MIR-corpus fixture: bare link()/monitor()/unlink() builtins inside a
+// handler.
+//
+// Pins the user-name bridge for the seeded synthetic builtins: a bare
+// one-argument `link(target)` / `monitor(target)` / `unlink(target)`
+// call in an actor handler lowers to
+// `CallRuntimeAbi { symbol: "hew_actor_link" }` / `"hew_actor_monitor"`
+// / `"hew_actor_unlink"` with the implicit self handle resolved via
+// `hew_actor_self`.
+actor Probe {
+    receive fn ping() {}
+}
+
+actor Boss {
+    let target: LocalPid<Probe>;
+    receive fn go() {
+        link(target);
+        monitor(target);
+        unlink(target);
+    }
+}
+
+fn main() -> i64 {
+    let p = spawn Probe;
+    let b = spawn Boss(target: p);
+    b.go();
+    0
+}

@@ -64,6 +64,32 @@ fn allowlist_subset_round_trips() {
     );
 }
 
+/// Routing-partition disjointness: a pre-staged family's symbol must be
+/// ABSENT from `MIR_EMITTER_RUNTIME_SYMBOLS`. The two routes are
+/// exclusive — pre-staged symbols ride `Terminator::Call` into the
+/// codegen callee intercepts; emitter symbols ride
+/// `Instr::CallRuntimeAbi`. A pre-staged symbol mistakenly added to the
+/// emitter list would silently reroute its calls onto the runtime-ABI
+/// path (where the family has no lowering arm) with no other test
+/// firing.
+#[test]
+fn pre_staged_families_are_disjoint_from_the_emitter_allowlist() {
+    let mut violations = Vec::new();
+    for family in all_runtime_call_families() {
+        if is_pre_staged_family(family) && is_known_runtime_symbol(family.c_symbol()) {
+            violations.push((family, family.c_symbol()));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "pre-staged families whose symbol is ALSO in \
+         MIR_EMITTER_RUNTIME_SYMBOLS — the Terminator::Call and \
+         CallRuntimeAbi routes must stay disjoint; either un-pre-stage \
+         the family (wire its CallRuntimeAbi arm) or remove the symbol \
+         from the allowlist. Offenders: {violations:?}"
+    );
+}
+
 /// Allowlist coverage: every drop-descriptor's `c_symbol()` is in
 /// `MIR_EMITTER_RUNTIME_SYMBOLS`. (`hew_stream_close` /
 /// `hew_sink_close` are not in the allowlist today — the bijection
@@ -107,6 +133,26 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "hew_tcp_attach_local",
         "hew_sink_write_bytes",
         "hew_sink_try_write_bytes",
+        // Channel/stream element-layout-witness entries: codegen
+        // intercepts the `Terminator::Call` and emits the layout-witness
+        // ABI (`hew-codegen-rs/src/llvm.rs` recv/send intercept arms).
+        "hew_channel_recv_layout",
+        "hew_channel_try_recv_layout",
+        "hew_channel_send_layout",
+        "hew_stream_next_layout",
+        "hew_stream_try_next_layout",
+        "hew_stream_send_layout",
+        // Layout-backed HashMap projection ops: `Terminator::Call`
+        // identities lowered by `lower_hashmap_layout_direct_call`
+        // (`is_hashmap_layout_runtime_symbol`) and classified by the
+        // layout-fact walker on their carried family.
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_values_layout",
+        // Constructor surface forms: `CalleeNameDispatchOnly` catalog
+        // rows lowered by `lower_hashmap_constructor_call`
+        // (`is_hashmap_constructor_symbol`).
+        "HashMap::new",
+        "HashSet::new",
     ]
     .into_iter()
     .collect();

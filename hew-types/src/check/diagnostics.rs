@@ -338,31 +338,33 @@ impl Checker {
 
         match scrutinee_ty {
             Ty::Named {
-                builtin: Some(crate::BuiltinType::Option),
+                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
                 ..
             } => {
-                let missing: Vec<String> = Self::missing_constructor_variants(arms, "Some", "None")
-                    .into_iter()
-                    .map(str::to_string)
+                // Refutability-aware coverage: an arm whose payload subpattern
+                // is refutable (a literal predicate `Some(0)` or a nested
+                // constructor `Err(IoError::NotFound)`) does not by itself
+                // cover its variant; `variant_covered` recurses into nested
+                // payload patterns so a jointly-exhaustive set of nested arms
+                // still counts.
+                let leaves = Self::unguarded_leaf_patterns(arms);
+                if leaves
+                    .iter()
+                    .any(|p| super::patterns::pattern_is_catch_all(p))
+                {
+                    return;
+                }
+                let Some(variants) = self.enum_variant_payloads(scrutinee_ty) else {
+                    return;
+                };
+                let missing: Vec<String> = variants
+                    .iter()
+                    .filter(|(name, shape)| !self.variant_covered(&leaves, name, shape))
+                    .map(|(name, _)| name.clone())
                     .collect();
                 if !missing.is_empty() {
                     self.error_non_exhaustive(span, &missing, |name| match name {
                         "Some" => "Some(_)".to_string(),
-                        "None" => "None".to_string(),
-                        _ => name.to_string(),
-                    });
-                }
-            }
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Result),
-                ..
-            } => {
-                let missing: Vec<String> = Self::missing_constructor_variants(arms, "Ok", "Err")
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect();
-                if !missing.is_empty() {
-                    self.error_non_exhaustive(span, &missing, |name| match name {
                         "Ok" => "Ok(_)".to_string(),
                         "Err" => "Err(_)".to_string(),
                         _ => name.to_string(),
@@ -372,40 +374,29 @@ impl Checker {
             Ty::Named { name, .. } => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if !td.variants.is_empty() {
-                        let mut has_binding_identifier = false;
-                        let mut covered = Vec::new();
-                        for arm in arms {
-                            if arm.guard.is_some() {
-                                continue;
+                        let leaves = Self::unguarded_leaf_patterns(arms);
+                        // A plain lowercase binding (or an identifier that is
+                        // not a variant of this enum) is a catch-all arm.
+                        let is_catch_all = |pattern: &Pattern| match pattern {
+                            Pattern::Wildcard => true,
+                            Pattern::Identifier(id) => {
+                                let short = id.rsplit("::").next().unwrap_or(id);
+                                !td.variants.contains_key(short)
                             }
-                            visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                                Pattern::Constructor { name, .. }
-                                | Pattern::Struct { name, .. } => {
-                                    let short = name.rsplit("::").next().unwrap_or(name);
-                                    covered.push(short.to_string());
-                                }
-                                Pattern::Identifier(id) => {
-                                    let short = id.rsplit("::").next().unwrap_or(id);
-                                    if td.variants.contains_key(short) {
-                                        covered.push(short.to_string());
-                                    } else {
-                                        has_binding_identifier = true;
-                                    }
-                                }
-                                _ => {}
-                            });
-                        }
-                        if has_binding_identifier {
+                            _ => false,
+                        };
+                        if leaves.iter().any(|p| is_catch_all(p)) {
                             return;
                         }
-                        let missing: Vec<_> = td
-                            .variants
-                            .keys()
-                            .filter(|v| !covered.contains(*v))
+                        let Some(variants) = self.enum_variant_payloads(scrutinee_ty) else {
+                            return;
+                        };
+                        let mut missing_names: Vec<String> = variants
+                            .iter()
+                            .filter(|(vname, shape)| !self.variant_covered(&leaves, vname, shape))
+                            .map(|(vname, _)| vname.clone())
                             .collect();
-                        if !missing.is_empty() {
-                            let mut missing_names: Vec<_> =
-                                missing.iter().map(|name| (*name).clone()).collect();
+                        if !missing_names.is_empty() {
                             missing_names.sort();
                             self.error_non_exhaustive(span, &missing_names, |variant_name| {
                                 td.variants.get(variant_name).map_or_else(
@@ -547,64 +538,26 @@ impl Checker {
         ));
     }
 
-    /// Return the missing constructor variants for two-variant enum-like matches
-    /// (e.g., Some/None, Ok/Err). An identifier binding counts as exhaustive.
-    pub(super) fn missing_constructor_variants<'a>(
-        arms: &[MatchArm],
-        variant_a: &'a str,
-        variant_b: &'a str,
-    ) -> Vec<&'a str> {
-        fn visit_or<'pattern>(pattern: &'pattern Pattern, f: &mut impl FnMut(&'pattern Pattern)) {
+    /// Collect the leaf patterns of every unguarded arm, flattening
+    /// or-patterns. Guarded arms never contribute to exhaustiveness.
+    pub(super) fn unguarded_leaf_patterns(arms: &[MatchArm]) -> Vec<&Pattern> {
+        fn visit<'pattern>(pattern: &'pattern Pattern, out: &mut Vec<&'pattern Pattern>) {
             match pattern {
                 Pattern::Or(left, right) => {
-                    visit_or(&left.0, f);
-                    visit_or(&right.0, f);
+                    visit(&left.0, out);
+                    visit(&right.0, out);
                 }
-                _ => f(pattern),
+                _ => out.push(pattern),
             }
         }
-
-        let mut has_binding_identifier = false;
-        let mut has_a = false;
-        let mut has_b = false;
+        let mut leaves = Vec::new();
         for arm in arms {
             if arm.guard.is_some() {
                 continue;
             }
-            visit_or(&arm.pattern.0, &mut |pattern| match pattern {
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_a {
-                        has_a = true;
-                    }
-                    if short == variant_b {
-                        has_b = true;
-                    }
-                }
-                Pattern::Identifier(name) => {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    if short == variant_a {
-                        has_a = true;
-                    } else if short == variant_b {
-                        has_b = true;
-                    } else {
-                        has_binding_identifier = true;
-                    }
-                }
-                _ => {}
-            });
+            visit(&arm.pattern.0, &mut leaves);
         }
-        if has_binding_identifier {
-            return Vec::new();
-        }
-        let mut missing = Vec::new();
-        if !has_a {
-            missing.push(variant_a);
-        }
-        if !has_b {
-            missing.push(variant_b);
-        }
-        missing
+        leaves
     }
 
     /// Validate top-level `if let` / `while let` patterns against current

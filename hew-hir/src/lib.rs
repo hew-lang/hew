@@ -44,10 +44,10 @@ pub use node::{
     HirField, HirFn, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm,
-    HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind, WhereOrigin,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRegexLiteral, HirRestartPolicy,
+    HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind,
+    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

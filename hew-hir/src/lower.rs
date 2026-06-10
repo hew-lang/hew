@@ -41,10 +41,11 @@ use crate::node::{
     HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
     HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
     HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirRecordDecl,
-    HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -9264,6 +9265,40 @@ impl LowerCtx {
                     };
                 };
 
+                // Nested constructor subpatterns (`while let Ok(Ok(v)) = ...`)
+                // are admitted by the checker for `match` arms but the
+                // while-let lowering below consumes only the flat payload
+                // bindings — honouring the nested tag checks needs the
+                // recursive predicate emission that only `lower_match_enum_tag`
+                // wires. Fail closed rather than silently dropping the check.
+                if !resolution.payload_variant_patterns.is_empty() {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        "nested constructor patterns in while-let are reserved \
+                         for a future lane; match on the value instead",
+                        "while-let-substrate",
+                    );
+                    self.push_scope();
+                    let _ = self.lower_block(body, &ResolvedTy::Unit);
+                    self.pop_scope();
+                    let unsupported_expr = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "while-let with nested constructor pattern".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(unsupported_expr),
+                        span: span.clone(),
+                    };
+                }
+
                 // Only variant-constructor patterns with at least one
                 // payload binding are lowered. Unit-variant patterns
                 // (`None`), wildcards, literals, and plain bindings fail
@@ -9734,6 +9769,28 @@ impl LowerCtx {
             }
             return None;
         };
+
+        // Nested constructor subpatterns (`if let Ok(Ok(v)) = ...`) are
+        // admitted by the checker for `match` arms but this lowering consumes
+        // only the flat payload bindings — honouring the nested tag checks
+        // needs the recursive predicate emission that only
+        // `lower_match_enum_tag` wires. Fail closed rather than silently
+        // dropping the check.
+        if !resolution.payload_variant_patterns.is_empty() {
+            self.unsupported(
+                pattern_span.clone(),
+                "nested constructor patterns in if-let are reserved for a \
+                 future lane; match on the value instead",
+                "if-let-substrate",
+            );
+            self.push_scope();
+            let _ = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            if let Some(eb) = else_body {
+                let _ = self.lower_block(eb, &ResolvedTy::Unit);
+            }
+            return None;
+        }
 
         let (PatternKind::VariantCtor, Some(variant_match)) =
             (resolution.pattern_kind, resolution.variant_match)
@@ -14432,6 +14489,7 @@ impl LowerCtx {
                         },
                         bindings: vec![some_binding],
                         payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
                         guard: None,
                         body: some_body,
                         span: span.clone(),
@@ -14446,6 +14504,7 @@ impl LowerCtx {
                         },
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
                         guard: None,
                         body: none_body,
                         span: iterable.1.clone(),
@@ -15798,6 +15857,7 @@ impl LowerCtx {
                     ty: ok_ty.clone(),
                 }],
                 payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
                 guard: None,
                 body: ok_body,
                 span: span.clone(),
@@ -15811,6 +15871,7 @@ impl LowerCtx {
                     ty: err_ty,
                 }],
                 payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
                 guard: None,
                 body: err_body,
                 span: span.clone(),
@@ -15859,6 +15920,7 @@ impl LowerCtx {
                     ty: some_ty.clone(),
                 }],
                 payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
                 guard: None,
                 body: some_body,
                 span: span.clone(),
@@ -15867,6 +15929,7 @@ impl LowerCtx {
                 predicate: none_predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
                 guard: None,
                 body: none_body,
                 span: span.clone(),
@@ -16911,9 +16974,29 @@ impl LowerCtx {
 
             let payload_predicates = collect_match_payload_predicates(self, &arm.pattern.0);
 
+            // Nested constructor subpatterns only make sense on an
+            // EnumVariant arm; anything else is a checker contract violation
+            // — fail closed rather than silently dropping the nested checks.
+            if !resolution.payload_variant_patterns.is_empty()
+                && !matches!(predicate, HirMatchArmPredicate::EnumVariant { .. })
+            {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.unsupported(
+                    pattern_span.clone(),
+                    "nested constructor subpatterns on a non-variant match arm — \
+                     checker contract violation",
+                    "match-expression-substrate",
+                );
+                rejected = true;
+                continue;
+            }
+
             // Open scope for payload bindings + guard + body.
-            // Binding patterns also need a scope (the scrutinee is bound there).
+            // Binding patterns also need a scope (the scrutinee is bound
+            // there), as do nested constructor subpatterns (their inner
+            // bindings are materialised below).
             let needs_scope = !binding_specs.is_empty()
+                || !resolution.payload_variant_patterns.is_empty()
                 || matches!(predicate, HirMatchArmPredicate::Binding { .. });
             if needs_scope {
                 self.push_scope();
@@ -16949,6 +17032,29 @@ impl LowerCtx {
                 });
             }
 
+            // Materialise nested constructor predicate trees. Their inner
+            // bindings are registered in the same arm scope as the payload
+            // bindings above, so guard/body references resolve through them.
+            let mut payload_variant_predicates =
+                Vec::with_capacity(resolution.payload_variant_patterns.len());
+            let mut pvp_error = false;
+            for pvp in &resolution.payload_variant_patterns {
+                if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
+                    payload_variant_predicates.push(pred);
+                } else {
+                    pvp_error = true;
+                    break;
+                }
+            }
+            if pvp_error {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if needs_scope {
+                    self.pop_scope();
+                }
+                rejected = true;
+                continue;
+            }
+
             // Lower the guard expression (if any). The guard sees the same
             // bindings that the arm body sees, so it must be lowered after the
             // payload bindings are in scope.
@@ -16971,6 +17077,7 @@ impl LowerCtx {
                 predicate,
                 bindings,
                 payload_predicates,
+                payload_variant_predicates,
                 guard: guard_hir,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body.1.end,
@@ -17010,6 +17117,105 @@ impl LowerCtx {
         )
     }
 
+    /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into
+    /// its HIR form: resolve the nested variant's declaration-order index via
+    /// `machine_ctor_registry` (the same qualified-key lookup the outer arm
+    /// uses), register a generic-enum instantiation for the nested payload
+    /// type, and allocate binding ids for the inner payload bindings.
+    ///
+    /// Must be called inside the arm's scope (`push_scope`) so the inner
+    /// bindings resolve in the guard and body. Returns `None` after pushing a
+    /// fail-closed diagnostic.
+    fn build_payload_variant_predicate(
+        &mut self,
+        pvp: &hew_types::PayloadVariantPattern,
+        pattern_span: &Span,
+    ) -> Option<HirPayloadVariantPredicate> {
+        let payload_ty = match ResolvedTy::from_ty(&pvp.payload_ty) {
+            Ok(ty) => ty,
+            Err(err) => {
+                self.unsupported(
+                    pattern_span.clone(),
+                    format!("unresolved nested payload type in match arm ({err:?})"),
+                    "match-expression-substrate",
+                );
+                return None;
+            }
+        };
+        // Register a generic-enum instantiation for the nested payload type
+        // so MIR/codegen find its mangled layout (no-op for monomorphic
+        // enums; the scrutinee registration only covers the outer type).
+        self.try_register_enum_instantiation_ty(&payload_ty, pattern_span);
+        let qualified = format!(
+            "{}::{}",
+            pvp.variant_match.type_name, pvp.variant_match.variant_name
+        );
+        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+            self.unsupported(
+                pattern_span.clone(),
+                "nested match-arm variant not registered in machine/enum ctor registry",
+                "match-expression-substrate",
+            );
+            return None;
+        };
+        let variant_idx =
+            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
+        let Ok(field_idx) = u32::try_from(pvp.field_idx) else {
+            self.unsupported(
+                pattern_span.clone(),
+                "nested payload field index exceeds u32::MAX",
+                "match-expression-substrate",
+            );
+            return None;
+        };
+        let mut bindings = Vec::with_capacity(pvp.bindings.len());
+        for payload in &pvp.bindings {
+            let ty = match ResolvedTy::from_ty(&payload.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        format!("unresolved nested payload binding type in match arm ({err:?})"),
+                        "match-expression-substrate",
+                    );
+                    return None;
+                }
+            };
+            let Ok(inner_field_idx) = u32::try_from(payload.field_idx) else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "nested payload binding field index exceeds u32::MAX",
+                    "match-expression-substrate",
+                );
+                return None;
+            };
+            let bound = self.bind(
+                payload.binding_name.clone(),
+                ty.clone(),
+                false,
+                pattern_span.clone(),
+            );
+            bindings.push(HirMatchArmBinding {
+                binding: bound.id,
+                field_idx: inner_field_idx,
+                name: payload.binding_name.clone(),
+                ty,
+            });
+        }
+        let mut nested = Vec::with_capacity(pvp.nested.len());
+        for child in &pvp.nested {
+            nested.push(self.build_payload_variant_predicate(child, pattern_span)?);
+        }
+        Some(HirPayloadVariantPredicate {
+            field_idx,
+            payload_ty,
+            variant_match: pvp.variant_match.clone(),
+            variant_idx,
+            bindings,
+            nested,
+        })
+    }
+
     /// Classify a single leaf (non-`Or`) pattern for use when expanding
     /// or-patterns at HIR lowering time (the type-checker intentionally omits
     /// `record_arm_resolution` for `Pattern::Or` arms, so the resolution
@@ -17029,11 +17235,13 @@ impl LowerCtx {
                 pattern_kind: PatternKind::Wildcard,
                 variant_match: None,
                 payload_bindings: vec![],
+                payload_variant_patterns: vec![],
             }),
             Pattern::Literal(_) => Some(ArmResolution {
                 pattern_kind: PatternKind::Literal,
                 variant_match: None,
                 payload_bindings: vec![],
+                payload_variant_patterns: vec![],
             }),
             Pattern::Identifier(name) => {
                 let is_ctor =
@@ -17059,12 +17267,14 @@ impl LowerCtx {
                                 variant_name: short_name.to_owned(),
                             }),
                             payload_bindings: vec![],
+                            payload_variant_patterns: vec![],
                         })
                 } else {
                     Some(ArmResolution {
                         pattern_kind: PatternKind::Binding,
                         variant_match: None,
                         payload_bindings: vec![],
+                        payload_variant_patterns: vec![],
                     })
                 }
             }

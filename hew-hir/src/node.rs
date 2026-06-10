@@ -1942,6 +1942,37 @@ pub struct HirPayloadPredicate {
     pub ty: ResolvedTy,
 }
 
+/// Nested constructor subpattern check on one payload slot of an
+/// `EnumVariant` match arm (e.g. the `IoError::NotFound` in
+/// `Err(IoError::NotFound)` or the inner `Ok(v)` in `Ok(Ok(v))`).
+///
+/// MIR lowering evaluates these after the outer tag check and any literal
+/// payload predicates: it loads the payload slot into a fresh
+/// `payload_ty`-typed local (an unregistered transient alias — never entered
+/// into `owned_locals`, so ownership stays with the scrutinee), compares
+/// `EnumTag` of that local against `variant_idx`, and branches to the arm's
+/// fallthrough target on mismatch. On match, `bindings` are materialised
+/// from the nested variant's payload slots (registered exactly like
+/// top-level arm bindings) and `nested` children recurse with the transient
+/// local as their parent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirPayloadVariantPredicate {
+    /// 0-based payload slot within the ENCLOSING variant.
+    pub field_idx: u32,
+    /// Resolved enum type of that payload slot.
+    pub payload_ty: ResolvedTy,
+    /// Checker-resolved identity of the nested variant.
+    pub variant_match: VariantMatch,
+    /// Declaration-order tag index of the nested variant within
+    /// `payload_ty`'s layout (same registry the outer arm's
+    /// `HirMatchArmPredicate::EnumVariant::variant_idx` uses).
+    pub variant_idx: u32,
+    /// Bindings into THIS nested variant's payload slots.
+    pub bindings: Vec<HirMatchArmBinding>,
+    /// Deeper nested constructor subpatterns.
+    pub nested: Vec<HirPayloadVariantPredicate>,
+}
+
 /// One arm of an `HirExprKind::Match` expression.
 ///
 /// `predicate` encodes the arm's matching condition as an explicit enum,
@@ -1952,10 +1983,12 @@ pub struct HirPayloadPredicate {
 ///
 /// Payload-bearing constructor patterns carry their per-field bindings in
 /// `bindings`. Literal payload subpatterns carry their per-field checks in
-/// `payload_predicates`; this vector is empty for older constructor shapes.
-/// Arms with a `guard` expression fire only when the pattern matches AND
-/// the guard evaluates to `true`; a `false` guard falls through to the next
-/// arm exactly as if the pattern had not matched.
+/// `payload_predicates`; nested constructor subpatterns carry their
+/// recursive checks in `payload_variant_predicates`. Both vectors are empty
+/// for plain constructor shapes. Arms with a `guard` expression fire only
+/// when the pattern matches AND the guard evaluates to `true`; a `false`
+/// guard falls through to the next arm exactly as if the pattern had not
+/// matched.
 ///
 /// `body` is the arm's right-hand-side expression. The arm's source span
 /// is preserved for diagnostics.
@@ -1968,6 +2001,9 @@ pub struct HirMatchArm {
     /// Literal checks for constructor payload fields, evaluated after the
     /// outer tag check and before the arm body.
     pub payload_predicates: Vec<HirPayloadPredicate>,
+    /// Nested constructor checks for constructor payload fields, evaluated
+    /// after `payload_predicates` and before bindings/guard/body.
+    pub payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
     /// Optional guard expression (`Pattern if <guard> => ...`).
     ///
     /// When `Some`, the arm fires only if the pattern matches AND the guard

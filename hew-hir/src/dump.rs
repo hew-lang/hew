@@ -328,6 +328,28 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
     }
 }
 
+/// Dump one nested constructor payload predicate (recursive).
+fn dump_payload_variant_predicate(
+    out: &mut String,
+    pvp: &crate::node::HirPayloadVariantPredicate,
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    writeln!(
+        out,
+        "{pad}payload[{}] is {}::{} [variant_idx={}, bindings={}]",
+        pvp.field_idx,
+        pvp.variant_match.type_name,
+        pvp.variant_match.variant_name,
+        pvp.variant_idx,
+        pvp.bindings.len(),
+    )
+    .expect("write to string");
+    for child in &pvp.nested {
+        dump_payload_variant_predicate(out, child, indent + 2);
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single match on HirExprKind variants; each arm renders one variant \
@@ -1039,6 +1061,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         pred.field_idx, pred.literal
                     )
                     .expect("write to string");
+                }
+                for pvp in &arm.payload_variant_predicates {
+                    dump_payload_variant_predicate(out, pvp, indent + 6);
                 }
                 dump_expr(out, &arm.body, indent + 6);
             }

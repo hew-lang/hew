@@ -51,8 +51,8 @@ pub use self::types::{
     ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, PatternKind, PayloadBinding, SpanKey, StackHint,
-    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
+    NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
+    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
 };
 use self::types::{
     ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredChannelMethodRewrite,

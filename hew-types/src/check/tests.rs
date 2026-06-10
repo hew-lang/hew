@@ -21952,9 +21952,10 @@ fn main() -> i64 {
     );
 }
 
-/// Nested constructor in tuple-variant payload must be rejected.
+/// Nested constructor in tuple-variant payload is accepted and recorded as a
+/// `PayloadVariantPattern` in the arm's resolution side-table entry.
 #[test]
-fn constructor_payload_nested_ctor_emits_unsupported_diagnostic() {
+fn constructor_payload_nested_ctor_is_accepted_and_recorded() {
     let output = check_source(
         r"
 enum Color { Red; Green }
@@ -21969,16 +21970,59 @@ fn main() -> i64 {
 }",
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
-            &e.kind,
-            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
-                kind_label,
-                ..
-            } if kind_label == "nested constructor"
-        )),
-        "expected UnsupportedPayloadSubpattern(nested constructor) error; got errors: {:#?}",
+        output.errors.is_empty(),
+        "nested constructor payload subpattern must be accepted; got errors: {:#?}",
         output.errors
     );
+    let nested: Vec<_> = output
+        .pattern_resolutions
+        .values()
+        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+        .collect();
+    assert_eq!(
+        nested.len(),
+        1,
+        "exactly one arm carries a nested constructor subpattern"
+    );
+    let pvp = nested[0];
+    assert_eq!(pvp.field_idx, 0);
+    assert_eq!(pvp.variant_match.type_name, "Color");
+    assert_eq!(pvp.variant_match.variant_name, "Red");
+    assert!(pvp.bindings.is_empty());
+    assert!(pvp.nested.is_empty());
+}
+
+/// A nested constructor that binds from the inner payload (`Ok(Ok(v))`)
+/// records the inner binding on the nested pattern, not on the arm.
+#[test]
+fn constructor_payload_nested_ctor_inner_binding_recorded() {
+    let output = check_source(
+        r"
+fn doubly() -> Result<Result<i64, string>, string> {
+    Ok(Ok(42))
+}
+fn main() -> i64 {
+    match doubly() {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => 0 - 1,
+        Err(e) => 0 - 2,
+    }
+}",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "nested Result patterns must be accepted; got errors: {:#?}",
+        output.errors
+    );
+    let inner_ok = output
+        .pattern_resolutions
+        .values()
+        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+        .find(|pvp| pvp.variant_match.variant_name == "Ok")
+        .expect("Ok(Ok(v)) arm records a nested Ok pattern");
+    assert_eq!(inner_ok.bindings.len(), 1);
+    assert_eq!(inner_ok.bindings[0].binding_name, "v");
+    assert_eq!(inner_ok.bindings[0].field_idx, 0);
 }
 
 /// Tuple destructure inside tuple-variant payload position must be rejected.

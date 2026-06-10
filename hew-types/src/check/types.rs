@@ -817,6 +817,37 @@ pub struct PayloadBinding {
     pub ty: Ty,
 }
 
+/// Checker-resolved nested constructor subpattern occupying one payload slot
+/// of an enclosing constructor pattern.
+///
+/// For `Err(IoError::NotFound)`: one entry on the `Err` arm with
+/// `field_idx = 0`, `payload_ty = IoError`, `variant_match = NotFound`, no
+/// bindings, no nested children.
+/// For `Ok(Ok(v))` on `Result<Result<i64, E1>, E2>`: one entry with
+/// `field_idx = 0`, `payload_ty = Result<i64, E1>`, `variant_match = Ok`,
+/// and `bindings = [v @ inner slot 0]`.
+///
+/// `bindings` and `nested` index into THIS nested variant's payload list,
+/// not the enclosing one. The structure is recursive so arbitrary
+/// constructor-nesting depth flows through one shape; non-constructor
+/// refutable subpatterns (literals, struct/tuple destructures, or-patterns)
+/// inside a nested constructor remain fail-closed at the checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PayloadVariantPattern {
+    /// 0-based slot of this subpattern within the ENCLOSING variant's
+    /// payload list.
+    pub field_idx: usize,
+    /// Checker-resolved enum type of that payload slot (the type the nested
+    /// tag check runs against).
+    pub payload_ty: Ty,
+    /// Resolved identity of the nested variant being matched.
+    pub variant_match: VariantMatch,
+    /// Bindings introduced from THIS nested variant's payload slots.
+    pub bindings: Vec<PayloadBinding>,
+    /// Deeper nested constructor subpatterns within this variant's payload.
+    pub nested: Vec<PayloadVariantPattern>,
+}
+
 /// Checker-resolved summary of one match arm's pattern.
 ///
 /// Keyed by `SpanKey::from(&arm.pattern.1)` in the
@@ -835,6 +866,13 @@ pub struct ArmResolution {
     /// itself is expressed via the environment, not here), `None` / unit
     /// variants, and struct/tuple patterns that destructure to wildcards only.
     pub payload_bindings: Vec<PayloadBinding>,
+    /// Nested constructor subpatterns in this arm's constructor payload
+    /// (e.g. the `IoError::NotFound` in `Err(IoError::NotFound)`).
+    ///
+    /// Populated only for `VariantCtor` arms; consumers that cannot honour
+    /// the nested checks (if-let / while-let lowering) MUST fail closed on a
+    /// non-empty vector rather than ignore it.
+    pub payload_variant_patterns: Vec<PayloadVariantPattern>,
 }
 
 impl TypeCheckOutput {

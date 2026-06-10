@@ -12235,6 +12235,24 @@ impl Builder {
                 self.start_block(pass_bb);
             }
 
+            // Nested constructor predicate checks (`Err(IoError::NotFound)`,
+            // `Ok(Ok(v))`): recursively load each nested payload slot into a
+            // transient local, compare its enum tag, and branch to
+            // `fallthrough_bb` on mismatch. Inner bindings are queued and
+            // materialised alongside the arm's own bindings below so the
+            // predicate phase stays side-effect-free on the binding maps.
+            let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
+            for pvp in &arm.payload_variant_predicates {
+                self.emit_payload_variant_predicate_checks(
+                    pvp,
+                    scrutinee_local,
+                    variant_idx,
+                    fallthrough_bb,
+                    arm.body.site,
+                    &mut nested_binding_jobs,
+                )?;
+            }
+
             let arm_is_some = matches!(
                 &arm.predicate,
                 hew_hir::HirMatchArmPredicate::EnumVariant {
@@ -12344,6 +12362,43 @@ impl Builder {
                         arm.body.site,
                     ));
                 }
+            }
+
+            // Nested constructor payload bindings (the `v` in `Ok(Ok(v))`):
+            // same registration discipline as the arm's own bindings above —
+            // `Bind` statement, `owned_locals` entry for non-BitCopy types so
+            // the function-scope drop elaboration releases exactly once, and
+            // a `binding_locals` slot so guard/body references resolve. The
+            // source place projects from the transient nested-payload local
+            // the predicate phase loaded, not from the scrutinee directly.
+            // The vec-iter/generator/recv special drops above are top-level-
+            // `Some`-payload concerns and cannot apply at nesting depth ≥ 1.
+            for (src_local, src_variant_idx, binding) in nested_binding_jobs {
+                let binding_ty = self.subst_ty(&binding.ty);
+                self.statements.push(MirStatement::Bind {
+                    binding: binding.binding,
+                    name: binding.name.clone(),
+                    site: arm.body.site,
+                    ty: binding_ty.clone(),
+                });
+                self.record_binding_scope(binding.binding);
+                let keep_for_drop_elab =
+                    ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy;
+                if keep_for_drop_elab {
+                    self.owned_locals
+                        .push((binding.binding, binding.name.clone(), binding_ty));
+                }
+                let dest = self.alloc_local(binding.ty.clone());
+                self.instructions.push(Instr::Move {
+                    dest,
+                    src: Place::MachineVariant {
+                        local: src_local,
+                        variant_idx: src_variant_idx,
+                        field_idx: binding.field_idx,
+                    },
+                });
+                let previous = self.binding_locals.insert(binding.binding, dest);
+                overwritten_bindings.push((binding.binding, previous, keep_for_drop_elab));
             }
 
             // Guard check: evaluate the guard expression and branch. Placed
@@ -12463,6 +12518,104 @@ impl Builder {
         // Join. Subsequent lowering continues here.
         self.start_block(join_bb);
         Some(result_place)
+    }
+
+    /// Emit the tag-check chain for one nested constructor payload predicate
+    /// (recursive).
+    ///
+    /// Loads the payload slot `pred.field_idx` of the parent variant into a
+    /// fresh `payload_ty`-typed local, compares that local's `EnumTag`
+    /// against `pred.variant_idx`, and branches: match → a fresh pass block
+    /// (left as the current block), mismatch → `fallthrough_bb` (the next
+    /// arm's check block or the exhaustiveness tail).
+    ///
+    /// Ownership: the transient payload local is a non-owning alias of the
+    /// parent variant's payload — it gets no `Bind` statement and no
+    /// `owned_locals` entry, so drop elaboration never releases it directly.
+    /// The parent composite (ultimately the match scrutinee) remains the
+    /// registered owner and frees the loaded heap content through its
+    /// recursive tag-aware `DropKind::EnumInPlace` scope-exit drop, which
+    /// descends through this nesting depth. For that to hold, the
+    /// `derive_enum_composite_drop_allowed` escape scan must NOT misread the
+    /// reads this method emits as payload escapes: the inner tag is read with
+    /// `Place::EnumTag` (a bitcopy discriminant, exempted as a tag read), and
+    /// the i64 tag destination is never tainted as a payload binder (the
+    /// heap-owning propagation guard). Inner bindings extract ownership
+    /// exactly like top-level arm bindings; they are queued into
+    /// `binding_jobs` as `(parent_local, parent_variant_idx, binding)` and
+    /// materialised by the caller in the binding phase, where they become
+    /// same-scope payload binders the composite drop coordinates with (a bound
+    /// inner string is read-but-not-independently-dropped, so the composite is
+    /// its single owner — no double-free, no leak).
+    fn emit_payload_variant_predicate_checks(
+        &mut self,
+        pred: &hew_hir::HirPayloadVariantPredicate,
+        parent_local: u32,
+        parent_variant_idx: u32,
+        fallthrough_bb: u32,
+        site: SiteId,
+        binding_jobs: &mut Vec<(u32, u32, hew_hir::HirMatchArmBinding)>,
+    ) -> Option<()> {
+        let payload_ty = self.subst_ty(&pred.payload_ty);
+        let payload_place = self.alloc_local(payload_ty);
+        let Some(payload_local) = base_local(payload_place) else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "nested constructor payload local shape".to_string(),
+                    site,
+                },
+                note: format!(
+                    "nested payload predicate requires a Place::Local; got {payload_place:?}"
+                ),
+            });
+            return None;
+        };
+        self.instructions.push(Instr::Move {
+            dest: payload_place,
+            src: Place::MachineVariant {
+                local: parent_local,
+                variant_idx: parent_variant_idx,
+                field_idx: pred.field_idx,
+            },
+        });
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(payload_local),
+        });
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(pred.variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.instructions.push(Instr::IntCmp {
+            pred: CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+        let pass_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: pass_bb,
+            else_target: fallthrough_bb,
+        });
+        self.start_block(pass_bb);
+        for binding in &pred.bindings {
+            binding_jobs.push((payload_local, pred.variant_idx, binding.clone()));
+        }
+        for child in &pred.nested {
+            self.emit_payload_variant_predicate_checks(
+                child,
+                payload_local,
+                pred.variant_idx,
+                fallthrough_bb,
+                site,
+                binding_jobs,
+            )?;
+        }
+        Some(())
     }
 
     /// Emit the binding for a `Binding`-predicate arm: move the entire
@@ -20654,6 +20807,27 @@ fn place_is_interior_projection(place: Place) -> bool {
     }
 }
 
+/// True when `place` projects only the integer discriminant tag of an
+/// enum/machine value (`Place::EnumTag` / `Place::MachineTag`).
+///
+/// A tag read copies a bitcopy ordinal out of the tagged-union header; it
+/// transfers NO heap ownership. The nested-constructor predicate lowering
+/// (`emit_payload_variant_predicate_checks`) reads the tag of an inner
+/// payload binder this way to dispatch on it — that read must NOT be
+/// classified as a payload escape in `derive_enum_composite_drop_allowed`,
+/// otherwise the parent composite is wrongly excluded from its tag-aware
+/// `DropKind::EnumInPlace` scope-exit drop and the inner payload leaks
+/// (the W5.020 nested-payload leak). It is the exact symmetric analogue of
+/// the parent composite's own benign tag read, which the whole-composite
+/// escape branch already exempts by only flagging whole `Place::Local`
+/// reads. Any read that could move the heap payload out (an interior
+/// `MachineVariant` / `EnumVariant` projection, a whole-value `Local`
+/// hand-off) is deliberately NOT covered here, so the heap-payload escape
+/// scan stays fail-closed.
+fn place_is_tag_read(place: Place) -> bool {
+    matches!(place, Place::EnumTag(_) | Place::MachineTag(_))
+}
+
 /// The *source* (read) operands of an instruction — every `Place` whose
 /// value the instruction consumes, excluding the destination(s) it writes.
 ///
@@ -21163,6 +21337,25 @@ fn retained_string_terminator_drop_safe(term: &Terminator, local: u32) -> bool {
         .any(|place| place_refs_local(place, local));
     if !reads_binding {
         return true;
+    }
+    // A borrowing string call (`hew_string_length`, `hew_string_concat`, the
+    // `.len()` / `.to_uppercase()` / … getters and copy-in transforms in
+    // `is_borrowing_string_use`) READS its string argument without retaining
+    // it — argument ownership stays with the caller. A payload binder passed
+    // there is therefore a transient borrow, NOT an escape, so the parent
+    // enum composite still owns the buffer and keeps its `EnumInPlace` drop.
+    // Without this, `match r { Err(E::Invalid(m)) => m.len() }` (and the flat
+    // `Err(m) => m.len()`) wrongly excluded the composite and leaked the
+    // bound inner string on every match. The binder `m` itself is excluded
+    // from its own sole-owner drop by `derive_cow_sole_owner` (it is read as
+    // a source operand here), so the composite drop is the single owner — no
+    // double-free.
+    if let Terminator::Call { callee, args, .. } = term {
+        if is_borrowing_string_call_callee(callee)
+            && args.iter().any(|arg| place_refs_local(*arg, local))
+        {
+            return true;
+        }
     }
     matches!(
         term,
@@ -22136,7 +22329,7 @@ fn derive_enum_composite_drop_allowed(
     // scope mapping inherit the source binder's scope on propagation; HIR
     // bindings whose scope does not match are filtered out and the source
     // escape scan below treats the move as an unbound-destination escape.
-    let mut payload_binders: HashMap<u32, ScopeId> = HashMap::new();
+    let mut payload_binders: HashMap<u32, Option<ScopeId>> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Instr::Move { dest, src } = instr {
@@ -22151,19 +22344,17 @@ fn derive_enum_composite_drop_allowed(
                                 // out — tracking it would over-exclude the
                                 // composite drop and leak.
                                 if local_is_heap_owning(dl) {
-                                    // Source scope: the destructure binder
-                                    // `dl` is the original — its declaring
-                                    // scope is the same-scope reference for
-                                    // all onward propagation. Falls back to
-                                    // ScopeId(0) for the rare case where the
-                                    // binder's HIR registration ran on a code
-                                    // path that bypassed `record_binding_
-                                    // scope`; that fallback only ever weakens
-                                    // the scope match (everything compares
-                                    // unequal), never strengthens it, so the
-                                    // posture stays fail-closed.
-                                    let scope = local_scope.get(&dl).copied().unwrap_or(ScopeId(0));
-                                    payload_binders.entry(dl).or_insert(scope);
+                                    // The binder's real declaring scope
+                                    // (`None` for a synthetic transient with no
+                                    // HIR scope — e.g. the nested-constructor
+                                    // predicate's payload local). Carried so
+                                    // onward propagation can apply the
+                                    // same-scope discipline; a `None` source
+                                    // propagates freely (it never survives a
+                                    // back-edge).
+                                    payload_binders
+                                        .entry(dl)
+                                        .or_insert_with(|| local_scope.get(&dl).copied());
                                 }
                             }
                         }
@@ -22184,6 +22375,19 @@ fn derive_enum_composite_drop_allowed(
                         if payload_binders.contains_key(&dl) {
                             continue;
                         }
+                        // Only a heap-owning destination can carry the payload
+                        // buffer onward. A bitcopy destination — most notably
+                        // the i64 discriminant a nested-constructor predicate
+                        // loads via `Move { dest, src: EnumTag(binder) }` — holds
+                        // no heap reference, so tainting it as a payload binder
+                        // is wrong: its later bitcopy reads (the `IntCmp` tag
+                        // dispatch) would be misread as payload escapes and
+                        // exclude the parent composite from its `EnumInPlace`
+                        // drop (the W5.020 nested-payload leak). Mirrors the
+                        // `local_is_heap_owning` guard the seeding loop applies.
+                        if !local_is_heap_owning(dl) {
+                            continue;
+                        }
                         // Same-scope discipline. A `Move` into a HIR binding
                         // is only a benign onward hand-off when the binding
                         // is declared in the SAME scope as the originating
@@ -22196,13 +22400,21 @@ fn derive_enum_composite_drop_allowed(
                         // pointer (use-after-free). MIR temps (no entry in
                         // `local_scope`) have no own lifetime longer than
                         // the statement that produced them, so they inherit
-                        // the source scope and propagate freely.
-                        let propagate = match local_scope.get(&dl) {
-                            Some(&dst_scope) => dst_scope == src_scope,
-                            None => true,
+                        // the source scope and propagate freely. A `None`
+                        // SOURCE scope is a synthetic transient (the nested
+                        // predicate's payload local) that likewise never
+                        // survives a back-edge, so its hand-off to an inner
+                        // same-arm binder propagates freely too.
+                        let propagate = match (src_scope, local_scope.get(&dl).copied()) {
+                            (None, _) | (_, None) => true,
+                            (Some(s), Some(d)) => s == d,
                         };
                         if propagate {
-                            payload_binders.insert(dl, src_scope);
+                            // Carry `dl`'s own scope onward when it has one, so
+                            // a further hand-off out of `dl` is judged against
+                            // `dl`'s real lifetime; fall back to the source's
+                            // scope for MIR temps.
+                            payload_binders.insert(dl, local_scope.get(&dl).copied().or(src_scope));
                             changed = true;
                         }
                     }
@@ -22266,7 +22478,15 @@ fn derive_enum_composite_drop_allowed(
                 //     binder→binder copy is the benign onward hand-off the
                 //     forward-propagation already tracks.
                 if let Some(sl) = src_local {
-                    if payload_binders.contains_key(&sl) {
+                    // A tag read (`Move { dest, src: EnumTag(binder) }`) copies
+                    // only the bitcopy discriminant ordinal out of the binder —
+                    // no heap payload escapes — so it is NOT a payload escape.
+                    // This is what the nested-constructor predicate lowering
+                    // emits to dispatch on an inner payload's variant tag; left
+                    // unexempted it wrongly excludes the parent composite from
+                    // its `EnumInPlace` drop and leaks the inner payload (W5.020
+                    // nested-payload leak).
+                    if payload_binders.contains_key(&sl) && !place_is_tag_read(*src) {
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
                             && matches!(dest, Place::Local(_));
@@ -22298,7 +22518,7 @@ fn derive_enum_composite_drop_allowed(
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if payload_binders.contains_key(&l) {
+                        if payload_binders.contains_key(&l) && !place_is_tag_read(p) {
                             note_payload_escape(
                                 &payload_binders,
                                 l,
@@ -22329,6 +22549,7 @@ fn derive_enum_composite_drop_allowed(
                     }
                 }
                 if payload_binders.contains_key(&l)
+                    && !place_is_tag_read(p)
                     && !retained_string_terminator_drop_safe(&block.terminator, l)
                 {
                     note_payload_escape(
@@ -24690,7 +24911,7 @@ fn ty_is_heap_owning_tuple(ty: &ResolvedTy, enum_layouts: &[crate::model::EnumLa
 /// observable, and the precise per-root attribution is a follow-on slice if a
 /// fixture ever needs it.
 fn note_payload_escape(
-    _payload_binders: &HashMap<u32, ScopeId>,
+    _payload_binders: &HashMap<u32, Option<ScopeId>>,
     _escaping_binder: u32,
     alias_of: &HashMap<u32, u32>,
     _blocks: &[BasicBlock],

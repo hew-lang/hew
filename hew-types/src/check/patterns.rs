@@ -172,7 +172,206 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
     }
 }
 
+/// True for patterns that match every value of any type: `_` and plain
+/// lowercase identifier bindings.
+pub(super) fn pattern_is_catch_all(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard => true,
+        Pattern::Identifier(name) => {
+            !(name.contains("::") || name.chars().next().is_some_and(char::is_uppercase))
+        }
+        _ => false,
+    }
+}
+
+/// True for payload subpatterns that match every value of their slot type:
+/// wildcards, plain bindings, and the unit tuple `()`.
+fn payload_subpattern_is_irrefutable(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Wildcard => true,
+        Pattern::Identifier(name) => {
+            !(name.contains("::") || name.chars().next().is_some_and(char::is_uppercase))
+        }
+        Pattern::Tuple(pats) => pats.is_empty(),
+        _ => false,
+    }
+}
+
+/// Payload shape of one enum variant for exhaustiveness coverage.
+pub(super) enum VariantPayloadShape {
+    Unit,
+    Tuple(Vec<Ty>),
+    /// Struct-variant fields; coverage only needs the names, not the types,
+    /// because nested constructor subpatterns are not admitted in
+    /// struct-variant field position.
+    Struct,
+}
+
 impl Checker {
+    /// Enumerate `(variant_name, payload_shape)` for an enum-like scrutinee
+    /// type: builtin `Option` / `Result`, user enums, and machine state
+    /// enums. Returns `None` for non-enum types.
+    pub(super) fn enum_variant_payloads(
+        &self,
+        ty: &Ty,
+    ) -> Option<Vec<(String, VariantPayloadShape)>> {
+        if let Some(inner) = ty.as_option() {
+            return Some(vec![
+                (
+                    "Some".to_string(),
+                    VariantPayloadShape::Tuple(vec![inner.clone()]),
+                ),
+                ("None".to_string(), VariantPayloadShape::Unit),
+            ]);
+        }
+        if let Some((ok, err)) = ty.as_result() {
+            return Some(vec![
+                (
+                    "Ok".to_string(),
+                    VariantPayloadShape::Tuple(vec![ok.clone()]),
+                ),
+                (
+                    "Err".to_string(),
+                    VariantPayloadShape::Tuple(vec![err.clone()]),
+                ),
+            ]);
+        }
+        let type_name = ty.type_name()?;
+        let td = self.lookup_type_def(type_name)?;
+        if td.variants.is_empty() {
+            return None;
+        }
+        let type_params = td.type_params.clone();
+        let type_args = if let Ty::Named { args, .. } = ty {
+            args.clone()
+        } else {
+            vec![]
+        };
+        Some(
+            td.variants
+                .iter()
+                .map(|(name, def)| {
+                    let shape = match def {
+                        VariantDef::Unit => VariantPayloadShape::Unit,
+                        VariantDef::Tuple(fields) => VariantPayloadShape::Tuple(
+                            fields
+                                .iter()
+                                .map(|f| substitute_pattern_field_ty(f, &type_params, &type_args))
+                                .collect(),
+                        ),
+                        VariantDef::Struct(_) => VariantPayloadShape::Struct,
+                    };
+                    (name.clone(), shape)
+                })
+                .collect(),
+        )
+    }
+
+    /// True when `patterns` (the flattened, unguarded match-arm leaf patterns)
+    /// cover every value of `ty`.
+    ///
+    /// Refutability-aware: an arm only counts toward a variant's coverage when
+    /// its payload subpatterns are irrefutable, or — for single-payload
+    /// variants — when the inner subpatterns recursively cover the payload
+    /// type. Multi-slot variants whose every row carries a refutable
+    /// subpattern are conservatively treated as uncovered (over-rejection is
+    /// resolved by the user adding a catch-all arm; under-rejection would
+    /// push a reachable miss onto the runtime exhaustiveness trap).
+    pub(super) fn patterns_cover_type(&self, patterns: &[&Pattern], ty: &Ty) -> bool {
+        if patterns.iter().any(|p| pattern_is_catch_all(p)) {
+            return true;
+        }
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Bool) {
+            let mut has_true = false;
+            let mut has_false = false;
+            for pattern in patterns {
+                match pattern {
+                    Pattern::Literal(Literal::Bool(true)) => has_true = true,
+                    Pattern::Literal(Literal::Bool(false)) => has_false = true,
+                    _ => {}
+                }
+            }
+            return has_true && has_false;
+        }
+        let Some(variants) = self.enum_variant_payloads(&resolved) else {
+            return false;
+        };
+        variants
+            .iter()
+            .all(|(name, shape)| self.variant_covered(patterns, name, shape))
+    }
+
+    /// True when at least one row of `patterns` headed by `variant_name`
+    /// covers every value of the variant's payload.
+    pub(super) fn variant_covered(
+        &self,
+        patterns: &[&Pattern],
+        variant_name: &str,
+        shape: &VariantPayloadShape,
+    ) -> bool {
+        let mut ctor_rows: Vec<&[(Pattern, Span)]> = Vec::new();
+        let mut has_unit_row = false;
+        let mut has_struct_cover = false;
+        for pattern in patterns {
+            match pattern {
+                Pattern::Constructor { name, patterns } => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_name {
+                        ctor_rows.push(patterns.as_slice());
+                    }
+                }
+                Pattern::Identifier(name) => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_name {
+                        has_unit_row = true;
+                    }
+                }
+                Pattern::Struct { name, fields } => {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    if short == variant_name
+                        && fields.iter().all(|pf| {
+                            pf.pattern
+                                .as_ref()
+                                .is_none_or(|(sub, _)| payload_subpattern_is_irrefutable(sub))
+                        })
+                    {
+                        has_struct_cover = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        match shape {
+            VariantPayloadShape::Unit => has_unit_row || !ctor_rows.is_empty(),
+            VariantPayloadShape::Struct => has_struct_cover,
+            VariantPayloadShape::Tuple(payload_tys) => {
+                if ctor_rows.iter().any(|row| {
+                    row.len() == payload_tys.len()
+                        && row
+                            .iter()
+                            .all(|(sub, _)| payload_subpattern_is_irrefutable(sub))
+                }) {
+                    return true;
+                }
+                // Single-payload variants recurse: the inner subpatterns of
+                // every row jointly cover the payload type (e.g. `Ok(Ok(v))`
+                // + `Ok(Err(e))` cover `Ok` of a nested Result).
+                if payload_tys.len() == 1 {
+                    let inner: Vec<&Pattern> = ctor_rows
+                        .iter()
+                        .filter(|row| row.len() == 1)
+                        .map(|row| &row[0].0)
+                        .collect();
+                    if !inner.is_empty() && self.patterns_cover_type(&inner, &payload_tys[0]) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     fn machine_event_type_outside_transition(&self, ty: &Ty) -> Option<String> {
         let type_name = ty.type_name()?;
         let machine_name = type_name.strip_suffix("Event")?;
@@ -707,11 +906,13 @@ impl Checker {
                 pattern_kind: PatternKind::Wildcard,
                 variant_match: None,
                 payload_bindings: vec![],
+                payload_variant_patterns: vec![],
             },
             Pattern::Literal(_) => ArmResolution {
                 pattern_kind: PatternKind::Literal,
                 variant_match: None,
                 payload_bindings: vec![],
+                payload_variant_patterns: vec![],
             },
             Pattern::Identifier(name) => {
                 // Use the same heuristic as `bind_pattern` to distinguish an
@@ -727,12 +928,14 @@ impl Checker {
                         pattern_kind: PatternKind::VariantCtor,
                         variant_match,
                         payload_bindings: vec![],
+                        payload_variant_patterns: vec![],
                     }
                 } else {
                     ArmResolution {
                         pattern_kind: PatternKind::Binding,
                         variant_match: None,
                         payload_bindings: vec![],
+                        payload_variant_patterns: vec![],
                     }
                 }
             }
@@ -742,29 +945,48 @@ impl Checker {
                 let payload_tys = self
                     .lookup_variant_types(name, scrutinee_ty, patterns.len())
                     .unwrap_or_else(|| vec![Ty::Error; patterns.len()]);
-                // Reject payload subpatterns that Stage 1 still cannot lower.
-                // Literal predicates are accepted and carried forward into HIR
-                // as pending payload predicates; nested constructors and
-                // aggregate destructures remain fail-closed until the later
-                // match-destructure stages wire their runtime checks.
-                for (sub_pat, sub_span) in patterns {
-                    if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
-                        self.report_error_with_note(
-                            crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
-                                variant_name: short_name.to_string(),
-                                kind_label: label.to_string(),
-                            },
-                            sub_span,
-                            format!(
-                                "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
-                            ),
-                            pattern_span,
-                            "v0.5 payload subpatterns support plain bindings (`x`), wildcards (`_`), \
-                             and literal predicates; nested patterns are reserved for a future \
-                             match-destructure stage"
-                                .to_string(),
-                        );
-                        return;
+                // Validate payload subpatterns. Plain bindings, wildcards,
+                // literal predicates, and (recursively) nested constructor
+                // subpatterns are admitted; aggregate destructures and
+                // or-patterns in payload position remain fail-closed.
+                let mut payload_variant_patterns: Vec<PayloadVariantPattern> = Vec::new();
+                for (field_idx, (sub_pat, sub_span)) in patterns.iter().enumerate() {
+                    let payload_ty = payload_tys.get(field_idx).cloned().unwrap_or(Ty::Error);
+                    match Self::nested_ctor_subpattern(sub_pat) {
+                        Some((ctor_name, inner_patterns)) => {
+                            let Some(pvp) = self.build_payload_variant_pattern(
+                                field_idx,
+                                &payload_ty,
+                                ctor_name,
+                                inner_patterns,
+                                sub_span,
+                                pattern_span,
+                            ) else {
+                                return;
+                            };
+                            payload_variant_patterns.push(pvp);
+                        }
+                        None => {
+                            if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
+                                self.report_error_with_note(
+                                    crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                        variant_name: short_name.to_string(),
+                                        kind_label: label.to_string(),
+                                    },
+                                    sub_span,
+                                    format!(
+                                        "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                                    ),
+                                    pattern_span,
+                                    "v0.5 payload subpatterns support plain bindings (`x`), wildcards (`_`), \
+                                     literal predicates, and nested constructor patterns; aggregate \
+                                     destructures and or-patterns are reserved for a future \
+                                     match-destructure stage"
+                                        .to_string(),
+                                );
+                                return;
+                            }
+                        }
                     }
                 }
                 let payload_bindings: Vec<PayloadBinding> = patterns
@@ -783,6 +1005,7 @@ impl Checker {
                     pattern_kind: PatternKind::VariantCtor,
                     variant_match,
                     payload_bindings,
+                    payload_variant_patterns,
                 }
             }
             Pattern::Struct { name, fields } => {
@@ -984,6 +1207,7 @@ impl Checker {
                     },
                     variant_match,
                     payload_bindings,
+                    payload_variant_patterns: vec![],
                 }
             }
             Pattern::Tuple(pats) => {
@@ -1025,6 +1249,7 @@ impl Checker {
                     pattern_kind: PatternKind::TuplePattern,
                     variant_match: None,
                     payload_bindings,
+                    payload_variant_patterns: vec![],
                 }
             }
             // Or-patterns are intentionally skipped.  Or-pattern lowering is
@@ -1070,11 +1295,160 @@ impl Checker {
                     pattern_kind: PatternKind::Regex { captures },
                     variant_match: None,
                     payload_bindings: vec![],
+                    payload_variant_patterns: vec![],
                 }
             }
         };
 
         self.pending_pattern_resolutions.insert(key, resolution);
+    }
+
+    /// Classify a payload subpattern as a nested constructor, returning the
+    /// constructor's surface name and its own payload subpatterns.
+    ///
+    /// Matches both shapes a nested variant takes in payload position:
+    /// `Pattern::Constructor` (`Err(ParseError::Invalid(_))`) and a
+    /// constructor-like `Pattern::Identifier` (`Err(IoError::NotFound)` — a
+    /// unit variant, which parses as an identifier). Returns `None` for every
+    /// other subpattern kind so the caller falls through to the
+    /// binding/wildcard/literal handling.
+    fn nested_ctor_subpattern(pattern: &Pattern) -> Option<(&str, &[(Pattern, Span)])> {
+        match pattern {
+            Pattern::Constructor { name, patterns } => Some((name, patterns.as_slice())),
+            Pattern::Identifier(name) => {
+                let is_constructor_like =
+                    name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+                is_constructor_like.then_some((name.as_str(), &[] as &[(Pattern, Span)]))
+            }
+            _ => None,
+        }
+    }
+
+    /// Recursively resolve a nested constructor subpattern at payload slot
+    /// `field_idx` (whose checker type is `payload_ty`) into a
+    /// [`PayloadVariantPattern`].
+    ///
+    /// Admitted inner subpattern shapes: plain bindings, wildcards, the unit
+    /// tuple `()`, and (recursively) further constructor patterns. Literal
+    /// predicates inside a NESTED constructor, aggregate destructures,
+    /// or-patterns, and regex patterns fail closed with an
+    /// `UnsupportedPayloadSubpattern` diagnostic.
+    ///
+    /// Returns `None` after reporting (or when `bind_pattern` already
+    /// reported, for unresolvable constructor names) so the caller abandons
+    /// the arm resolution — a missing side-table entry fails closed in HIR.
+    fn build_payload_variant_pattern(
+        &mut self,
+        field_idx: usize,
+        payload_ty: &Ty,
+        ctor_name: &str,
+        inner_patterns: &[(Pattern, Span)],
+        sub_span: &Span,
+        pattern_span: &Span,
+    ) -> Option<PayloadVariantPattern> {
+        let resolved_payload_ty = self.project_assoc_types(&self.subst.resolve(payload_ty));
+        let short_name = ctor_name.rsplit("::").next().unwrap_or(ctor_name);
+        let Some(variant_match) =
+            self.resolve_variant_match(short_name, &resolved_payload_ty, ctor_name)
+        else {
+            // `bind_pattern` already reported a mismatch for
+            // `Pattern::Constructor` shapes (it recursed through the payload),
+            // but constructor-like identifiers (unit variants) take the plain
+            // binding path there and arrive unvalidated — report here so the
+            // arm fails closed with a named diagnostic either way.
+            if inner_patterns.is_empty() {
+                self.report_error(
+                    crate::error::TypeErrorKind::Mismatch {
+                        expected: resolved_payload_ty.user_facing().to_string(),
+                        actual: ctor_name.to_string(),
+                    },
+                    sub_span,
+                    format!(
+                        "variant `{ctor_name}` is not a member of `{}`",
+                        resolved_payload_ty.user_facing()
+                    ),
+                );
+            }
+            return None;
+        };
+        let inner_payload_tys = self
+            .lookup_variant_types(ctor_name, &resolved_payload_ty, inner_patterns.len())
+            .unwrap_or_else(|| vec![Ty::Error; inner_patterns.len()]);
+        let mut bindings: Vec<PayloadBinding> = Vec::new();
+        let mut nested: Vec<PayloadVariantPattern> = Vec::new();
+        for (inner_idx, (sub_pat, inner_span)) in inner_patterns.iter().enumerate() {
+            let inner_ty = inner_payload_tys
+                .get(inner_idx)
+                .cloned()
+                .unwrap_or(Ty::Error);
+            if let Some((inner_ctor, inner_subs)) = Self::nested_ctor_subpattern(sub_pat) {
+                let pvp = self.build_payload_variant_pattern(
+                    inner_idx,
+                    &inner_ty,
+                    inner_ctor,
+                    inner_subs,
+                    inner_span,
+                    pattern_span,
+                )?;
+                nested.push(pvp);
+                continue;
+            }
+            match sub_pat {
+                Pattern::Wildcard => {}
+                Pattern::Tuple(pats) if pats.is_empty() => {}
+                Pattern::Identifier(binding_name) => {
+                    // Constructor-like identifiers were consumed by
+                    // `nested_ctor_subpattern` above; this is a plain binding.
+                    bindings.push(PayloadBinding {
+                        field_idx: inner_idx,
+                        binding_name: binding_name.clone(),
+                        ty: self.project_assoc_types(&inner_ty),
+                    });
+                }
+                other => {
+                    // Literal predicates are admitted at the top payload level
+                    // (MIR compares them against a directly-projected field)
+                    // but not yet inside a nested constructor; aggregate
+                    // destructures, or-patterns, and regex subpatterns are
+                    // fail-closed at every depth.
+                    let label = match other {
+                        Pattern::Literal(_) => "literal predicate inside a nested constructor",
+                        Pattern::Struct { .. } => "struct destructure",
+                        Pattern::Tuple(_) => "tuple destructure",
+                        Pattern::Or(_, _) => "or-pattern",
+                        Pattern::Regex { .. } => "regex pattern",
+                        Pattern::Wildcard
+                        | Pattern::Identifier(_)
+                        | Pattern::Constructor { .. } => {
+                            unreachable!("handled above")
+                        }
+                    };
+                    self.report_error_with_note(
+                        crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                            variant_name: short_name.to_string(),
+                            kind_label: label.to_string(),
+                        },
+                        inner_span,
+                        format!(
+                            "payload subpattern `{label}` in `{short_name}(...)` is not yet supported"
+                        ),
+                        pattern_span,
+                        "nested constructor payloads support plain bindings (`x`), wildcards \
+                         (`_`), and further nested constructors; other subpattern shapes are \
+                         reserved for a future match-destructure stage"
+                            .to_string(),
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(PayloadVariantPattern {
+            field_idx,
+            payload_ty: resolved_payload_ty,
+            variant_match,
+            bindings,
+            nested,
+        })
     }
 
     /// Resolve the source variant-match descriptor for a constructor written at

@@ -734,7 +734,20 @@ pub fn sched_try_wake() {
 
 /// Main loop executed by each worker thread.
 fn worker_loop(id: usize, local: &WorkDeque) {
-    let sched = get_scheduler().expect("scheduler not initialized");
+    // Capture the raw scheduler pointer once at thread-start.  In production
+    // the global SCHEDULER pointer never changes after hew_sched_init, so the
+    // reference derived here is valid for the loop's entire lifetime.
+    //
+    // In test builds we re-read SCHEDULER on every iteration to detect the
+    // test-only NoWorkerSchedulerForTest swap (which violates the production
+    // invariant) and exit cleanly before any freed pointer is dereferenced.
+    // See NoWorkerSchedulerForTest::Drop for the matching drain.
+    let sched_raw = SCHEDULER.load(Ordering::Acquire);
+    // SAFETY: Non-null means hew_sched_init set it; the scheduler is valid
+    // until hew_runtime_cleanup, which only runs after all workers are joined.
+    let Some(sched) = (unsafe { sched_raw.as_ref() }) else {
+        return;
+    };
     let mut rng = Xorshift64::new(crate::deterministic::effective_worker_seed(id as u64));
     crate::observe::set_current_worker_shard(id);
 
@@ -746,6 +759,15 @@ fn worker_loop(id: usize, local: &WorkDeque) {
     crate::signal::init_worker_recovery(id as u32);
 
     while !sched.shutdown.load(Ordering::Acquire) {
+        // Test-only guard: if the global scheduler pointer was replaced under
+        // us (by NoWorkerSchedulerForTest::install), exit before the transient
+        // scheduler is freed by the guard's Drop.  In production SCHEDULER is
+        // never swapped during a worker's lifetime, so this branch is
+        // compiled away in non-test builds with zero hot-path overhead.
+        #[cfg(test)]
+        if SCHEDULER.load(Ordering::Relaxed) != sched_raw {
+            break;
+        }
         // 1. Pop from local deque (LIFO — cache-friendly).
         if let Some(ptr) = local.pop() {
             activate_actor(ptr.cast::<HewActor>());
@@ -1936,6 +1958,18 @@ pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new
 /// so an enqueued actor pointer stays observable for assertions. Used by the
 /// free-path UAF tests (both the reactor-detach and non-reactor link/monitor
 /// wake windows) to prove a freed actor is never left queued.
+///
+/// # Drop quiescence
+///
+/// Worker threads from a prior [`hew_sched_init`] may start executing
+/// `worker_loop` during the install window (after the global `SCHEDULER`
+/// pointer is swapped) and cache the test-only scheduler pointer.  The
+/// `Drop` impl sets `shutdown = true` on the installed scheduler and notifies
+/// its parkers before freeing, giving those workers time to exit.  The
+/// `#[cfg(test)]` SCHEDULER-mismatch check in `worker_loop` causes them to
+/// break after at most one loop iteration.  Together the two mechanisms close
+/// the test-only heap-use-after-free window without touching the production
+/// hot path.
 #[cfg(test)]
 pub(crate) struct NoWorkerSchedulerForTest {
     previous: *mut Scheduler,
@@ -2007,8 +2041,54 @@ impl Drop for NoWorkerSchedulerForTest {
     fn drop(&mut self) {
         let ptr = SCHEDULER.swap(self.previous, Ordering::AcqRel);
         if !ptr.is_null() {
-            // SAFETY: `ptr` was allocated by `install` via Box::into_raw and no
-            // worker threads ever referenced it (worker-less scheduler).
+            // Quiesce any worker thread that may have cached `ptr` as its
+            // scheduler during the install window.
+            //
+            // WHY: worker_loop captures SCHEDULER once at thread-start.  A
+            // worker spawned by a prior hew_sched_init may start late — after
+            // install() has already swapped the global — and cache `ptr`.  That
+            // worker will see the #[cfg(test)] SCHEDULER-mismatch check and
+            // break out of the loop, but it needs `ptr` to remain valid while
+            // it runs the current iteration to completion.  Setting
+            // `shutdown = true` + notifying parkers ensures it exits on the
+            // very next loop-condition check (line 748) without parking again,
+            // and the sleep that follows (> PARK_TIMEOUT) gives it that time.
+            //
+            // This path is only taken when the restored scheduler has live
+            // worker threads (i.e. a prior hew_sched_init was not cleaned up).
+            // When self.previous is null or has an empty worker_handles, no
+            // worker could have captured `ptr`, so we skip straight to free.
+            //
+            // WHY sleep not join: the workers that cached `ptr` belong to
+            // `self.previous` (the production scheduler); their JoinHandles
+            // live in that scheduler's worker_handles.  Joining them here would
+            // permanently drain the production scheduler's thread pool, breaking
+            // tests that run after this guard.  A bounded sleep is sufficient
+            // because, after shutdown = true + notify, a worker exits after at
+            // most one PARK_TIMEOUT (10 ms) regardless of system load.
+            //
+            // WHEN obsolete: once hew_sched_init-calling tests each call
+            // hew_sched_shutdown to properly quiesce before returning, no
+            // worker can survive into the next SCHED_TEST_MUTEX window and this
+            // drain path becomes unreachable.
+            let prev_has_live_workers = !self.previous.is_null()
+                // SAFETY: self.previous was live when install() ran; SCHED_TEST_MUTEX
+                // is still held, so no concurrent test can free it.
+                && unsafe { (*self.previous).worker_handles.access(|h| !h.is_empty()) };
+            if prev_has_live_workers {
+                // SAFETY: ptr is still our allocation; Drop has not been called yet.
+                let installed = unsafe { &*ptr };
+                installed.shutdown.store(true, Ordering::Release);
+                for parker in &installed.parkers {
+                    parker.cond.notify_all();
+                }
+                // Wait > PARK_TIMEOUT for workers to observe shutdown=true and
+                // exit the loop body they are currently in.
+                std::thread::sleep(PARK_TIMEOUT * 2 + Duration::from_millis(5));
+            }
+            // SAFETY: `ptr` was allocated by `install` via Box::into_raw.  Any
+            // worker that cached `ptr` has seen shutdown=true (above) and
+            // exited (or, if prev_has_live_workers was false, never existed).
             drop(unsafe { Box::from_raw(ptr) });
         }
     }

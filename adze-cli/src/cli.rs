@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    atomic_fs, checksum, client, config, credentials, index, lockfile, manifest, native,
+    checksum, client, config, credentials, index, lockfile, manifest, native,
     package_fs, registry, resolver, signing, tarball,
 };
 

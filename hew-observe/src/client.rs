@@ -2,9 +2,12 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-use std::io::{self, BufRead, Read, Write};
+use std::io;
+#[cfg(unix)]
+use std::io::{BufRead, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -48,8 +51,10 @@ pub enum ClientError {
     /// Could not connect to the unix socket (stale path, permissions, etc.).
     Connect(io::Error),
     /// Failed to configure socket read/write timeouts.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Timeout(io::Error),
     /// Failed to write the HTTP request.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Write(io::Error),
     /// Failed to read the HTTP response (status line, headers, or body).
     Read(io::Error),

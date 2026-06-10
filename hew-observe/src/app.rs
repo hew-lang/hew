@@ -1,8 +1,11 @@
 //! Application state for the TUI observer.
 
 use std::cmp::Reverse;
+#[cfg(unix)]
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(unix)]
+use std::time::Duration;
 
 use crate::client::{
     ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
@@ -177,7 +180,9 @@ pub struct App {
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
+    #[cfg_attr(not(unix), allow(dead_code))]
     auto_discover: bool,
+    #[cfg_attr(not(unix), allow(dead_code))]
     last_discovery_scan: Instant,
 
     prev_messages_sent: u64,
@@ -1245,6 +1250,7 @@ mod tests {
         Arc, Mutex,
     };
     use std::thread::{self, JoinHandle};
+    use std::time::Duration;
 
     struct TestTraceServer {
         addr: String,

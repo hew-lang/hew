@@ -1,0 +1,35 @@
+// Mixed-import dedup regression: a FILE import and a PACKAGE import both
+// contribute an `impl ResultMethods for Result` on distinct, same-bare-named
+// types. BOTH impls must emit and dispatch to their own method body.
+//
+// Pre-fix, the fourth-pass dedup keyed by the bare `"Result:ResultMethods"`
+// name: the file-import impl seeded the key, so the package-import impl was
+// `continue`d (silently dropped). Calling `r.rows()` on the package handle
+// then had no MIR body and failed closed (CallableUnsupportedInMir / wrong
+// dispatch). The provenance-based skip (by module origin, not name) leaves the
+// package impl untouched, so both `local.rows()` and `r.rows()` resolve.
+import hew::testffi;
+import "mixed_import_impl_collision_lib.hew";
+
+fn main() {
+    // File-import impl: local Result.rows() == handle * 10.
+    let local = Result { handle: 5 };
+    println(f"local={local.tag()}");
+
+    // Package-import impl: testffi Result.rows()/get()/total()/free().
+    let db = spawn testffi.Db(seed: 9);
+    match await db.query(3) {
+        Ok(r) => {
+            let n = r.rows();
+            println(f"rows={n}");
+            for i in 0 .. n {
+                let cell = r.get(i);
+                println(cell);
+            }
+            let sum = r.total();
+            println(f"total={sum}");
+            r.free();
+        },
+        Err(_) => println("ask failed"),
+    }
+}

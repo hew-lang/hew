@@ -1093,6 +1093,74 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
     map
 }
 
+/// Identify, by PROVENANCE, the module-graph modules whose items were spliced
+/// into `program.items` by `flatten_file_import_items` (i.e. reached via a
+/// file-path `import "x.hew";`).
+///
+/// The fourth pass (`lower_program_with_mono_cap`'s module-graph walk) visits
+/// every module in `mg.topo_order`, which contains BOTH package-imported and
+/// file-imported modules. File-import items are ALSO lowered by the
+/// source-order third pass (they live in `program.items` after the splice), so
+/// the fourth pass must skip a file-import module's impl blocks to avoid
+/// double-lowering them into duplicate `<SelfType>::<method>` symbols.
+///
+/// The discriminator is the module's IDENTITY, not the bare type/trait name an
+/// impl targets: file-import decls (`file_path.is_some()`) carry the canonical
+/// `resolved_source_paths` of the files they pulled in; a graph module is
+/// file-imported iff one of its `source_paths` is among them. Keying on origin
+/// (rather than `"<type>:<trait>"`) is required for soundness: Hew deliberately
+/// permits two DISTINCT modules to declare same-bare-named `pub type`s and
+/// `impl Trait for T` (see `LESSONS.md` per-module-type-identity; e.g. std
+/// http and websocket each define their own `Server`/`impl ServerMethods for
+/// Server`). A bare-name skip would silently drop a package-import impl that
+/// merely shares a name with a file-import/root impl; an origin skip cannot.
+fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModuleId> {
+    use std::path::PathBuf;
+
+    let mut ids = HashSet::new();
+    let Some(mg) = &program.module_graph else {
+        return ids;
+    };
+
+    // Canonical source paths contributed by file-path imports.
+    let mut file_import_paths: HashSet<PathBuf> = HashSet::new();
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        for p in &decl.resolved_source_paths {
+            file_import_paths.insert(p.clone());
+        }
+        for p in &decl.resolved_item_source_paths {
+            file_import_paths.insert(p.clone());
+        }
+    }
+    if file_import_paths.is_empty() {
+        return ids;
+    }
+
+    // A non-root module is file-imported iff any of its source files were
+    // pulled in by a file-path import above. Package-imported modules never
+    // appear in `file_import_paths`, so they are excluded and the fourth pass
+    // emits their impls exactly once.
+    for (mod_id, module) in &mg.modules {
+        if *mod_id == mg.root {
+            continue;
+        }
+        if module
+            .source_paths
+            .iter()
+            .any(|p| file_import_paths.contains(p))
+        {
+            ids.insert(mod_id.clone());
+        }
+    }
+    ids
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2507,31 +2575,18 @@ pub fn lower_program_with_mono_cap(
         // blocks. For file-import impls the resulting LLVM module fails
         // verification with "Global is external, but doesn't have external or
         // weak linkage!" (the internal-linkage bodyless declaration that the
-        // rename collision produces). This dedup mirrors the `root_actor_names`
-        // guard above: package imports are NOT in `program.items`, so they are
-        // emitted exactly once by this walk. The identity key is
-        // `"<self_type_name>:<trait_name_or_empty>"` — the same precision as the
-        // checker uses for impl registration.
-        let root_impl_blocks: HashSet<String> = program
-            .items
-            .iter()
-            .filter_map(|(item, _)| {
-                if let Item::Impl(impl_decl) = item {
-                    if let TypeExpr::Named {
-                        name: self_type_name,
-                        ..
-                    } = &impl_decl.target_type.0
-                    {
-                        let trait_part = impl_decl
-                            .trait_bound
-                            .as_ref()
-                            .map_or(String::new(), |tb| tb.name.clone());
-                        return Some(format!("{self_type_name}:{trait_part}"));
-                    }
-                }
-                None
-            })
-            .collect();
+        // rename collision produces).
+        //
+        // The discriminator is module ORIGIN, not the impl's bare
+        // `"<type>:<trait>"` name: only the file-import SPLICED modules are
+        // lowered twice (third-pass splice + this fourth-pass walk), so the
+        // skip targets exactly those modules by identity. Keying by name would
+        // be unsound — Hew permits distinct modules to share a bare type/trait
+        // name (`LESSONS.md` per-module-type-identity), so a file-import/root
+        // impl could silently shadow a same-named but DISTINCT package-import
+        // impl. `file_import_module_ids` cannot misroute a package impl: package
+        // modules are never in the set, so this walk emits them exactly once.
+        let file_import_modules = file_import_module_ids(program);
         // Mirror the checker's 1-based non-root module index. The checker
         // increments `current_module_idx` before each non-root topo-order
         // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
@@ -2765,27 +2820,23 @@ pub fn lower_program_with_mono_cap(
                         // private-helper closure reachable from impl methods, a
                         // follow-up to the free-fn closure already wired here.)
                         Item::Impl(impl_decl) => {
+                            // Skip impl blocks of FILE-import modules: their
+                            // items were spliced into `program.items` and
+                            // already lowered by the source-order third pass.
+                            // Re-lowering here would emit duplicate
+                            // `<SelfType>::<method>` symbols (see
+                            // `file_import_module_ids`). The guard is by module
+                            // identity, so a package-import impl that merely
+                            // shares a bare type/trait name with a file-import
+                            // or root impl is never skipped.
+                            if file_import_modules.contains(mod_id) {
+                                continue;
+                            }
                             if let TypeExpr::Named {
                                 name: self_type_name,
                                 ..
                             } = &impl_decl.target_type.0
                             {
-                                // Dedup: skip this impl block if it was already
-                                // emitted in the source-order third pass (because
-                                // the module is file-imported and its items were
-                                // spliced into `program.items` by
-                                // `flatten_file_import_items`). Package-imported
-                                // modules are NOT in `program.items`, so their
-                                // impl blocks are absent from `root_impl_blocks`
-                                // and are emitted here exactly once.
-                                let trait_part = impl_decl
-                                    .trait_bound
-                                    .as_ref()
-                                    .map_or(String::new(), |tb| tb.name.clone());
-                                let impl_key = format!("{self_type_name}:{trait_part}");
-                                if root_impl_blocks.contains(&impl_key) {
-                                    continue;
-                                }
                                 // Conservatively lower only the imported impl
                                 // methods that are provably safe cross-module;
                                 // skip the rest so they stay dropped exactly as

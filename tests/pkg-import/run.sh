@@ -7,6 +7,8 @@
 #   - the prelude-shadowing record name (`type Result`)
 #   - [native] auto-link: the package's Rust staticlib builds on demand
 #   - local-actor asks coexisting with imported asks (regression guard)
+#   - mixed file-import + package-import impls on distinct same-bare-named
+#     types (dedup must skip by module origin, not by `<type>:<trait>` name)
 # On macOS the trait-method demo re-runs under MallocScribble/GuardEdges to
 # hold the handle's single-release contract.
 set -euo pipefail
@@ -30,6 +32,7 @@ fixtures=(
   imported_actor_ask_record
   imported_trait_method
   local_actor_ask_guard
+  mixed_import_impl_collision
 )
 
 for fixture in "${fixtures[@]}"; do

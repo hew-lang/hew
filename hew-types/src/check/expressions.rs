@@ -4081,7 +4081,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         if matches!(&object.0, Expr::This) && self.current_actor_type.is_some() {
-            if self.current_actor_fields.iter().any(|name| name == field) {
+            if self.current_actor_fields.iter().any(|f| f.name == field) {
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedField,
                     span,

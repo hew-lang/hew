@@ -23802,3 +23802,210 @@ fn main() -> i64 {
         output.errors
     );
 }
+
+// ── Actor field mutability enforcement ──────────────────────────────────
+//
+// `var` fields are writable everywhere; `let` and bare fields may only be
+// assigned inside `init { }` (the constructor). Handlers, methods, and
+// lifecycle hooks reject the write with a field-shaped MutabilityError that
+// names the declaration site and the `var` fix.
+
+fn immutable_field_errors(output: &TypeCheckOutput, field: &str) -> Vec<String> {
+    output
+        .errors
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, TypeErrorKind::MutabilityError)
+                && e.message
+                    .contains(&format!("cannot assign to immutable field `{field}`"))
+        })
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+#[test]
+fn let_field_assignment_in_receive_fn_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    receive fn bump() {
+        count = count + 1;
+    }
+}
+",
+    );
+    assert_eq!(
+        immutable_field_errors(&output, "count").len(),
+        1,
+        "let field write in a receive fn must be rejected; got: {:#?}",
+        output.errors
+    );
+    let err = output
+        .errors
+        .iter()
+        .find(|e| {
+            e.message
+                .contains("cannot assign to immutable field `count`")
+        })
+        .expect("immutable field error");
+    assert!(
+        !err.notes.is_empty(),
+        "diagnostic must carry a declaration-site note; got: {err:#?}"
+    );
+    assert!(
+        err.suggestions.iter().any(|s| s.contains("var")),
+        "diagnostic must suggest declaring the field with `var`; got: {err:#?}"
+    );
+}
+
+#[test]
+fn bare_field_assignment_in_receive_fn_is_rejected() {
+    // A bare field declaration defaults to immutable (parser default),
+    // so it follows the same rule as `let`.
+    let output = check_source(
+        r"
+actor Counter {
+    count: i64;
+    receive fn bump() {
+        count = count + 1;
+    }
+}
+",
+    );
+    assert_eq!(
+        immutable_field_errors(&output, "count").len(),
+        1,
+        "bare field write in a receive fn must be rejected; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn compound_assignment_to_let_field_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    receive fn bump() {
+        count += 1;
+    }
+}
+",
+    );
+    assert_eq!(
+        immutable_field_errors(&output, "count").len(),
+        1,
+        "compound assignment to a let field must be rejected; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_field_assignment_in_actor_method_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    receive fn poke() {
+        bump();
+    }
+    fn bump() {
+        count = count + 1;
+    }
+}
+",
+    );
+    assert_eq!(
+        immutable_field_errors(&output, "count").len(),
+        1,
+        "let field write in a plain actor method must be rejected; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_field_assignment_in_on_stop_hook_is_rejected() {
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    receive fn poke() {}
+    #[on(stop)]
+    fn drain() {
+        count = 0;
+    }
+}
+",
+    );
+    assert_eq!(
+        immutable_field_errors(&output, "count").len(),
+        1,
+        "let field write in a lifecycle hook must be rejected; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_field_assignment_in_init_is_accepted() {
+    let output = check_source(
+        r"
+actor Counter {
+    let count: i64;
+    init(initial: i64) {
+        count = initial;
+    }
+    receive fn total() -> i64 {
+        count
+    }
+}
+",
+    );
+    assert!(
+        immutable_field_errors(&output, "count").is_empty(),
+        "init must be allowed to assign let fields; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn var_field_assignment_in_receive_fn_is_accepted() {
+    let output = check_source(
+        r"
+actor Counter {
+    var count: i64;
+    receive fn bump() {
+        count = count + 1;
+    }
+}
+",
+    );
+    assert!(
+        immutable_field_errors(&output, "count").is_empty(),
+        "var field write in a receive fn must be accepted; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_field_read_in_receive_fn_is_accepted() {
+    let output = check_source(
+        r"
+actor Counter {
+    let step: i64;
+    var count: i64;
+    receive fn bump() {
+        count = count + step;
+    }
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !matches!(e.kind, TypeErrorKind::MutabilityError)),
+        "reading a let field in a receive fn must be accepted; got: {:#?}",
+        output.errors
+    );
+}

@@ -233,6 +233,26 @@ impl TypeError {
         .with_suggestion(format!("consider changing this to `var {name}`"))
     }
 
+    /// Create a mutability error for an assignment to an immutable actor
+    /// state field outside `init { }`.
+    ///
+    /// `decl_span` is the field's declaration site; the note anchors the
+    /// diagnostic there so the fix (declare the field with `var`) lands on
+    /// the right line.
+    #[must_use]
+    pub fn immutable_field_assignment(span: Span, name: &str, decl_span: Span) -> Self {
+        Self::new(
+            TypeErrorKind::MutabilityError,
+            span,
+            format!("cannot assign to immutable field `{name}` outside `init`"),
+        )
+        .with_note(
+            decl_span,
+            format!("field `{name}` is declared immutable here"),
+        )
+        .with_suggestion(format!("declare the field with `var`: `var {name}: ...`"))
+    }
+
     /// Create a return type mismatch error.
     #[must_use]
     pub fn return_type_mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {

@@ -121,6 +121,7 @@ fn minimal_actor(
             name: "count".to_string(),
             ty: ResolvedTy::I64,
             default: None,
+            is_mutable: true,
             span: 0..0,
         }],
         init: Some(hew_hir::HirActorInit {

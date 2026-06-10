@@ -339,6 +339,20 @@ grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 
+# Actor field mutability: a `let` state field is writable only inside
+# `init`; a receive-fn write must fail at check time and name the var fix.
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic text, not a command substitution.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_let_field_assign.hew" \
+    'cannot assign to immutable field `count`' \
+    "actor_let_field_assign"
+
+# Actor field mutability accept side: a `let` field set at spawn time is
+# readable from handlers while the `var` field takes the writes.
+# step=7 applied twice: exit 14.
+run_accept_expect_status "actor_let_field_read" 14
+
 # Actor runtime ABI fail-closed smoke: `actor_counter` is an accept fixture on
 # native targets, but actors require the production scheduler/mailbox ABI. Bare
 # `wasm32-unknown-unknown` has no runtime ABI at all, and the current Tier-2

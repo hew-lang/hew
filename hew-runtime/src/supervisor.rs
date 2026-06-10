@@ -1060,6 +1060,43 @@ fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
     }
 }
 
+/// Free a batch of stopped siblings on a background thread during a restart and
+/// register the `JoinHandle` in the deferred-teardown registry.
+///
+/// The siblings are still tracked in `LIVE_ACTORS` until this thread runs the
+/// restart-aware free on each. Like the supervisor-stop teardown sites, leaving
+/// the thread detached would let `cleanup_all_actors` sweep those allocations
+/// out from under an in-flight crash-restart free — a use-after-free /
+/// double-free. Registering the handle puts the teardown under the same
+/// join-before-sweep barrier (`drain_deferred_teardown_threads`).
+fn spawn_deferred_restart_free(deferred: Vec<DeferredFree>) {
+    if deferred.is_empty() {
+        return;
+    }
+    match std::thread::Builder::new()
+        .name("deferred-free".into())
+        .spawn(move || {
+            for d in deferred {
+                // SAFETY: actor was stopped; supervisor no longer references it.
+                // Use the restart-aware free path so the codegen state-drop does
+                // NOT run on field pointers that are still byte-aliased by
+                // `spec.init_state` and about to be reused by
+                // `restart_child_from_spec`. See
+                // `actor::free_actor_resources_with_options`.
+                unsafe { actor::hew_actor_free_for_restart(d.0) };
+            }
+        }) {
+        Ok(handle) => {
+            // Register the teardown thread so `cleanup_all_actors` joins it
+            // before sweeping the actors this thread still dereferences.
+            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+        }
+        Err(_) => {
+            eprintln!("hew: warning: failed to spawn deferred-free thread");
+        }
+    }
+}
+
 fn current_actor_supervisor(current: *mut HewActor) -> *mut HewSupervisor {
     if current.is_null() {
         return ptr::null_mut();
@@ -1461,24 +1498,7 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     deferred.push(DeferredFree(child));
                 }
             }
-            if !deferred.is_empty()
-                && std::thread::Builder::new()
-                    .name("deferred-free".into())
-                    .spawn(move || {
-                        for d in deferred {
-                            // SAFETY: actor was stopped; supervisor no longer references it.
-                            // Use the restart-aware free path so the codegen
-                            // state-drop does NOT run on field pointers that
-                            // are still byte-aliased by `spec.init_state` and
-                            // about to be reused by `restart_child_from_spec`.
-                            // See `actor::free_actor_resources_with_options`.
-                            unsafe { actor::hew_actor_free_for_restart(d.0) };
-                        }
-                    })
-                    .is_err()
-            {
-                eprintln!("hew: warning: failed to spawn deferred-free thread");
-            }
+            spawn_deferred_restart_free(deferred);
             for i in 0..sup.child_count {
                 // SAFETY: index is valid.
                 unsafe { restart_child_from_spec(sup, i) };
@@ -1496,24 +1516,7 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
                     deferred.push(DeferredFree(child));
                 }
             }
-            if !deferred.is_empty()
-                && std::thread::Builder::new()
-                    .name("deferred-free".into())
-                    .spawn(move || {
-                        for d in deferred {
-                            // SAFETY: actor was stopped; supervisor no longer references it.
-                            // Use the restart-aware free path so the codegen
-                            // state-drop does NOT run on field pointers that
-                            // are still byte-aliased by `spec.init_state` and
-                            // about to be reused by `restart_child_from_spec`.
-                            // See `actor::free_actor_resources_with_options`.
-                            unsafe { actor::hew_actor_free_for_restart(d.0) };
-                        }
-                    })
-                    .is_err()
-            {
-                eprintln!("hew: warning: failed to spawn deferred-free thread");
-            }
+            spawn_deferred_restart_free(deferred);
             for i in failed_index..sup.child_count {
                 // SAFETY: index is valid.
                 unsafe { restart_child_from_spec(sup, i) };
@@ -2388,8 +2391,21 @@ mod tests {
         }
     }
 
+    /// Serializes the deferred-teardown join-barrier tests. They share the
+    /// process-global `DEFERRED_TEARDOWN_THREADS` registry and each holds its
+    /// teardown open with a gated terminate; running two of them concurrently
+    /// would let one test's `drain_deferred_teardown_threads` steal and join
+    /// the other's still-gated handle, so the victim's own drain observes an
+    /// empty registry and asserts before the stolen teardown frees its actor.
+    /// Production only ever drains once, single-threaded, in
+    /// `cleanup_all_actors`; this lock restores that precondition for the tests.
+    static TEARDOWN_DRAIN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn drain_deferred_teardown_joins_in_flight_supervisor_stop() {
+        let _serial = TEARDOWN_DRAIN_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // The deferred-sup-stop thread dereferences the supervisor's child and
         // self actors for the whole teardown. `cleanup_all_actors` joins the
         // registered teardown threads before sweeping `LIVE_ACTORS`; this test
@@ -2443,6 +2459,70 @@ mod tests {
             assert!(
                 !actor::is_actor_live_with_id(self_id, self_actor),
                 "joined teardown must have released the supervisor self actor"
+            );
+
+            release.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn drain_deferred_teardown_joins_in_flight_restart_free() {
+        let _serial = TEARDOWN_DRAIN_SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The ONE_FOR_ALL / REST_FOR_ONE restart arms free stopped siblings on
+        // a background "deferred-free" thread that runs
+        // `hew_actor_free_for_restart` on actors still tracked in
+        // `LIVE_ACTORS`. `cleanup_all_actors` must join that teardown before
+        // sweeping the registry, or the sweep races the in-flight free into a
+        // use-after-free / double-free. This drives the production restart spawn
+        // helper directly and holds the free open across the drain via a gated
+        // terminate, so a drain that does NOT join the deferred-free thread
+        // (the pre-fix detached spawn) returns while the sibling is still
+        // tracked and the assertion fails.
+        // SAFETY: this test owns the supervisor tree and gates the teardown
+        // through test-controlled atomics, mirroring the supervisor-stop
+        // variant above.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let child_id = (*child).id;
+
+            // Detach the sibling from the supervisor exactly as the restart
+            // arms do via `take_child_slot`, then drive it to a quiescent
+            // terminal state and gate its terminate open.
+            let taken = take_child_slot(&mut *sup, 0);
+            assert_eq!(taken, child);
+            let child_ref = &*child;
+            child_ref
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            child_ref.terminate_called.store(true, Ordering::Release);
+            child_ref.terminate_finished.store(false, Ordering::Release);
+
+            // Production restart teardown spawn + registration.
+            spawn_deferred_restart_free(vec![DeferredFree(child)]);
+
+            // Release the gated terminate while the drain below is joining the
+            // deferred-free thread. The teardown blocks in
+            // `free_actor_resources_with_options` on `terminate_finished`
+            // before reclaiming the sibling, so this store happens-before the
+            // free.
+            let child_addr = child as usize;
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                // SAFETY: the teardown thread cannot free the sibling before
+                // observing this store (see comment above).
+                (*(child_addr as *mut HewActor))
+                    .terminate_finished
+                    .store(true, Ordering::Release);
+            });
+
+            crate::lifetime::live_actors::drain_deferred_teardown_threads();
+
+            // The join barrier guarantees the teardown finished — no polling.
+            assert!(
+                !actor::is_actor_live_with_id(child_id, child),
+                "joined restart teardown must have released the stopped sibling"
             );
 
             release.join().unwrap();

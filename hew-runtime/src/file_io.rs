@@ -227,15 +227,17 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     }
 }
 
-/// Read the raw bytes of a file into a `bytes` `HewVec` (i32 elements).
+/// Read the raw bytes of a file and return them as a `BytesTriple` value.
 ///
-/// Returns an empty `HewVec` on error.
+/// Returns an empty triple (`ptr=null, offset=0, len=0`) on error; the caller
+/// must inspect `hew_stream_last_errno()` to distinguish a genuine empty file
+/// from a read failure.
 ///
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate::vec::HewVec {
+pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> crate::bytes::BytesTriple {
     // SAFETY: `path` is the caller-provided C string pointer for this ABI entrypoint.
     let Some(rust_path) = (unsafe { crate::util::cstr_to_str(&path, "hew_file_read_bytes") })
     else {
@@ -245,8 +247,11 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
             msg.into(),
             22, // EINVAL: Invalid argument
         );
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { crate::vec::hew_vec_new() };
+        return crate::bytes::BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
     };
     match std::fs::read(rust_path) {
         Ok(data) => {
@@ -256,31 +261,59 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
             // hew_stream_last_error() after a successful read.
             crate::hew_clear_error();
             let _ = crate::stream_error::take_last_error();
-            // SAFETY: data slice is valid.
-            unsafe { crate::vec::u8_to_hwvec(&data) }
+            let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+            // SAFETY: data is a valid Vec<u8>; len <= data.len().
+            unsafe { crate::bytes::hew_bytes_from_static(data.as_ptr(), len) }
         }
         Err(error) => {
             let msg = format!("hew_file_read_bytes: {error}");
             crate::set_last_error(&msg);
             set_last_error_with_errno(msg, error.raw_os_error().unwrap_or(0));
-            // SAFETY: hew_vec_new allocates a valid empty HewVec.
-            unsafe { crate::vec::hew_vec_new() }
+            crate::bytes::BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            }
         }
     }
 }
 
-/// Write a `bytes` `HewVec` to a file, overwriting any existing content.
+/// Out-pointer variant of [`hew_file_read_bytes`] for Windows x64 MSVC sret fix.
+///
+/// Writes the result into `*out` and returns void. Every bytes-triple producer
+/// exports a `_raw` sibling so that codegen can use the out-pointer calling
+/// convention on all platforms and avoid the MSVC sret mismatch.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+/// `out` must be a valid, writable pointer to a `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_bytes_raw(
+    path: *const c_char,
+    out: *mut crate::bytes::BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_file_read_bytes(path) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Write a `BytesTriple` to a file, overwriting any existing content.
+///
+/// `data` is the address of the caller's `BytesTriple` alloca, passed via the
+/// by-pointer bytes consumer convention (`is_bytes_by_pointer_consumer`).
 ///
 /// Returns 0 on success, -1 on error.
 ///
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string.
-/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `data` must be a valid, non-null pointer to a `BytesTriple`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_write_bytes(
     path: *const c_char,
-    data: *mut crate::vec::HewVec,
+    data: *const crate::bytes::BytesTriple,
 ) -> i32 {
     if path.is_null() || data.is_null() {
         return -1;
@@ -290,9 +323,17 @@ pub unsafe extern "C" fn hew_file_write_bytes(
     let Ok(rust_path) = c_path.to_str() else {
         return -1;
     };
-    // SAFETY: data validity forwarded to hwvec_to_u8.
-    let bytes = unsafe { crate::vec::hwvec_to_u8(data) };
-    if std::fs::write(rust_path, &bytes).is_ok() {
+    // SAFETY: caller guarantees `data` is a valid BytesTriple pointer.
+    let triple = unsafe { &*data };
+    let slice = if triple.len == 0 || triple.ptr.is_null() {
+        &[] as &[u8]
+    } else {
+        // SAFETY: triple.ptr + triple.offset is valid for triple.len bytes per BytesTriple invariant.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+    };
+    if std::fs::write(rust_path, slice).is_ok() {
         0
     } else {
         -1
@@ -865,6 +906,19 @@ mod tests {
     // hew_file_read_bytes / hew_file_write_bytes
     // -----------------------------------------------------------------------
 
+    /// Helper: free a `BytesTriple` allocated by the runtime (non-null `ptr`).
+    ///
+    /// # Safety
+    ///
+    /// `triple.ptr` must be a pointer allocated by `hew_bytes_from_static` (or
+    /// any other bytes runtime allocator using `alloc_buf`).
+    unsafe fn free_bytes_triple(triple: &crate::bytes::BytesTriple) {
+        if !triple.ptr.is_null() {
+            // SAFETY: caller guarantees ptr was allocated by hew_bytes_from_static.
+            unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
+        }
+    }
+
     #[test]
     fn read_bytes_roundtrip_with_write_bytes() {
         let dir = test_dir("bytes_rt");
@@ -872,39 +926,38 @@ mod tests {
         let data: Vec<u8> = vec![0, 1, 127, 128, 255];
         std::fs::write(&file, &data).unwrap();
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        // SAFETY: p is a valid NUL-terminated C string; triple is returned by hew_file_read_bytes.
         unsafe {
-            let v = hew_file_read_bytes(p.as_ptr());
-            assert!(!v.is_null());
-            let recovered = crate::vec::hwvec_to_u8(v);
-            assert_eq!(recovered, data);
-            crate::vec::hew_vec_free(v);
+            let triple = hew_file_read_bytes(p.as_ptr());
+            assert_eq!(triple.len as usize, data.len());
+            let slice = std::slice::from_raw_parts(
+                triple.ptr.add(triple.offset as usize),
+                triple.len as usize,
+            );
+            assert_eq!(slice, data.as_slice());
+            free_bytes_triple(&triple);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn read_bytes_null_path_returns_empty_vec() {
-        // SAFETY: null is the value under test; v is returned by hew_file_read_bytes.
-        unsafe {
-            let v = hew_file_read_bytes(std::ptr::null());
-            assert!(!v.is_null());
-            assert_eq!(crate::vec::hew_vec_len(v), 0);
-            crate::vec::hew_vec_free(v);
-        }
+    fn read_bytes_null_path_returns_empty_triple() {
+        // SAFETY: null is the value under test; the function handles it gracefully.
+        let triple = unsafe { hew_file_read_bytes(std::ptr::null()) };
+        assert_eq!(triple.len, 0);
+        assert!(triple.ptr.is_null());
     }
 
     #[test]
-    fn read_bytes_nonexistent_file_returns_empty_vec() {
+    fn read_bytes_nonexistent_file_returns_empty_triple() {
         let dir = test_dir("bytes_missing");
         let file = dir.join("ghost.bin");
         let p = cpath(&file);
-        // SAFETY: p is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        // SAFETY: p is a valid NUL-terminated C string; triple is returned by hew_file_read_bytes.
         unsafe {
-            let v = hew_file_read_bytes(p.as_ptr());
-            assert!(!v.is_null());
-            assert_eq!(crate::vec::hew_vec_len(v), 0);
-            crate::vec::hew_vec_free(v);
+            let triple = hew_file_read_bytes(p.as_ptr());
+            assert_eq!(triple.len, 0);
+            assert!(triple.ptr.is_null());
 
             // hew_last_error() returns a thread-local pointer; copy it before
             // any subsequent call could overwrite it.
@@ -930,11 +983,8 @@ mod tests {
         // Step 1: trigger a failure so LAST_ERRNO is set to a non-zero value.
         let ghost_path = dir.join("does_not_exist.bin");
         let ghost = cpath(&ghost_path);
-        // SAFETY: ghost is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
-        unsafe {
-            let v = hew_file_read_bytes(ghost.as_ptr());
-            crate::vec::hew_vec_free(v);
-        }
+        // SAFETY: ghost is a valid NUL-terminated C string.
+        let _ = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
         // LAST_ERRNO should now be non-zero (ENOENT / 2 on POSIX systems).
         // We deliberately do NOT read it here — reading would clear it via
         // take_last_errno(), defeating the regression test.
@@ -945,12 +995,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create test dir");
         std::fs::write(&real_path, content).expect("write test file");
         let real = cpath(&real_path);
-        // SAFETY: real is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
+        // SAFETY: real is a valid NUL-terminated C string.
         unsafe {
-            let v = hew_file_read_bytes(real.as_ptr());
-            assert!(!v.is_null());
-            assert_eq!(crate::vec::hew_vec_len(v), 3);
-            crate::vec::hew_vec_free(v);
+            let triple = hew_file_read_bytes(real.as_ptr());
+            assert_eq!(triple.len, 3);
+            free_bytes_triple(&triple);
         }
 
         // Step 3: LAST_ERRNO must be 0 — the success path cleared it.
@@ -982,10 +1031,7 @@ mod tests {
         let ghost_path = dir.join("does_not_exist.bin");
         let ghost = cpath(&ghost_path);
         // SAFETY: ghost is a valid NUL-terminated C string.
-        unsafe {
-            let v = hew_file_read_bytes(ghost.as_ptr());
-            crate::vec::hew_vec_free(v);
-        }
+        let _ = unsafe { hew_file_read_bytes(ghost.as_ptr()) };
 
         // Step 2: write a real file and read it successfully.
         let real_path = dir.join("real.bin");
@@ -995,10 +1041,9 @@ mod tests {
         let real = cpath(&real_path);
         // SAFETY: real is a valid NUL-terminated C string.
         unsafe {
-            let v = hew_file_read_bytes(real.as_ptr());
-            assert!(!v.is_null());
-            assert_eq!(crate::vec::hew_vec_len(v), 3);
-            crate::vec::hew_vec_free(v);
+            let triple = hew_file_read_bytes(real.as_ptr());
+            assert_eq!(triple.len, 3);
+            free_bytes_triple(&triple);
         }
 
         // Step 3a: hew_stream_last_error() must return NULL (cabi LAST_ERROR
@@ -1023,15 +1068,12 @@ mod tests {
     }
 
     #[test]
-    fn read_bytes_invalid_utf8_path_returns_empty_vec() {
+    fn read_bytes_invalid_utf8_path_returns_empty_triple() {
         let bad = invalid_utf8_cstring();
-        // SAFETY: bad is a valid NUL-terminated C string; v is returned by hew_file_read_bytes.
-        unsafe {
-            let v = hew_file_read_bytes(bad.as_ptr());
-            assert!(!v.is_null());
-            assert_eq!(crate::vec::hew_vec_len(v), 0);
-            crate::vec::hew_vec_free(v);
-        }
+        // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
+        let triple = unsafe { hew_file_read_bytes(bad.as_ptr()) };
+        assert_eq!(triple.len, 0);
+        assert!(triple.ptr.is_null());
     }
 
     #[test]
@@ -1040,33 +1082,36 @@ mod tests {
         let file = dir.join("out.bin");
         let p = cpath(&file);
         let data: &[u8] = &[10, 20, 30];
-        // SAFETY: p is a valid NUL-terminated C string; v is created by u8_to_hwvec.
-        unsafe {
-            let v = crate::vec::u8_to_hwvec(data);
-            let rc = hew_file_write_bytes(p.as_ptr(), v);
-            assert_eq!(rc, 0);
-            crate::vec::hew_vec_free(v);
-        }
+        // Build a BytesTriple pointing at the data slice (no allocation needed).
+        let triple = crate::bytes::BytesTriple {
+            ptr: data.as_ptr().cast_mut(),
+            offset: 0,
+            len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+        };
+        // SAFETY: p is a valid NUL-terminated C string; triple points to valid data.
+        let rc = unsafe { hew_file_write_bytes(p.as_ptr(), &raw const triple) };
+        assert_eq!(rc, 0);
         assert_eq!(std::fs::read(&file).unwrap(), data);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn write_bytes_null_path_returns_error() {
-        // SAFETY: null path is the value under test; v is created by hew_vec_new.
-        unsafe {
-            let v = crate::vec::hew_vec_new();
-            let rc = hew_file_write_bytes(std::ptr::null(), v);
-            assert_eq!(rc, -1);
-            crate::vec::hew_vec_free(v);
-        }
+        let triple = crate::bytes::BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        // SAFETY: null path is the value under test; the function handles it.
+        let rc = unsafe { hew_file_write_bytes(std::ptr::null(), &raw const triple) };
+        assert_eq!(rc, -1);
     }
 
     #[test]
     fn write_bytes_null_data_returns_error() {
         let p = CString::new("/tmp/hew_fio_wbytes_null.bin").unwrap();
         // SAFETY: null data is the value under test; the function handles it.
-        let rc = unsafe { hew_file_write_bytes(p.as_ptr(), std::ptr::null_mut()) };
+        let rc = unsafe { hew_file_write_bytes(p.as_ptr(), std::ptr::null()) };
         assert_eq!(rc, -1);
     }
 

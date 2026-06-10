@@ -216,7 +216,7 @@ fn test_stream_try_from_file_and_try_to_file_use_ioerror() {
     cleanup_file(file_path);
     match stream.try_to_file(file_path) {
         Ok(sink) => {
-            sink.write("stream");
+            sink.send("stream");
             sink.close();
         },
         Err(_) => panic("expected try_to_file to succeed"),

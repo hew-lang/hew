@@ -773,20 +773,16 @@ fn build_module_graph_with_diagnostics(
         return Err(FrontendFailure::message_only(msg));
     }
 
-    // Reject programs where two distinct modules contribute an actor with the
-    // same bare type name to the lowered actor-layout set.  Cross-module actor
-    // identity is keyed by the BARE name everywhere downstream (MIR
-    // `actor_layouts`, the `LocalPid<Actor>` handle type, the receive-fn call
-    // path, and the `Actor__recv__*` handler-symbol mangling), and the
-    // type-checker admits duplicate bare type names across modules.  Without
-    // this guard `spawn bank.Account(...)` and `spawn store.Account(...)` (two
-    // packages each exporting `pub actor Account`) would race for one
-    // bare-keyed layout — binding the wrong handlers/state/drop glue — or a
-    // root-local `actor Account` would silently shadow an imported one.  Until
-    // qualified actor identity is plumbed through HIR/MIR/codegen this is an
-    // unsupported shape; fail closed rather than misroute.  Runs before
+    // Reject a single module declaring two actors with one name.  Cross-module
+    // duplicates are LEGAL: actor identity is the qualified (defining-module,
+    // name) pair end-to-end — the checker emits `LocalPid<bank.Account>`, MIR
+    // layouts key on the dotted name, and native symbols mangle through
+    // `bank$Account` — so `spawn bank.Account(...)` and `spawn
+    // store.Account(...)` bind their own handlers/state/drop glue.  Within one
+    // module there is no qualifier left to tell two same-named actors apart,
+    // so that case stays a hard error.  Runs before
     // `flatten_file_import_items`, so each actor still lives in exactly one
-    // module and the file-imported-actor happy path is not double-counted.
+    // module here.
     if let Err(msg) = check_duplicate_actor_layout_names(&graph) {
         return Err(FrontendFailure::message_only(msg));
     }
@@ -814,46 +810,34 @@ fn check_duplicate_short_module_names(
     Ok(())
 }
 
-/// Reject two distinct modules contributing an actor with the same bare type
-/// name to the program's lowered actor-layout set.
+/// Reject a single module (or the root program) declaring two actors with
+/// the same name.
 ///
-/// See the call site in `build_module_graph_with_diagnostics` for the full
-/// rationale: cross-module actor identity is bare-name-keyed throughout
-/// HIR/MIR/codegen, so two same-named actors from different modules cannot be
-/// told apart and `spawn <module>.Actor(...)` would misroute.  Root-local
-/// actors are always emitted; non-root modules export only their `pub` actors,
-/// so a private imported actor never enters the layout set and is exempt.  The
+/// Actor identity is the qualified `(defining-module, name)` pair, so
+/// same-named actors from DIFFERENT modules are legal and keep distinct
+/// layouts, handle types, and native symbols.  Within one module the
+/// qualified identities collide — `bank.Account` twice — and no spawn
+/// spelling could tell them apart, so that shape stays a hard error.  The
 /// guard runs at graph-build time (before file-import flattening), so each
-/// actor lives in exactly one module here — the file-imported-actor happy path
-/// (a single `pub actor` reachable via `import "x.hew"`) is counted once and is
-/// not flagged.
+/// actor lives in exactly one module here.
 fn check_duplicate_actor_layout_names(
     graph: &hew_parser::module::ModuleGraph,
 ) -> Result<(), String> {
-    let mut seen: HashMap<&str, &hew_parser::module::ModuleId> = HashMap::new();
     for mod_id in &graph.topo_order {
         let Some(module) = graph.modules.get(mod_id) else {
             continue;
         };
-        let is_root = *mod_id == graph.root;
+        let mut seen: HashSet<&str> = HashSet::new();
         for (item, _) in &module.items {
             let Item::Actor(actor) = item else { continue };
-            // Only `pub` actors are exported from a non-root module into an
-            // importer's layout set; a module-private actor stays internal and
-            // cannot collide across the boundary.  Root-local actors are always
-            // emitted regardless of visibility.
-            if !is_root && !actor.visibility.is_pub() {
-                continue;
-            }
-            if let Some(existing) = seen.insert(actor.name.as_str(), mod_id) {
-                let first = describe_actor_module(existing, graph);
-                let second = describe_actor_module(mod_id, graph);
+            if !seen.insert(actor.name.as_str()) {
+                let owner = describe_actor_module(mod_id, graph);
                 return Err(format!(
-                    "Error: two modules contribute an actor named `{}` to the \
-                     program: {first} and {second}. Cross-module actor layouts \
-                     are keyed by the bare actor name, so `spawn <module>.{}(...)` \
-                     cannot tell them apart. Rename one of the actors.",
-                    actor.name, actor.name
+                    "Error: {owner} declares two actors named `{}`; the \
+                     qualified actor identity is (module, name), so two \
+                     declarations in one module cannot be told apart. Rename \
+                     one of the actors.",
+                    actor.name
                 ));
             }
         }
@@ -2110,15 +2094,11 @@ mod tests {
     }
 
     /// Two different modules each exporting a `pub actor` with the same bare
-    /// name must be REJECTED. Cross-module actor identity is keyed by the bare
-    /// name throughout HIR/MIR/codegen (the MIR `actor_layouts` map, the
-    /// `LocalPid<Actor>` handle type, and the `Actor__recv__*` handler symbols),
-    /// so admitting `bank::Account` and `store::Account` together would let
-    /// `spawn bank.Account(...)` bind the wrong layout/handlers/state. The guard
-    /// lives in `check_duplicate_actor_layout_names` (called from
-    /// `build_module_graph_with_diagnostics`).
+    /// name are LEGAL: actor identity is the qualified (module, name) pair —
+    /// `bank.Account` and `store.Account` keep distinct checker entries, MIR
+    /// layouts, and native symbols — so the program checks cleanly.
     #[test]
-    fn check_file_rejects_duplicate_exported_actor_names() {
+    fn check_file_accepts_duplicate_exported_actor_names_across_modules() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_source(
             dir.path(),
@@ -2138,28 +2118,16 @@ mod tests {
             "import bank;\nimport store;\n\nfn main() -> i64 { 0 }\n",
         );
 
-        let failure = check_file(&input, &FrontendOptions::default())
-            .expect_err("duplicate exported actor names must fail closed");
-        assert!(
-            failure.message.contains("actor named `Account`"),
-            "expected a duplicate-actor diagnostic, got: {}",
-            failure.message
-        );
-        assert!(
-            failure.message.contains("bank") && failure.message.contains("store"),
-            "diagnostic should name both colliding modules, got: {}",
-            failure.message
-        );
+        check_file(&input, &FrontendOptions::default())
+            .expect("same-named pub actors from distinct modules must coexist");
     }
 
-    /// A root-local actor colliding by bare name with an imported `pub actor`
-    /// must be REJECTED — otherwise `spawn bank.Account(...)` would silently
-    /// resolve to the root-local `Account` layout (the bare-name dedup in the
-    /// HIR imported-module walk would suppress the package actor). The guard
-    /// catches root-vs-import collisions because it does NOT skip the root
-    /// module (unlike the short-name guard).
+    /// A root-local actor sharing a bare name with an imported `pub actor` is
+    /// LEGAL: the bare reference resolves local-first to the root actor and
+    /// `spawn bank.Account(...)` routes to the package actor's qualified
+    /// layout — neither shadows the other.
     #[test]
-    fn check_file_rejects_root_actor_colliding_with_imported_actor() {
+    fn check_file_accepts_root_actor_sharing_name_with_imported_actor() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_source(
             dir.path(),
@@ -2174,16 +2142,35 @@ mod tests {
              receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
         );
 
-        let failure = check_file(&input, &FrontendOptions::default())
-            .expect_err("root/imported actor name collision must fail closed");
-        assert!(
-            failure.message.contains("actor named `Account`"),
-            "expected a duplicate-actor diagnostic, got: {}",
-            failure.message
+        check_file(&input, &FrontendOptions::default())
+            .expect("root and imported same-named actors must coexist");
+    }
+
+    /// One module declaring two same-named actors stays a hard error: both
+    /// would claim the same qualified (module, name) identity, and no spawn
+    /// spelling could tell them apart.
+    #[test]
+    fn check_file_rejects_same_module_duplicate_actor_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "bank.hew",
+            "pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 1 }\n}\n\
+             pub actor Account {\n    var n: i64 = 0;\n    \
+             receive fn who() -> i64 { 2 }\n}\n",
         );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import bank;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("two same-named actors in one module must fail closed");
         assert!(
-            failure.message.contains("the root program") && failure.message.contains("bank"),
-            "diagnostic should name the root program and module `bank`, got: {}",
+            failure.message.contains("two actors named `Account`"),
+            "expected a same-module duplicate-actor diagnostic, got: {}",
             failure.message
         );
     }

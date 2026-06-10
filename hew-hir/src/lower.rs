@@ -2523,33 +2523,6 @@ pub fn lower_program_with_mono_cap(
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
-        // Actor names already emitted from the root program — root-local actors
-        // plus any FILE-import actors that `flatten_file_import_items` spliced
-        // into `program.items` (file imports register their items flat, under
-        // bare names, and emit a `HirItem::Actor` in the source-order pass
-        // above). The imported-module walk below ALSO sees those file-import
-        // modules in the graph; without this guard it would emit a second
-        // `HirItem::Actor` for the same actor, and because actor layouts are
-        // keyed by the actor's bare name the duplicate collides at MIR with
-        // `ActorHandlerSymbolCollision`. Package imports (`import hew::pkg;`)
-        // are NOT flattened, so their actors are absent here and are emitted by
-        // the walk exactly once.
-        //
-        // This dedup is by BARE NAME, which is only sound because
-        // `check_duplicate_actor_layout_names` (hew-compile, at graph-build
-        // time) has already failed the compile closed if two DISTINCT modules
-        // contribute a same-named actor. So a name shared between a graph
-        // module and `program.items` here is always the SAME actor reached via
-        // a file import — never a genuine cross-module collision that this skip
-        // could misroute.
-        let root_actor_names: HashSet<String> = program
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Actor(actor) => Some(actor.name.clone()),
-                _ => None,
-            })
-            .collect();
         // Impl blocks already emitted by the source-order third pass — both
         // root-program impls and FILE-import impls that `flatten_file_import_items`
         // spliced into `program.items`. The module-graph walk below ALSO visits
@@ -2985,19 +2958,18 @@ pub fn lower_program_with_mono_cap(
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
                         Item::Actor(actor) if actor.visibility.is_pub() => {
-                            // Skip actors already emitted from the root program
-                            // (a file import flattened this actor under its bare
-                            // name in the source-order pass). Re-emitting it here
-                            // would duplicate the bare-name-keyed layout and
-                            // collide at MIR. A bare-name match is safe to skip
-                            // because `check_duplicate_actor_layout_names`
-                            // (hew-compile) has already rejected any genuine
-                            // cross-module same-name collision — so this is only
-                            // ever the same file-imported actor, never a package
-                            // actor being silently suppressed. Package-import
-                            // actors are not in `root_actor_names`, so they still
-                            // emit here.
-                            if root_actor_names.contains(&actor.name) {
+                            // Skip actors of FILE-import modules: their items
+                            // were spliced into `program.items` and already
+                            // emitted (under the flat/root identity) by the
+                            // source-order pass; re-emitting here would
+                            // duplicate the layout. The guard is by module
+                            // PROVENANCE (`file_import_module_ids`), not bare
+                            // name: actor identity is the qualified
+                            // (module, name) pair, so a package actor that
+                            // merely shares a bare name with a root or
+                            // file-imported actor is a DISTINCT actor and must
+                            // still emit its own qualified layout here.
+                            if file_import_modules.contains(mod_id) {
                                 continue;
                             }
                             // Fail-closed target gate: actors require the actor

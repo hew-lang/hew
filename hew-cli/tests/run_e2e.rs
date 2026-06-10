@@ -3878,15 +3878,15 @@ fn run_non_pub_imported_actor_fails_closed() {
     );
 }
 
-/// Security regression (a): two imported packages each exporting a `pub actor`
-/// with the same bare name (`Account`) must NOT silently route to one layout.
-/// Cross-module actor identity is bare-name-keyed throughout HIR/MIR/codegen,
-/// so `spawn bank.Account(...)` and `spawn store.Account(...)` cannot be told
-/// apart. The compile fails closed at graph-build time
-/// (`check_duplicate_actor_layout_names`) with a diagnostic naming the actor
-/// and both modules, rather than binding the wrong handlers/state/drop glue.
+/// Qualified actor identity (a): two imported packages each exporting a
+/// `pub actor` with the same bare name (`Account`) coexist in one program.
+/// Identity is the qualified (module, name) pair end-to-end — the checker
+/// types `spawn bank.Account()` as `LocalPid<bank.Account>`, MIR layouts key
+/// on the dotted name, and native symbols mangle through `bank$Account` — so
+/// each spawn binds its own handlers/state/drop glue and the asks route to
+/// the right actor.
 #[test]
-fn run_two_packages_same_actor_name_fails_closed() {
+fn run_two_packages_same_actor_name_both_spawn_and_ask() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -3926,31 +3926,25 @@ fn run_two_packages_same_actor_name_fails_closed() {
 
     let output = run_bounded_hew_run(&main, dir.path());
     assert!(
-        !output.status.success(),
-        "two packages with the same actor name must fail closed; stdout: {}\nstderr: {}",
+        output.status.success(),
+        "two packages with the same actor name must both spawn and answer; \
+         stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        combined.contains("actor named `Account`")
-            && combined.contains("bank")
-            && combined.contains("store"),
-        "expected a duplicate-actor diagnostic naming `Account`, `bank` and `store`; got: {combined}"
+        stdout.contains("a=1") && stdout.contains("s=2"),
+        "each ask must route to its own module's actor (a=1, s=2); got: {stdout}"
     );
 }
 
-/// Security regression (b): a root-local actor and an imported `pub actor` with
-/// the same bare name (`Account`) must NOT let `spawn bank.Account(...)`
-/// silently resolve to the root-local actor (the HIR bare-name dedup would
-/// otherwise suppress the package actor). The compile fails closed with a
-/// diagnostic naming the actor, the root program, and the module.
+/// Qualified actor identity (b): a root-local actor and an imported
+/// `pub actor` with the same bare name (`Account`) coexist. The qualified
+/// spawn (`bank.Account`) routes to the package actor and the bare spawn
+/// resolves local-first to the root actor — neither shadows the other.
 #[test]
-fn run_root_and_package_same_actor_name_fails_closed() {
+fn run_root_and_package_same_actor_name_route_independently() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -3974,8 +3968,13 @@ fn run_root_and_package_same_actor_name_fails_closed() {
          }\n\
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
+         \x20   let l = spawn Account();\n\
          \x20   match await a.who() {\n\
          \x20       Ok(v) => println(f\"a={v}\"),\n\
+         \x20       Err(_) => println(\"e\"),\n\
+         \x20   }\n\
+         \x20   match await l.who() {\n\
+         \x20       Ok(v) => println(f\"l={v}\"),\n\
          \x20       Err(_) => println(\"e\"),\n\
          \x20   }\n\
          }\n",
@@ -3984,28 +3983,17 @@ fn run_root_and_package_same_actor_name_fails_closed() {
 
     let output = run_bounded_hew_run(&main, dir.path());
     assert!(
-        !output.status.success(),
-        "root + package actor name collision must fail closed; stdout: {}\nstderr: {}",
+        output.status.success(),
+        "root + package same-named actors must both spawn and answer; \
+         stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Must NOT have run the local actor (would print `a=111`) — the compile
-    // must reject before codegen.
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !combined.contains("a=111") && !combined.contains("a=999"),
-        "collision must be rejected before any actor runs; got: {combined}"
-    );
-    assert!(
-        combined.contains("actor named `Account`")
-            && combined.contains("the root program")
-            && combined.contains("bank"),
-        "expected a duplicate-actor diagnostic naming `Account`, the root program and `bank`; \
-         got: {combined}"
+        stdout.contains("a=999") && stdout.contains("l=111"),
+        "qualified spawn must route to the package actor (a=999) and the \
+         bare spawn local-first to the root actor (l=111); got: {stdout}"
     );
 }
 

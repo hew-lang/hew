@@ -176,19 +176,25 @@ test-group = "subprocess-intensive"
 #   - profile.ci and the preflight fallback are UNCHANGED by this profile.
 #
 # Binary-name survey (2026-06-10):
-#   Excluded by binary(_exec)          — all *_exec codegen/JIT tests
-#   Excluded by binary(_e2e)           — all *_e2e hew-cli/codegen/runtime tests
-#   Excluded by binary(_oracle)        — leak-oracle hew-cli tests
-#   Excluded by binary(machine_lifecycle) — subprocess; name not _exec/_e2e
-#   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name not _exec/_e2e
-#   Excluded by binary(jit_trap_bridge) — JIT-deferred; name not _exec
-#   Already excluded from smoke base:  eval_e2e, test_runner_e2e, parity, hew-wasm
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(_exec) - binary(_e2e) - binary(_oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge)"
+#   Excluded by binary(~exec)   — all *_exec codegen/JIT tests
+#   Excluded by binary(~e2e)    — all *_e2e hew-cli/codegen/runtime tests
+#   Excluded by binary(~oracle) — leak-oracle hew-cli tests
+#   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
+#   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
+#   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
+#   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
+#
+# Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
+# binary(...) is an EXACT-equality match and nextest errors out when it matches
+# no binary name.  Substring exclusion therefore needs the contains matcher
+# `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
+# because those binaries exist.
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 [[profile.lane.overrides]]
-# Safety net: route any _exec tests that slip past the default-filter into the
-# subprocess-intensive group.  The default-filter should exclude them entirely.
-filter = "binary(_exec)"
+# Safety net: route any exec-named tests that slip past the default-filter into
+# the subprocess-intensive group.  The default-filter should exclude them entirely.
+filter = "binary(~exec)"
 test-group = "subprocess-intensive"

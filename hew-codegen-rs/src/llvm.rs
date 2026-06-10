@@ -13386,11 +13386,12 @@ fn lower_actor_state_field_store(
     // kind leaks exactly as before this fix, never double-frees):
     //   - `Bytes` / `String`: released here (refcount-aware `hew_bytes_drop` /
     //     null-and-static-tolerant `hew_string_drop`).
-    //   - `Vec` / `HashMap` / `HashSet`: their state-level release is owned
-    //     solely by the `collection_layout_witness` spine
-    //     (`hew_*_managed` / `*_layout` family); wiring an overwrite release
-    //     needs that witness lookup here — a separate slice. Overwrite still
-    //     leaks the previous collection.
+    //   - `Vec` / `HashMap` / `HashSet`: single-pointer handles released here
+    //     with the same pointer-inequality guard; the release symbol derives
+    //     from `collection_layout_witness` — the SAME descriptor `state_drop`
+    //     frees the kind with, so the overwrite release and the final drop
+    //     can never select mismatched runtime symbols (lifecycle-symmetry,
+    //     W4.045 UAF class).
     //   - `UserRecord` / `Enum`: need the synthesised in-place drop helpers
     //     with tag dispatch; overwrite still leaks the previous payload.
     //   - `IoHandle`: an overwrite release would CLOSE the old handle (a
@@ -13466,10 +13467,49 @@ fn lower_actor_state_field_store(
                     &format!("state_f{idx}_str"),
                 )?;
             }
-            StateFieldCloneKind::BitCopy { .. }
-            | StateFieldCloneKind::Vec { .. }
+            StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
+            | StateFieldCloneKind::HashSet { .. } => {
+                // The field slot holds the collection handle pointer by
+                // value. The release symbol comes from the layout witness —
+                // the sole collection symbol-selection authority — so this
+                // release and the `state_drop` release derive from one
+                // descriptor and cannot drift (W4.045 UAF class). All three
+                // `*_free_*` symbols are null-tolerant, so the spawn-time
+                // zero-initialised first store needs no extra guard.
+                let witness = collection_layout_witness(kind)?.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
+                         has no layout witness; `collection_layout_witness` and the \
+                         kind classifier have drifted"
+                    ))
+                })?;
+                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
+                         requires a pointer-typed handle slot, got {field_ty:?}; the \
+                         state layout and the kind classifier have drifted"
+                    )));
+                }
+                let old_ptr = fn_ctx
+                    .builder
+                    .build_load(
+                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        &format!("actor_state_field_{idx}_old_coll"),
+                    )
+                    .llvm_ctx("ActorStateFieldStore old collection load")?
+                    .into_pointer_value();
+                let new_ptr = src_val.into_pointer_value();
+                emit_state_field_old_value_release(
+                    fn_ctx,
+                    old_ptr,
+                    new_ptr,
+                    witness.drop_sym,
+                    &format!("state_f{idx}_coll"),
+                )?;
+            }
+            StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }

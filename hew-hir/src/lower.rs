@@ -260,7 +260,7 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// builtin with no AST `fn` item. MIR routes
 /// `BindingRef { name: "unlink", resolved: Item(_) }` through
 /// `user_name_to_c_symbol` → `hew_actor_unlink`.
-const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
+const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
 
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
 /// constructor. The checker (`Checker::register_builtins`) registers it as a

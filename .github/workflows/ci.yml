@@ -284,6 +284,10 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: make test-vertical-slice
 
+      - name: Run cross-module package-import oracle
+        if: env.RUN_CODE_PATH == 'true'
+        run: make test-pkg-import
+
       - name: Setup Node.js for sandbox parity
         if: env.RUN_CODE_PATH == 'true'
         uses: actions/setup-node@v4

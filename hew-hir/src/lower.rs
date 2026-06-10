@@ -1874,10 +1874,17 @@ pub fn lower_program_with_mono_cap(
             // Snapshot type-params and ItemId for the enum-layout discovery
             // pass (slice 2). Needed to substitute variant payload types and
             // to build EnumMonoKey.origin. Stored even for non-generic enums
-            // (empty type_params) so discovery can safely skip them.
-            ctx.enum_type_params
-                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+            // (empty type_params) so discovery can safely skip them. ENUMS
+            // only: a struct sharing a prelude generic enum's name (e.g. a
+            // user `type Result { handle: i64 }`) must not overwrite the
+            // prelude's `enum_type_params` entry, or every later
+            // `try_register_enum_instantiation` for that enum silently
+            // no-ops and codegen-front fails with registration-mismatch.
+            if decl.kind == TypeDeclKind::Enum {
+                ctx.enum_type_params
+                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+            }
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
@@ -2001,15 +2008,30 @@ pub fn lower_program_with_mono_cap(
                                     hir_decl.variants.clone(),
                                 );
                             }
-                            ctx.enum_type_params
-                                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-                            ctx.enum_type_params.insert(
-                                format!("{module_short}.{}", hir_decl.name),
-                                hir_decl.type_params.clone(),
-                            );
-                            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
-                            ctx.enum_item_ids
-                                .insert(format!("{module_short}.{}", hir_decl.name), hir_decl.id);
+                            // Enum-layout discovery registries are seeded for
+                            // ENUMS only, mirroring the root-module pre-pass
+                            // above. An imported STRUCT must not insert under
+                            // its bare name: a record sharing a prelude generic
+                            // enum's name (e.g. sqlite's `type Result`) would
+                            // overwrite `enum_type_params["Result"]` with an
+                            // empty param list, silently turning every later
+                            // `try_register_enum_instantiation` for that enum
+                            // into a no-op (the ask-site `Result<R, AskError>`
+                            // layout then never registers and codegen-front
+                            // fails closed with registration-mismatch).
+                            if decl.kind == TypeDeclKind::Enum {
+                                ctx.enum_type_params
+                                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
+                                ctx.enum_type_params.insert(
+                                    format!("{module_short}.{}", hir_decl.name),
+                                    hir_decl.type_params.clone(),
+                                );
+                                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+                                ctx.enum_item_ids.insert(
+                                    format!("{module_short}.{}", hir_decl.name),
+                                    hir_decl.id,
+                                );
+                            }
                             type_decl_cache.insert(decl as *const _, hir_decl);
                         }
                         Item::Machine(md) if md.visibility.is_pub() => {
@@ -2656,6 +2678,36 @@ pub fn lower_program_with_mono_cap(
                                         });
                                     if body_unresolvable || sig_unresolvable {
                                         skip_methods.insert(method.name.clone());
+                                    }
+                                }
+                                // Transitive closure: a lowered method whose
+                                // body method-calls a skip-listed sibling
+                                // (e.g. `respond_html` calling the skipped
+                                // `respond`) would trip the HIR callable-set
+                                // gate at module level — the gate scans every
+                                // EMITTED body, not just user call sites — so
+                                // it must be skipped too. Matching is by bare
+                                // method name (the receiver is not
+                                // type-resolved in this pre-pass), which can
+                                // only over-skip: fail-closed, never
+                                // fail-open. Runs to a fixed point so chains
+                                // of intra-impl calls are covered.
+                                loop {
+                                    let mut grew = false;
+                                    for method in &impl_decl.methods {
+                                        if skip_methods.contains(&method.name) {
+                                            continue;
+                                        }
+                                        if collect_all_method_call_names(&method.body)
+                                            .iter()
+                                            .any(|callee| skip_methods.contains(callee))
+                                        {
+                                            skip_methods.insert(method.name.clone());
+                                            grew = true;
+                                        }
+                                    }
+                                    if !grew {
+                                        break;
                                     }
                                 }
                                 ctx.lower_impl_block(
@@ -4852,17 +4904,28 @@ impl LowerCtx {
     }
 }
 
+/// Call-name accumulator for the private-refs scanner: `bare` receives
+/// bare-identifier call targets (`foo(...)`), `methods` receives method-call
+/// names (`recv.foo(...)`) regardless of receiver. Both lists are raw
+/// (unsorted, with duplicates) until a `collect_*` wrapper normalises them.
+#[derive(Default)]
+struct CallNames {
+    bare: Vec<String>,
+    methods: Vec<String>,
+}
+
 /// Collect the names of private helper functions that are referenced by direct
 /// `Expr::Call { function: Expr::Identifier(name) }` within `body` and whose
 /// names appear in `candidate_fns`. Method-call syntax (`foo.bar()`) is not
 /// tracked — only bare identifier callees are considered. Returns a sorted,
 /// deduplicated list of matching names.
 fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> Vec<String> {
-    let mut found = Vec::new();
+    let mut found = CallNames::default();
     scan_block_for_private_refs(body, Some(candidate_fns), &mut found);
-    found.sort_unstable();
-    found.dedup();
-    found
+    let mut bare = found.bare;
+    bare.sort_unstable();
+    bare.dedup();
+    bare
 }
 
 /// Collect every bare-identifier call target (`foo(...)` where `foo` is an
@@ -4877,11 +4940,32 @@ fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> V
 /// `fn_registry`). Such methods are skipped, matching the prior behaviour where
 /// every imported impl method was dropped.
 fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
-    let mut found = Vec::new();
+    let mut found = CallNames::default();
     scan_block_for_private_refs(body, None, &mut found);
-    found.sort_unstable();
-    found.dedup();
-    found
+    let mut bare = found.bare;
+    bare.sort_unstable();
+    bare.dedup();
+    bare
+}
+
+/// Collect every method-call name (`recv.foo(...)` → `foo`) reachable in
+/// `body`, regardless of the receiver's type.
+///
+/// Used by the imported-impl skip computation to make skip-listing transitive:
+/// an emitted method whose body method-calls a skip-listed sibling would fail
+/// the HIR callable-set gate at module level (the gate scans every emitted
+/// body, not just user call sites), so such methods must be skipped too. The
+/// receiver is not type-resolved at this pre-pass stage; matching by bare
+/// method name is conservative — over-skipping keeps the boundary fail-closed
+/// (a call to an over-skipped method still fails with
+/// `CallableUnsupportedInMir`), never fail-open.
+fn collect_all_method_call_names(body: &Block) -> Vec<String> {
+    let mut found = CallNames::default();
+    scan_block_for_private_refs(body, None, &mut found);
+    let mut methods = found.methods;
+    methods.sort_unstable();
+    methods.dedup();
+    methods
 }
 
 /// Iterate the parameter and return `TypeExpr`s of an impl-block method.
@@ -4936,12 +5020,15 @@ fn imported_impl_signature_type_is_safe(
                 });
             }
             // The impl's own self type is the opaque handle (already resolvable);
-            // scalar primitives (`string`, `i64`, `bool`, …) and compound
-            // builtins (`Vec`, `Option`, `LocalPid`, …) are resolvable by name.
+            // a literal `Self` receiver/return normalises to that same self
+            // type, so it is admitted on identical grounds. Scalar primitives
+            // (`string`, `i64`, `bool`, …) and compound builtins (`Vec`,
+            // `Option`, `LocalPid`, …) are resolvable by name.
             let is_primitive = hew_types::ty::PRIMITIVE_ALIASES
                 .iter()
                 .any(|(canonical, aliases)| *canonical == name || aliases.contains(&name.as_str()));
             let head_ok = name == self_type_name
+                || name == "Self"
                 || is_primitive
                 || hew_types::lookup_builtin_type(name).is_some();
             if !head_ok {
@@ -5065,7 +5152,7 @@ fn collect_imported_private_fn_closure(
     reachable
 }
 
-fn scan_block_for_private_refs(block: &Block, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
+fn scan_block_for_private_refs(block: &Block, pf: Option<&HashSet<String>>, out: &mut CallNames) {
     for (stmt, _) in &block.stmts {
         scan_stmt_for_private_refs(stmt, pf, out);
     }
@@ -5074,7 +5161,7 @@ fn scan_block_for_private_refs(block: &Block, pf: Option<&HashSet<String>>, out:
     }
 }
 
-fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
+fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &mut CallNames) {
     match stmt {
         Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
             scan_expr_for_private_refs(&v.0, pf, out);
@@ -5149,14 +5236,14 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
     clippy::too_many_lines,
     reason = "exhaustive single-pass AST walk; splitting into sub-functions would obscure the traversal structure without adding clarity"
 )]
-fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &mut Vec<String>) {
+fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &mut CallNames) {
     match expr {
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
                 // `pf == None` collects every bare call name; `Some(set)` records
                 // only names present in `set` (the same-module private-fn filter).
                 if pf.is_none_or(|set| set.contains(name)) {
-                    out.push(name.clone());
+                    out.bare.push(name.clone());
                 }
             }
             scan_expr_for_private_refs(&function.0, pf, out);
@@ -5235,7 +5322,12 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
         Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
             scan_expr_for_private_refs(&expr.0, pf, out);
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
+            out.methods.push(method.clone());
             scan_expr_for_private_refs(&receiver.0, pf, out);
             for arg in args {
                 scan_expr_for_private_refs(&arg.expr().0, pf, out);
@@ -10343,6 +10435,19 @@ impl LowerCtx {
                             return self.lower_expr(inner, intent);
                         }
                     };
+                    // Register the `Result<reply_ty, AskError>` instantiation at
+                    // the ask site itself, independent of surrounding context.
+                    // Local asks usually get the layout registered by their
+                    // consumer (match scrutinee, `let ?` binding, return-type
+                    // walk), but an IMPORTED actor's ask has no such guarantee:
+                    // without this seed the importing crate's
+                    // `enum_layout_registry` lacks `Result$$<reply>$AskError`
+                    // and codegen-front fails closed (registration-mismatch).
+                    // The registry dedups by `EnumMonoKey`, so the double
+                    // registration on the local path is a no-op. Mirrors the
+                    // `ResolvedImplCall` / `RewriteToFunction` /
+                    // `RemoteActorAsk` sibling arms.
+                    self.try_register_enum_instantiation_ty(&result_ty, &span);
                     let mut ask_expr = self.lower_expr(inner, intent);
                     ask_expr.ty = result_ty;
                     return ask_expr;
@@ -12954,6 +13059,27 @@ impl LowerCtx {
         let type_name = name
             .rsplit_once('.')
             .map_or(name, |(_, unqualified)| unqualified);
+        // A declared user record shadows a same-named builtin for a bare,
+        // argument-less reference: e.g. a package's `type Result { handle:
+        // i64 }` annotation `-> Result` names the record, never the prelude's
+        // generic `Result<T, E>` (a zero-arg reference to a generic builtin
+        // is not constructible). The checker already resolves such an
+        // annotation to the record; without this interception the HIR maps
+        // it to the builtin and MIR's actor-ask reply comparison sees
+        // builtin-`Result` vs user-`Result` and fails closed with a reply
+        // type mismatch. Dotted references and parameterised references are
+        // untouched, and an `#[opaque]` handle is never intercepted — it must
+        // keep its `is_opaque` discriminator so the actor-state clone/drop
+        // classifier stays fail-closed (a bodyless `#[opaque] type` also
+        // lands in `record_registry`, so registry membership alone cannot
+        // decide).
+        if !name.contains('.')
+            && args.is_empty()
+            && self.record_registry.contains_key(name)
+            && !self.resolves_to_opaque_handle(name, type_name)
+        {
+            return ResolvedTy::named_user(name.to_string(), args);
+        }
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name)
             .or_else(|| crate::builtin_type_classes::builtin_type_registration(type_name))
         {
@@ -23386,6 +23512,127 @@ mod tests {
             "`await actor.close()` as a let-value must produce AwaitOutOfPosition; \
              diagnostics: {:#?}",
             lowered.diagnostics
+        );
+    }
+
+    // ─── Imported impl-method signature safety (cross-module lowering) ───
+
+    fn named_type(name: &str) -> TypeExpr {
+        TypeExpr::Named {
+            name: name.to_string(),
+            type_args: None,
+        }
+    }
+
+    /// The literal `Self` receiver of an imported impl method is the impl's
+    /// own opaque handle — it must be admitted, or every imported impl method
+    /// with a `self` parameter is skip-listed and any call fails with
+    /// `CallableUnsupportedInMir`.
+    #[test]
+    fn imported_impl_self_receiver_is_admitted() {
+        let no_registered_types = |_: &str| false;
+        assert!(imported_impl_signature_type_is_safe(
+            &named_type("Self"),
+            "Result",
+            &no_registered_types,
+        ));
+    }
+
+    /// A signature type naming an UNREGISTERED imported user type must stay
+    /// rejected even after the `Self` admission: the `Self` fix widens only
+    /// the receiver, never a sibling parameter the importer cannot resolve.
+    #[test]
+    fn imported_impl_unregistered_user_type_stays_rejected() {
+        let no_registered_types = |_: &str| false;
+        assert!(!imported_impl_signature_type_is_safe(
+            &named_type("SomeUnregisteredImportedType"),
+            "Result",
+            &no_registered_types,
+        ));
+        // The full signature [Self, Unregistered] is unsafe as a whole: the
+        // per-type predicate drives an `.any(!safe)` skip in the emit arm.
+        let sig = [
+            named_type("Self"),
+            named_type("SomeUnregisteredImportedType"),
+        ];
+        assert!(sig.iter().any(|ty| !imported_impl_signature_type_is_safe(
+            ty,
+            "Result",
+            &no_registered_types,
+        )));
+    }
+
+    /// A user record sharing a prelude generic enum's name (`type Result {
+    /// handle: i64 }`) must not poison the enum-layout registries or the
+    /// handler return-type resolution: the actor ask still registers the
+    /// builtin `Result<Result, AskError>` instantiation and the handler's
+    /// return type resolves to the USER record (matching the checker), not
+    /// the builtin enum.
+    #[test]
+    fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r#"
+            type Result { handle: i64; }
+
+            actor Db {
+                var n: i64 = 0;
+                receive fn query(sql: string) -> Result {
+                    n = n + 1;
+                    Result { handle: n }
+                }
+            }
+
+            fn main() {
+                let db = spawn Db(n: 0);
+                match await db.query("SELECT 1") {
+                    Ok(r) => println(f"handle={r.handle}"),
+                    Err(_) => println("ask failed"),
+                }
+            }
+            "#,
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "shadowed-Result actor ask must lower clean: {:#?}",
+            lowered.diagnostics
+        );
+        // The handler return type follows the checker: the user record.
+        let Some(HirItem::Actor(actor)) = lowered
+            .module
+            .items
+            .iter()
+            .find(|item| matches!(item, HirItem::Actor(a) if a.name == "Db"))
+        else {
+            panic!("expected lowered Db actor");
+        };
+        let handler = actor
+            .receive_handlers
+            .iter()
+            .find(|h| h.name == "query")
+            .expect("query handler");
+        assert_eq!(
+            handler.return_ty,
+            ResolvedTy::named_user("Result".to_string(), vec![]),
+            "handler return type must resolve to the user record, not the builtin enum"
+        );
+        // The ask site registered the builtin `Result<Result, AskError>`
+        // layout — the record name must not have clobbered the prelude's
+        // `enum_type_params` entry (which would silently no-op registration).
+        assert!(
+            lowered
+                .module
+                .enum_layouts
+                .iter()
+                .any(|layout| layout.key.origin_name == "Result"
+                    && layout.key.type_args.first()
+                        == Some(&ResolvedTy::named_user("Result".to_string(), vec![]))),
+            "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
+            lowered
+                .module
+                .enum_layouts
+                .iter()
+                .map(|layout| &layout.key)
+                .collect::<Vec<_>>()
         );
     }
 }

@@ -1,0 +1,26 @@
+// Regression guard: a local actor ask in the same program as an imported
+// one. The ask-site layout registration must dedup with the local
+// scrutinee-site registration (same EnumMonoKey), leaving local asks
+// untouched.
+import hew::testffi;
+
+actor Counter {
+    var count: i64 = 0;
+    receive fn bump() -> i64 {
+        count = count + 1;
+        count
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    match await c.bump() {
+        Ok(v) => println(f"local={v}"),
+        Err(_) => println("local ask failed"),
+    }
+    let db = spawn testffi.Db(seed: 2);
+    match await db.count32() {
+        Ok(v) => println(f"imported={v}"),
+        Err(_) => println("imported ask failed"),
+    }
+}

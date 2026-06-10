@@ -1,0 +1,21 @@
+# Standalone crate: the [workspace] table detaches it from the repository
+# workspace so `hew`'s [native] auto-link can build it in isolation, exactly
+# like an out-of-tree ecosystem package. No dependencies — malloc/free come
+# from the C runtime so the build works offline.
+[package]
+name = "hew-testffi-fixture"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Native FFI backing for the hew::testffi fixture package"
+
+[lib]
+name = "hew_hew_testffi"
+crate-type = ["staticlib"]
+
+# The staticlib must embed panic = "abort" so the final link against libhew.a
+# does not carry a second unwinder personality.
+[profile.release]
+panic = "abort"
+
+[workspace]

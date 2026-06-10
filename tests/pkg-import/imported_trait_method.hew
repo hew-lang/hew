@@ -1,0 +1,22 @@
+// Full demo: imported-actor record ask, then imported-type trait methods —
+// query -> rows() -> get() loop -> total() -> free(). Mirrors the sqlite
+// query/rows/get/free shape end-to-end, single-release on the handle.
+import hew::testffi;
+
+fn main() {
+    let db = spawn testffi.Db(seed: 9);
+    match await db.query(3) {
+        Ok(r) => {
+            let n = r.rows();
+            println(f"rows={n}");
+            for i in 0 .. n {
+                let cell = r.get(i);
+                println(cell);
+            }
+            let sum = r.total();
+            println(f"total={sum}");
+            r.free();
+        },
+        Err(_) => println("ask failed"),
+    }
+}

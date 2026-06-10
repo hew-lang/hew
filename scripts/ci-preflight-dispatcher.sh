@@ -250,8 +250,10 @@ is_sandbox_parity_path() {
 }
 
 is_vertical_slice_path() {
+    # tests/pkg-import is the cross-module package-import sibling of the
+    # vertical-slice oracle: same end-to-end compiler ladder, same lane.
     case "$1" in
-        tests/vertical-slice/*)
+        tests/vertical-slice/*|tests/pkg-import/*)
             return 0
             ;;
     esac
@@ -560,11 +562,13 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-compiler-pipeline"
         add_command "make test-vertical-slice"
+        add_command "make test-pkg-import"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-vertical-slice"
+        add_command "make test-pkg-import"
         ;;
     observe)
         add_command "cargo fmt --all -- --check"

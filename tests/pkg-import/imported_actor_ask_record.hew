@@ -1,0 +1,14 @@
+// Imported-actor ask replying the imported record handle. The record is
+// named `Result` in the package — the prelude-shadowing case.
+import hew::testffi;
+
+fn main() {
+    let db = spawn testffi.Db(seed: 5);
+    match await db.query(2) {
+        Ok(r) => {
+            println("query ok");
+            r.free();
+        },
+        Err(_) => println("ask failed"),
+    }
+}

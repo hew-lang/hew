@@ -1,0 +1,10 @@
+// Imported-actor ask replying i64.
+import hew::testffi;
+
+fn main() {
+    let db = spawn testffi.Db(seed: 3);
+    match await db.count64() {
+        Ok(v) => println(f"count64={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

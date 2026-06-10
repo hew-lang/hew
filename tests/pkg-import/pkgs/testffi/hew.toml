@@ -1,0 +1,11 @@
+[package]
+name = "hew::testffi"
+version = "0.1.0"
+description = "In-tree FFI fixture package exercising imported-actor asks, imported-type trait methods, and [native] auto-link"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[native]
+crate = "."
+lib = "hew_hew_testffi"
+kind = "staticlib"

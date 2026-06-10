@@ -57,7 +57,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
@@ -500,6 +500,12 @@ test-compiler-pipeline: stdlib wasm-runtime
 # against stale runtime/stdlib archives on a fresh checkout or CI runner.
 test-vertical-slice: hew runtime stdlib check-libhew-fresh
 	bash tests/vertical-slice/run.sh
+
+# Cross-module package-import oracle: fixtures importing the in-tree
+# `hew::testffi` package through `hew run --pkg-path` — imported-actor value
+# asks, imported-type trait methods, and the [native] auto-link path.
+test-pkg-import: hew runtime stdlib check-libhew-fresh
+	bash tests/pkg-import/run.sh
 
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \

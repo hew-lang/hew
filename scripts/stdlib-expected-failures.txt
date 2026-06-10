@@ -1,0 +1,22 @@
+# Tracked stdlib type-check failures — consumed by scripts/stdlib-ratchet.sh.
+#
+# Format: one entry per line.
+#   <path-relative-to-repo-root>  # reason  # lane-reference
+#
+# Ratchet rules:
+#   - Any NEW failure not listed here causes the gate to exit 1.
+#   - Any listed failure that NOW PASSES causes the gate to exit 1.
+#   - Delete an entry when the underlying issue is fixed.
+#   - Never add an entry to hide a regression; fix the code instead.
+#
+# Captured: 2026-06-10 on release/v0.5.0-pre-history-polish (575e022d)
+
+std/builtins.hew  # E_COMPILE: `display` is defined multiple times — duplicate lang_item registration; converging lane: L23 (display dedup)
+std/concurrency/lambda_actor.hew  # E_MIR: unknown type `LambdaActorWeakHandle` — MIR boundary gap for lambda-actor close(); converging lane: L24 (lambda-actor close NYI)
+std/encoding/csv/csv.hew  # warning-treated-as-error: `parse_file` never called — unused-pub warning; converging lane: L25 (stdlib warning cleanup)
+std/link_monitor.hew  # E_COMPILE: impl method return-type mismatch on MonitorRef::close — trait Closable impl check; converging lane: L26 (Closable trait impl)
+std/net/net.hew  # warning-treated-as-error: `try_broadcast_except` never called — unused-pub warning; converging lane: L25 (stdlib warning cleanup)
+std/net/websocket/websocket.hew  # warning-treated-as-error: `connect` never called — unused-pub warning; converging lane: L25 (stdlib warning cleanup)
+std/sort/sort.hew  # warning-treated-as-error: `copy_strings` never called — unused-pub warning; converging lane: L25 (stdlib warning cleanup)
+std/stream.hew  # warning-treated-as-error: `pipe` never called — unused-pub warning; converging lane: L25 (stdlib warning cleanup)
+std/text/semver/semver.hew  # E_MIR_CHECK: binding `s` used after consumed — move-after-use; converging lane: L22 (semver borrow fix)

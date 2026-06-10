@@ -1,0 +1,214 @@
+# hew-suite-expected-failures.txt
+#
+# Known failing tests in tests/hew/ as of the L27 gating lane.
+# The ratchet (scripts/hew-suite-ratchet.sh) enforces:
+#   - Every test listed here MUST fail (unexpected pass = gate failure).
+#   - Every test NOT listed here MUST pass (unexpected failure = gate failure).
+#
+# When a converging lane fixes its stdlib module, remove the corresponding
+# entries from this file.  Do NOT remove entries to make the gate green if
+# the tests are still failing — fix the underlying stdlib instead.
+#
+# Format: <test_function_name>  # <root_cause>; converging lane: <lane>
+#
+# Source files whose tests ALL fail (hew check exits 1):
+#   - tests/hew/base64_test.hew     (E_MIR/E_CODEGEN in base64 stdlib)
+#   - tests/hew/compress_test.hew   (E_MIR in compress stdlib)
+#   - tests/hew/csv_test.hew        (E_HIR in csv stdlib)
+#   - tests/hew/fs_stream_test.hew  (E_MIR in fs_stream stdlib)
+#   - tests/hew/hex_test.hew        (E_MIR in hex stdlib)
+#   - tests/hew/math_test.hew       (fn main() collision in test runner)
+#   - tests/hew/msgpack_test.hew    (E_MIR in msgpack stdlib)
+#   - tests/hew/net_try_api_test.hew (E_CODEGEN in net stdlib)
+#   - tests/hew/semver_test.hew     (E_MIR_CHECK use-after-consume in semver stdlib)
+#   - tests/hew/sign_test.hew       (E_MIR in sign stdlib)
+#   - tests/hew/sort_test.hew       (E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib)
+#   - tests/hew/toml_test.hew       (E_MIR in toml stdlib)
+#   - tests/hew/xml_test.hew        (E_MIR in xml stdlib)
+#
+# Total: 184 unique failing test function names.
+
+test_abs_dispatches_by_numeric_type  # fn main() collision in test runner; converging lane: math stdlib fix
+test_array_of_tables_walk  # E_MIR in toml stdlib; converging lane: L25
+test_array_round_trip_elements  # E_MIR in msgpack stdlib; converging lane: L25
+test_array_round_trip_length  # E_MIR in msgpack stdlib; converging lane: L25
+test_builder_push_consumes_element  # E_MIR in toml stdlib; converging lane: L25
+test_builder_with_consumes_child  # E_MIR in toml stdlib; converging lane: L25
+test_compare_equal_versions_returns_zero  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_compare_greater_major_returns_one  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_compare_lesser_major_returns_neg_one  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_compare_minor_difference  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_compare_patch_difference  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_decode_double_padding_round_trip  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_invalid_char_at_last_nibble_returns_empty  # E_MIR in hex stdlib; converging lane: L23
+test_decode_invalid_char_at_position_0_returns_empty  # E_MIR in hex stdlib; converging lane: L23
+test_decode_invalid_chars_returns_empty  # E_MIR in hex stdlib; converging lane: L23
+test_decode_invalid_returns_empty  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_invalid_single_char_returns_empty  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_known_value  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_mixed_case_matches_lowercase  # E_MIR in hex stdlib; converging lane: L23
+test_decode_no_padding_round_trip  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_odd_length_returns_empty  # E_MIR in hex stdlib; converging lane: L23
+test_decode_single_padding_round_trip  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_decode_uppercase_string  # E_MIR in hex stdlib; converging lane: L23
+test_decode_url_safe_encoded_string  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_deflate_round_trip  # E_MIR in compress stdlib; converging lane: L25
+test_deflate_round_trip_empty  # E_MIR in compress stdlib; converging lane: L25
+test_encode_1_byte_produces_double_padding  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_2_bytes_produces_single_padding  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_3_bytes_produces_no_padding  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_int_127_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_int_negative_one_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_int_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_int_zero_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_int_zero_round_trip  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_known_value  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_single_byte_0xff  # E_MIR in hex stdlib; converging lane: L23
+test_encode_single_byte_zero  # E_MIR in hex stdlib; converging lane: L23
+test_encode_string_empty_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_string_produces_nonempty_bytes  # E_MIR in msgpack stdlib; converging lane: L25
+test_encode_upper_known_value  # E_MIR in hex stdlib; converging lane: L23
+test_encode_upper_round_trip_via_decode  # E_MIR in hex stdlib; converging lane: L23
+test_encode_upper_single_byte_0xff  # E_MIR in hex stdlib; converging lane: L23
+test_encode_url_safe_differs_from_standard  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_url_safe_index_62_is_dash  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_encode_url_safe_known_output  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_free_no_panic  # E_MIR in xml stdlib; converging lane: L25
+test_from_bool_get_bool_round_trip  # E_MIR in toml stdlib; converging lane: L25
+test_from_float_bare_stringify_is_empty  # E_MIR in toml stdlib; converging lane: L25
+test_from_float_round_trip_via_table_field  # E_MIR in toml stdlib; converging lane: L25
+test_from_int_get_int_round_trip  # E_MIR in toml stdlib; converging lane: L25
+test_from_json_invalid_returns_empty  # E_MIR in msgpack stdlib; converging lane: L25
+test_from_json_to_json_round_trip_int_field  # E_MIR in msgpack stdlib; converging lane: L25
+test_from_string_get_string_round_trip  # E_MIR in toml stdlib; converging lane: L25
+test_gzip_round_trip  # E_MIR in compress stdlib; converging lane: L25
+test_gzip_round_trip_empty  # E_MIR in compress stdlib; converging lane: L25
+test_header_out_of_range_returns_empty  # E_HIR in csv stdlib; converging lane: L25
+test_io_error_from_errno_network_variants  # E_MIR in fs_stream stdlib; converging lane: L25
+test_io_error_message_formats_all_variants  # E_MIR in fs_stream stdlib; converging lane: L25
+test_io_error_tcp_variants_are_distinct  # E_CODEGEN in net stdlib; converging lane: L25
+test_is_element_returns_positive_for_element  # E_MIR in xml stdlib; converging lane: L25
+test_keypair_private_key_is_83_bytes  # E_MIR in sign stdlib; converging lane: L23
+test_keypair_public_key_is_32_bytes  # E_MIR in sign stdlib; converging lane: L23
+test_listener_close_surface_returns_unit  # E_CODEGEN in net stdlib; converging lane: L25
+test_matches_exact_version  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_matches_gt_strictly_greater  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_matches_gte_not_satisfied  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_matches_gte_satisfied  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_matches_lt_strictly_less  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_matches_lte_satisfied  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_max_returns_the_larger_value  # fn main() collision in test runner; converging lane: math stdlib fix
+test_min_returns_the_smaller_value  # fn main() collision in test runner; converging lane: math stdlib fix
+test_missing_attribute_returns_empty  # E_MIR in xml stdlib; converging lane: L25
+test_missing_field_handle_is_invalid  # E_MIR in toml stdlib; converging lane: L25
+test_nested_builder_stringify_reparse  # E_MIR in toml stdlib; converging lane: L25
+test_nested_object_round_trip  # E_MIR in msgpack stdlib; converging lane: L25
+test_nested_table_dotted_key  # E_MIR in toml stdlib; converging lane: L25
+test_parse_array_of_integers  # E_MIR in toml stdlib; converging lane: L25
+test_parse_attribute  # E_MIR in xml stdlib; converging lane: L25
+test_parse_child_tag  # E_MIR in xml stdlib; converging lane: L25
+test_parse_children_count  # E_MIR in xml stdlib; converging lane: L25
+test_parse_cols_count  # E_HIR in csv stdlib; converging lane: L25
+test_parse_crlf_inside_quoted_field_preserved  # E_HIR in csv stdlib; converging lane: L25
+test_parse_crlf_row_terminator_produces_correct_rows  # E_HIR in csv stdlib; converging lane: L25
+test_parse_embedded_lf_in_quoted_field_preserved  # E_HIR in csv stdlib; converging lane: L25
+test_parse_embedded_newline_with_escaped_quote_in_same_field  # E_HIR in csv stdlib; converging lane: L25
+test_parse_empty_quoted_field  # E_HIR in csv stdlib; converging lane: L25
+test_parse_empty_string_returns_zero_rows_and_cols  # E_HIR in csv stdlib; converging lane: L25
+test_parse_escaped_quote_in_quoted_field_decoded  # E_HIR in csv stdlib; converging lane: L25
+test_parse_get_by_index  # E_HIR in csv stdlib; converging lane: L25
+test_parse_get_by_name  # E_HIR in csv stdlib; converging lane: L25
+test_parse_get_by_name_missing_column_returns_empty  # E_HIR in csv stdlib; converging lane: L25
+test_parse_get_out_of_bounds_returns_empty  # E_HIR in csv stdlib; converging lane: L25
+test_parse_header_names  # E_HIR in csv stdlib; converging lane: L25
+test_parse_large_component_values  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_mixed_lf_and_crlf_terminators  # E_HIR in csv stdlib; converging lane: L25
+test_parse_no_headers_empty_string_returns_zero_rows_and_cols  # E_HIR in csv stdlib; converging lane: L25
+test_parse_no_headers_generates_synthetic_headers  # E_HIR in csv stdlib; converging lane: L25
+test_parse_no_headers_three_cols_get_by_name  # E_HIR in csv stdlib; converging lane: L25
+test_parse_no_headers_three_rows_three_cols_data  # E_HIR in csv stdlib; converging lane: L25
+test_parse_no_pre_release_returns_empty_string  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_pre_release_label  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_quoted_field_with_comma_parses_as_one_field  # E_HIR in csv stdlib; converging lane: L25
+test_parse_root_tag  # E_MIR in xml stdlib; converging lane: L25
+test_parse_rows_count  # E_HIR in csv stdlib; converging lane: L25
+test_parse_simple_version_components  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_parse_text_content  # E_MIR in xml stdlib; converging lane: L25
+test_parse_trailing_crlf_yields_correct_row_count  # E_HIR in csv stdlib; converging lane: L25
+test_parse_trailing_newline_yields_one_data_row  # E_HIR in csv stdlib; converging lane: L25
+test_parse_zero_version  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_reverse_floats_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_floats_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_floats_three_elements  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_ints_does_not_mutate_original  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_ints_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_ints_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_ints_three_elements  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_strings_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_strings_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_strings_three_elements  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_reverse_then_sort_round_trips  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_round_trip_all_0xff_length_1  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_0xff_length_16  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_0xff_length_2  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_0xff_length_3  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_256_byte_values  # E_MIR in hex stdlib; converging lane: L23
+test_round_trip_all_zeros_length_1  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_zeros_length_16  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_zeros_length_2  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_all_zeros_length_3  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_empty  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_multi_byte_64  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_round_trip_nonempty  # E_MIR/E_CODEGEN in base64 stdlib; converging lane: L23
+test_sign_verify_roundtrip_succeeds  # E_MIR in sign stdlib; converging lane: L23
+test_signature_is_64_bytes  # E_MIR in sign stdlib; converging lane: L23
+test_sort_floats_ascending_order  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_floats_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_floats_negative_values  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_floats_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_already_sorted  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_ascending_order  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_does_not_mutate_original  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_negative_values  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_reverse_sorted_input  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_ints_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_strings_alphabetical_order  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_strings_does_not_mutate_original  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_strings_duplicate_entries  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_strings_empty  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_sort_strings_single_element  # E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib; converging lane: L25
+test_stream_try_from_file_and_try_to_file_use_ioerror  # E_MIR in fs_stream stdlib; converging lane: L25
+test_string_root_round_trip  # E_MIR in msgpack stdlib; converging lane: L25
+test_stringify_produces_valid_toml  # E_MIR in toml stdlib; converging lane: L25
+test_table_builder_int_field  # E_MIR in toml stdlib; converging lane: L25
+test_table_builder_string_field  # E_MIR in toml stdlib; converging lane: L25
+test_to_json_empty_bytes_returns_empty_string  # E_MIR in msgpack stdlib; converging lane: L25
+test_to_string_includes_pre_release  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_to_string_round_trips_simple_version  # E_MIR_CHECK use-after-consume in semver stdlib; converging lane: L22
+test_try_append_and_try_read_bytes  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_connect_bad_address_returns_err  # E_CODEGEN in net stdlib; converging lane: L25
+test_try_connect_refused_returns_connection_refused  # E_CODEGEN in net stdlib; converging lane: L25
+test_try_copy_missing_source_returns_not_found  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_copy_success  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_list_dir_handles_success_and_missing_paths  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_listen_address_in_use_returns_address_in_use  # E_CODEGEN in net stdlib; converging lane: L25
+test_try_listen_returns_ok_on_available_port  # E_CODEGEN in net stdlib; converging lane: L25
+test_try_parse_duplicate_key_returns_err  # E_MIR in toml stdlib; converging lane: L25
+test_try_parse_empty_string_is_empty_table  # E_MIR in toml stdlib; converging lane: L25
+test_try_parse_invalid_returns_err  # E_MIR in toml stdlib; converging lane: L25
+test_try_parse_simple_key_value  # E_MIR in toml stdlib; converging lane: L25
+test_try_parse_valid_returns_ok  # E_MIR in toml stdlib; converging lane: L25
+test_try_read_bytes_missing_returns_not_found  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_read_missing_returns_not_found  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_rename_missing_source_returns_not_found  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_rename_success  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_write_and_try_read_bytes_binary_roundtrip  # E_MIR in fs_stream stdlib; converging lane: L25
+test_try_write_read_size_and_delete_roundtrip  # E_MIR in fs_stream stdlib; converging lane: L25
+test_two_tables_sequential_alloc_free_reverse_order  # E_HIR in csv stdlib; converging lane: L25
+test_unicode_string_field_round_trip  # E_MIR in msgpack stdlib; converging lane: L25
+test_verify_rejects_malformed_signature  # E_MIR in sign stdlib; converging lane: L23
+test_verify_rejects_tampered_message  # E_MIR in sign stdlib; converging lane: L23
+test_verify_rejects_wrong_public_key  # E_MIR in sign stdlib; converging lane: L23
+test_zlib_round_trip  # E_MIR in compress stdlib; converging lane: L25
+test_zlib_round_trip_empty  # E_MIR in compress stdlib; converging lane: L25

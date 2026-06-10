@@ -887,9 +887,13 @@ mod tests {
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 1, -1) };
         assert_eq!(winner, 0);
         // Clean up value + channel.
-        // SAFETY: ch is still live; reply_take + free are balanced.
+        // SAFETY: ch is still live; reply_take transfers ownership of the
+        // malloc'd reply buffer — free it before releasing the channel.
         unsafe {
-            let _ = reply_take(ch);
+            let val = reply_take(ch);
+            if !val.is_null() {
+                libc::free(val);
+            }
             hew_reply_channel_free(ch);
         }
     }
@@ -924,19 +928,31 @@ mod tests {
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 3, -1) };
         assert_eq!(winner, 0, "should pick lowest-index ready channel");
         // Clean up.
-        // SAFETY: channels are live; cancel + free are balanced.
+        // SAFETY: channels are live; reply_take transfers ownership of the
+        // malloc'd reply buffer — free each before releasing its channel.
         unsafe {
-            let _ = reply_take(ch0);
+            let val0 = reply_take(ch0);
+            if !val0.is_null() {
+                libc::free(val0);
+            }
             hew_reply_channel_free(ch0);
             hew_reply_channel_cancel(ch1);
             hew_reply_channel_free(ch1);
-            let _ = reply_take(ch2);
+            let val2 = reply_take(ch2);
+            if !val2.is_null() {
+                libc::free(val2);
+            }
             hew_reply_channel_free(ch2);
         }
     }
 
     #[test]
     fn select_first_no_ready_channels_empty_queue_returns_minus_one() {
+        // Acquire the runtime test lock: hew_select_first calls hew_wasm_sched_tick
+        // which mutates COOPERATIVE_TICK_DEPTH (non-atomic static mut).  Running
+        // concurrently with scheduler_wasm tests that also touch that global
+        // causes a subtract-with-overflow abort.
+        let _guard = crate::runtime_test_guard();
         // Neither channel gets a reply; scheduler queue is empty so we
         // should return -1 rather than spin forever.
         let ch0 = hew_reply_channel_new();

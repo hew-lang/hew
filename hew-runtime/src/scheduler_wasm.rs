@@ -5685,6 +5685,8 @@ mod tests {
             "second WASM dispatch should run after the first handler panics"
         );
         assert_eq!(state, 1);
+        // SAFETY: mb was allocated above; actor is done, free the mailbox.
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
     }
 
     // ── Fix 1 regression: activation-entry PENDING clear ────────────────

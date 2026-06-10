@@ -70,6 +70,13 @@ pub(crate) fn debug_is_libc_tracked(ptr: *const u8) -> bool {
         .is_some_and(|s| s.contains(&(ptr as usize)))
 }
 
+/// Serialises every test that touches `LIBC_ALLOC_SET` so that parallel test
+/// execution does not cause pointer entries from one test to appear in
+/// another's assertions.  Mirrors the `TICKER_TEST_MUTEX` pattern in
+/// `timer_periodic`.
+#[cfg(test)]
+pub(crate) static ALLOC_TRACKER_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +85,9 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn allocator_pairing_tracker_lifecycle() {
+        let _guard = ALLOC_TRACKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // SAFETY: libc::malloc for a small test buffer; null-checked immediately.
         let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
         assert!(!ptr.is_null());
@@ -96,6 +106,9 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn allocator_pairing_globalalloc_ptr_not_libc_tracked() {
+        let _guard = ALLOC_TRACKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let b: Box<u8> = Box::new(0);
         // ALLOCATOR-PAIRING: GlobalAlloc — Box::into_raw for testing only.
         let ptr = Box::into_raw(b);
@@ -110,6 +123,9 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn allocator_pairing_tracker_two_ptrs_independent() {
+        let _guard = ALLOC_TRACKER_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // SAFETY: libc::malloc for small test buffers; null-checked immediately.
         let p1 = unsafe { libc::malloc(4) }.cast::<u8>();
         // SAFETY: same as p1.

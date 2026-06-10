@@ -2702,6 +2702,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: false,
                     default,
                     doc_comment,
                 });
@@ -2722,6 +2723,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: true,
                     default,
                     doc_comment,
                 });
@@ -2758,6 +2760,7 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: false,
                     default,
                     doc_comment,
                 });

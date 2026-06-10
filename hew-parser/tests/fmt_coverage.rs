@@ -2040,3 +2040,63 @@ fn fmt_method_chain_on_plain_binary_receiver_roundtrips() {
         "AST mismatch after format.\nFormatted:\n{formatted}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Actor field mutability (var vs let)
+// -----------------------------------------------------------------------
+
+#[test]
+fn fmt_actor_var_field_preserved_not_rewritten_to_let() {
+    // Regression: formatter was silently rewriting `var` actor fields to `let`,
+    // a semantic mutation — `var` fields are mutable in handlers, `let` are not.
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("var count: i64 = 0;"),
+        "formatter must not rewrite `var` field to `let`; output:\n{out}"
+    );
+    assert!(
+        !out.contains("let count:"),
+        "output must not contain `let count:` when field was declared `var`; output:\n{out}"
+    );
+}
+
+#[test]
+fn fmt_actor_let_field_stays_let() {
+    // A `let` field (immutable actor state) must stay `let` — not promoted to `var`.
+    let src = "actor Frozen {\n    let x: i64 = 0;\n\n    receive fn noop() {}\n}\n";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("let x: i64 = 0;"),
+        "formatter must preserve `let` field; output:\n{out}"
+    );
+    assert!(
+        !out.contains("var x:"),
+        "formatter must not promote `let` field to `var`; output:\n{out}"
+    );
+}
+
+#[test]
+fn fmt_actor_mixed_var_and_let_fields_roundtrip() {
+    // Actor with both mutable and immutable fields — each must keep its keyword.
+    exact_roundtrip(
+        "actor Mixed {\n    let id: i64 = 0;\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_var_field_ast_equality_after_format() {
+    // AST-equality check: parse(format(parse(src))) must equal parse(src)
+    // including the is_mutable flag on FieldDecl.
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+    let formatted = format_program(&p1.program);
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    assert!(
+        program_eq_ignoring_spans(&p1.program, &p2.program),
+        "AST mismatch: var-field mutability lost after format+reparse.\nFormatted:\n{formatted}"
+    );
+}

@@ -987,8 +987,9 @@ impl<'a> Formatter<'a> {
 
         for field in &decl.fields {
             if self.has_comments() {
+                let kw = if field.is_mutable { "var" } else { "let" };
                 let pos =
-                    self.find_keyword_after(&format!("let {}", field.name), self.prev_source_pos);
+                    self.find_keyword_after(&format!("{kw} {}", field.name), self.prev_source_pos);
                 self.flush_comments_before(pos);
             }
             self.format_field_decl(field);
@@ -1570,7 +1571,7 @@ impl<'a> Formatter<'a> {
     fn format_field_decl(&mut self, f: &FieldDecl) {
         self.write_outer_doc(f.doc_comment.as_ref());
         self.write_indent();
-        self.write("let ");
+        self.write(if f.is_mutable { "var " } else { "let " });
         self.write(&f.name);
         self.write(": ");
         self.format_type_expr(&f.ty.0);

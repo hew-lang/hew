@@ -1362,6 +1362,9 @@ pub struct ActorInit {
 pub struct FieldDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    /// `true` when declared with `var` (mutable actor field); `false` for `let`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_mutable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<Spanned<Expr>>,
     #[serde(default)]

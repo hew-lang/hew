@@ -7223,19 +7223,52 @@ mod tests {
 
     /// RAII helper that sets the fast SWIM-timing env vars for a test and
     /// removes them on drop, all under `ENV_LOCK` exclusive access.
-    struct SwimTimingEnv;
+    ///
+    /// The base fast-env budgets (40 ms ping/period, 120 ms suspect) are
+    /// multiplied by `HEW_SWIM_TEST_TIME_SCALE` (default 1) so `TSan`'s ~10×
+    /// slowdown does not cause false-DEAD verdicts.  The `make tsan` target
+    /// sets `HEW_SWIM_TEST_TIME_SCALE=10`; plain `cargo test` leaves it unset
+    /// (scale = 1, unchanged behaviour).  Production timing is untouched: the
+    /// `HEW_SWIM_PROTOCOL_PERIOD_MS` / `HEW_SWIM_PING_TIMEOUT_MS` /
+    /// `HEW_SWIM_SUSPECT_TIMEOUT_MS` knobs read by `cluster_config_from_env`
+    /// at node-start time are set here only for the test's duration.
+    struct SwimTimingEnv {
+        /// The resolved time scale (≥ 1).  Exposed so tests can derive their
+        /// own wall-clock waits from the same multiplier.
+        scale: u32,
+    }
 
     impl SwimTimingEnv {
         fn fast() -> Self {
+            // WHY: TSan imposes ~10× CPU overhead, stretching real elapsed time
+            // so that 40 ms protocol periods expire before TSan-slowed threads
+            // complete a ping round-trip, producing false DEAD verdicts.
+            // WHEN obsolete: if the driven-SWIM tests are converted to a mock
+            // clock, the scale knob becomes unnecessary.
+            // WHAT the real solution looks like: inject a mock monotonic clock
+            // into the SWIM driver so wall time is irrelevant.
+            let scale: u32 = crate::env::ENV_LOCK.read_access(|()| {
+                std::env::var("HEW_SWIM_TEST_TIME_SCALE")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|v| *v >= 1)
+                    .unwrap_or(1)
+            });
             crate::env::ENV_LOCK.access(|()| {
-                // SAFETY: ENV_LOCK provides exclusive access to the environ.
+                // SAFETY: ENV_LOCK provides exclusive write access to the environ.
                 unsafe {
-                    std::env::set_var("HEW_SWIM_PROTOCOL_PERIOD_MS", "40");
-                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", "40");
-                    std::env::set_var("HEW_SWIM_SUSPECT_TIMEOUT_MS", "120");
+                    std::env::set_var("HEW_SWIM_PROTOCOL_PERIOD_MS", (40 * scale).to_string());
+                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", (40 * scale).to_string());
+                    std::env::set_var("HEW_SWIM_SUSPECT_TIMEOUT_MS", (120 * scale).to_string());
                 }
             });
-            Self
+            Self { scale }
+        }
+
+        /// Returns the resolved time-scale multiplier so tests can derive their
+        /// own wall-clock waits from the same factor.
+        fn scale(&self) -> u32 {
+            self.scale
         }
     }
 
@@ -7269,7 +7302,7 @@ mod tests {
         const NODE_A: u16 = 340;
         const NODE_B: u16 = 341;
         let _guard = crate::runtime_test_guard();
-        let _swim_env = SwimTimingEnv::fast();
+        let swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
         let node_a_bind = CString::new("127.0.0.1:0").unwrap();
@@ -7278,7 +7311,9 @@ mod tests {
         assert!(!node_a.as_ptr().is_null());
         // SAFETY: node_a is valid.
         unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        thread::sleep(Duration::from_millis(50));
+        // Allow node A's runtime to settle before connecting; scaled so TSan's
+        // thread-scheduling overhead does not race the node-start path.
+        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
 
         let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
 
@@ -7352,7 +7387,7 @@ mod tests {
         const NODE_A: u16 = 342;
         const NODE_B: u16 = 343;
         let _guard = crate::runtime_test_guard();
-        let _swim_env = SwimTimingEnv::fast();
+        let swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
         let node_a_bind = CString::new("127.0.0.1:0").unwrap();
@@ -7361,7 +7396,9 @@ mod tests {
         assert!(!node_a.as_ptr().is_null());
         // SAFETY: node_a is valid.
         unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        thread::sleep(Duration::from_millis(50));
+        // Allow node A's runtime to settle before connecting; scaled so TSan's
+        // thread-scheduling overhead does not race the node-start path.
+        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
 
         let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
 
@@ -7371,9 +7408,11 @@ mod tests {
         // SAFETY: both nodes are valid here.
         unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
 
-        // Let the driver run for well beyond the suspect timeout (120 ms) while
-        // both nodes stay up. ~25 protocol periods at 40 ms each.
-        thread::sleep(Duration::from_secs(1));
+        // Let the driver run for well beyond the suspect timeout while both
+        // nodes stay up. ~25 protocol periods at the configured period length.
+        // Scaled by the same factor as the SWIM budgets so the ratio holds
+        // under TSan (HEW_SWIM_TEST_TIME_SCALE=10 → 10 s observation window).
+        thread::sleep(Duration::from_millis(1_000 * u64::from(swim_env.scale())));
 
         // Neither node may have been declared DEAD on the other's view.
         // SAFETY: A's cluster is live (node still running).

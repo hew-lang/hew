@@ -725,11 +725,22 @@ check-sanitizer-gate:
 	if [ "$$fail" -ne 0 ]; then exit 1; fi
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
+#
+# ASAN_SYMBOLIZER_PATH: ASan/LSan use llvm-symbolizer to resolve addresses
+# into function names for suppression matching.  On Debian/Ubuntu the binary
+# lives under /usr/lib/llvm-N/bin/ but is not always on PATH.  Detect the
+# highest-versioned copy available and export it so LSAN suppression patterns
+# that match by function name (e.g. leak:hew_sched_init) fire correctly.
+# Falls back gracefully to the empty string if none is found (suppressions
+# may not apply without a symbolizer, but the build will still run).
+ASAN_SYMBOLIZER ?= $(lastword $(sort $(wildcard /usr/lib/llvm-*/bin/llvm-symbolizer)))
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes" \
 	ASAN_OPTIONS="detect_leaks=1" \
+	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="suppressions=$(CURDIR)/hew-runtime/lsan.supp" \
+	HEW_SWIM_TEST_TIME_SCALE=3 \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
@@ -745,6 +756,7 @@ else
 	CARGO_TARGET_DIR=$(RUNTIME_TSAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
 	TSAN_OPTIONS="halt_on_error=0 suppressions=$(CURDIR)/hew-runtime/tsan.supp" \
+	HEW_SWIM_TEST_TIME_SCALE=10 \
 	cargo +nightly test \
 		--target $(SANITIZER_RUST_TARGET) \
 		-p hew-runtime \

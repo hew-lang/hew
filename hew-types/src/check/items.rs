@@ -647,7 +647,23 @@ impl Checker {
             Some(&expected_ret)
         };
         let actual = self.check_block(&fd.body, block_expected);
-        if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
+        // A completely empty body on a method whose `Self` is a compiler
+        // builtin (`LocalPid`, `RemotePid`, `Vec`, …) is a fail-closed
+        // declaration stub: no source constructor exists for an opaque pid
+        // handle or an abstract `T`, a self-call would stack-overflow, and the
+        // real value is produced by codegen / the runtime. The placeholder body
+        // is deliberately empty and lowers to a fail-closed zero-value, so its
+        // non-`unit` return type is by design. Skip the body-vs-return mismatch
+        // for these — mirrors the `#[intrinsic]` body-skip above, scoped to
+        // builtin-typed impls so an ordinary user function with a forgotten body
+        // still flags the missing return value.
+        let empty_builtin_self_stub = fd.body.stmts.is_empty()
+            && fd.body.trailing_expr.is_none()
+            && self
+                .current_self_type
+                .as_ref()
+                .is_some_and(|(name, _)| Ty::is_named_builtin(name));
+        if !empty_builtin_self_stub && !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,
                 &actual,

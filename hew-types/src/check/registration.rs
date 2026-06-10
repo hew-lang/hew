@@ -859,8 +859,12 @@ impl Checker {
                     // even when the user's program never declares the trait
                     // itself. Without this, every `f"…"` lowering in user code
                     // would fail-closed with "no lang-item registered for key
-                    // `display_fmt`".
-                    self.register_trait_lang_items(tr, 0..0);
+                    // `display_fmt`". Seed WITHOUT claiming `lang_item_spans`
+                    // (mirrors the trait_defs pre-registration above): when the
+                    // file under check IS builtins.hew, the normal source pass
+                    // re-registers the same `Display` trait and must not trip a
+                    // duplicate-definition error against this seed.
+                    self.seed_trait_lang_items(tr);
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     self.pre_register_type_decl(td);
@@ -3294,6 +3298,46 @@ impl Checker {
         Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
     }
 
+    /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
+    /// `std/builtins.hew` trait declaration WITHOUT claiming `lang_item_spans`.
+    ///
+    /// Mirrors the `trait_defs` pre-registration in `register_builtins_hew_impls`
+    /// that deliberately skips `type_def_spans`: the user-redeclare path — which
+    /// includes type-checking `std/builtins.hew` itself, where the same `Display`
+    /// trait is processed a second time through the normal source-registration
+    /// pass — must register cleanly without a `duplicate_definition` error.
+    /// Genuine collisions between two source traits both tagging the same key
+    /// are still caught: that path runs through `register_trait_lang_items`,
+    /// which owns `lang_item_spans`.
+    pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl) {
+        if let Some(key) = &td.lang_item {
+            if self.lang_items.get(key).is_none() {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        method_name: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    if self.lang_items.get(key).is_none() {
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                method_name: Some(m.name.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Harvest `#[lang_item("…")]` tags from a trait declaration into
     /// [`Checker::lang_items`].
     ///
@@ -4912,6 +4956,58 @@ impl Checker {
         method: &FnDecl,
         impl_sig: &FnSig,
     ) {
+        // Two `Ty::Named` that share a name + args but disagree only on the
+        // `builtin` discriminator denote the same nominal type: the tag is a
+        // derived property of the name, stamped when a type resolves against a
+        // canonical builtin source and left `None` when the same name resolves
+        // against its in-scope user definition. The std dual-surface error
+        // enums (`CloseError`, `SendError`, …) hit this — a trait method
+        // declared in `std/io/closable.hew` carries the local-enum form
+        // (`builtin: None`) while an `impl Closable` in another module resolves
+        // the bare name to the builtin surface (`builtin: Some(CloseError)`).
+        // Re-derive the tag from the name on both sides so trait-conformance
+        // compares nominal identity rather than the incidental resolution path
+        // (the user-facing diagnostics still render the original, untouched
+        // types).
+        fn canonicalize_builtin_tags(ty: &Ty) -> Ty {
+            match ty {
+                Ty::Tuple(elems) => {
+                    Ty::Tuple(elems.iter().map(canonicalize_builtin_tags).collect())
+                }
+                Ty::Array(elem, n) => Ty::Array(Box::new(canonicalize_builtin_tags(elem)), *n),
+                Ty::Slice(elem) => Ty::Slice(Box::new(canonicalize_builtin_tags(elem))),
+                Ty::Named { name, args, .. } => Ty::normalize_named(
+                    name.clone(),
+                    args.iter().map(canonicalize_builtin_tags).collect(),
+                ),
+                Ty::Function { params, ret } => Ty::Function {
+                    params: params.iter().map(canonicalize_builtin_tags).collect(),
+                    ret: Box::new(canonicalize_builtin_tags(ret)),
+                },
+                Ty::Closure {
+                    params,
+                    ret,
+                    captures,
+                } => Ty::Closure {
+                    params: params.iter().map(canonicalize_builtin_tags).collect(),
+                    ret: Box::new(canonicalize_builtin_tags(ret)),
+                    captures: captures.iter().map(canonicalize_builtin_tags).collect(),
+                },
+                Ty::Pointer {
+                    is_mutable,
+                    pointee,
+                } => Ty::Pointer {
+                    is_mutable: *is_mutable,
+                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                },
+                Ty::Borrow { pointee } => Ty::Borrow {
+                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                },
+                Ty::Task(inner) => Ty::Task(Box::new(canonicalize_builtin_tags(inner))),
+                other => other.clone(),
+            }
+        }
+
         let trait_name = trait_bound.name.clone();
         let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
             return;
@@ -5091,7 +5187,7 @@ impl Checker {
             .zip(impl_sig.params.iter())
             .enumerate()
         {
-            if expected != actual {
+            if canonicalize_builtin_tags(expected) != canonicalize_builtin_tags(actual) {
                 let param_label = impl_sig.param_names.get(i).map_or_else(
                     || format!("parameter {}", i + 1),
                     |n| format!("parameter `{n}`"),
@@ -5120,7 +5216,9 @@ impl Checker {
             }
         }
 
-        if expected_return != impl_sig.return_type {
+        if canonicalize_builtin_tags(&expected_return)
+            != canonicalize_builtin_tags(&impl_sig.return_type)
+        {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),

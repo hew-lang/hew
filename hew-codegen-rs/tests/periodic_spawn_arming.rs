@@ -1,9 +1,10 @@
-//! WASM actor trace metadata registration must be emitted on the spawn path.
+//! `#[every(duration)]` periodic handlers must be armed on the spawn path.
 //!
-//! The runtime bridge consumes `hew_wasm_register_actor_meta` to attribute
-//! trace events by actor type and handler name. Codegen has no module-init hook,
-//! so the producer must run immediately before `hew_actor_spawn` /
-//! `hew_actor_spawn_opts`.
+//! Spawn-site codegen consumes `ActorHandlerLayout.every_ms` and emits one
+//! `hew_actor_schedule_periodic(actor, msg_type, interval_ms)` per periodic
+//! handler, after the spawn + lifecycle sequence, with a fail-closed trap on
+//! a null (arming-failed) handle. The `msg_type` operand must be the layout's
+//! descriptor-derived id — the same one the send path dispatches on.
 
 use std::path::Path;
 
@@ -16,25 +17,25 @@ use hew_types::ResolvedTy;
 
 fn local_pid_of(actor: &str) -> ResolvedTy {
     ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
-            name: actor.to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: false,
-        }],
+        name: actor.to_string(),
+        args: vec![],
         builtin: None,
         is_opaque: false,
     }
 }
 
-fn spawn_pipeline() -> IrPipeline {
-    let actor_name = "TraceActor";
-    let actor_pid_ty = local_pid_of(actor_name);
-    let handler_symbol = format!("{actor_name}__recv__handle_ping");
+fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
+    let actor_name = "PulseActor";
+    let actor_pid_ty = ResolvedTy::Named {
+        name: "LocalPid".to_string(),
+        args: vec![local_pid_of(actor_name)],
+        builtin: None,
+        is_opaque: false,
+    };
+    let handler_symbol = format!("{actor_name}__recv__tick");
 
     let spawn_fn = RawMirFunction {
-        name: "spawn_trace_actor".to_string(),
+        name: "spawn_pulse_actor".to_string(),
         return_ty: actor_pid_ty.clone(),
         call_conv: FunctionCallConv::Default,
         params: vec![],
@@ -99,13 +100,13 @@ fn spawn_pipeline() -> IrPipeline {
         max_heap_bytes: None,
         cycle_capable: false,
         handlers: vec![ActorHandlerLayout {
-            name: "handle_ping".to_string(),
+            name: "tick".to_string(),
             symbol: handler_symbol,
             msg_type: 7,
             param_tys: vec![],
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
-            every_ms: None,
+            every_ms,
         }],
         state_clone_fn_symbol: None,
         state_drop_fn_symbol: None,
@@ -137,45 +138,60 @@ fn spawn_pipeline() -> IrPipeline {
 }
 
 fn emit_ll(pipeline: &IrPipeline, slug: &str) -> String {
-    let tmp = std::env::temp_dir().join(format!("hew-wasm-actor-meta-{slug}"));
+    let tmp = std::env::temp_dir().join(format!("hew-periodic-spawn-{slug}"));
     std::fs::create_dir_all(&tmp).expect("create output dir");
     let options = EmitOptions {
-        module_name: "wasm_actor_meta_probe",
+        module_name: "periodic_spawn_probe",
         out_dir: &tmp,
         native: false,
         wasm: false,
         target_triple: None,
     };
-    let artefacts = emit_module(pipeline, &options).expect("metadata pipeline must emit");
+    let artefacts = emit_module(pipeline, &options).expect("periodic spawn pipeline must emit");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("ll path");
     std::fs::read_to_string(ll_path).expect("read emitted IR")
 }
 
 #[test]
-fn actor_spawn_registers_trace_metadata_before_spawn() {
-    let ir = emit_ll(&spawn_pipeline(), "spawn");
+fn periodic_handler_spawn_arms_timer_with_layout_msg_type() {
+    let ir = emit_ll(&spawn_pipeline(Some(50)), "armed");
 
-    let register_pos = ir
-        .find("call void @hew_wasm_register_actor_meta")
-        .unwrap_or_else(|| panic!("expected hew_wasm_register_actor_meta call in:\n{ir}"));
+    let arm_pos = ir
+        .find("call ptr @hew_actor_schedule_periodic(")
+        .unwrap_or_else(|| panic!("expected hew_actor_schedule_periodic call in:\n{ir}"));
+    assert!(
+        ir.contains("i32 7, i64 50)"),
+        "arming must pass the layout msg_type (7) and interval_ms (50):\n{ir}"
+    );
     let spawn_pos = ir
         .find("call ptr @hew_actor_spawn")
         .unwrap_or_else(|| panic!("expected hew_actor_spawn call in:\n{ir}"));
     assert!(
-        register_pos < spawn_pos,
-        "metadata registration must happen before actor spawn:\n{ir}"
+        spawn_pos < arm_pos,
+        "the timer must be armed on the freshly spawned actor, after spawn:\n{ir}"
     );
+}
+
+#[test]
+fn periodic_arming_null_handle_traps_fail_closed() {
+    let ir = emit_ll(&spawn_pipeline(Some(50)), "trap");
 
     assert!(
-        ir.contains("TraceActor"),
-        "actor name missing from IR:\n{ir}"
+        ir.contains("periodic_arm_fail_tick"),
+        "arming must branch to a per-handler fail block on a null handle:\n{ir}"
     );
     assert!(
-        ir.contains("handle_ping"),
-        "handler name missing from IR:\n{ir}"
+        ir.contains("call void @hew_trap_with_code(i32 206)"),
+        "a null arming handle must trap with HEW_TRAP_ACTOR_SEND_FAILED=206:\n{ir}"
     );
+}
+
+#[test]
+fn message_driven_handler_spawn_does_not_arm() {
+    let ir = emit_ll(&spawn_pipeline(None), "unarmed");
+
     assert!(
-        ir.contains("store i32 7"),
-        "msg_type missing from IR:\n{ir}"
+        !ir.contains("hew_actor_schedule_periodic"),
+        "an actor with no #[every] handlers must not touch the periodic ABI:\n{ir}"
     );
 }

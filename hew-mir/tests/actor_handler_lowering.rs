@@ -508,6 +508,52 @@ fn actor_receive_handlers_emit_actor_handler_functions_and_layout() {
     }
 }
 
+/// `#[every]` carry: the HIR `every_ns` nanosecond annotation must surface on
+/// the MIR `ActorHandlerLayout` as a millisecond interval, alongside the
+/// descriptor-derived `msg_type`, so spawn-site codegen can arm the periodic
+/// timer with the same message id the send path uses.
+#[test]
+fn actor_handler_every_ns_lowers_to_layout_every_ms() {
+    let mut ids = IdGen::default();
+    let tick_return = return_none_stmt(&mut ids);
+    let tick_body = block(&mut ids, vec![tick_return], None, ResolvedTy::Unit);
+    let mut tick = receive("tick", false, vec![], ResolvedTy::Unit, tick_body);
+    tick.every_ns = Some(50_000_000); // 50ms
+    let bump_return = return_none_stmt(&mut ids);
+    let bump_body = block(&mut ids, vec![bump_return], None, ResolvedTy::Unit);
+    let bump = receive("bump", false, vec![], ResolvedTy::Unit, bump_body);
+    let actor = actor(&mut ids, "Ticker", vec![tick, bump]);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
+
+    assert_eq!(pipeline.actor_layouts.len(), 1);
+    let layout = &pipeline.actor_layouts[0];
+    let tick_layout = layout
+        .handlers
+        .iter()
+        .find(|h| h.name == "tick")
+        .expect("tick handler layout");
+    assert_eq!(
+        tick_layout.every_ms,
+        Some(50),
+        "every_ns=50_000_000 must lower to every_ms=50"
+    );
+    assert_ne!(
+        tick_layout.msg_type,
+        i32::MAX,
+        "periodic handler must carry the descriptor msg id, not the sentinel"
+    );
+    let bump_layout = layout
+        .handlers
+        .iter()
+        .find(|h| h.name == "bump")
+        .expect("bump handler layout");
+    assert_eq!(
+        bump_layout.every_ms, None,
+        "message-driven handler must not carry an interval"
+    );
+}
+
 #[test]
 fn actor_handler_generator_receive_fn_emits_unsupported_diagnostic_and_no_body() {
     let mut ids = IdGen::default();

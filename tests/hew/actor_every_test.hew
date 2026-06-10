@@ -1,0 +1,61 @@
+//! e2e coverage for `#[every(duration)]` periodic receive handlers.
+//!
+//! A spawned actor's periodic handler must tick without any explicit send
+//! (HEW-SPEC-2026 §2.1.2: armed at spawn, repeats until stop, no payload),
+//! the handler's state mutation must be observable through a normal ask
+//! (ticks serialize through the message loop like any other message), and
+//! two instances of the same actor must tick independently.
+//!
+//! Timing margins are deliberately generous: a 50ms interval observed over a
+//! 500ms window asserts only >= 3 ticks (nominal ~10), so scheduler jitter
+//! cannot flake the test.
+
+import std::testing;
+
+actor Pulse {
+    var count: i64 = 0;
+
+    #[every(50ms)]
+    receive fn tick() {
+        count += 1;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+#[test]
+fn periodic_handler_ticks_after_spawn() {
+    let p = spawn Pulse(count: 0);
+    sleep_ms(500);
+    let r = await p.total();
+    match r {
+        Ok(n) => testing.assert_true(n >= 3),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn two_instances_tick_independently() {
+    // `a` gets a ~250ms head start (~5 extra nominal ticks), so its count
+    // must stay strictly ahead of `b` — proving the timers are per-instance,
+    // not shared across the actor type.
+    let a = spawn Pulse(count: 0);
+    sleep_ms(250);
+    let b = spawn Pulse(count: 0);
+    sleep_ms(250);
+    let ra = await a.total();
+    let rb = await b.total();
+    match ra {
+        Ok(na) => match rb {
+            Ok(nb) => {
+                testing.assert_true(na >= 3);
+                testing.assert_true(nb >= 1);
+                testing.assert_true(na > nb);
+            },
+            Err(_) => testing.assert_true(false),
+        },
+        Err(_) => testing.assert_true(false),
+    }
+}

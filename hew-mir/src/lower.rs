@@ -4021,10 +4021,19 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
         let msg_type = descriptor
             .and_then(|d| d.msg_id_for(&handler.name))
             .map_or(i32::MAX, |id| i32::from_ne_bytes(id.to_ne_bytes()));
+        // ns→ms truncating divide — the runtime timer ABI
+        // (`hew_actor_schedule_periodic`) is millisecond-grained. The
+        // checker rejects sub-millisecond intervals, so 0 is unreachable
+        // for checked programs; an unchecked 0 is refused by the runtime
+        // (null handle) and trapped by codegen's spawn-site check.
+        let every_ms = handler
+            .every_ns
+            .map(|ns| u64::try_from(ns).map_or(0, |ns| ns / 1_000_000));
         layouts.push(ActorHandlerLayout {
             name: handler.name.clone(),
             symbol: mangle_actor_receive_handler(&actor_symbol_base(actor), &handler.name),
             msg_type,
+            every_ms,
             param_tys: handler
                 .params
                 .iter()
@@ -17314,6 +17323,9 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_channel_recv_layout".to_string(),
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "hew_channel_recv_layout",
+                ),
                 args: vec![receiver_place],
                 dest: Some(result_dest),
                 next,
@@ -17412,6 +17424,9 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_stream_next_layout".to_string(),
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    "hew_stream_next_layout",
+                ),
                 args: vec![stream_place],
                 dest: Some(result_dest),
                 next,

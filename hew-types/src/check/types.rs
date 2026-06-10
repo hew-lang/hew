@@ -2132,6 +2132,12 @@ pub struct Checker {
     /// `reported_machine_bound_violations` but scoped to actor spawns so
     /// that machine and actor violations cannot accidentally suppress each other.
     pub(super) reported_actor_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    /// Actors declaring at least one `#[every(duration)]` periodic receive
+    /// handler, keyed by actor name; the value is the first periodic
+    /// handler's name (for diagnostics). Populated during
+    /// `register_actor_decl`, consulted by `check_supervisor` to reject
+    /// child specs whose runtime spawn path cannot arm periodic timers.
+    pub(super) actors_with_periodic_handlers: HashMap<String, String>,
     pub(super) current_return_type: Option<Ty>,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
@@ -2525,6 +2531,7 @@ impl Checker {
             reported_machine_bound_violations: HashSet::new(),
             actor_type_param_bounds: HashMap::new(),
             reported_actor_bound_violations: HashSet::new(),
+            actors_with_periodic_handlers: HashMap::new(),
             current_return_type: None,
             in_generator: false,
             inside_await_expr: false,

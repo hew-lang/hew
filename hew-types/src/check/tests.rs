@@ -24009,3 +24009,156 @@ actor Counter {
         output.errors
     );
 }
+
+// ── #[every(duration)] periodic receive handlers ─────────────────────────────
+//
+// Validation behaviours for the periodic-handler attribute: interval floor,
+// handler shape (params / return / generator), attribute arity, and the
+// supervisor-child rejection (periodic timers are armed by spawn-site
+// codegen, which the supervisor child-spec spawn path never reaches).
+mod every_attribute {
+    use super::*;
+
+    fn invalid_op_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains(fragment))
+    }
+
+    #[test]
+    fn valid_millisecond_interval_accepted() {
+        let output = check_source(
+            "actor Ticker { var count: i64 = 0; #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a 50ms periodic handler is the spec'd happy path; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn sub_millisecond_interval_rejected() {
+        let output =
+            check_source("actor Ticker { #[every(500us)] receive fn tick() {} } fn main() {}");
+        assert!(
+            invalid_op_contains(&output, "minimum periodic interval is 1ms"),
+            "500us floors to a 0ms timer interval and must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn exactly_one_millisecond_accepted() {
+        let output =
+            check_source("actor Ticker { #[every(1ms)] receive fn tick() {} } fn main() {}");
+        assert!(
+            output.errors.is_empty(),
+            "1ms is the minimum valid interval and must be accepted; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn handler_with_params_rejected() {
+        let output =
+            check_source("actor Ticker { #[every(10ms)] receive fn tick(n: i64) {} } fn main() {}");
+        assert!(
+            invalid_op_contains(&output, "must not have parameters"),
+            "periodic handlers receive no payload; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn handler_with_return_type_rejected() {
+        let output = check_source(
+            "actor Ticker { #[every(10ms)] receive fn tick() -> i64 { 1 } } fn main() {}",
+        );
+        assert!(
+            invalid_op_contains(&output, "must not have a return type"),
+            "periodic handlers are fire-and-forget; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn generator_handler_rejected() {
+        let output = check_source(
+            "actor Ticker { #[every(10ms)] receive gen fn ticks() -> i64 { yield 1; } } fn main() {}",
+        );
+        assert!(
+            invalid_op_contains(&output, "must not be a generator"),
+            "generator receive fns have no dispatchable body for a tick; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn multiple_every_attributes_rejected() {
+        let output = check_source(
+            "actor Ticker { #[every(10ms)] #[every(20ms)] receive fn tick() {} } fn main() {}",
+        );
+        assert!(
+            invalid_op_contains(&output, "multiple #[every] attributes"),
+            "only one #[every] per handler; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn non_duration_argument_rejected() {
+        let output = check_source("actor Ticker { #[every(5)] receive fn tick() {} } fn main() {}");
+        assert!(
+            invalid_op_contains(&output, "must be a duration literal"),
+            "a bare integer is not a duration; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn supervisor_child_with_periodic_handler_rejected() {
+        let output = check_source(
+            r"
+            actor Heartbeat {
+                #[every(100ms)]
+                receive fn beat() {}
+            }
+
+            supervisor App {
+                child hb: Heartbeat;
+            }
+
+            fn main() {}
+            ",
+        );
+        assert!(
+            invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
+            "supervisor child spawns never reach spawn-site timer arming; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn supervisor_child_without_periodic_handler_accepted() {
+        let output = check_source(
+            r"
+            actor Worker {
+                receive fn work() {}
+            }
+
+            supervisor App {
+                child w: Worker;
+            }
+
+            fn main() {}
+            ",
+        );
+        assert!(
+            !invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
+            "the accept twin: a message-driven child must not trip the periodic check; got: {:#?}",
+            output.errors
+        );
+    }
+}

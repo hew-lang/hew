@@ -1538,6 +1538,20 @@ fn intern_runtime_decl<'ctx>(
         // Returns the process-wide timer wheel, lazily creating it and starting
         // the 1ms ticker thread. The deadline schedule target.
         "hew_global_timer_wheel" => ptr_ty.fn_type(&[], false),
+        // hew_actor_schedule_periodic(actor: *mut HewActor, msg_type: i32,
+        //   interval_ms: u64) -> *mut c_void (timer_periodic.rs:309 native,
+        // timer_periodic_wasm.rs:228 wasm32 — identical C signature on both
+        // targets; wasm32 delivery is cooperative via `hew_wasm_timer_tick`).
+        // Arms the `#[every(duration)]` recurring zero-payload self-send of
+        // `msg_type`. Returns the timer handle, or null when arming fails
+        // (null actor, zero interval, or ticker startup failure — the runtime
+        // records the detail in its last-error slot). Spawn-site codegen
+        // checks the handle and traps fail-closed; the handle is otherwise
+        // unconsumed because cancellation is actor-lifetime-scoped
+        // (`hew_actor_free` → `cancel_all_timers_for_actor`).
+        "hew_actor_schedule_periodic" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i64_ty.into()], false)
+        }
         "hew_reply_channel_signal_ready" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // ── suspendable-callee driver (Terminator::SuspendingCallClosure) ─────
         // The continuation-handle verbs the driver calls to run a closure-invoke
@@ -6151,6 +6165,7 @@ fn emit_spawn_actor(
     emit_actor_state_clone_drop_registration(fn_ctx, actor_name, spawned, actor_layout)?;
 
     emit_actor_spawn_lifecycle(fn_ctx, actor_name, spawned, init_args)?;
+    emit_periodic_handler_arming(fn_ctx, actor_name, spawned, actor_layout)?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
         return Err(CodegenError::FailClosed(format!(
@@ -6161,6 +6176,101 @@ fn emit_spawn_actor(
         .builder
         .build_store(dest_ptr, spawned)
         .llvm_ctx("SpawnActor store")?;
+    Ok(())
+}
+
+/// Arm one `hew_actor_schedule_periodic` timer per `#[every(duration)]`
+/// receive handler on the freshly spawned actor.
+///
+/// The `msg_type` comes from the actor's `ActorHandlerLayout` row — the same
+/// protocol-descriptor id the send/ask paths use (`lower_actor_handler_layouts`,
+/// hew-mir/src/lower.rs) — so a periodic tick and a user send of the same
+/// handler are indistinguishable in dispatch.
+///
+/// Fail-closed: `hew_actor_schedule_periodic` returns null when it cannot arm
+/// the timer (invalid interval, or the timer-wheel ticker failed to start —
+/// the runtime records the detail in its last-error slot). A null handle
+/// branches to `hew_trap_with_code(HEW_TRAP_ACTOR_SEND_FAILED=206)`; the
+/// periodic timer IS this handler's send path, and 206 is the established
+/// "send substrate failed" discriminator (`emit_select_setup_failure_trap`
+/// reuses it the same way). Never a silent continue.
+///
+/// Arming happens AFTER `emit_actor_spawn_lifecycle`, so `init`/`on_start`
+/// have completed before the first tick can be dispatched. The returned
+/// handle is discarded: cancellation is actor-lifetime-scoped
+/// (`hew_actor_free` → `cancel_all_timers_for_actor`), and user-facing cancel
+/// handles are out of scope for the v0.5 surface.
+fn emit_periodic_handler_arming(
+    fn_ctx: &FnCtx<'_, '_>,
+    actor_name: &str,
+    spawned: PointerValue<'_>,
+    actor_layout: &ActorLayout,
+) -> CodegenResult<()> {
+    if actor_layout.handlers.iter().all(|h| h.every_ms.is_none()) {
+        return Ok(());
+    }
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let schedule_periodic = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_schedule_periodic",
+    )?;
+    for handler in &actor_layout.handlers {
+        let Some(interval_ms) = handler.every_ms else {
+            continue;
+        };
+        let msg_type = i32_ty.const_int(handler.msg_type as u64, false);
+        let interval = i64_ty.const_int(interval_ms, false);
+        let handle = fn_ctx
+            .builder
+            .build_call(
+                schedule_periodic,
+                &[spawned.into(), msg_type.into(), interval.into()],
+                &format!("periodic_arm_{}", handler.name),
+            )
+            .llvm_ctx("hew_actor_schedule_periodic call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed("hew_actor_schedule_periodic returned void".into())
+            })?
+            .into_pointer_value();
+        let arm_failed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                handle,
+                ptr_ty.const_null(),
+                &format!("periodic_arm_failed_{}", handler.name),
+            )
+            .llvm_ctx("periodic arm null compare")?;
+        let parent_fn = fn_ctx
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .ok_or_else(|| {
+                CodegenError::Llvm(format!(
+                    "spawn `{actor_name}` periodic arming block has no parent function"
+                ))
+            })?;
+        let fail_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent_fn, &format!("periodic_arm_fail_{}", handler.name));
+        let ok_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent_fn, &format!("periodic_arm_ok_{}", handler.name));
+        fn_ctx
+            .builder
+            .build_conditional_branch(arm_failed, fail_bb, ok_bb)
+            .llvm_ctx("periodic arm branch")?;
+        fn_ctx.builder.position_at_end(fail_bb);
+        const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
+        emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED, "periodic_arm_fail")?;
+        fn_ctx.builder.position_at_end(ok_bb);
+    }
     Ok(())
 }
 
@@ -46230,6 +46340,7 @@ mod tests {
             param_tys: vec![],
             return_ty: ResolvedTy::Unit,
             requires_state_guard: true,
+            every_ms: None,
         }
     }
 
@@ -46245,6 +46356,7 @@ mod tests {
             param_tys: vec![],
             return_ty: ResolvedTy::I64,
             requires_state_guard: true,
+            every_ms: None,
         }
     }
 
@@ -47041,6 +47153,7 @@ fn main() {
             param_tys: vec![ResolvedTy::I64],
             return_ty: ResolvedTy::Unit,
             requires_state_guard: false,
+            every_ms: None,
         };
         // The MIR function for the handler uses ActorHandler call-conv.  Because
         // the function name contains `__recv__`, `declare_function` appends a

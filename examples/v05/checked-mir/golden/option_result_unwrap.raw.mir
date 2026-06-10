@@ -407,7 +407,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_i64",
+                        family: OptionUnwrap(
+                            I64,
+                        ),
                         args: [
                             Local(
                                 3,
@@ -524,7 +526,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_f64",
+                        family: OptionUnwrap(
+                            F64,
+                        ),
                         args: [
                             Local(
                                 8,
@@ -689,7 +693,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_i32",
+                        family: OptionUnwrap(
+                            I32,
+                        ),
                         args: [
                             Local(
                                 13,
@@ -756,7 +762,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_or_i64",
+                        family: OptionUnwrapOr(
+                            I64,
+                        ),
                         args: [
                             Local(
                                 19,
@@ -883,7 +891,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_or_f64",
+                        family: OptionUnwrapOr(
+                            F64,
+                        ),
                         args: [
                             Local(
                                 25,
@@ -1059,7 +1069,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_unwrap_or_i32",
+                        family: OptionUnwrapOr(
+                            I32,
+                        ),
                         args: [
                             Local(
                                 31,
@@ -1123,7 +1135,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_unwrap_i64",
+                        family: ResultUnwrap(
+                            I64,
+                        ),
                         args: [
                             Local(
                                 38,
@@ -1242,7 +1256,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_unwrap_f64",
+                        family: ResultUnwrap(
+                            F64,
+                        ),
                         args: [
                             Local(
                                 43,
@@ -1411,7 +1427,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_unwrap_i32",
+                        family: ResultUnwrap(
+                            I32,
+                        ),
                         args: [
                             Local(
                                 48,
@@ -1478,7 +1496,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_unwrap_or_i64",
+                        family: ResultUnwrapOr(
+                            I64,
+                        ),
                         args: [
                             Local(
                                 54,
@@ -1708,7 +1728,9 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_unwrap_or_i32",
+                        family: ResultUnwrapOr(
+                            I32,
+                        ),
                         args: [
                             Local(
                                 60,
@@ -1772,7 +1794,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_is_ok",
+                        family: ResultIsOk,
                         args: [
                             Local(
                                 67,
@@ -1795,7 +1817,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_result_is_err",
+                        family: ResultIsErr,
                         args: [
                             Local(
                                 67,

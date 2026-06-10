@@ -283,7 +283,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_some",
+                        family: OptionIsSome,
                         args: [
                             Local(
                                 3,
@@ -392,7 +392,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_none",
+                        family: OptionIsNone,
                         args: [
                             Local(
                                 3,
@@ -509,7 +509,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_none",
+                        family: OptionIsNone,
                         args: [
                             Local(
                                 6,
@@ -626,7 +626,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_some",
+                        family: OptionIsSome,
                         args: [
                             Local(
                                 6,
@@ -847,7 +847,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_some",
+                        family: OptionIsSome,
                         args: [
                             Local(
                                 30,
@@ -964,7 +964,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_option_is_none",
+                        family: OptionIsNone,
                         args: [
                             Local(
                                 33,

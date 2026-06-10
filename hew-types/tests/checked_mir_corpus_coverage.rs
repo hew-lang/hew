@@ -173,14 +173,32 @@ fn corpus_covers_every_family_or_pins_the_gap() {
         dir.display()
     );
 
+    // The `RuntimeCall` payload renders its TYPED family
+    // (`family: VecSliceRange(\n    I64,\n),`) rather than a symbol
+    // string; normalize the pretty Debug output (strip whitespace, fold
+    // the trailing comma inside parens) so a single-line family needle
+    // matches it.
+    let normalized: String = haystack
+        .split_whitespace()
+        .collect::<String>()
+        .replace(",)", ")");
+
     let mut uncovered = BTreeSet::new();
     for family in all_runtime_call_families() {
         let sym = family.c_symbol();
-        // Symbols render quoted in the Debug dumps (`callee: "hew_vec_len"`,
-        // `symbol: "..."`, `drop_fn: "..."`); quoting avoids substring
-        // false-positives for short names like `abs` / `min`.
-        let needle = format!("\"{sym}\"");
-        if !haystack.contains(&needle) {
+        // Two renderings count as coverage:
+        //  - the quoted symbol (`callee: "hew_vec_len"`, `drop_fn: "..."`)
+        //    on the `Terminator::Call` / drop routes — quoting avoids
+        //    substring false-positives for short names like `abs` / `min`;
+        //  - the typed family on the `Instr::CallRuntimeAbi` route
+        //    (`family: VecLen,` — matched against the normalized text so
+        //    the multi-line pretty rendering of parameterized variants is
+        //    recognised; the trailing comma avoids prefix collisions).
+        let quoted = format!("\"{sym}\"");
+        let family_needle = format!("family:{family:?},")
+            .split_whitespace()
+            .collect::<String>();
+        if !haystack.contains(&quoted) && !normalized.contains(&family_needle) {
             uncovered.insert(sym);
         }
     }

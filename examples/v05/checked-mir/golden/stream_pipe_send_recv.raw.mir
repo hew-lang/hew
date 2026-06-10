@@ -7862,7 +7862,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_concat",
+                        family: StringConcat,
                         args: [
                             Local(
                                 4,
@@ -8148,7 +8148,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_concat",
+                        family: StringConcat,
                         args: [
                             Local(
                                 19,

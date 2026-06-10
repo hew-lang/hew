@@ -119,7 +119,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_index",
+                        family: StringIndex,
                         args: [
                             Local(
                                 1,
@@ -157,7 +157,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_slice_codepoints",
+                        family: StringSliceCodepoints,
                         args: [
                             Local(
                                 1,
@@ -251,7 +251,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_concat",
+                        family: StringConcat,
                         args: [
                             Local(
                                 1,
@@ -281,7 +281,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_string_concat",
+                        family: StringConcat,
                         args: [
                             Local(
                                 10,

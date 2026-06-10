@@ -69,7 +69,7 @@ RawMirFunction {
                 EnterContext,
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_new",
+                        family: TaskScopeNew,
                         args: [],
                         dest: Some(
                             Local(
@@ -80,7 +80,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_set_current",
+                        family: TaskScopeSetCurrent,
                         args: [
                             Local(
                                 0,
@@ -95,7 +95,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_new",
+                        family: TaskNew,
                         args: [],
                         dest: Some(
                             Local(
@@ -106,7 +106,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_spawn",
+                        family: TaskScopeSpawn,
                         args: [
                             Local(
                                 0,
@@ -126,7 +126,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_join_all",
+                        family: TaskScopeJoinAll,
                         args: [
                             Local(
                                 0,
@@ -137,7 +137,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_destroy",
+                        family: TaskScopeDestroy,
                         args: [
                             Local(
                                 0,
@@ -148,7 +148,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_task_scope_set_current",
+                        family: TaskScopeSetCurrent,
                         args: [
                             Local(
                                 1,

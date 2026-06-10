@@ -161,7 +161,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_self",
+                        family: ActorSelf,
                         args: [],
                         dest: Some(
                             Local(
@@ -172,7 +172,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_link",
+                        family: ActorLink,
                         args: [
                             Local(
                                 1,
@@ -194,7 +194,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_self",
+                        family: ActorSelf,
                         args: [],
                         dest: Some(
                             Local(
@@ -205,7 +205,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_monitor",
+                        family: ActorMonitor,
                         args: [
                             Local(
                                 3,
@@ -227,7 +227,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_self",
+                        family: ActorSelf,
                         args: [],
                         dest: Some(
                             Local(
@@ -238,7 +238,7 @@ RawMirFunction {
                 ),
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_actor_unlink",
+                        family: ActorUnlink,
                         args: [
                             Local(
                                 5,

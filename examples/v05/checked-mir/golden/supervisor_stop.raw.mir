@@ -315,7 +315,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_supervisor_child_get",
+                        family: SupervisorChildGet,
                         args: [
                             Local(
                                 1,
@@ -521,7 +521,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_supervisor_stop",
+                        family: SupervisorStop,
                         args: [
                             Local(
                                 1,

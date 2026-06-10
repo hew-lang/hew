@@ -531,35 +531,27 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
         for block in &func.blocks {
             for instr in &block.instructions {
                 let excluded = match instr {
+                    // Excluded families (see `wasm_excluded_call_family`): the
+                    // Duplex group (`hew-runtime/src/duplex.rs:54`,
+                    // `#![cfg(not(target_arch = "wasm32"))]`, WASM-TODO(#1451)),
+                    // the Supervisor group (requires the native preemptive
+                    // scheduler; WASM builds use a cooperative single-threaded
+                    // executor — WASM-TODO(#1475)), and the TaskScope group
+                    // (`hew-runtime/src/task_scope.rs` is native-only via
+                    // `hew-runtime/src/lib.rs:466`; the type checker already
+                    // rejects `scope {}` on WASM targets, this scan is the
+                    // defence-in-depth catch for direct-MIR paths — W2.006,
+                    // WASM-TODO(#1451)).
+                    //
+                    // `hew_tcp_stream_from_conn` was historically listed here
+                    // but is unreachable through `Instr::CallRuntimeAbi`: it
+                    // is not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
+                    // `RuntimeCall::new` refuses it at construction; std/net's
+                    // extern-block calls bypass this scan entirely and rely on
+                    // the wasm32 runtime stub (the original note already said
+                    // so). WASM-TODO(#1451): TCP transport gap.
                     Instr::CallRuntimeAbi(call) => {
-                        let sym = call.symbol();
-                        // hew_duplex_* — excluded via hew-runtime/src/duplex.rs:54
-                        //   `#![cfg(not(target_arch = "wasm32"))]`.
-                        //   WASM-TODO(#1451).
-                        // hew_supervisor_* — the supervisor family requires the native
-                        //   preemptive scheduler; WASM builds use a cooperative
-                        //   single-threaded executor that does not support supervisor
-                        //   restart machinery.
-                        //   WASM-TODO(#1475): supervisor WASM parity is tracked there.
-                        // hew_tcp_stream_from_conn — TCP transport is unavailable on
-                        //   wasm32; the runtime stub returns null but codegen surfaces
-                        //   a structured diagnostic instead of a silent null.
-                        //   WASM-TODO(#1451): TCP transport gap.
-                        // hew_task_scope_* — structured-concurrency substrate
-                        //   (`hew-runtime/src/task_scope.rs`) is native-only via
-                        //   `hew-runtime/src/lib.rs:466`. Defence in depth: the
-                        //   type checker rejects `scope {}` on WASM targets at
-                        //   `hew-types/src/check/expressions.rs` via
-                        //   `WasmUnsupportedFeature::StructuredConcurrency`. This
-                        //   scan catches any direct-MIR path that bypasses the
-                        //   type-checker gate. W2.006.
-                        //   WASM-TODO(#1451): task-scope sub-task under the
-                        //   WASM parity umbrella issue.
-                        (sym.starts_with("hew_duplex_")
-                            || sym.starts_with("hew_supervisor_")
-                            || sym.starts_with("hew_task_scope_")
-                            || sym == "hew_tcp_stream_from_conn")
-                            .then(|| sym.to_string())
+                        wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
                     }
                     Instr::Drop {
                         drop_fn: Some(fn_name),
@@ -671,6 +663,175 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
         }
     }
     None
+}
+
+/// True iff `family` is a wasm32-EXCLUDED runtime-call family: its native
+/// implementation is `cfg(not(target_arch = "wasm32"))` and a wasm build
+/// reaching `wasm-ld` with the symbol would fail with a confusing dangling
+/// reference instead of a structured `WasmUnsupportedSubstrate` diagnostic.
+///
+/// Exhaustive over [`RuntimeCallFamily`] — NO wildcard arm. Every future
+/// family addition forces an explicit wasm32 decision here (LESSONS P0
+/// `boundary-fail-closed`; the string-prefix predecessor of this match
+/// silently stopped firing when a symbol was renamed).
+///
+/// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
+fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+    match family {
+        // Duplex dual-queue substrate: hew-runtime/src/duplex.rs:54 is
+        // `#![cfg(not(target_arch = "wasm32"))]`. WASM-TODO(#1451).
+        F::DuplexClone
+        | F::DuplexClose
+        | F::DuplexCloseHalf
+        | F::DuplexPair
+        | F::DuplexPayloadFree
+        | F::DuplexRecv
+        | F::DuplexRecvHalf
+        | F::DuplexSend
+        | F::DuplexSendHalf
+        | F::DuplexTryRecv
+        | F::DuplexTrySend
+        // Supervisor restart machinery requires the native preemptive
+        // scheduler. WASM-TODO(#1475).
+        | F::SupervisorChildGet
+        | F::SupervisorNestedGet
+        | F::SupervisorStop
+        // Structured-concurrency task scopes are native-only
+        // (hew-runtime/src/lib.rs:466). WASM-TODO(#1451).
+        | F::TaskScopeCancelAfterNs
+        | F::TaskScopeDestroy
+        | F::TaskScopeJoinAll
+        | F::TaskScopeNew
+        | F::TaskScopeSetCurrent
+        | F::TaskScopeSpawn => true,
+        // Everything else links and runs on wasm32 (or is gated earlier by
+        // its own structured check). Exhaustively enumerated so a new
+        // family cannot land without a wasm32 decision.
+        F::ActorAsk
+        | F::ActorAskWithChannel
+        | F::ActorCooperate
+        | F::ActorLink
+        | F::ActorMonitor
+        | F::ActorSelf
+        | F::ActorSendById
+        | F::ActorSpawn
+        | F::ActorUnlink
+        | F::AutoMutexAlloc
+        | F::AutoMutexFree
+        | F::AutoMutexLock
+        | F::AutoMutexUnlock
+        | F::BytesIndex
+        | F::BytesLen
+        | F::BytesPush
+        | F::BytesSlice
+        | F::CancelTokenIsRequested
+        | F::CancelTokenRelease
+        | F::CancelTokenRetain
+        | F::ChannelRecvLayout
+        | F::ChannelSendLayout
+        | F::ChannelTryRecvLayout
+        | F::ChannelSenderClose
+        | F::ChannelReceiverClose
+        | F::DurationAbs
+        | F::DurationHours
+        | F::DurationIsZero
+        | F::DurationMicros
+        | F::DurationMillis
+        | F::DurationMins
+        | F::DurationNanos
+        | F::DurationSecs
+        | F::DynBoxAlloc
+        | F::DynBoxFree
+        | F::HashMapContainsKeyLayout
+        | F::HashMapFreeLayout
+        | F::HashMapGetLayout
+        | F::HashMapInsertLayout
+        | F::HashMapKeysLayout
+        | F::HashMapLenLayout
+        | F::HashMapNew
+        | F::HashMapNewWithLayout
+        | F::HashMapRemoveLayout
+        | F::HashMapValuesLayout
+        | F::HashSetContainsLayout
+        | F::HashSetFreeLayout
+        | F::HashSetInsertLayout
+        | F::HashSetIsEmptyLayout
+        | F::HashSetLenLayout
+        | F::HashSetNew
+        | F::HashSetNewWithLayout
+        | F::HashSetRemoveLayout
+        | F::InstantDurationSince
+        | F::InstantElapsed
+        | F::InstantNow
+        | F::LambdaActorAsk
+        | F::LambdaBodyAllocReplyBuf
+        | F::LambdaActorClone
+        | F::LambdaActorDowngrade
+        | F::LambdaDrainAll
+        | F::LambdaActorNew
+        | F::LambdaActorRelease
+        | F::LambdaActorSend
+        | F::LambdaActorWeakClone
+        | F::LambdaActorWeakDrop
+        | F::LambdaActorWeakSend
+        | F::MathIntrinsic(_)
+        | F::NodeLookup
+        | F::ObserveReadU64
+        | F::ObserveScrape
+        | F::ObserveSeries
+        | F::OptionIsNone
+        | F::OptionIsSome
+        | F::OptionUnwrap(_)
+        | F::OptionUnwrapOr(_)
+        | F::RcNew
+        | F::RecvHalfRecv
+        | F::RecvHalfTryRecv
+        | F::RegexCapture
+        | F::RegexCompile
+        | F::RegexFreeCapture
+        | F::RegexMatch
+        | F::RemotePidTell
+        | F::ReplyChannelCancel
+        | F::ReplyChannelFree
+        | F::ReplyChannelNew
+        | F::ReplyPayloadFree
+        | F::ReplyWait
+        | F::ResultIsErr
+        | F::ResultIsOk
+        | F::ResultUnwrap(_)
+        | F::ResultUnwrapOr(_)
+        | F::SelectFirst
+        | F::SendHalfSend
+        | F::SendHalfTrySend
+        | F::SinkClose
+        | F::SinkWrite(_)
+        | F::SinkTryWrite(_)
+        | F::StreamClose
+        | F::StreamNextLayout
+        | F::StreamSendLayout
+        | F::StreamTryNextLayout
+        | F::StringCharCount
+        | F::StringConcat
+        | F::StringIndex
+        | F::StringSliceCodepoints
+        | F::TcpAttachLocal
+        | F::TaskAwaitBlocking
+        | F::TaskCompleteThreaded
+        | F::TaskCompletionObserve
+        | F::TaskCompletionUnobserve
+        | F::TaskFree
+        | F::TaskGetEnv
+        | F::TaskGetError
+        | F::TaskGetResult
+        | F::TaskNew
+        | F::TaskSetEnv
+        | F::TaskSpawnThread
+        | F::VecGet(_)
+        | F::VecLen
+        | F::VecSliceRange(_)
+        | F::VtableDispatchPanicOnOob => false,
+    }
 }
 
 fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
@@ -18250,6 +18411,11 @@ fn lower_call_runtime_abi(
     fn_ctx: &FnCtx<'_, '_>,
     call: &hew_mir::RuntimeCall,
 ) -> CodegenResult<()> {
+    use hew_types::runtime_call::{RuntimeCallFamily as F, VecGetElem};
+    // `symbol` is DERIVED from the family at the codegen edge — kept as a
+    // binding because the arm bodies use it for diagnostics, sub-dispatch
+    // within a multi-family arm, and `intern_runtime_decl` (the LLVM
+    // declare edge, where the C name is a name by nature).
     let symbol = call.symbol();
     let args = call.args();
     let dest = call.dest();
@@ -18257,8 +18423,8 @@ fn lower_call_runtime_abi(
     let i64_ty = fn_ctx.ctx.i64_type();
     let i8_ty = fn_ctx.ctx.i8_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    match symbol {
-        "hew_option_is_some" | "hew_option_is_none" => {
+    match call.family() {
+        F::OptionIsSome | F::OptionIsNone => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 1 arg (option), got {}",
@@ -18323,7 +18489,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, i64_ty, i8_ty, ptr_ty);
         }
-        "hew_duplex_pair" => {
+        F::DuplexPair => {
             if args.len() != 4 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_duplex_pair): expected 4 args \
@@ -18366,7 +18532,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_duplex_send" => {
+        F::DuplexSend => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_duplex_send): expected 3 args \
@@ -18430,7 +18596,7 @@ fn lower_call_runtime_abi(
         // i32 status is discarded in statement context and materialized
         // into `Result<(), SendError>` in value context (see the `dest`
         // branch below).
-        "hew_lambda_actor_send" | "hew_lambda_actor_weak_send" => {
+        F::LambdaActorSend | F::LambdaActorWeakSend => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 3 args \
@@ -18481,7 +18647,7 @@ fn lower_call_runtime_abi(
         // in this MVP (reply-decode and reply-buffer-free are a
         // follow-on slice — `hew_reply_payload_free` must run on
         // *reply_out when non-null).
-        "hew_lambda_actor_ask" => {
+        F::LambdaActorAsk => {
             if args.len() != 6 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_lambda_actor_ask): expected 6 args \
@@ -18917,7 +19083,7 @@ fn lower_call_runtime_abi(
         // is the producer surface for the same release call when a
         // future slice (e.g. explicit `.release()` on a handle) wants
         // it inline). Result discarded.
-        "hew_lambda_actor_release" => {
+        F::LambdaActorRelease => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_lambda_actor_release): expected 1 arg \
@@ -18957,7 +19123,7 @@ fn lower_call_runtime_abi(
         // fail-closed sentinel so the producer surface and codegen
         // surface stay in lock-step (the M2 allowlist accepts the
         // symbol; codegen rejects it from the wrong producer surface).
-        "hew_lambda_actor_new" => {
+        F::LambdaActorNew => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(hew_lambda_actor_new): the lambda-actor \
                  construction surface is `Terminator::MakeLambdaActor` (function- \
@@ -18974,7 +19140,7 @@ fn lower_call_runtime_abi(
         // directly so the runtime can write back ptr/offset/len after CoW/grow.
         // args[1]: Hew API accepts i32 for convenience; truncate to u8 at the
         // runtime ABI boundary.
-        "hew_bytes_len" => {
+        F::BytesLen => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_len): expected 1 arg (bytes), got {}",
@@ -19022,7 +19188,7 @@ fn lower_call_runtime_abi(
         // sret pointer, which conflicts with hew's `[2 x i64]` register-pair
         // codegen.  The `_raw` variant is `void(ptr, i32, i32, i64, i64, *mut
         // BytesTriple)` and writes the result directly into the dest alloca.
-        "hew_bytes_slice" => {
+        F::BytesSlice => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_slice): expected 3 args \
@@ -19109,7 +19275,7 @@ fn lower_call_runtime_abi(
             // build_store needed.
             let _ = (i8_ty, i64_ty);
         }
-        "hew_bytes_push" => {
+        F::BytesPush => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_push): expected 2 args \
@@ -19155,7 +19321,7 @@ fn lower_call_runtime_abi(
         // bounds-checks and aborts on OOB (boundary-fail-closed); no compiler-
         // emitted trap CFG. The dest int type is widened from the runtime's i8
         // return (i8 for `b[i]`'s `u8` dest; i32 for `bytes.get`'s `i32` dest).
-        "hew_bytes_index" => {
+        F::BytesIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_bytes_index): expected 2 args \
@@ -19274,7 +19440,7 @@ fn lower_call_runtime_abi(
         //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
         //                     discriminant 0 (Ok), zero-length payload.
         //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
-        "hew_actor_link" => {
+        F::ActorLink => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_actor_link): expected 2 args \
@@ -19310,7 +19476,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_actor_monitor" => {
+        F::ActorMonitor => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_actor_monitor): expected 2 args \
@@ -19349,7 +19515,7 @@ fn lower_call_runtime_abi(
         // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
         // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
         // the producer always supplies `dest: None`.
-        "hew_supervisor_stop" => {
+        F::SupervisorStop => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_supervisor_stop): expected 1 arg \
@@ -19381,7 +19547,7 @@ fn lower_call_runtime_abi(
         // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
         // means a producer mis-routed a destructor through the
         // generic call path. Fail-closed.
-        "hew_duplex_close" => {
+        F::DuplexClose => {
             return Err(CodegenError::FailClosed(
                 "Instr::CallRuntimeAbi(hew_duplex_close): close is the drop \
                  ritual's responsibility — emit Instr::Drop { drop_fn: \
@@ -19396,7 +19562,7 @@ fn lower_call_runtime_abi(
         // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
         // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
         //
-        "hew_vec_len" => {
+        F::VecLen => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
@@ -19472,8 +19638,14 @@ fn lower_call_runtime_abi(
         // index i64 from arg1, call, store result into dest. The result type
         // differs per variant and is encoded in the function return type from
         // `intern_runtime_decl`.
-        "hew_vec_get_bool" | "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_f64"
-        | "hew_vec_get_ptr" | "hew_vec_get_str" => {
+        F::VecGet(
+            VecGetElem::Bool
+            | VecGetElem::I32
+            | VecGetElem::I64
+            | VecGetElem::F64
+            | VecGetElem::Ptr
+            | VecGetElem::Str,
+        ) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
@@ -19545,7 +19717,7 @@ fn lower_call_runtime_abi(
         // (same as the `lower_layout_vec_direct_call` path for `.get()`).
         // The runtime returns a `*const c_void` pointing into the vec buffer;
         // codegen loads the full element value through that pointer into dest.
-        "hew_vec_get_layout" => {
+        F::VecGet(VecGetElem::Layout) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_get_layout): expected 2 args \
@@ -19598,7 +19770,7 @@ fn lower_call_runtime_abi(
         // element value through it into dest. The borrowed element stays owned
         // by the Vec — the dest is NOT scheduled for an independent drop (the
         // for-in binding is a borrow, F5 discipline).
-        "hew_vec_get_owned" => {
+        F::VecGet(VecGetElem::Owned) => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_vec_get_owned): expected 2 args \
@@ -19648,11 +19820,9 @@ fn lower_call_runtime_abi(
         // start/end i64 from args 1..2, call, store the returned `*mut
         // HewVec` into dest (a ptr-typed Vec<T> alloca). The element type
         // is encoded in the suffix and selected by the MIR producer.
-        "hew_vec_slice_range_i32"
-        | "hew_vec_slice_range_i64"
-        | "hew_vec_slice_range_f64"
-        | "hew_vec_slice_range_ptr"
-        | "hew_vec_slice_range_str" => {
+        // Every VecSliceElem variant shares the arm; the per-element
+        // symbol is already in `symbol` (the family's c_symbol).
+        F::VecSliceRange(_) => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 3 args (vec, start, end), got {}",
@@ -19700,7 +19870,7 @@ fn lower_call_runtime_abi(
         // dest. The runtime entries themselves enforce invalid-input bounds.
         //
         // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char.
-        "hew_string_concat" => {
+        F::StringConcat => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_concat): expected 2 args (a, b), got {}",
@@ -19738,7 +19908,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_string_concat store")?;
             let _ = i32_ty;
         }
-        "hew_observe_read_u64" => {
+        F::ObserveReadU64 => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_observe_read_u64): expected 1 arg (name), got {}",
@@ -19768,7 +19938,7 @@ fn lower_call_runtime_abi(
             }
             let _ = i32_ty;
         }
-        "hew_observe_scrape" | "hew_observe_series" => {
+        F::ObserveScrape | F::ObserveSeries => {
             let (call_name, call_ctx, returned_void_ctx, store_ctx) = match symbol {
                 "hew_observe_scrape" => (
                     "hew_observe_scrape_call",
@@ -19813,7 +19983,7 @@ fn lower_call_runtime_abi(
             }
             let _ = i32_ty;
         }
-        "hew_string_char_count" => {
+        F::StringCharCount => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_char_count): expected 1 arg (s), got {}",
@@ -19843,7 +20013,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i64_ty, ptr_ty);
         }
-        "hew_string_index" => {
+        F::StringIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_index): expected 2 args (s, i), got {}",
@@ -19880,7 +20050,7 @@ fn lower_call_runtime_abi(
         }
         // hew_string_slice_codepoints(s: *const c_char, start: i64, end: i64)
         //   -> *mut c_char (fresh owned slice)
-        "hew_string_slice_codepoints" => {
+        F::StringSliceCodepoints => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_string_slice_codepoints): expected 3 args \
@@ -19924,7 +20094,7 @@ fn lower_call_runtime_abi(
         }
         // hew_task_new() -> *mut HewTask
         // No args. dest: Place holding the task pointer.
-        "hew_task_new" => {
+        F::TaskNew => {
             if !args.is_empty() {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_new): expected 0 args, got {}",
@@ -19957,7 +20127,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_new" => {
+        F::TaskScopeNew => {
             if !args.is_empty() {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_new): expected 0 args, got {}",
@@ -19987,7 +20157,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_scope_new store")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_set_current" => {
+        F::TaskScopeSetCurrent => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_set_current): expected 1 arg, got {}",
@@ -20017,7 +20187,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+        F::TaskScopeDestroy | F::TaskScopeJoinAll => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi({symbol}): expected 1 arg, got {}",
@@ -20042,7 +20212,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_spawn" => {
+        F::TaskScopeSpawn => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_spawn): expected 2 args, got {}",
@@ -20067,7 +20237,7 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_task_scope_spawn call")?;
             let _ = (i32_ty, ptr_ty);
         }
-        "hew_task_scope_cancel_after_ns" => {
+        F::TaskScopeCancelAfterNs => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_scope_cancel_after_ns): expected 2 args, got {}",
@@ -20114,7 +20284,7 @@ fn lower_call_runtime_abi(
         // this shim with a real two-arg call matching that convention. WHAT: load
         // task ptr from args[0], load fn-ptr from args[1] using the chosen Place
         // shape, call void hew_task_spawn_thread(task, fn_ptr).
-        "hew_task_spawn_thread" => {
+        F::TaskSpawnThread => {
             return Err(CodegenError::FailClosed(
                 "Instr::CallRuntimeAbi(hew_task_spawn_thread): no MIR producer for \
                  spawn fn(...) has landed yet (inventory row 3). The fn-ptr Place \
@@ -20126,7 +20296,7 @@ fn lower_call_runtime_abi(
         // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
         // args[0]: task ptr. dest: Place for the result pointer (may be None for
         // void-result tasks; the blocking guarantee is unconditional).
-        "hew_task_await_blocking" => {
+        F::TaskAwaitBlocking => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_await_blocking): expected 1 arg \
@@ -20161,7 +20331,7 @@ fn lower_call_runtime_abi(
         // hew_task_get_result(task: *mut HewTask) -> *mut c_void
         // args[0]: task ptr. dest: Place for the result pointer.
         // Must be called after hew_task_await_blocking (task is Done).
-        "hew_task_get_result" => {
+        F::TaskGetResult => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_get_result): expected 1 arg \
@@ -20198,7 +20368,7 @@ fn lower_call_runtime_abi(
         }
         // hew_task_free(task: *mut HewTask) -> void
         // args[0]: task ptr. dest: None — frees the task allocation.
-        "hew_task_free" => {
+        F::TaskFree => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_task_free): expected 1 arg (task), got {}",
@@ -20252,7 +20422,7 @@ fn lower_call_runtime_abi(
         //
         // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
         //   emission; supervisor tree requires the native scheduler runtime.
-        "hew_supervisor_child_get" => {
+        F::SupervisorChildGet => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
@@ -20374,7 +20544,7 @@ fn lower_call_runtime_abi(
         // args[0]: scrutinee (string local; stored as ptr in LLVM)
         // args[1]: literal_id (ConstI64 local; used as GEP index into global array)
         // dest:    i32 local (MIR emits IntCmp(NotEq, result, 0) immediately after)
-        "hew_regex_match" => {
+        F::RegexMatch => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_match): expected 2 args \
@@ -20465,7 +20635,7 @@ fn lower_call_runtime_abi(
         // The returned *mut c_char is converted to i64 via ptrtoint so it fits
         // into the MIR i64 capture place. The MIR null-check (`IntCmp(Eq, cap, 0)`)
         // fires when the capture did not participate (null → 0 → branch to next arm).
-        "hew_regex_capture" => {
+        F::RegexCapture => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_capture): expected 3 args \
@@ -20557,7 +20727,7 @@ fn lower_call_runtime_abi(
         // Emitted by MIR at arm-body exit (success path, after all captures are
         // extracted) and in partial-failure cleanup blocks (captures[0..j] already
         // allocated when capture[j] returned null).
-        "hew_regex_free_capture" => {
+        F::RegexFreeCapture => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "Instr::CallRuntimeAbi(hew_regex_free_capture): expected 1 arg \
@@ -20584,14 +20754,121 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_regex_free_capture call")?;
         }
 
-        other => {
-            // Allowlisted but not wired. Names a missing follow-on
-            // seam so the next implementer can find the gap quickly
-            // (`parity-or-tracked-gap`).
+        // Allowlisted but not wired (no codegen lowering arm yet), plus the
+        // pre-staged intercept families whose calls ride `Terminator::Call`
+        // and can never legally arrive as `Instr::CallRuntimeAbi` (their
+        // symbols are not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
+        // `RuntimeCall::new` refuses them at construction — this arm is
+        // their unreachable-by-construction backstop). Exhaustively
+        // enumerated, NO wildcard: a new family cannot land without an
+        // explicit lowering decision here (`parity-or-tracked-gap`,
+        // LESSONS P0 `match-fail-closed`).
+        F::ActorAsk
+        | F::ActorAskWithChannel
+        | F::ActorCooperate
+        | F::ActorSelf
+        | F::ActorSendById
+        | F::ActorSpawn
+        | F::ActorUnlink
+        | F::AutoMutexAlloc
+        | F::AutoMutexFree
+        | F::AutoMutexLock
+        | F::AutoMutexUnlock
+        | F::CancelTokenIsRequested
+        | F::CancelTokenRelease
+        | F::CancelTokenRetain
+        | F::ChannelRecvLayout
+        | F::ChannelSendLayout
+        | F::ChannelTryRecvLayout
+        | F::ChannelSenderClose
+        | F::ChannelReceiverClose
+        | F::DuplexClone
+        | F::DuplexCloseHalf
+        | F::DuplexPayloadFree
+        | F::DuplexRecv
+        | F::DuplexRecvHalf
+        | F::DuplexSendHalf
+        | F::DuplexTryRecv
+        | F::DuplexTrySend
+        | F::DurationAbs
+        | F::DurationHours
+        | F::DurationIsZero
+        | F::DurationMicros
+        | F::DurationMillis
+        | F::DurationMins
+        | F::DurationNanos
+        | F::DurationSecs
+        | F::DynBoxAlloc
+        | F::DynBoxFree
+        | F::HashMapContainsKeyLayout
+        | F::HashMapFreeLayout
+        | F::HashMapGetLayout
+        | F::HashMapInsertLayout
+        | F::HashMapKeysLayout
+        | F::HashMapLenLayout
+        | F::HashMapNew
+        | F::HashMapNewWithLayout
+        | F::HashMapRemoveLayout
+        | F::HashMapValuesLayout
+        | F::HashSetContainsLayout
+        | F::HashSetFreeLayout
+        | F::HashSetInsertLayout
+        | F::HashSetIsEmptyLayout
+        | F::HashSetLenLayout
+        | F::HashSetNew
+        | F::HashSetNewWithLayout
+        | F::HashSetRemoveLayout
+        | F::InstantDurationSince
+        | F::InstantElapsed
+        | F::InstantNow
+        | F::LambdaBodyAllocReplyBuf
+        | F::LambdaActorClone
+        | F::LambdaActorDowngrade
+        | F::LambdaDrainAll
+        | F::LambdaActorWeakClone
+        | F::LambdaActorWeakDrop
+        | F::MathIntrinsic(_)
+        | F::NodeLookup
+        | F::OptionUnwrap(_)
+        | F::OptionUnwrapOr(_)
+        | F::RcNew
+        | F::RecvHalfRecv
+        | F::RecvHalfTryRecv
+        | F::RegexCompile
+        | F::RemotePidTell
+        | F::ReplyChannelCancel
+        | F::ReplyChannelFree
+        | F::ReplyChannelNew
+        | F::ReplyPayloadFree
+        | F::ReplyWait
+        | F::ResultIsErr
+        | F::ResultIsOk
+        | F::ResultUnwrap(_)
+        | F::ResultUnwrapOr(_)
+        | F::SelectFirst
+        | F::SendHalfSend
+        | F::SendHalfTrySend
+        | F::SinkClose
+        | F::SinkWrite(_)
+        | F::SinkTryWrite(_)
+        | F::StreamClose
+        | F::StreamNextLayout
+        | F::StreamSendLayout
+        | F::StreamTryNextLayout
+        | F::SupervisorNestedGet
+        | F::TcpAttachLocal
+        | F::TaskCompleteThreaded
+        | F::TaskCompletionObserve
+        | F::TaskCompletionUnobserve
+        | F::TaskGetEnv
+        | F::TaskGetError
+        | F::TaskSetEnv
+        | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
-                "Instr::CallRuntimeAbi(symbol={other:?}): codegen has no lowering arm \
-                 for this M2 runtime symbol; wire a per-symbol arm or leave the \
-                 producer fail-closed until the substrate lane lands"
+                "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \
+                 lowering arm for this runtime family; wire a per-family arm or leave \
+                 the producer fail-closed until the substrate lane lands",
+                call.family(),
             )));
         }
     }

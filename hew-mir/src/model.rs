@@ -3015,8 +3015,10 @@ pub enum CmpPred {
 /// provided getter methods.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeCall {
-    /// Validated `hew_*` C-ABI symbol name.
-    symbol: String,
+    /// Typed identity of the runtime entry. The C-ABI symbol string is
+    /// DERIVED (`family.c_symbol()`) at every read — the string is born
+    /// at the codegen FFI edge, never carried across the IR.
+    family: hew_types::runtime_call::RuntimeCallFamily,
     /// Argument places in C-ABI order.
     args: Vec<Place>,
     /// Destination place for the return value, or `None` if discarded.
@@ -3029,28 +3031,43 @@ impl RuntimeCall {
     /// Returns `Err(UnknownRuntimeSymbol)` if `symbol` is not in the
     /// M2 runtime-ABI allowlist — enforcing the allowlist boundary at
     /// construction in all build profiles (LESSONS P0 `boundary-fail-closed`).
+    /// The validated symbol is lifted into its typed [`RuntimeCallFamily`]
+    /// through the catalog bijection; every allowlist symbol has a family
+    /// (pinned by `every_allowlist_symbol_has_a_family`), so a `None` lift
+    /// is a catalog/allowlist drift and refuses construction.
+    ///
+    /// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
     ///
     /// # Errors
     ///
     /// Returns [`UnknownRuntimeSymbol`] when `symbol` is not recognised by
-    /// `runtime_symbols::is_known_runtime_symbol`.
+    /// `runtime_symbols::is_known_runtime_symbol` or has no catalog family.
     pub fn new(
         symbol: impl Into<String>,
         args: Vec<Place>,
         dest: Option<Place>,
     ) -> Result<Self, UnknownRuntimeSymbol> {
         let symbol = symbol.into();
-        if crate::runtime_symbols::is_known_runtime_symbol(&symbol) {
-            Ok(RuntimeCall { symbol, args, dest })
-        } else {
-            Err(UnknownRuntimeSymbol(symbol))
+        if !crate::runtime_symbols::is_known_runtime_symbol(&symbol) {
+            return Err(UnknownRuntimeSymbol(symbol));
+        }
+        match hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol) {
+            Some(family) => Ok(RuntimeCall { family, args, dest }),
+            None => Err(UnknownRuntimeSymbol(symbol)),
         }
     }
 
-    /// The validated C-ABI symbol name.
+    /// The validated C-ABI symbol name, derived from the typed family at
+    /// the read edge (the catalog bijection is the sole authority).
     #[must_use]
-    pub fn symbol(&self) -> &str {
-        &self.symbol
+    pub fn symbol(&self) -> &'static str {
+        self.family.c_symbol()
+    }
+
+    /// The typed runtime-call family.
+    #[must_use]
+    pub fn family(&self) -> hew_types::runtime_call::RuntimeCallFamily {
+        self.family
     }
 
     /// Argument places in C-ABI order.

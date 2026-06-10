@@ -433,7 +433,7 @@ RawMirFunction {
                 },
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_vec_len",
+                        family: VecLen,
                         args: [
                             Local(
                                 1,
@@ -503,7 +503,9 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_vec_get_str",
+                        family: VecGet(
+                            Str,
+                        ),
                         args: [
                             Local(
                                 1,
@@ -704,7 +706,7 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_vec_len",
+                        family: VecLen,
                         args: [
                             Local(
                                 1,
@@ -784,7 +786,9 @@ RawMirFunction {
             instructions: [
                 CallRuntimeAbi(
                     RuntimeCall {
-                        symbol: "hew_vec_slice_range_str",
+                        family: VecSliceRange(
+                            Str,
+                        ),
                         args: [
                             Local(
                                 1,

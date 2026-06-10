@@ -301,18 +301,21 @@ install-hooks:
 	echo "Dispatcher status:"; \
 	printf '%b\n' "$$dispatcher_summary"
 
-# Downstream repo roots (sibling directories of hew/)
-HEW_SH  ?= $(CURDIR)/../hew.sh
-HEW_RUN ?= $(CURDIR)/../hew.run
+# Downstream repo roots (sibling directories of hew/).
+# Derive from the common git directory (already computed above) rather than
+# $(CURDIR), which points to the worktree's own filesystem location and yields
+# the wrong parent when `make -C <worktree>` is invoked from an out-of-tree path.
+HEW_SH  ?= $(shell dirname "$(COMMON_GIT_DIR)")/../hew.sh
+HEW_RUN ?= $(shell dirname "$(COMMON_GIT_DIR)")/../hew.run
 
 # Build hew-wasm and distribute to downstream repos
 wasm-dist: wasm
 	@echo "==> Distributing hew-wasm to hew.sh"
-	cp hew-wasm/pkg/hew_wasm.js      $(HEW_SH)/src/lib/wasm/hew_wasm.js
-	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_SH)/public/wasm/hew_wasm_bg.wasm
+	cp $(CURDIR)/hew-wasm/pkg/hew_wasm.js      $(HEW_SH)/src/lib/wasm/hew_wasm.js
+	cp $(CURDIR)/hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_SH)/public/wasm/hew_wasm_bg.wasm
 	@echo "==> Distributing hew-wasm to hew.run"
-	cp hew-wasm/pkg/hew_wasm.js      $(HEW_RUN)/src/lib/wasm/hew_wasm.js
-	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
+	cp $(CURDIR)/hew-wasm/pkg/hew_wasm.js      $(HEW_RUN)/src/lib/wasm/hew_wasm.js
+	cp $(CURDIR)/hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
 	@echo "==> Done. Commit in hew.sh and hew.run."
 
 # Create symlinks from build/ into the real output locations.

@@ -726,12 +726,12 @@ fn resource_field_transition_out_drops() {
     assert_eq!(
         snapshot,
         vec![
-            "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Idle drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
             "Holding->Idle dropped-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
             "Holding @resource-set: {\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 }\"}",
             "Holding->Idle order: drop@0 < tag@3",
             "Holding->Holding default { self } drops: []",
-            "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via FileHandle::close\"]",
+            "Holding->Holding @reenter drops: [\"MachineVariant { local: 0, variant_idx: 0, field_idx: 0 } via UserClose(\\\"FileHandle::close\\\")\"]",
             "Holding->Holding @reenter order: drop@0 < tag@3",
             "Idle->Done drops: []",
         ],

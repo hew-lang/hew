@@ -183,7 +183,7 @@ fn pipeline_accepts_user_fn_call_via_call_terminator() {
 fn actor_on_stop_emits_terminate_trampoline_and_registration() {
     let src = r#"
         actor Counter {
-            let count: i64;
+            var count: i64;
             receive fn noop() { }
             #[on(stop)]
             fn shutdown() { count = 0; }
@@ -225,7 +225,7 @@ fn actor_on_stop_emits_terminate_trampoline_and_registration() {
 fn actor_multiple_on_stop_emits_fan_out_trampoline_calling_both_hooks() {
     let src = r#"
         actor Sequencer {
-            let counter: i64;
+            var counter: i64;
             receive fn value() -> i64 { counter }
             #[on(stop)]
             fn cleanup_a() { counter = 1; }

@@ -110,11 +110,11 @@ fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorD
 fn imported_actor_carries_defining_module_and_root_actor_carries_none() {
     let program = build_program_with_imported_module(
         "pub actor Worker {\n\
-         \x20   let count: i64;\n\
+         \x20   var count: i64;\n\
          \x20   receive fn bump(n: i64) { count = count + n; }\n\
          }\n",
         "actor Local {\n\
-         \x20   let total: i64;\n\
+         \x20   var total: i64;\n\
          \x20   receive fn poke() { total = total + 1; }\n\
          }\n\
          fn main() -> i64 { 0 }",
@@ -144,11 +144,11 @@ fn imported_actor_carries_defining_module_and_root_actor_carries_none() {
 fn qualified_name_derives_dotted_for_module_and_bare_for_root() {
     let program = build_program_with_imported_module(
         "pub actor Worker {\n\
-         \x20   let count: i64;\n\
+         \x20   var count: i64;\n\
          \x20   receive fn bump(n: i64) { count = count + n; }\n\
          }\n",
         "actor Local {\n\
-         \x20   let total: i64;\n\
+         \x20   var total: i64;\n\
          \x20   receive fn poke() { total = total + 1; }\n\
          }\n\
          fn main() -> i64 { 0 }",

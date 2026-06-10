@@ -72,9 +72,9 @@ const SLOPE_TOLERANCE: usize = 5;
 fn collection_overwrite_source(frames: usize) -> String {
     format!(
         "actor Cache {{\n\
-         \x20   let items: Vec<string>;\n\
-         \x20   let index: HashMap<string, i64>;\n\
-         \x20   let seen: HashSet<i64>;\n\
+         \x20   var items: Vec<string>;\n\
+         \x20   var index: HashMap<string, i64>;\n\
+         \x20   var seen: HashSet<i64>;\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
          \x20       let next: Vec<string> = Vec::new();\n\
@@ -132,7 +132,7 @@ fn record_functional_update_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   let cur: Outer;\n\
+         \x20   var cur: Outer;\n\
          \n\
          \x20   receive fn bump() {{\n\
          \x20       cur = Outer {{\n\
@@ -181,7 +181,7 @@ fn enum_overwrite_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Tracker {{\n\
-         \x20   let status: Status;\n\
+         \x20   var status: Status;\n\
          \n\
          \x20   receive fn advance(n: i64) {{\n\
          \x20       status = match n % 3 {{\n\
@@ -229,7 +229,7 @@ record Profile {
 }
 
 actor Keeper {
-    let prof: Profile;
+    var prof: Profile;
 
     receive fn refresh() {
         prof = prof;
@@ -268,7 +268,7 @@ record Pair {
 }
 
 actor Swapper {
-    let pair: Pair;
+    var pair: Pair;
 
     receive fn swap() {
         pair = Pair { a: pair.b, b: pair.a };

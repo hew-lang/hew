@@ -6880,14 +6880,34 @@ impl LowerCtx {
         // Inherent-impl on builtin nominal guard: reject `impl Vec<T> { ... }`
         // and similar bare inherent impls on builtin generic types (`Vec`,
         // `HashMap`, `Option`, `Result`, etc.). The stdlib ships its own
-        // inherent impls on these types via `std/builtins.hew` (registered
+        // inherent impls on these types via compiled-in sources (registered
         // through the checker's `register_builtins_hew_impls` path, not via
         // HIR lowering), so a user-source inherent impl on the same nominal
         // collides downstream with a confusing duplicate-definition error.
         // Fail-closing at the V0b boundary makes the rejection site the
         // failure site. Trait impls (`impl MyTrait for Vec<T>`) are not
         // covered here — orphan-rule policing is a separate concern.
+        //
+        // Exception: declarative receiver FFI. An inherent impl on a builtin
+        // nominal whose methods ALL carry `#[extern_symbol(...)]` (the
+        // `impl<T> Option<T>` / `impl<T, E> Result<T, E>` blocks in
+        // `std/option.hew` / `std/result.hew`) is the registration *source*
+        // the checker consumes via `register_compiled_stdlib_receiver_impls`.
+        // Every receiver call site is rewritten by the checker to the
+        // expanded runtime symbol, so there is nothing for HIR to lower:
+        // the panic-stub bodies must never become callable
+        // `<SelfType>::<method>` functions (that would stand up a parallel
+        // dispatch surface beside the builtin enums' dedicated layouts).
+        // Skip the block as already-consumed metadata.
         if decl.trait_bound.is_none() && hew_types::lookup_builtin_type(self_type_name).is_some() {
+            let all_methods_are_extern_symbol_ffi = !decl.methods.is_empty()
+                && decl
+                    .methods
+                    .iter()
+                    .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
+            if all_methods_are_extern_symbol_ffi {
+                return;
+            }
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ImplBlockShapeNotLowered {
                     shape: format!("inherent impl on builtin nominal `{self_type_name}`"),

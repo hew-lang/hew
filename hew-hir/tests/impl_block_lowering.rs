@@ -469,3 +469,89 @@ fn impl_block_inherent_on_builtin_nominal_emits_fail_closed_shape_diagnostic() {
         output.diagnostics,
     );
 }
+
+#[test]
+fn declarative_ffi_inherent_impl_on_builtin_nominal_is_skipped_without_diagnostic() {
+    // Declarative receiver FFI: an inherent impl on a builtin nominal whose
+    // methods ALL carry `#[extern_symbol(...)]` is the registration source the
+    // checker consumes via `register_compiled_stdlib_receiver_impls` (the
+    // `impl<T> Option<T>` / `impl<T, E> Result<T, E>` blocks in
+    // `std/option.hew` / `std/result.hew`). HIR must treat the block as
+    // already-consumed metadata: no `ImplBlockShapeNotLowered` rejection, and
+    // no `<SelfType>::<method>` functions emitted from the panic-stub bodies
+    // (call sites dispatch through checker-recorded extern-symbol rewrites).
+    let output = lower(
+        r#"
+        impl<T> Option<T> {
+            #[extern_symbol(hew_option_is_some)]
+            fn is_some(opt: Option<T>) -> bool {
+                panic("declarative FFI body reached without rewrite")
+            }
+            #[extern_symbol("hew_option_unwrap_{T}")]
+            fn unwrap(opt: Option<T>) -> T {
+                panic("declarative FFI body reached without rewrite")
+            }
+        }
+        "#,
+    );
+
+    let shape_diag = output
+        .diagnostics
+        .iter()
+        .find(|d| matches!(&d.kind, HirDiagnosticKind::ImplBlockShapeNotLowered { .. }));
+    assert!(
+        shape_diag.is_none(),
+        "declarative-FFI inherent impl on a builtin nominal must be admitted \
+         (skipped), not rejected; got diagnostics: {:#?}",
+        output.diagnostics,
+    );
+    let emitted_methods: Vec<&str> = output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(f) if f.name.starts_with("Option::") => Some(f.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        emitted_methods.is_empty(),
+        "declarative-FFI stub bodies must not be emitted as callable \
+         `Option::<method>` functions; got: {emitted_methods:?}",
+    );
+}
+
+#[test]
+fn mixed_ffi_and_real_body_inherent_impl_on_builtin_nominal_stays_fail_closed() {
+    // A builtin-nominal inherent impl containing ANY method without
+    // `#[extern_symbol]` is not declarative FFI — it is a user-authored
+    // inherent impl and keeps the fail-closed rejection.
+    let output = lower(
+        r#"
+        impl<T> Option<T> {
+            #[extern_symbol(hew_option_is_some)]
+            fn is_some(opt: Option<T>) -> bool {
+                panic("declarative FFI body reached without rewrite")
+            }
+            fn user_method(opt: Option<T>) -> i32 {
+                0
+            }
+        }
+        "#,
+    );
+
+    let shape_diag = output.diagnostics.iter().find_map(|d| {
+        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+            Some(shape.clone())
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        shape_diag.as_deref(),
+        Some("inherent impl on builtin nominal `Option`"),
+        "mixed FFI/real-body inherent impls on builtin nominals must stay \
+         fail-closed; got diagnostics: {:#?}",
+        output.diagnostics,
+    );
+}

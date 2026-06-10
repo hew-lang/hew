@@ -1587,6 +1587,68 @@ pub unsafe extern "C" fn hew_stream_cancel_pending_read(
     // WASM-GAP: paired with hew_stream_poll; tracked for v0.5.
 }
 
+// ── Deadline-cancel cleanup callback (NEW-6b) ───────────────────────────────
+
+/// Per-suspend cancel context for `await stream.recv()`: holds both the read
+/// slot and the stream handle so the cleanup callback can cancel + detach.
+///
+/// Allocated as an alloca in the coroutine frame (codegen side) so its lifetime
+/// spans the coro.suspend — the spilling pass moves it into the frame object.
+#[repr(C)]
+#[allow(
+    dead_code,
+    reason = "fields accessed via FFI from codegen-emitted LLVM IR, not from Rust"
+)]
+pub struct HewStreamRecvCancelCtx {
+    /// The `HewReadSlot` this recv registered against.
+    pub slot: *mut crate::read_slot::HewReadSlot,
+    /// The `HewStream` handle the recv is registered against.
+    pub stream: *mut HewStream,
+}
+
+impl std::fmt::Debug for HewStreamRecvCancelCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewStreamRecvCancelCtx")
+            .field("slot", &self.slot)
+            .field("stream", &self.stream)
+            .finish()
+    }
+}
+
+/// Await-cancel cleanup callback for a suspending `await stream.recv()`.
+///
+/// Fires when the deadline timer wins the one-shot CAS (`TimedOut`) or an
+/// explicit cancel wins (`Cancelled`).  Cancels the read slot and detaches the
+/// stream core's in-flight consumer reference so the core never tries to wake
+/// a freed slot.
+///
+/// # Safety
+///
+/// `source` must be a `*mut HewStreamRecvCancelCtx` allocated in the caller's
+/// coroutine frame.  The underlying slot and stream must still be alive.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_recv_cancel_cleanup(
+    source: *mut std::ffi::c_void,
+    _status: i32,
+) {
+    let ctx = source.cast::<HewStreamRecvCancelCtx>();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: ctx is a valid frame-alloca; slot and stream pointers are alive.
+    let slot = unsafe { (*ctx).slot };
+    // SAFETY: same frame-alloca guarantee as slot above.
+    let stream = unsafe { (*ctx).stream };
+    if !slot.is_null() {
+        // SAFETY: slot is alive (frame alloca).
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+    }
+    if !stream.is_null() {
+        // SAFETY: stream is alive and core still holds a reference to the slot.
+        unsafe { hew_stream_detach_await(stream, slot) };
+    }
+}
+
 /// Close (discard) a stream.
 ///
 /// # Safety

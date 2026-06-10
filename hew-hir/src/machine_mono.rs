@@ -1108,6 +1108,32 @@ fn walk_expr(
                 cap_diag_emitted,
             );
         }
+        HirExprKind::ChannelRecvAwait { receiver, .. } => {
+            walk_expr(
+                receiver,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            walk_expr(
+                stream,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             walk_expr(
                 left,

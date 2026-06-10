@@ -1,0 +1,38 @@
+// Accept fixture (NEW-7): `await stream.recv() | after d` — a frame arrives
+// before the deadline, so the suspending recv resolves to `Ok(Some(frame))`.
+//
+// The sink writes one string frame before the actor parks. The long `after 5000ms`
+// deadline never fires. Proves the deadline-vs-frame race in the direction where
+// the frame wins, and that a prompt recv disarms the timer.
+//
+// Match pattern: two-level match required in v0.5 (nested constructor subpatterns
+// are not yet supported). Outer match on `Result`, inner match on `Option<string>`.
+//
+// Exit-code contract: Ok(Some(_)) arm → 1; other arms → negative.
+import std::stream;
+
+actor Pipeline {
+    receive fn run() -> i64 {
+        let (sink, input) = stream.pipe(8);
+        sink.send("hello");
+        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 5000ms;
+        sink.close();
+        match frame {
+            Ok(inner) => {
+                match inner {
+                    Some(_s) => 1,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let p = spawn Pipeline;
+    match await p.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

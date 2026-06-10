@@ -2480,6 +2480,15 @@ pub enum Terminator {
         /// recv's `Option<T>` binding type (checker-authoritative), never
         /// from a runtime symbol name.
         elem_ty: ResolvedTy,
+        /// When present, this recv is the source of `await stream.recv() | after d`.
+        /// `result_dest` remains the raw `Option<T>` slot; codegen binds
+        /// `Ok(result_dest)` or `Err(TimeoutError::Timeout)` into this outer
+        /// `Result<Option<T>, TimeoutError>` slot on the resume edge after
+        /// resolving the await-cancel arbiter.
+        deadline_result_dest: Option<Place>,
+        /// `TimeoutError` payload slot for the deadline Err arm. Present exactly
+        /// when `deadline_result_dest` is present.
+        error_dest: Option<Place>,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the item is bound. This is the `next` block of the original recv.
@@ -2566,6 +2575,15 @@ pub enum Terminator {
         /// `Option<T>` binding type (checker-authoritative), never from a
         /// runtime symbol name.
         elem_ty: ResolvedTy,
+        /// When present, this recv is the source of `await rx.recv() | after d`.
+        /// `result_dest` remains the raw `Option<T>` slot; codegen binds
+        /// `Ok(result_dest)` or `Err(TimeoutError::Timeout)` into this outer
+        /// `Result<Option<T>, TimeoutError>` slot on the resume edge after
+        /// resolving the await-cancel arbiter.
+        deadline_result_dest: Option<Place>,
+        /// `TimeoutError` payload slot for the deadline Err arm. Present exactly
+        /// when `deadline_result_dest` is present.
+        error_dest: Option<Place>,
         /// Block reached on the coro switch resume edge (case 0) — the body
         /// continues here after `enqueue_resume` woke the parked continuation and
         /// the item is bound. This is the `next` block of the original recv.

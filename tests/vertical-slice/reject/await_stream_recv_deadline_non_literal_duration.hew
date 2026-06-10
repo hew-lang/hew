@@ -1,0 +1,34 @@
+// Reject fixture (NEW-7): `await stream.recv() | after d` with a NON-LITERAL
+// duration. The deadline is embedded as a compile-time constant nanosecond value;
+// a variable or computed duration is not constant-foldable and fails CLOSED at
+// CHECK time — a precise compile-time diagnostic, NOT a runtime error or hang.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-literal duration"
+import std::stream;
+
+actor Pipeline {
+    receive fn run() -> i64 {
+        let (sink, input) = stream.pipe(8);
+        let d = 50ms;
+        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after d;
+        sink.close();
+        match frame {
+            Ok(inner) => {
+                match inner {
+                    Some(_s) => 1,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let p = spawn Pipeline;
+    match await p.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

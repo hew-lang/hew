@@ -297,6 +297,12 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         // `await listener.accept()` suspends the handler on listener-readiness
         // (NEW-2).
         | HirExprKind::ListenerAwaitAccept { .. }
+        // `await rx.recv() | after d` suspends the handler on channel-readiness
+        // with a deadline (L4 phase 2).
+        | HirExprKind::ChannelRecvAwait { .. }
+        // `await stream.recv() | after d` suspends the handler on stream-readiness
+        // with a deadline (L4 phase 2).
+        | HirExprKind::StreamRecvAwait { .. }
         | HirExprKind::ActorSend { .. } => {
             *found = true;
         }

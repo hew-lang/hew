@@ -53,6 +53,11 @@ pub enum BuiltinType {
     Duration,
     Trap,
     CancellationToken,
+    /// `TimeoutError` — the error arm of `await rx.recv() | after d` /
+    /// `await stream.recv() | after d`.  A unit enum with one variant
+    /// (`Timeout`) that distinguishes a deadline expiry from a closed channel
+    /// (`Ok(None)`).
+    TimeoutError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +173,7 @@ builtin_types! {
     Duration => "Duration",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
+    TimeoutError => "TimeoutError",
 }
 
 impl BuiltinType {
@@ -277,7 +283,8 @@ impl BuiltinType {
             | Self::Unit
             | Self::Duration
             | Self::Trap
-            | Self::CancellationToken => 0,
+            | Self::CancellationToken
+            | Self::TimeoutError => 0,
         }
     }
 

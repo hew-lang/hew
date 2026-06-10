@@ -1800,6 +1800,22 @@ impl Checker {
                                 builtin: None,
                             },
                         )
+                    } else if matches!(
+                        self.method_call_rewrites.get(&inner_key),
+                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                            if c_symbol == "hew_channel_recv_layout"
+                    ) {
+                        // `await rx.recv() | after d` → `Result<Option<T>, TimeoutError>`
+                        // `inner_ty` is `Option<T>` from the plain `await rx.recv()` path.
+                        Ty::result(inner_ty, Ty::timeout_error())
+                    } else if matches!(
+                        self.method_call_rewrites.get(&inner_key),
+                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
+                            if c_symbol == "hew_stream_next_layout"
+                    ) {
+                        // `await stream.recv() | after d` → `Result<Option<T>, TimeoutError>`
+                        // `inner_ty` is `Option<T>` from the plain `await stream.recv()` path.
+                        Ty::result(inner_ty, Ty::timeout_error())
                     } else {
                         inner_ty
                     }

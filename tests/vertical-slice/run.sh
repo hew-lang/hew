@@ -1820,16 +1820,53 @@ if "${HEW}" compile \
 fi
 grep -q 'parser-only in this build' "${reject_output}"
 
-# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable channel
-# RECV await. recv/next deadlines fail CLOSED at CHECK time (not a runtime NYI,
-# not a hang) with the same precise diagnostic as read/accept.
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/await_recv_deadline_deferred.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected await_recv_deadline_deferred fixture to fail" >&2
+# Accept (NEW-7 — recv-deadline ok): item arrives before deadline → Ok(Some(v)) → exit 42.
+compile_accept "await_recv_deadline_ok"
+recv_ok_bin="${ROOT}/.tmp/compile-out/await_recv_deadline_ok"
+recv_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${recv_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  recv_ok_status=0
+else
+  recv_ok_status=$?
+fi
+if [[ "${recv_ok_status}" -ne 42 ]]; then
+  echo "expected await_recv_deadline_ok (HEW_WORKERS=1) to exit 42, got ${recv_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
   exit 1
 fi
-grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Accept (NEW-7 — recv-deadline timeout): deadline fires before any send → Err(_) → exit 7.
+compile_accept "await_recv_deadline_timeout"
+recv_timeout_bin="${ROOT}/.tmp/compile-out/await_recv_deadline_timeout"
+recv_timeout_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${recv_timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  recv_timeout_status=0
+else
+  recv_timeout_status=$?
+fi
+if [[ "${recv_timeout_status}" -ne 7 ]]; then
+  echo "expected await_recv_deadline_timeout (HEW_WORKERS=1) to exit 7, got ${recv_timeout_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (NEW-7 — recv-deadline closed): channel closed before deadline → Ok(None) → exit 5.
+compile_accept "await_recv_deadline_closed"
+recv_closed_bin="${ROOT}/.tmp/compile-out/await_recv_deadline_closed"
+recv_closed_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${recv_closed_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  recv_closed_status=0
+else
+  recv_closed_status=$?
+fi
+if [[ "${recv_closed_status}" -ne 5 ]]; then
+  echo "expected await_recv_deadline_closed (HEW_WORKERS=1) to exit 5, got ${recv_closed_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
 
 # Accept (accept-deadline worker-free timeout oracle): `await ln.accept() | after 60ms`
 # where no client connects. Under HEW_WORKERS=1 the accept parks worker-free and
@@ -1868,15 +1905,89 @@ if [[ "${accept_ok_status}" -ne 42 ]]; then
   exit 1
 fi
 
-# Reject (fail-closed, deferred to v0.6): a deadline on a suspendable typed-STREAM
-# next (`Stream<bytes>.recv()`).
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/await_stream_recv_deadline_deferred.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected await_stream_recv_deadline_deferred fixture to fail" >&2
+# Accept (NEW-7 — stream-recv-deadline ok): frame arrives before deadline → Ok(Some) → exit 1.
+compile_accept "await_stream_recv_deadline_ok"
+stream_recv_ok_bin="${ROOT}/.tmp/compile-out/await_stream_recv_deadline_ok"
+stream_recv_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${stream_recv_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  stream_recv_ok_status=0
+else
+  stream_recv_ok_status=$?
+fi
+if [[ "${stream_recv_ok_status}" -ne 1 ]]; then
+  echo "expected await_stream_recv_deadline_ok (HEW_WORKERS=1) to exit 1, got ${stream_recv_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
   exit 1
 fi
-grep -q 'only supported for actor-ask awaits' "${reject_output}"
+
+# Accept (NEW-7 — stream-recv-deadline timeout): deadline fires before any frame → Err(_) → exit 7.
+compile_accept "await_stream_recv_deadline_timeout"
+stream_recv_timeout_bin="${ROOT}/.tmp/compile-out/await_stream_recv_deadline_timeout"
+stream_recv_timeout_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${stream_recv_timeout_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  stream_recv_timeout_status=0
+else
+  stream_recv_timeout_status=$?
+fi
+if [[ "${stream_recv_timeout_status}" -ne 7 ]]; then
+  echo "expected await_stream_recv_deadline_timeout (HEW_WORKERS=1) to exit 7, got ${stream_recv_timeout_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (NEW-7 — element-type breadth: string): channel recv deadline with
+# heap-owning string element type → Ok(Some) → exit 3.
+compile_accept "await_recv_deadline_string_ok"
+recv_string_ok_bin="${ROOT}/.tmp/compile-out/await_recv_deadline_string_ok"
+recv_string_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${recv_string_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  recv_string_ok_status=0
+else
+  recv_string_ok_status=$?
+fi
+if [[ "${recv_string_ok_status}" -ne 3 ]]; then
+  echo "expected await_recv_deadline_string_ok (HEW_WORKERS=1) to exit 3, got ${recv_string_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Accept (NEW-7 — element-type breadth: record): channel recv deadline with
+# struct/record element type (non-bitcopy layout-witness ABI) → Ok(Some(p)) → exit 30.
+compile_accept "await_recv_deadline_record_ok"
+recv_record_ok_bin="${ROOT}/.tmp/compile-out/await_recv_deadline_record_ok"
+recv_record_ok_status=0
+if "${TIMEOUT}" --kill-after=5s 30s env HEW_WORKERS=1 "${recv_record_ok_bin}" \
+    >"${stdout_output}" 2>"${stderr_output}"; then
+  recv_record_ok_status=0
+else
+  recv_record_ok_status=$?
+fi
+if [[ "${recv_record_ok_status}" -ne 30 ]]; then
+  echo "expected await_recv_deadline_record_ok (HEW_WORKERS=1) to exit 30, got ${recv_record_ok_status}" >&2
+  cat "${accept_output}" "${stdout_output}" "${stderr_output}" >&2
+  exit 1
+fi
+
+# Reject (NEW-7 — non-suspendable): `await rx.recv() | after d` in a plain function.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_recv_deadline_non_suspendable.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_recv_deadline_non_suspendable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-suspendable context' "${reject_output}"
+
+# Reject (NEW-7 — non-suspendable): `await stream.recv() | after d` in a plain function.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_stream_recv_deadline_non_suspendable.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_stream_recv_deadline_non_suspendable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-suspendable context' "${reject_output}"
 
 # Reject (fail-closed, deferred to v0.6): an actor-ask deadline with a NON-LITERAL
 # duration. The codegen deadline is a compile-time constant, so a variable /
@@ -1885,6 +1996,26 @@ if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/await_nonliteral_duration_deferred.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected await_nonliteral_duration_deferred fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-literal duration' "${reject_output}"
+
+# Reject (NEW-7 — non-literal duration): `await rx.recv() | after d` with a
+# variable duration fails CLOSED at CHECK time (duration must be a literal).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_recv_deadline_non_literal_duration.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_recv_deadline_non_literal_duration fixture to fail" >&2
+  exit 1
+fi
+grep -q 'non-literal duration' "${reject_output}"
+
+# Reject (NEW-7 — non-literal duration): `await stream.recv() | after d` with a
+# variable duration fails CLOSED at CHECK time (duration must be a literal).
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_stream_recv_deadline_non_literal_duration.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_stream_recv_deadline_non_literal_duration fixture to fail" >&2
   exit 1
 fi
 grep -q 'non-literal duration' "${reject_output}"

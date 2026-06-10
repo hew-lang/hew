@@ -630,6 +630,74 @@ pub unsafe extern "C" fn hew_channel_cancel_pending_read(
     }
 }
 
+// ── Deadline-cancel cleanup callback (NEW-6b) ───────────────────────────────
+//
+// `hew_channel_recv_cancel_cleanup` bridges the `HewAwaitCleanup` callback ABI
+// (`fn(*mut c_void, i32)`) to the channel-recv cancel path.  Codegen allocates a
+// `HewChannelRecvCancelCtx` in the coroutine frame before the coro.suspend and
+// passes a pointer to it as the `source` argument to `hew_await_cancel_new`.
+// When the deadline timer fires (or an explicit cancel wins the CAS), the
+// await-cancel arbiter calls this cleanup function.
+
+/// Per-suspend cancel context: carries both the read slot and the channel
+/// receiver handle so the cleanup callback can cancel + detach in one call.
+///
+/// Allocated as an alloca in the coroutine frame (codegen side) so its lifetime
+/// spans the coro.suspend — the spilling pass moves it into the frame object.
+#[repr(C)]
+#[allow(
+    dead_code,
+    reason = "fields accessed via FFI from codegen-emitted LLVM IR, not from Rust"
+)]
+pub struct HewChannelRecvCancelCtx {
+    /// The `HewReadSlot` this recv registered against.
+    pub slot: *mut crate::read_slot::HewReadSlot,
+    /// The `HewChannelReceiver` handle the recv is registered against.
+    pub receiver: *mut HewChannelReceiver,
+}
+
+impl std::fmt::Debug for HewChannelRecvCancelCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewChannelRecvCancelCtx")
+            .field("slot", &self.slot)
+            .field("receiver", &self.receiver)
+            .finish()
+    }
+}
+
+/// Await-cancel cleanup callback for a suspending `await rx.recv()`.
+///
+/// Fires when the deadline timer wins the one-shot CAS (`TimedOut`) or an
+/// explicit cancel wins (`Cancelled`).  Cancels the read slot and detaches the
+/// channel-core's in-flight consumer reference so the core never tries to wake
+/// a freed slot.
+///
+/// # Safety
+///
+/// `source` must be a `*mut HewChannelRecvCancelCtx` allocated in the caller's
+/// coroutine frame; it remains valid until the actor resumes and the frame is
+/// freed.  The underlying slot and receiver must still be alive (they are kept
+/// alive by the coroutine frame's alloca lifetime).
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_recv_cancel_cleanup(source: *mut c_void, _status: i32) {
+    let ctx = source.cast::<HewChannelRecvCancelCtx>();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: ctx is a valid frame-alloca; slot and receiver pointers are alive.
+    let slot = unsafe { (*ctx).slot };
+    // SAFETY: same frame-alloca guarantee as slot above.
+    let receiver = unsafe { (*ctx).receiver };
+    if !slot.is_null() {
+        // SAFETY: slot is alive (frame alloca) and still owned by this recv path.
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+    }
+    if !receiver.is_null() {
+        // SAFETY: receiver is alive and core still holds a reference to the slot.
+        unsafe { hew_channel_detach_recv(receiver, slot) };
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

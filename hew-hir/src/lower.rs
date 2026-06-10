@@ -241,6 +241,11 @@ const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 /// `machine_ctor_registry`. Variant order matches `hew-codegen-rs/src/llvm.rs`:
 /// Full=0, Closed=1, NodeRoutingNotWired=2.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
+/// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
+/// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
+/// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
+/// `machine_ctor_registry`. One variant: Timeout=0, no payload.
+const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
@@ -400,6 +405,13 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_params: &[],
             variant_names: &["Full", "Closed", "NodeRoutingNotWired"],
             variant_payloads: &[&[], &[], &[]],
+        },
+        BuiltinEnumSpec {
+            type_name: "TimeoutError",
+            item_id: SYNTHETIC_TIMEOUT_ERROR_ITEM,
+            type_params: &[],
+            variant_names: &["Timeout"],
+            variant_payloads: &[&[]],
         },
         BuiltinEnumSpec {
             type_name: "AskError",
@@ -3742,10 +3754,14 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(receiver, out, trait_out);
             collect_call_sites_in_expr(event, out, trait_out);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_call_sites_in_expr(stream, out, trait_out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {
@@ -6318,6 +6334,15 @@ impl LowerCtx {
             }
             HirExprKind::ListenerAwaitAccept { listener, .. } => {
                 self.wrap_var_self_explicit_expr_returns(listener, receiver, abi_return_ty);
+            }
+            HirExprKind::ChannelRecvAwait {
+                receiver: recv_expr,
+                ..
+            } => {
+                self.wrap_var_self_explicit_expr_returns(recv_expr, receiver, abi_return_ty);
+            }
+            HirExprKind::StreamRecvAwait { stream, .. } => {
+                self.wrap_var_self_explicit_expr_returns(stream, receiver, abi_return_ty);
             }
             HirExprKind::Index { container, index } => {
                 self.wrap_var_self_explicit_expr_returns(container, receiver, abi_return_ty);
@@ -17217,13 +17242,110 @@ impl LowerCtx {
             );
             return self.unsupported_expr(span.clone(), "unsupported accept deadline form");
         }
-        // Out-of-scope await sources: task-await, channel recv, stream next,
-        // suspending closure. Fail closed at CHECK time naming the form.
+        // NEW-6b: `await rx.recv() | after d` — channel recv with a deadline.
+        if self.is_channel_recv_await(&inner_key) {
+            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
+                let recv_expr = self.lower_expr(receiver, IntentKind::Read);
+                // The plain `await rx.recv()` type is `Option<T>` — the checker
+                // recorded it for the inner `rx.recv()` call at `await_inner.1`.
+                let option_ty = self
+                    .resolved_expr_types
+                    .get(&inner_key)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                let timeout_error_ty = ResolvedTy::Named {
+                    name: "TimeoutError".to_string(),
+                    args: vec![],
+                    builtin: Some(BuiltinType::TimeoutError),
+                    is_opaque: false,
+                };
+                let result_ty = ResolvedTy::Named {
+                    name: "Result".to_string(),
+                    args: vec![option_ty, timeout_error_ty],
+                    builtin: Some(BuiltinType::Result),
+                    is_opaque: false,
+                };
+                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
+                // Register `Result<Option<T>, TimeoutError>` and its nested
+                // `Option<T>` instantiation with the enum layout registry so
+                // that MIR/codegen can resolve the tagged-union struct layout.
+                // `try_register_enum_instantiation(span)` looks up the type by
+                // span in the checker's type map, which holds the pre-deadline
+                // plain type — so call _ty directly instead.
+                self.try_register_enum_instantiation_ty(&result_ty, span);
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class,
+                    ty: result_ty,
+                    intent,
+                    kind: HirExprKind::ChannelRecvAwait {
+                        receiver: Box::new(recv_expr),
+                        deadline_ns: Some(deadline_ns),
+                    },
+                    span: span.clone(),
+                };
+            }
+            self.unsupported(
+                span.clone(),
+                "`await rx.recv() | after d` expected a method-call receiver (internal)",
+                "new6b-recv-deadline",
+            );
+            return self.unsupported_expr(span.clone(), "unsupported channel recv deadline form");
+        }
+        // NEW-6b: `await stream.recv() | after d` — stream recv with a deadline.
+        if self.is_stream_recv_await(&inner_key) {
+            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
+                let stream_expr = self.lower_expr(receiver, IntentKind::Read);
+                // The plain `await stream.recv()` type is `Option<T>` — the checker
+                // recorded it for the inner `stream.recv()` call at `await_inner.1`.
+                let option_ty = self
+                    .resolved_expr_types
+                    .get(&inner_key)
+                    .cloned()
+                    .unwrap_or(ResolvedTy::Unit);
+                let timeout_error_ty = ResolvedTy::Named {
+                    name: "TimeoutError".to_string(),
+                    args: vec![],
+                    builtin: Some(BuiltinType::TimeoutError),
+                    is_opaque: false,
+                };
+                let result_ty = ResolvedTy::Named {
+                    name: "Result".to_string(),
+                    args: vec![option_ty, timeout_error_ty],
+                    builtin: Some(BuiltinType::Result),
+                    is_opaque: false,
+                };
+                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
+                // Same registration as ChannelRecvAwait above.
+                self.try_register_enum_instantiation_ty(&result_ty, span);
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class,
+                    ty: result_ty,
+                    intent,
+                    kind: HirExprKind::StreamRecvAwait {
+                        stream: Box::new(stream_expr),
+                        deadline_ns: Some(deadline_ns),
+                    },
+                    span: span.clone(),
+                };
+            }
+            self.unsupported(
+                span.clone(),
+                "`await stream.recv() | after d` expected a method-call receiver (internal)",
+                "new6b-stream-recv-deadline",
+            );
+            return self.unsupported_expr(span.clone(), "unsupported stream recv deadline form");
+        }
+        // Out-of-scope await sources: task-await, suspending closure.
+        // Channel recv and stream recv are now handled above (NEW-6b).
         self.unsupported(
             span.clone(),
             "`await <…> | after d` deadline is only supported for actor-ask awaits, \
-             connection reads (read/read_string), and listener accepts; task-await, \
-             recv/next, and suspending-closure deadlines are deferred to v0.6",
+             connection reads (read/read_string), listener accepts, channel recv, and \
+             stream recv; task-await and suspending-closure deadlines are deferred to v0.6",
             "new6c-read-deadline",
         );
         self.unsupported_expr(span.clone(), "unsupported await-deadline source")
@@ -18534,10 +18656,14 @@ fn collect_captures_walk(
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
             collect_captures_walk(event, param_ids, seen, captures, self_id);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_captures_walk(stream, param_ids, seen, captures, self_id);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
             // Machine state constructors are not expected inside lambda bodies.
@@ -18651,6 +18777,9 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_general_closure_captures_walk(listener, outer_bindings, seen, captures);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_general_closure_captures_walk(stream, outer_bindings, seen, captures);
         }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
@@ -18837,7 +18966,8 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
@@ -19346,6 +19476,9 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_hir_emitted_events_walk(listener, event_names, out);
         }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_hir_emitted_events_walk(stream, event_names, out);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_hir_emitted_events_walk(value, event_names, out);
         }
@@ -19609,7 +19742,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(receiver, event_names, out);
             collect_hir_emitted_events_walk(event, event_names, out);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
@@ -22329,6 +22463,9 @@ fn scan_expr_for_call_shape(
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             scan_expr_for_call_shape(listener, callable, diagnostics);
         }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            scan_expr_for_call_shape(stream, callable, diagnostics);
+        }
         HirExprKind::NumericCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
@@ -22473,8 +22610,10 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             scan_expr_for_call_shape(arg, callable, diagnostics);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. } => {
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
         }
         HirExprKind::MachineEmit { fields, .. } => {
@@ -22487,9 +22626,6 @@ fn scan_expr_for_call_shape(
         } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
             scan_expr_for_call_shape(event, callable, diagnostics);
-        }
-        HirExprKind::MachineStateName { receiver, .. } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
         }
         HirExprKind::MachineVariantCtor {
             payload: Some(fields),

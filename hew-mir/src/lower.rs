@@ -4105,6 +4105,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_unknown_self_fields_in_expr(listener, state_fields, seen, unknown);
         }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_unknown_self_fields_in_expr(stream, state_fields, seen, unknown);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
@@ -4265,7 +4268,8 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(event, state_fields, seen, unknown);
         }
-        HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
@@ -8142,6 +8146,14 @@ impl Builder {
                 listener,
                 deadline_ns,
             } => self.lower_listener_await_accept(listener, *deadline_ns, expr),
+            HirExprKind::ChannelRecvAwait {
+                receiver,
+                deadline_ns,
+            } => self.lower_channel_recv_await(receiver, *deadline_ns, expr),
+            HirExprKind::StreamRecvAwait {
+                stream,
+                deadline_ns,
+            } => self.lower_stream_recv_await(stream, *deadline_ns, expr),
             HirExprKind::RemoteActorAsk {
                 receiver,
                 msg,
@@ -15375,6 +15387,8 @@ impl Builder {
                     stream: *stream,
                     result_dest,
                     elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
                     resume: next,
                     cleanup: next,
                 });
@@ -15412,6 +15426,8 @@ impl Builder {
                     receiver: *receiver,
                     result_dest,
                     elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
                     resume: next,
                     cleanup: next,
                 });
@@ -17155,6 +17171,202 @@ impl Builder {
         });
         self.start_block(next);
         Some(string_dest)
+    }
+
+    /// Lower `await rx.recv() | after d` (L4 phase 2, channel form). Suspending
+    /// channel-recv with a deadline attached. When `deadline_ns` is present:
+    ///
+    /// - `expr.ty` is `Result<Option<T>, TimeoutError>` (set by HIR).
+    /// - `result_dest` is allocated for the raw `Option<T>` slot; codegen wraps
+    ///   it into `Ok(_)` or emits `Err(TimeoutError::Timeout)` via the
+    ///   `deadline_result_dest` slot.
+    ///
+    /// In a non-suspendable context with a deadline, fail closed with a
+    /// diagnostic (no parkable continuation → no deadline semantics possible).
+    fn lower_channel_recv_await(
+        &mut self,
+        receiver: &HirExpr,
+        deadline_ns: Option<i64>,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let receiver_place = self.lower_value(receiver)?;
+
+        // When deadline is active, `expr.ty` is `Result<Option<T>, TimeoutError>`.
+        // Extract `Option<T>` for result_dest; allocate outer slot for deadline_result_dest.
+        let option_ty = if deadline_ns.is_some() {
+            match &expr.ty {
+                hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
+                    self.subst_ty(&args[0])
+                }
+                other => self.subst_ty(other),
+            }
+        } else {
+            self.subst_ty(&expr.ty)
+        };
+
+        // Extract the element type from `Option<T>`.
+        let elem_ty = match &option_ty {
+            hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
+                self.subst_ty(&args[0])
+            }
+            other => other.clone(),
+        };
+
+        let result_dest = self.alloc_local(option_ty);
+
+        if self.current_function_call_conv.carries_execution_context() {
+            let deadline_result_dest =
+                deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
+            let error_dest = deadline_ns.map(|_| {
+                self.alloc_local(hew_types::ResolvedTy::Named {
+                    name: "TimeoutError".to_string(),
+                    args: Vec::new(),
+                    builtin: Some(hew_types::BuiltinType::TimeoutError),
+                    is_opaque: false,
+                })
+            });
+            let next = self.alloc_block();
+            if let Some(ns) = deadline_ns {
+                self.await_deadline_ns.insert(self.current_block_id, ns);
+            }
+            self.finish_current_block(Terminator::SuspendingChannelRecv {
+                receiver: receiver_place,
+                result_dest,
+                elem_ty,
+                deadline_result_dest,
+                error_dest,
+                resume: next,
+                cleanup: next,
+            });
+            self.start_block(next);
+            if let Some(outer_dest) = deadline_result_dest {
+                return Some(outer_dest);
+            }
+        } else {
+            if deadline_ns.is_some() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "`await rx.recv() | after d` in a non-suspendable context"
+                            .to_string(),
+                        site: expr.site,
+                    },
+                    note: "channel recv deadlines require a suspendable actor/closure/task \
+                           context; default-call-convention functions have no parkable \
+                           continuation to resume on timeout"
+                        .to_string(),
+                });
+                return None;
+            }
+            // Default callers keep the blocking hew_channel_recv_layout FFI call.
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Call {
+                callee: "hew_channel_recv_layout".to_string(),
+                args: vec![receiver_place],
+                dest: Some(result_dest),
+                next,
+            });
+            self.start_block(next);
+        }
+
+        Some(result_dest)
+    }
+
+    /// Lower `await stream.recv() | after d` (L4 phase 2, stream form). Suspending
+    /// stream-recv with a deadline attached. When `deadline_ns` is present:
+    ///
+    /// - `expr.ty` is `Result<Option<T>, TimeoutError>` (set by HIR).
+    /// - `result_dest` is allocated for the raw `Option<T>` slot; codegen wraps
+    ///   it into `Ok(_)` or emits `Err(TimeoutError::Timeout)` via the
+    ///   `deadline_result_dest` slot.
+    ///
+    /// In a non-suspendable context with a deadline, fail closed with a
+    /// diagnostic (no parkable continuation → no deadline semantics possible).
+    fn lower_stream_recv_await(
+        &mut self,
+        stream: &HirExpr,
+        deadline_ns: Option<i64>,
+        expr: &HirExpr,
+    ) -> Option<Place> {
+        let stream_place = self.lower_value(stream)?;
+
+        // When deadline is active, `expr.ty` is `Result<Option<T>, TimeoutError>`.
+        // Extract `Option<T>` for result_dest; allocate outer slot for deadline_result_dest.
+        let option_ty = if deadline_ns.is_some() {
+            match &expr.ty {
+                hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
+                    self.subst_ty(&args[0])
+                }
+                other => self.subst_ty(other),
+            }
+        } else {
+            self.subst_ty(&expr.ty)
+        };
+
+        // Extract the element type from `Option<T>`.
+        let elem_ty = match &option_ty {
+            hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
+                self.subst_ty(&args[0])
+            }
+            other => other.clone(),
+        };
+
+        let result_dest = self.alloc_local(option_ty);
+
+        if self.current_function_call_conv.carries_execution_context() {
+            let deadline_result_dest =
+                deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
+            let error_dest = deadline_ns.map(|_| {
+                self.alloc_local(hew_types::ResolvedTy::Named {
+                    name: "TimeoutError".to_string(),
+                    args: Vec::new(),
+                    builtin: Some(hew_types::BuiltinType::TimeoutError),
+                    is_opaque: false,
+                })
+            });
+            let next = self.alloc_block();
+            if let Some(ns) = deadline_ns {
+                self.await_deadline_ns.insert(self.current_block_id, ns);
+            }
+            self.finish_current_block(Terminator::SuspendingStreamNext {
+                stream: stream_place,
+                result_dest,
+                elem_ty,
+                deadline_result_dest,
+                error_dest,
+                resume: next,
+                cleanup: next,
+            });
+            self.start_block(next);
+            if let Some(outer_dest) = deadline_result_dest {
+                return Some(outer_dest);
+            }
+        } else {
+            if deadline_ns.is_some() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "`await stream.recv() | after d` in a non-suspendable context"
+                            .to_string(),
+                        site: expr.site,
+                    },
+                    note: "stream recv deadlines require a suspendable actor/closure/task \
+                           context; default-call-convention functions have no parkable \
+                           continuation to resume on timeout"
+                        .to_string(),
+                });
+                return None;
+            }
+            // Default callers keep the blocking hew_stream_next_layout FFI call.
+            let next = self.alloc_block();
+            self.finish_current_block(Terminator::Call {
+                callee: "hew_stream_next_layout".to_string(),
+                args: vec![stream_place],
+                dest: Some(result_dest),
+                next,
+            });
+            self.start_block(next);
+        }
+
+        Some(result_dest)
     }
 
     /// Lower `await listener.accept()` (NEW-2). The listener-readiness sibling of
@@ -28953,7 +29165,12 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
+            .filter(|l| {
+                l.name != "LookupError"
+                    && l.name != "SendError"
+                    && l.name != "AskError"
+                    && l.name != "TimeoutError"
+            })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
         let layout = user_layouts[0];
@@ -29004,7 +29221,12 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
+            .filter(|l| {
+                l.name != "LookupError"
+                    && l.name != "SendError"
+                    && l.name != "AskError"
+                    && l.name != "TimeoutError"
+            })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
         assert_eq!(user_layouts[0].name, "Colour");
@@ -29072,7 +29294,12 @@ mod enum_layout_tests {
         let user_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| l.name != "LookupError" && l.name != "SendError" && l.name != "AskError")
+            .filter(|l| {
+                l.name != "LookupError"
+                    && l.name != "SendError"
+                    && l.name != "AskError"
+                    && l.name != "TimeoutError"
+            })
             .collect();
         assert_eq!(
             user_layouts.len(),
@@ -30260,6 +30487,8 @@ mod f1_suspending_escape_poison {
             stream: Place::Local(1),
             result_dest: Place::Local(2),
             elem_ty: ResolvedTy::Bytes,
+            deadline_result_dest: None,
+            error_dest: None,
             resume: 1,
             cleanup: 2,
         };

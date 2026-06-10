@@ -1,4 +1,4 @@
-//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Status: runnable
 //! Description: Sensor mesh — distributed actor service pattern
 
 // Sensor mesh — distributed actor service pattern
@@ -12,6 +12,23 @@
 // Node::start/shutdown/register/lookup typecheck today; other Node APIs
 // (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
 actor Logger {
+
+    // Simulate temperature with variation
+
+    // ── In distributed mode, each of these would be on a different node:
+    // Node::start("0.0.0.0:9000");  // logger node
+
+    // Node::register("logger", logger);
+
+    // Node::start("0.0.0.0:9001");  // monitor node
+    // let logger = Node::lookup("logger");
+
+    // Node::register("monitor", monitor);
+
+    // Node::start("0.0.0.0:9002");  // sensor node
+    // let monitor = Node::lookup("monitor");
+
+    // Simulate 6 ticks
     let count: i32;
     receive fn log_event(source: string, msg: string) {
         count = count + 1;
@@ -44,8 +61,6 @@ actor Sensor {
     let monitor: LocalPid<Monitor>;
     let base_temp: i32;
     receive fn tick(cycle: i32) {
-
-        // Simulate temperature with variation
         let temp = base_temp + cycle % 5 - 2;
         monitor.reading(sensor_id, temp);
     }
@@ -53,23 +68,11 @@ actor Sensor {
 
 fn main() {
     println("=== Sensor Mesh Demo ===");
-
-    // ── In distributed mode, each of these would be on a different node:
-    // Node::start("0.0.0.0:9000");  // logger node
-    let logger = spawn Logger;
-    // Node::register("logger", logger);
-
-    // Node::start("0.0.0.0:9001");  // monitor node
-    // let logger = Node::lookup("logger");
+    let logger = spawn Logger(count: 0);
     let empty: Vec<i32> = Vec::new();
     let monitor = spawn Monitor(readings: empty, logger: logger, threshold: 30);
-    // Node::register("monitor", monitor);
-
-    // Node::start("0.0.0.0:9002");  // sensor node
-    // let monitor = Node::lookup("monitor");
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
-    // Simulate 6 ticks
     for cycle in 0 .. 6 {
         s1.tick(cycle);
         s2.tick(cycle);

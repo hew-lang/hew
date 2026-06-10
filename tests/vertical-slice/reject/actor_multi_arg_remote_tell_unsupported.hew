@@ -1,0 +1,29 @@
+// Reject fixture: remote tell resolving to a multi-parameter receive
+// handler (E_REMOTE_PAYLOAD_UNSUPPORTED).
+//
+// The tell seam is codegen's `hew_remote_pid_tell` intercept (the ask
+// seam fails closed earlier, in MIR's remote handler matcher). Same
+// invariant on both seams: the remote wire carries one message value,
+// the multi-arg handler's local wire is the packed-args record, and a
+// first-param match between the two is a wire-width mismatch — refused
+// at compile time rather than sending short bytes to a body that
+// unpacks the full record.
+actor Logger {
+    receive fn log_pair(code: i64, label: string) {
+        println(f"[{label}] code={code}");
+    }
+}
+
+impl ActorMsg for Logger {
+    type Msg = i64;
+    type Reply = ();
+}
+
+fn main() {
+    let peer: RemotePid<Logger> = RemotePid::from_raw<Logger>(1, 0);
+    let sent: Result<(), SendError> = peer.tell(7);
+    match sent {
+        Ok(_) => println("sent"),
+        Err(_) => println("send failed"),
+    }
+}

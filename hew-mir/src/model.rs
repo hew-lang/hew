@@ -2047,6 +2047,21 @@ pub enum Terminator {
         shape: i32,
         mailbox_capacity: u32,
         next: u32,
+        /// Capture-environment source: the stack Place holding the
+        /// `RecordInit`'d env record, or `None` for a capture-free lambda.
+        /// Codegen heap-boxes the record (`malloc` + `memcpy` of
+        /// `sizeof(env)`) and passes the heap pointer as
+        /// `hew_lambda_actor_new`'s `state` arg; the body prologue reads
+        /// captures back through that pointer (`ClosureEnvFieldLoad` on
+        /// the state slot).
+        env: Option<Place>,
+        /// Per-field teardown classes for the capture env, in declared
+        /// field order. Codegen synthesizes the real `state_drop_fn` body
+        /// from these (field drop then `free(env)`), and `WeakSelfHandle`
+        /// fields are nulled at box time and back-filled with the
+        /// downgraded weak handle after construction — the weak self
+        /// reference cannot exist before the actor it refers to.
+        env_field_drops: Vec<LambdaEnvFieldDrop>,
     },
     /// Actor message send. The sent value at `value` crosses the
     /// actor boundary; `MirCheck::ActorSendEscape` checks the value's
@@ -4232,6 +4247,26 @@ pub enum CaptureKind {
     Weak,
 }
 
+/// Per-field teardown class for a lambda-actor capture-env field,
+/// carried on [`Terminator::MakeLambdaActor::env_field_drops`] in
+/// declared field order. The MIR producer derives the class from the
+/// capture's `ValueClass` / `CaptureKind` so codegen can synthesize the
+/// env `state_drop_fn` (and the weak-self back-fill) without re-deriving
+/// ownership from LLVM types. The runtime calls the synthesized dropper
+/// exactly once after the dispatch loop stops (`lifecycle-symmetry`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LambdaEnvFieldDrop {
+    /// `BitCopy` field — no teardown.
+    None,
+    /// Owned `string` field cloned into the env at spawn; dropped via
+    /// `hew_string_drop`.
+    String,
+    /// Weak self-handle (`CaptureKind::Weak`): nulled at box time,
+    /// back-filled with `hew_lambda_actor_downgrade(handle)` after
+    /// construction, dropped via `hew_lambda_actor_weak_drop`.
+    WeakSelfHandle,
+}
+
 /// A basic-block kind. `Normal` blocks carry user-level statements;
 /// `Cleanup` blocks run drop plans on panic / cancel / outer-trap edges
 /// per HEW-SPEC §3.7.8.4. Cleanup blocks are reachable only via
@@ -4703,6 +4738,20 @@ pub enum MirDiagnosticKind {
     CannotMaterializeClosureCapture {
         binding: BindingId,
         name: String,
+        site: SiteId,
+    },
+    /// A remote dispatch (`RemotePid<T>` ask/tell) resolved to a
+    /// multi-parameter receive handler. Multi-arg sends pack into an
+    /// anonymous record whose bytes may carry heap pointers — bytes the
+    /// cross-node codec is not seeded to serialize (the codec carries
+    /// single-param message types only; packed-args seeding is the
+    /// cross-node payload serialization lane's positive path). A
+    /// single-value remote payload delivered to a handler that unpacks
+    /// the full packed record would read out of bounds on the receiving
+    /// node, so the boundary fails closed at compile time instead.
+    RemotePayloadUnsupported {
+        actor: String,
+        handler: String,
         site: SiteId,
     },
     /// Drop-elaboration aborted because the M2 substrate's per-exit

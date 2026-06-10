@@ -643,6 +643,13 @@ run_accept_expect_stdout "lambda_callable_ask"
 # parity (send dispatch + ask reply decode) is held by the same routing.
 run_accept_expect_stdout "lambda_log_collision"
 
+# Accept: lambda-actor multi-param dispatch through the packed-args
+# anonymous-record wire (the same payload mechanism as declared-actor
+# multi-arg sends). Covers i64+i64 ask, string+i64 ask, and string+i64
+# tell. Single-param lambdas stay on the 8-byte single-vertebra wire —
+# pinned by lambda_small_msg / lambda_callable_* below.
+run_accept_expect_stdout "lambda_multi_param"
+
 # Accept: lambda-actor message types narrower than 8 bytes (`bool`, `i32`)
 # pin the 8-byte zero-padded wire format. Pre-fix, the sender allocated
 # the spill at the source type's width (1 byte for `bool`, 4 for `i32`)
@@ -659,6 +666,19 @@ run_accept_expect_stdout "lambda_small_msg"
 # mailbox. Regression for `E_HIR: indirect call ... has no MIR dispatch path`,
 # which fired before the field receiver was recognised as an actor send/ask.
 run_accept_expect_stdout "actor_field_method_dispatch"
+
+# Accept + run: declared-actor multi-arg tell through the packed-args
+# anonymous-record wire. Mixed (string, i64) and double-heap-owning
+# (string, string) payloads; the trailing ask fences stdout ordering.
+# Each packed field is copied at exactly sizeof(field) into the record,
+# the mailbox deep-copies sizeof(record) bytes, and the dispatch
+# trampoline unpacks each param at its natural field offset.
+run_accept_expect_stdout "actor_multi_arg_tell"
+
+# Accept + run: declared-actor multi-arg ask — `await adder.compute(3, 4)`
+# packs both args into one record and the reply rides the existing ask
+# channel; covers i64+i64 and string+i64 ask payloads.
+run_accept_expect_stdout "actor_multi_arg_ask"
 
 # Reject: an ask-shaped receive method called on a struct-field actor receiver
 # must be `await`ed. `actor B { let out: W; ... out.get() }` invokes W's
@@ -720,18 +740,48 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_escape.hew" >
 fi
 grep -q 'E_LAMBDA_SELF_ESCAPE' "${reject_output}"
 
-# Reject: lambda actor body capturing an outer binding (including
-# the let-binding's own name for forward self-recursion) fails closed
-# at MIR with `CannotMaterializeClosureCapture`. Pre-fix the spawn-side
-# silently skipped the capture wiring and returned the handle anyway —
-# the actor would then run with an uninitialised state pointer (check
-# OK, run rc=1, no diagnostic). A follow-on slice will land the env-pack
-# / env-unpack substrate; until then captures must fail closed at check.
-if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_self_recursion.hew" >"${reject_output}" 2>&1; then
-  echo "expected lambda-self-recursion fixture to fail (capture not yet wired)" >&2
-  exit 1
-fi
-grep -q 'CannotMaterializeClosureCapture' "${reject_output}"
+# Accept + run: lambda-actor closure captures through the heap-boxed env
+# record. BitCopy captures (tell + ask shapes) read the env field back on
+# every dispatch; the recursive self-reference is a WEAK capture that is
+# back-filled with the downgraded handle after construction and
+# dispatches through hew_lambda_actor_weak_send (§5.9 ratification 2 —
+# the body never keeps its own actor alive).
+run_accept_expect_stdout "lambda_capture_tell"
+run_accept_expect_stdout "lambda_capture_ask"
+run_accept_expect_stdout "lambda_self_recursion"
+
+# Accept + run: heap-owning `string` capture. The env owns an
+# independent hew_string_clone (made at box time); the caller's binding
+# stays usable after the spawn; two dispatches read the same env field;
+# the synthesized state dropper frees the clone exactly once at actor
+# shutdown. Validated under MallocScribble/PreScribble/GuardEdges.
+run_accept_expect_stdout "lambda_capture_heap"
+
+# Reject: capture env field classes are explicit — an owned aggregate
+# capture (Vec, HashMap, record, owned handle) has no cross-boundary
+# ownership protocol yet and must fail closed rather than shallow-copy
+# heap pointers into the actor's env.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/lambda_capture_owned_aggregate.hew" \
+  "CannotMaterializeClosureCapture" \
+  "lambda_capture_owned_aggregate"
+
+# Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
+# receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The
+# remote wire carries one message value; a multi-arg handler's local
+# wire is the packed-args record. A first-param match between the two is
+# a wire-width mismatch (short bytes into a full-record unpack on the
+# receiving node), so both seams — MIR's remote ask matcher and
+# codegen's hew_remote_pid_tell intercept — refuse at compile time. The
+# cross-node payload serialization lane lands the positive path.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_unsupported.hew" \
+  "E_REMOTE_PAYLOAD_UNSUPPORTED" \
+  "actor_multi_arg_remote_unsupported"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_tell_unsupported.hew" \
+  "E_REMOTE_PAYLOAD_UNSUPPORTED" \
+  "actor_multi_arg_remote_tell_unsupported"
 
 # Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then

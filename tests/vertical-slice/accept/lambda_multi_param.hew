@@ -1,0 +1,26 @@
+// Lambda-actor multi-param dispatch through the packed-args
+// anonymous-record wire — the SAME payload mechanism declared-actor
+// multi-arg sends use. `actor |a: i64, b: i64| -> i64` produces
+// `Duplex<(i64, i64), i64>`; the call surface is the N-arg form
+// `add(3, 4)` and returns `Result<i64, AskError>`. The mixed-type ask
+// covers a heap-owning (string) field packed next to a BitCopy field;
+// the tell shape covers the fire-and-forget path of the same wire.
+fn main() {
+    let add = actor |a: i64, b: i64| -> i64 { a + b };
+    let sum = add(3, 4);
+    match sum {
+        Ok(v) => println(f"add={v}"),
+        Err(_) => println("add failed"),
+    }
+
+    let tag = actor |prefix: string, n: i64| -> string { f"{prefix}:{n * 2}" };
+    let label = tag("answer", 21);
+    match label {
+        Ok(s) => println(s),
+        Err(_) => println("tag failed"),
+    }
+
+    let log = actor |level: string, code: i64| { println(f"[{level}] code={code}"); };
+    log("warn", 7);
+    sleep_ms(200);
+}

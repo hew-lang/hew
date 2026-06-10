@@ -120,6 +120,9 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
             "E_NOT_YET_IMPLEMENTED"
         }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => {
+            "E_REMOTE_PAYLOAD_UNSUPPORTED"
+        }
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -451,6 +454,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. } => {
             "CannotMaterializeClosureCapture"
         }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => "RemotePayloadUnsupported",
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
@@ -521,6 +525,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
+        | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
@@ -584,6 +589,10 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { name, .. } => {
             format!("could not materialize closure capture `{name}` in MIR")
         }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { actor, handler, .. } => format!(
+            "remote dispatch to multi-parameter receive fn `{handler}` on actor `{actor}` \
+             is not supported: the cross-node codec carries single-value payloads only"
+        ),
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
             format!("drop plan for MIR block {block} could not be determined: {reason}")
         }
@@ -707,6 +716,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
+        | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. } => {

@@ -1136,23 +1136,57 @@ impl Checker {
             } if type_args.len() == 2 => {
                 let msg_ty = type_args[0].clone();
                 let reply_ty = type_args[1].clone();
-                // Arity: exactly one call argument (the message).
-                self.check_arity(args, 1, "lambda actor handle", span);
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let actual = self.check_against(expr, sp, &msg_ty);
-                    // Enforce Send on the call-site argument (E_DUPLEX_NON_SEND).
-                    if !matches!(actual, Ty::Error | Ty::Var(_))
-                        && !self.registry.implements_marker(&actual, MarkerTrait::Send)
-                    {
-                        self.report_error(
-                            TypeErrorKind::InvalidSend,
-                            sp,
-                            format!(
-                                "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
-                                actual.user_facing()
-                            ),
-                        );
+                // A multi-param lambda actor carries a Tuple message type
+                // (`actor |a: i64, b: string| { .. }` → `Duplex<(i64, string), R>`).
+                // Its call surface is the N-arg form `handle(a, b)`: each call
+                // argument checks against its tuple component and each crosses
+                // the actor boundary independently (per-arg Send enforcement).
+                // Every other shape — including a single literal-tuple argument
+                // for a single-tuple-param lambda — stays on the one-message
+                // path below.
+                let multi_component_tys: Option<Vec<Ty>> = match &msg_ty {
+                    Ty::Tuple(parts) if parts.len() > 1 && parts.len() == args.len() => {
+                        Some(parts.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(parts) = multi_component_tys {
+                    for (arg, part) in args.iter().zip(parts.iter()) {
+                        let (expr, sp) = arg.expr();
+                        let actual = self.check_against(expr, sp, part);
+                        // Enforce Send per argument (E_DUPLEX_NON_SEND).
+                        if !matches!(actual, Ty::Error | Ty::Var(_))
+                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                sp,
+                                format!(
+                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
+                                    actual.user_facing()
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    // Arity: exactly one call argument (the message).
+                    self.check_arity(args, 1, "lambda actor handle", span);
+                    if let Some(arg) = args.first() {
+                        let (expr, sp) = arg.expr();
+                        let actual = self.check_against(expr, sp, &msg_ty);
+                        // Enforce Send on the call-site argument (E_DUPLEX_NON_SEND).
+                        if !matches!(actual, Ty::Error | Ty::Var(_))
+                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                sp,
+                                format!(
+                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
+                                    actual.user_facing()
+                                ),
+                            );
+                        }
                     }
                 }
                 // Return type depends on reply direction:

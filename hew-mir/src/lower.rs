@@ -5174,6 +5174,12 @@ struct Builder {
     generated_functions: Vec<LoweredFunction>,
     closure_record_layouts: Vec<crate::model::RecordLayout>,
     capture_env_sources: HashMap<BindingId, CaptureEnvSource>,
+    /// Body-side set of capture bindings whose env field holds a WEAK
+    /// lambda-actor handle (`CaptureKind::Weak` — the forward-bound self
+    /// reference, §5.9 ratification 2). `lower_lambda_actor_call` consults
+    /// this to dispatch the self-send through `hew_lambda_actor_weak_send`
+    /// (the weak handle's ABI) instead of `hew_lambda_actor_send`.
+    weak_lambda_capture_bindings: std::collections::HashSet<BindingId>,
     /// Base locals (the `u32` slot index from `Place::Local`) of pattern
     /// bindings introduced by a non-BitCopy `match` record/tuple destructure
     /// (`lower_match_project`) **whose scrutinee was consume-marked at the
@@ -7287,6 +7293,20 @@ impl Builder {
                         self.binding_locals.get(binding_id),
                         Some(Place::LambdaActorHandle(_))
                     ) {
+                        return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
+                    }
+                    // Body-side captured-handle dispatch: inside a lambda-actor
+                    // body, the forward-bound self binding (and any captured
+                    // Duplex handle) resolves through `capture_env_sources`,
+                    // not `binding_locals`. The callee's Duplex type plus the
+                    // env-source entry is the routing signal — the loaded env
+                    // field is the handle value.
+                    if self.capture_env_sources.contains_key(binding_id)
+                        && matches!(
+                            &callee.ty,
+                            ResolvedTy::Named { name, .. } if name == "Duplex"
+                        )
+                    {
                         return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
                     }
                 }
@@ -15775,18 +15795,90 @@ impl Builder {
         match args {
             [] => Some(self.alloc_local(ResolvedTy::Unit)),
             [arg] => self.lower_value(arg),
-            _ => {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: "actor receive call with more than one argument".to_string(),
-                        site,
-                    },
-                    note: "slice-4 actor payload packing supports unit or one scalar argument"
-                        .to_string(),
-                });
-                None
-            }
+            _ => self.lower_packed_args_payload(args, site),
         }
+    }
+
+    /// Pack a multi-argument actor payload into a synthetic anonymous-record
+    /// Place — the single shared payload mechanism for every multi-arg actor
+    /// send shape (tell, ask, select arm, join branch, and the lambda-actor
+    /// multi-param message).
+    ///
+    /// Wire contract: the packed record is a stack local in the caller's
+    /// frame, filled field-by-field via `RecordInit` (struct GEP + store,
+    /// each field written at exactly `sizeof(field_ty)`). Codegen derives
+    /// `(ptr, sizeof(packed_record))` from the Place through the existing
+    /// `actor_payload_ptr_size` path and the mailbox deep-copies that many
+    /// bytes — the same bounded-copy invariant the single-arg wire carries.
+    /// The receive side (`emit_actor_dispatch_trampoline`) reconstructs the
+    /// identical non-packed LLVM struct from the handler's `param_tys` and
+    /// unpacks each param at its natural field offset, so both ends agree on
+    /// the layout by construction (same field types, same order, same
+    /// `packed = false` struct rules).
+    ///
+    /// Ownership: the checker (`enforce_actor_method_send_args`) marks every
+    /// arg moved at the boundary, so a heap-owning field's caller binding is
+    /// dead after the send; the field store into the packed record IS the
+    /// move. The packed temp itself is a non-binding local — no scope-exit
+    /// drop is scheduled for it, so the bytes (including any heap pointers)
+    /// have exactly one consumer: the mailbox node the runtime deep-copies
+    /// them into.
+    ///
+    /// The minted type name is module-unique (`owner` symbol + per-function
+    /// monotonic id), so two handlers with identical field types can never
+    /// collide in `record_layouts` / the codegen struct map.
+    fn lower_packed_args_payload(
+        &mut self,
+        args: &[hew_hir::HirExpr],
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let mut field_places: Vec<Place> = Vec::with_capacity(args.len());
+        let mut field_tys: Vec<ResolvedTy> = Vec::with_capacity(args.len());
+        for arg in args {
+            let place = self.lower_value(arg)?;
+            field_places.push(place);
+            field_tys.push(self.subst_ty(&arg.ty));
+        }
+
+        let packed_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("packed-args id overflow — closure id counter exhausted");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let packed_name = format!("__hew_packed_args_{owner}_{packed_id}");
+        let packed_ty = ResolvedTy::Named {
+            name: packed_name.clone(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        self.closure_record_layouts
+            .push(crate::model::RecordLayout {
+                name: packed_name,
+                field_tys,
+            });
+
+        let fields: Vec<(FieldOffset, Place)> = field_places
+            .into_iter()
+            .enumerate()
+            .map(|(idx, place)| {
+                (
+                    FieldOffset(
+                        u32::try_from(idx)
+                            .expect("packed-args field count exceeds u32::MAX — impossible in Hew"),
+                    ),
+                    place,
+                )
+            })
+            .collect();
+        let dest = self.alloc_local(packed_ty.clone());
+        self.instructions.push(Instr::RecordInit {
+            ty: packed_ty,
+            fields,
+            dest,
+        });
+        Some(dest)
     }
 
     fn actor_method_info(
@@ -15871,16 +15963,19 @@ impl Builder {
         // checker's `actor_send_aliasing` map.  Only an explicit `Alias`
         // classification promotes the mode; every `Copy(reason)` variant and
         // every absent entry defaults to `Copy` (fail-closed).
-        let alias_mode = if args.is_empty() {
-            // Zero-arg send (unsupported shape): fail-closed Copy.
-            crate::model::SendAliasMode::Copy
-        } else {
+        let alias_mode = if args.len() == 1 {
             let key = hew_types::SpanKey::from(&args[0].span);
             match self.actor_send_aliasing.get(&key).copied() {
                 Some(hew_types::ActorSendAliasing::Alias) => crate::model::SendAliasMode::Alias,
                 // All Copy(reason) variants and missing entries → Copy (fail-closed).
                 _ => crate::model::SendAliasMode::Copy,
             }
+        } else {
+            // Zero-arg send and the multi-arg packed-record payload: the
+            // payload Place is unit / a fresh packed temp, never the first
+            // arg's binding, so the per-arg alias classification does not
+            // transfer — fail-closed Copy.
+            crate::model::SendAliasMode::Copy
         };
         self.finish_current_block(Terminator::Send {
             actor,
@@ -16605,13 +16700,48 @@ impl Builder {
             });
             return None;
         };
+        // The remote wire carries exactly ONE message value, so only
+        // single-parameter handlers are remote-dispatchable. A multi-arg
+        // handler whose first param matches the sent message must NOT be
+        // selected: the local wire for that handler is the packed-args
+        // anonymous record, and a single-value payload delivered to a
+        // body that unpacks the full record reads out of bounds on the
+        // receiving node. Fail closed with a distinct diagnostic
+        // (`serializer-fail-closed`); the cross-node payload
+        // serialization lane lands the positive path.
         let Some(handler) = layout.handlers.iter().find(|handler| {
-            handler
-                .param_tys
-                .first()
-                .is_some_and(|param| param == msg_ty)
+            handler.param_tys.len() == 1
+                && handler
+                    .param_tys
+                    .first()
+                    .is_some_and(|param| param == msg_ty)
                 && handler.return_ty == *reply_ty
         }) else {
+            if let Some(multi) = layout.handlers.iter().find(|handler| {
+                handler.param_tys.len() > 1
+                    && handler
+                        .param_tys
+                        .first()
+                        .is_some_and(|param| param == msg_ty)
+                    && handler.return_ty == *reply_ty
+            }) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::RemotePayloadUnsupported {
+                        actor: actor_name.to_string(),
+                        handler: multi.name.clone(),
+                        site,
+                    },
+                    note: format!(
+                        "receive fn `{}` takes {} parameters; a remote ask carries one \
+                         message value and the cross-node codec is not seeded for \
+                         packed multi-arg payloads. Declare a single-parameter handler \
+                         (e.g. wrapping the fields in a record) for remote dispatch.",
+                        multi.name,
+                        multi.param_tys.len()
+                    ),
+                });
+                return None;
+            }
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("remote actor ask handler lookup for `{actor_name}`"),
@@ -17539,16 +17669,15 @@ impl Builder {
         // returned handle into the enclosing function's
         // `LambdaActorHandle` slot.
         //
-        // MVP scope:
-        //   - No captures: if `captures` is non-empty, the body diagnostics
-        //     above already record a `CannotMaterializeClosureCapture`; we
-        //     proceed with a null-state body so the rest of the function
-        //     still produces a coherent module. The state-drop is a shared
-        //     module-local no-op symbol — see codegen's
-        //     `intern_lambda_state_drop_noop`.
+        // Scope:
+        //   - Captures: materialised as a heap-boxed env record passed as
+        //     the runtime state pointer (see the capture-env synthesis
+        //     below). A capture-free lambda passes null state and the
+        //     shared no-op state-drop stub.
         //   - Single user param (0 or 1): the codegen prologue copies
-        //     `msg_len` bytes from `msg_ptr` into the param alloca. Multi-arg
-        //     lambdas surface an `UnsupportedNode` diagnostic.
+        //     `sizeof(user_ty)` bytes from `msg_ptr` into the param alloca.
+        //     Multi-param bodies unpack each param at its packed-record
+        //     field offset (see the LambdaActorBody prologue in codegen).
         //   - Tell shape (`reply_ty == Unit`): codegen returns i32 0
         //     unconditionally.
         //   - Ask shape: codegen serialises the body's ReturnSlot value into a
@@ -17561,56 +17690,11 @@ impl Builder {
         // `place_aware_drop_fn` → `hew_lambda_actor_release`. The state-drop
         // no-op stub is invoked exactly once by the runtime at actor
         // shutdown, releasing nothing for the no-capture MVP.
-        if params.len() > 1 {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "lambda actor with >1 parameter".to_string(),
-                    site: expr.site,
-                },
-                note: "the M2 lambda-actor lowering supports zero- or single-param \
-                       bodies only; multi-param marshalling is a follow-on slice"
-                    .to_string(),
-            });
-            return handle;
-        }
-
-        // Captures (closure-environment carried into the body) are not yet
-        // wired through to the runtime: `hew_lambda_actor_new` accepts a
-        // captured-env pointer, but the M2 single-vertebra lowering does
-        // not materialise the env struct, pass it through to the body
-        // fn, or unpack it on the body side. Letting a capturing spawn
-        // reach codegen would skip `Terminator::MakeLambdaActor` and
-        // leave the handle uninitialised — a check-OK / run-fail
-        // (sendr/ask on uninit memory, rc=1, no diagnostic). Fail closed
-        // at MIR construction instead. One diagnostic per capture so the
-        // user sees the full list of bindings that block the spawn.
-        // The closure-capture wiring lands in a follow-on slice; until
-        // then any `actor |..| { .. cap .. }` spawn rejects at `hew check`
-        // with a structured `CannotMaterializeClosureCapture` per
-        // CLAUDE.md §1 (no silent miscompile).
-        if !captures.is_empty() {
-            for capture in captures {
-                self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
-                        binding: capture.binding,
-                        name: capture.name.clone(),
-                        site: expr.site,
-                    },
-                    note: format!(
-                        "lambda-actor closure capture `{}` is not yet wired through \
-                         the spawn-side runtime substrate. The body fn synthesised \
-                         by codegen has no access to captured outer bindings, so \
-                         the actor would run with an uninitialised state pointer. \
-                         A follow-on slice lands the env-pack on the spawn side \
-                         and env-unpack on the body side; until then, lambda actor \
-                         literals may not reference outer bindings (including a \
-                         forward-bound self-reference for recursion).",
-                        capture.name
-                    ),
-                });
-            }
-            return handle;
-        }
+        // Multi-param bodies ride the packed-args anonymous-record wire: the
+        // call site (`lower_lambda_actor_call`) packs the N args into one
+        // record and the body prologue unpacks each param at its natural
+        // field offset from `msg_ptr` (the codegen LambdaActorBody prologue
+        // rebuilds the identical struct from the user-param local types).
 
         let lambda_id = self.next_closure_id;
         self.next_closure_id = self
@@ -17619,7 +17703,146 @@ impl Builder {
             .expect("lambda id overflow — closure id counter exhausted");
         let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
         let body_name = format!("__hew_lambda_body_{owner}_{lambda_id}");
-        let state_drop_name = "__hew_lambda_state_drop_noop".to_string();
+
+        // ── Capture-env synthesis ──
+        //
+        // Captures materialise as a synthetic env record in the enclosing
+        // frame: one field per capture, in capture order. The supported
+        // field classes are explicit and everything else fails closed:
+        //
+        //   - `Weak` self-handle (the forward-bound let-binding for
+        //     recursion, §5.9 ratification 2): the field is OMITTED from
+        //     the `RecordInit` — the handle does not exist until
+        //     `hew_lambda_actor_new` returns. Codegen nulls the field at
+        //     box time and back-fills it with the DOWNGRADED weak handle
+        //     after construction; the env drop releases it via
+        //     `hew_lambda_actor_weak_drop`. Holding a weak (not strong)
+        //     self reference preserves stop-on-last-external-handle-drop.
+        //   - Strong BitCopy scalar: the field store copies the value;
+        //     the caller's binding stays live and untouched.
+        //   - Strong `string`: the field store copies the HANDLE bytes
+        //     (an alias); codegen replaces the heap-env field with an
+        //     independent `hew_string_clone` at box time, so the env owns
+        //     its copy and the caller's binding remains the owner of the
+        //     original. The env drop releases the clone via
+        //     `hew_string_drop` exactly once at actor shutdown.
+        //   - Anything else (Vec, HashMap, records, owned handles):
+        //     `CannotMaterializeClosureCapture` — no silent shallow copy
+        //     of an owned aggregate across the actor boundary.
+        //
+        // The env record outlives the spawning frame: codegen heap-boxes
+        // it (`malloc(sizeof(env))` + `memcpy`) and passes the heap
+        // pointer as `hew_lambda_actor_new`'s `state` arg. The body reads
+        // captures back through the state pointer (`ClosureEnvFieldLoad`
+        // on Local(0)); the synthesized `state_drop_fn` is the single
+        // teardown owner (field drops, then `free`), called exactly once
+        // by the runtime after the dispatch loop stops.
+        let mut env_place: Option<Place> = None;
+        let mut env_ty: Option<ResolvedTy> = None;
+        let mut env_field_drops: Vec<crate::model::LambdaEnvFieldDrop> = Vec::new();
+        let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
+        let mut weak_capture_bindings: std::collections::HashSet<hew_hir::BindingId> =
+            std::collections::HashSet::new();
+        if !captures.is_empty() {
+            let mut field_tys: Vec<ResolvedTy> = Vec::with_capacity(captures.len());
+            let mut init_fields: Vec<(FieldOffset, Place)> = Vec::new();
+            for (idx, capture) in captures.iter().enumerate() {
+                let offset =
+                    FieldOffset(u32::try_from(idx).expect("lambda capture count exceeds u32::MAX"));
+                // `HirLambdaCapture` carries no type; the captured binding's
+                // MIR slot type is the authority (for the weak self-capture
+                // the slot is the handle local, typed `Duplex<Msg, Reply>`).
+                let Some(capture_ty) = self
+                    .binding_locals
+                    .get(&capture.binding)
+                    .and_then(|place| base_local(*place))
+                    .and_then(|local| self.locals.get(local as usize))
+                    .cloned()
+                else {
+                    // Already diagnosed by the backend-slot loop above.
+                    return handle;
+                };
+                let drop_class = match (&capture.kind, &capture_ty) {
+                    (hew_hir::HirCaptureKind::Weak, _) => {
+                        weak_capture_bindings.insert(capture.binding);
+                        crate::model::LambdaEnvFieldDrop::WeakSelfHandle
+                    }
+                    (hew_hir::HirCaptureKind::Strong, ResolvedTy::String) => {
+                        crate::model::LambdaEnvFieldDrop::String
+                    }
+                    (
+                        hew_hir::HirCaptureKind::Strong,
+                        ResolvedTy::I64
+                        | ResolvedTy::I32
+                        | ResolvedTy::I16
+                        | ResolvedTy::I8
+                        | ResolvedTy::U64
+                        | ResolvedTy::U32
+                        | ResolvedTy::U16
+                        | ResolvedTy::U8
+                        | ResolvedTy::F64
+                        | ResolvedTy::F32
+                        | ResolvedTy::Bool
+                        | ResolvedTy::Char,
+                    ) => crate::model::LambdaEnvFieldDrop::None,
+                    (hew_hir::HirCaptureKind::Strong, other) => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::CannotMaterializeClosureCapture {
+                                binding: capture.binding,
+                                name: capture.name.clone(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "lambda-actor capture `{}` has type `{}`, which the \
+                                 capture env cannot carry yet: only BitCopy scalars, \
+                                 `string`, and the weak self-handle have an ownership \
+                                 protocol across the actor boundary. A shallow byte \
+                                 copy of an owned aggregate would alias its heap and \
+                                 double-free at shutdown — fail closed instead.",
+                                capture.name,
+                                other.user_facing()
+                            ),
+                        });
+                        return handle;
+                    }
+                };
+                if !matches!(drop_class, crate::model::LambdaEnvFieldDrop::WeakSelfHandle) {
+                    let Some(&src) = self.binding_locals.get(&capture.binding) else {
+                        // Already diagnosed by the backend-slot loop above.
+                        return handle;
+                    };
+                    init_fields.push((offset, src));
+                }
+                field_tys.push(capture_ty);
+                env_field_drops.push(drop_class);
+            }
+            let env_name = format!("__hew_lambda_env_{owner}_{lambda_id}");
+            let env_resolved_ty = ResolvedTy::Named {
+                name: env_name.clone(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            };
+            env_capture_field_tys.clone_from(&field_tys);
+            self.closure_record_layouts
+                .push(crate::model::RecordLayout {
+                    name: env_name,
+                    field_tys,
+                });
+            let dest = self.alloc_local(env_resolved_ty.clone());
+            self.instructions.push(Instr::RecordInit {
+                ty: env_resolved_ty.clone(),
+                fields: init_fields,
+                dest,
+            });
+            env_place = Some(dest);
+            env_ty = Some(env_resolved_ty);
+        }
+        let state_drop_name = if env_place.is_some() {
+            format!("__hew_lambda_env_drop_{owner}_{lambda_id}")
+        } else {
+            "__hew_lambda_state_drop_noop".to_string()
+        };
 
         let shape = if matches!(reply_ty, ResolvedTy::Unit) {
             crate::model::LambdaActorShape::Tell
@@ -17675,6 +17898,30 @@ impl Builder {
             };
             body_builder.binding_locals.insert(param.id, slot);
             user_param_local_ids.push(slot_id);
+        }
+
+        // Register each capture as a body-side env-field source: the body's
+        // `BindingRef`s to a captured binding lower to `ClosureEnvFieldLoad`
+        // through Local(0) — the runtime state pointer, which IS the boxed
+        // env pointer when captures are present. Mirrors the closure-shim
+        // env discipline at `lower_closure_shim`. Loads are read-only views
+        // into the env; only the synthesized `state_drop_fn` frees env
+        // fields (`ffi-ownership-contracts`).
+        if let Some(env_resolved_ty) = &env_ty {
+            for (idx, capture) in captures.iter().enumerate() {
+                body_builder.capture_env_sources.insert(
+                    capture.binding,
+                    CaptureEnvSource {
+                        env: Place::Local(0),
+                        env_ty: env_resolved_ty.clone(),
+                        field_offset: FieldOffset(
+                            u32::try_from(idx).expect("lambda capture count exceeds u32::MAX"),
+                        ),
+                        ty: env_capture_field_tys[idx].clone(),
+                    },
+                );
+            }
+            body_builder.weak_lambda_capture_bindings = weak_capture_bindings;
         }
 
         // Lower the lambda body. The body is a single HirExpr (an arrow
@@ -17800,9 +18047,11 @@ impl Builder {
         self.generated_functions.push(body_lowered);
 
         // Emit `Terminator::MakeLambdaActor` so codegen wires
-        // `hew_lambda_actor_new(64, shape, &body_fn, null, &state_drop_fn)`
+        // `hew_lambda_actor_new(64, shape, &body_fn, state, &state_drop_fn)`
         // and stores the resulting `*mut HewLambdaActorHandle` into
-        // `handle`. The 64-slot default mailbox is a substrate constant
+        // `handle`. `state` is null for a capture-free lambda; with
+        // captures it is the heap-boxed env codegen builds from `env`.
+        // The 64-slot default mailbox is a substrate constant
         // (mirrors the cooperate-site default in `hew-runtime`); a future
         // surface knob (`actor capacity 128 |..| { ... }`) can override
         // this without touching codegen.
@@ -17814,6 +18063,8 @@ impl Builder {
             shape: shape_disc,
             mailbox_capacity: 64,
             next,
+            env: env_place,
+            env_field_drops,
         });
         self.start_block(next);
 
@@ -17835,15 +18086,21 @@ impl Builder {
     /// otherwise → ask (`hew_lambda_actor_ask`). Mirrors the runtime
     /// `LambdaShape::{Tell,Ask}` enum (`hew-runtime/src/lambda_actor.rs`).
     ///
-    /// MVP scope: single-argument messages, 8-byte spill ABI (mirrors the
-    /// single-vertebra `hew_duplex_send` shape at `llvm.rs:16843`).
-    /// Multi-arg messages and richer marshalling are follow-on slices —
-    /// the codegen-front-validate path (`hew check`) only needs an LLVM-
-    /// valid module, which the 8-byte spill satisfies. The ask reply
-    /// slot is allocated but not read back into the `Result<R, AskError>`
-    /// dest in this MVP; `hew run` end-to-end of an ask round-trip needs
-    /// the reply-decode follow-on. LESSONS: substrate-over-surface,
-    /// boundary-fail-closed.
+    /// Scope: a single argument rides the single-vertebra wire (8-byte
+    /// zero-padded scalar spill, or the aggregate `(ptr, sizeof)` path
+    /// codegen selects for struct-typed messages — mirrors the
+    /// `hew_duplex_send` shape); two or more arguments pack into the
+    /// same anonymous-record payload declared-actor multi-arg sends use
+    /// (`lower_packed_args_payload`). Body-side self-sends through the
+    /// captured weak handle dispatch via `hew_lambda_actor_weak_send`;
+    /// a weak self-ask fails closed (no weak-ask runtime entry).
+    /// LESSONS: substrate-over-surface, boundary-fail-closed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "tell/ask × strong/weak-capture dispatch keeps the wire selection and \
+                  its fail-closed arms in one body; splitting would scatter the single \
+                  branch authority over the payload mechanism"
+    )]
     fn lower_lambda_actor_call(
         &mut self,
         callee: &HirExpr,
@@ -17851,8 +18108,29 @@ impl Builder {
         expr_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        // Weak-capture dispatch: a body-side self-send through the captured
+        // weak handle uses the weak ABI (`hew_lambda_actor_weak_send`). The
+        // discriminator is the callee binding's membership in the body
+        // builder's weak-capture set — the env field holds a
+        // `*mut HewLambdaActorWeakHandle`, which the strong-send entry must
+        // never receive (distinct repr; the runtime upgrade lives behind
+        // the weak entry).
+        let via_weak_capture = matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding_id),
+                ..
+            } if self.weak_lambda_capture_bindings.contains(binding_id)
+        );
         let handle = self.lower_value(callee)?;
-        if !matches!(handle, Place::LambdaActorHandle(_)) {
+        let handle_is_env_load = matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding_id),
+                ..
+            } if self.capture_env_sources.contains_key(binding_id)
+        );
+        if !matches!(handle, Place::LambdaActorHandle(_)) && !handle_is_env_load {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
                     reason: format!(
@@ -17860,21 +18138,22 @@ impl Builder {
                     ),
                 },
                 note: "lower_lambda_actor_call expects the callee binding's Place to be \
-                       Place::LambdaActorHandle; the gate in HirExprKind::Call must have \
-                       drifted from the place_aware lookup"
+                       Place::LambdaActorHandle or a captured-env Duplex field load; the \
+                       gate in HirExprKind::Call must have drifted from the place_aware \
+                       lookup"
                     .to_string(),
             });
             return None;
         }
 
-        if args.len() != 1 {
+        if args.is_empty() {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "lambda-actor call with arity != 1".to_string(),
+                    construct: "lambda-actor call with arity 0".to_string(),
                     site,
                 },
-                note: "the M2 lambda-actor lowering supports single-argument tell/ask only; \
-                       multi-arg messages are a follow-on slice"
+                note: "a zero-param lambda actor is dispatched with a unit message \
+                       (`handle(())`); bare zero-argument dispatch is a follow-on slice"
                     .to_string(),
             });
             return None;
@@ -17894,12 +18173,25 @@ impl Builder {
         };
         let is_ask = !matches!(reply_ty, ResolvedTy::Unit);
 
-        let msg_place = self.lower_value(&args[0])?;
+        // Payload mechanism convergence: a single argument rides the existing
+        // single-vertebra wire (8-byte zero-padded spill for scalars, or the
+        // aggregate (ptr, sizeof) path codegen selects for struct-typed
+        // messages); two or more arguments pack into the same anonymous-record
+        // payload declared-actor multi-arg sends use.
+        let msg_place = if args.len() == 1 {
+            self.lower_value(&args[0])?
+        } else {
+            self.lower_packed_args_payload(args, site)?
+        };
 
-        // 8-byte spill (single-vertebra exemplar — mirrors hew_duplex_send).
-        // Multi-byte / variable-length messages need a marshalling spine
-        // (heap-copy or hew_string_clone, then pass real bytes) — out of
-        // scope for the codegen-front-validate path.
+        // Wire byte-length operand for the SCALAR single-vertebra wire only:
+        // the fixed 8-byte zero-padded slot (mirrors hew_duplex_send). MIR has
+        // no sizeof expression, so for an aggregate payload (the packed-args
+        // record, or a struct-typed single message) codegen is the single size
+        // authority: it branches on the message Place's LLVM type and derives
+        // (ptr, sizeof(aggregate)) itself, never consuming this operand on
+        // that path. There is exactly one branch predicate (codegen's
+        // struct-type check), so the two ends cannot drift.
         let len_local = self.alloc_local(ResolvedTy::I64);
         self.instructions.push(Instr::ConstI64 {
             dest: len_local,
@@ -17913,6 +18205,24 @@ impl Builder {
         // run` of a real result-bearing call needs a follow-on slice
         // that materialises Ok(_) from the runtime i32 status).
         let dest = self.alloc_local(expr_ty.clone());
+
+        // A self-ask through the weak capture has no weak-ask runtime entry
+        // (`hew_lambda_actor_weak_send` is tell-only); refuse rather than
+        // upgrade-and-strong-ask behind the caller's back, which would keep
+        // the actor alive past external refcount zero for the ask duration.
+        if via_weak_capture && is_ask {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "recursive self-ask through a lambda-actor weak capture".to_string(),
+                    site,
+                },
+                note: "the weak self-handle supports fire-and-forget self-sends \
+                       (`hew_lambda_actor_weak_send`); an ask-shaped self-dispatch \
+                       needs a weak-ask runtime entry with upgrade semantics"
+                    .to_string(),
+            });
+            return None;
+        }
 
         let call = if is_ask {
             // Out-params: reply_out is `*mut *mut u8` (pointer-sized
@@ -17964,12 +18274,16 @@ impl Builder {
             )
         } else {
             crate::model::RuntimeCall::new(
-                "hew_lambda_actor_send",
+                if via_weak_capture {
+                    "hew_lambda_actor_weak_send"
+                } else {
+                    "hew_lambda_actor_send"
+                },
                 vec![handle, msg_place, len_local],
                 None,
             )
         }
-        .expect("hew_lambda_actor_{send,ask} are on the M2 runtime allowlist");
+        .expect("hew_lambda_actor_{send,weak_send,ask} are on the M2 runtime allowlist");
 
         self.instructions.push(Instr::CallRuntimeAbi(call));
         Some(dest)
@@ -20408,11 +20722,11 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // `dest` is the handle slot the generator is written into (a write);
         // `body_fn` is a static symbol, not a Place — no source operands.
         Terminator::MakeGenerator { .. } => Vec::new(),
-        // Lambda-actor construction: same shape as MakeGenerator — `dest`
-        // is written; `body_fn` and `state_drop_fn` are static symbols.
-        // No source operands. (Future captures will push `state`-shaped
-        // operand Places here; the MVP has no captures.)
-        Terminator::MakeLambdaActor { .. } => Vec::new(),
+        // Lambda-actor construction: `dest` is written; `body_fn` and
+        // `state_drop_fn` are static symbols. The capture env (when
+        // present) is READ — codegen heap-boxes its bytes — so it is a
+        // source operand.
+        Terminator::MakeLambdaActor { env, .. } => env.iter().copied().collect(),
         // `Suspend` has no source operands: the value channel is the explicit
         // coro frame out-pointer (spike-pinned null promise), not a `Place`, so
         // the suspend point reads nothing across the block edge.
@@ -20701,10 +21015,14 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
         // yielded value, so this terminator never escapes `local`.
         | Terminator::SuspendingCallClosure { .. }
-        | Terminator::MakeGenerator { .. }
-        // Lambda-actor construction is the same shape as MakeGenerator —
-        // body/state-drop are static symbols; no operand escape.
-        | Terminator::MakeLambdaActor { .. } => false,
+        | Terminator::MakeGenerator { .. } => false,
+        // Lambda-actor construction: body/state-drop are static symbols,
+        // but the capture env (when present) escapes into the actor's
+        // heap-boxed state — a yielded value reachable through it must
+        // not be body-end dropped.
+        Terminator::MakeLambdaActor { env, .. } => {
+            env.is_some_and(|p| place_refs_local(p, local))
+        }
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
         // operand. Re-yield / send / ask / select transfer the value out.
@@ -24079,12 +24397,12 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
         | Terminator::MakeGenerator { .. }
-        // Lambda-actor construction transfers no operand-Place: body_fn
-        // and state_drop_fn are static symbols; the `dest` handle slot is
-        // the WRITE, not a transferred source. Future captures push state
-        // operands here.
-        | Terminator::MakeLambdaActor { .. }
         | Terminator::Suspend { .. } => Vec::new(),
+        // Lambda-actor construction: body_fn and state_drop_fn are static
+        // symbols and the `dest` handle slot is the WRITE — but the capture
+        // env (when present) transfers into the actor's heap-boxed state,
+        // so it is poisoned like any other moved-into-sink payload.
+        Terminator::MakeLambdaActor { env, .. } => env.iter().copied().collect(),
     }
 }
 
@@ -25395,6 +25713,8 @@ fn enumerate_exits(
                 shape: _,
                 mailbox_capacity: _,
                 next,
+                env: _,
+                env_field_drops: _,
             } => (
                 ExitPath::Call {
                     block: block_id,

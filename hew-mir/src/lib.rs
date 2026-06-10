@@ -51,11 +51,12 @@ pub use model::{
     DecisionFact, Direction, DropKind, DropPlan, DynVtableInstance, ElabBlock, ElabDrop,
     ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl, FieldOffset, FloatWidth,
     FunctionCallConv, GenStateDropTable, GenStateLayout, GenStateLiveLocal, Instr, IntArithOp,
-    IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture, MachineLayout,
-    MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral,
-    RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout,
-    SupervisorLayout, Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture, LambdaEnvFieldDrop,
+    MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, PolymorphicMirFunction, RawMirFunction, RecordLayout,
+    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, Strategy,
+    SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TraitObjectStorage,
+    TrapKind, WitnessOperand,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

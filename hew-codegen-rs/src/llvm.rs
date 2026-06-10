@@ -58,9 +58,9 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, GenStateLayout, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout,
-    Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place,
+    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
+    SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy};
 
@@ -1738,6 +1738,23 @@ fn intern_runtime_decl<'ctx>(
         "hew_lambda_actor_send" => {
             i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
         }
+        // hew_lambda_actor_weak_send(weak: *mut HewLambdaActorWeakHandle,
+        //                            msg: *const u8, len: usize) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:1443`). The weak self-send for
+        // recursive lambda bodies: upgrades just long enough to dispatch,
+        // returns SendError::ActorStopped when the external strong count
+        // is zero (§5.9 ratification 2 — no resurrection).
+        "hew_lambda_actor_weak_send" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
+        }
+        // hew_lambda_actor_downgrade(actor) -> *mut HewLambdaActorWeakHandle
+        // (`hew-runtime/src/lambda_actor.rs:1410`). Used by the
+        // MakeLambdaActor env back-fill for the weak self-capture field.
+        "hew_lambda_actor_downgrade" => ptr_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_lambda_actor_weak_drop(weak) -> i32
+        // (`hew-runtime/src/lambda_actor.rs:1529`). Releases the weak
+        // handle; called by the synthesized env dropper.
+        "hew_lambda_actor_weak_drop" => i32_ty.fn_type(&[ptr_ty.into()], false),
         // hew_lambda_actor_ask(actor: *mut HewLambdaActorHandle,
         //                      msg: *const u8, len: usize,
         //                      reply_out: *mut *mut u8,
@@ -6550,6 +6567,81 @@ fn get_or_declare_libc_free<'ctx>(
     )
 }
 
+/// Synthesize the per-lambda capture-env dropper:
+/// `extern fn(env: *mut c_void)` — drops each owned env field by its
+/// declared class, then frees the heap env allocation. The runtime calls
+/// it exactly once after the dispatch loop stops; it is the SOLE teardown
+/// owner of the boxed env (`lifecycle-symmetry`). Field classes:
+///
+/// * `None` — BitCopy, nothing to release.
+/// * `String` — the env owns an independent `hew_string_clone`; release
+///   via `hew_string_drop`.
+/// * `WeakSelfHandle` — the downgraded self handle from the
+///   MakeLambdaActor back-fill; release via `hew_lambda_actor_weak_drop`
+///   (a weak drop never releases the actor itself). Null-safe at the
+///   runtime, so an env dropped before back-fill (construction failure)
+///   stays sound.
+fn emit_lambda_env_dropper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    name: &str,
+    env_struct: StructType<'ctx>,
+    field_drops: &[LambdaEnvFieldDrop],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    let func = llvm_mod.add_function(name, fn_ty, Some(Linkage::Internal));
+    let entry = ctx.append_basic_block(func, "entry");
+    let builder = ctx.create_builder();
+    builder.position_at_end(entry);
+    let env_ptr = func
+        .get_nth_param(0)
+        .ok_or_else(|| CodegenError::FailClosed(format!("env dropper `{name}` missing env param")))?
+        .into_pointer_value();
+    for (idx, class) in field_drops.iter().enumerate() {
+        let drop_symbol = match class {
+            LambdaEnvFieldDrop::None => continue,
+            LambdaEnvFieldDrop::String => "hew_string_drop",
+            LambdaEnvFieldDrop::WeakSelfHandle => "hew_lambda_actor_weak_drop",
+        };
+        let field_idx = u32::try_from(idx).map_err(|_| {
+            CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
+        })?;
+        let field_ptr = builder
+            .build_struct_gep(
+                env_struct,
+                env_ptr,
+                field_idx,
+                &format!("env_drop_field_{idx}_ptr"),
+            )
+            .llvm_ctx("lambda env dropper gep")?;
+        let field_val = builder
+            .build_load(ptr_ty, field_ptr, &format!("env_drop_field_{idx}"))
+            .llvm_ctx("lambda env dropper field load")?;
+        let drop_fn = llvm_mod.get_function(drop_symbol).unwrap_or_else(|| {
+            // `hew_string_drop(s: *mut c_char)` returns void;
+            // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
+            let sig = if drop_symbol == "hew_lambda_actor_weak_drop" {
+                ctx.i32_type().fn_type(&[ptr_ty.into()], false)
+            } else {
+                ctx.void_type().fn_type(&[ptr_ty.into()], false)
+            };
+            llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External))
+        });
+        builder
+            .build_call(drop_fn, &[field_val.into()], &format!("env_drop_{idx}"))
+            .llvm_ctx("lambda env dropper field drop call")?;
+    }
+    let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
+    builder
+        .build_call(free_fn, &[env_ptr.into()], "env_drop_free")
+        .llvm_ctx("lambda env dropper free call")?;
+    builder
+        .build_return(None)
+        .llvm_ctx("lambda env dropper ret")?;
+    Ok(func)
+}
+
 /// (sym, ret_ty, arg_ty) for the runtime per-field clone helpers. `ret_ty`
 /// is `Some(ptr)` for helpers that return a new heap pointer (caller
 /// stores into `dst.<f>` and rolls back on null), `None` for refcount-bump
@@ -8439,7 +8531,11 @@ fn collect_xnode_codec_drop_seeds(
 
     for actor in actor_layouts {
         for h in &actor.handlers {
-            if let Some(msg_ty) = h.param_tys.first() {
+            // Mirrors `emit_xnode_codec_module_init`: only single-param
+            // handlers get codec thunks, so only their msg types need
+            // drop-seed bodies. Multi-arg handlers are not seeded (their
+            // packed-args wire has no cross-node codec yet).
+            if let [msg_ty] = h.param_tys.as_slice() {
                 try_add(
                     msg_ty,
                     &mut rec_seeds,
@@ -17415,24 +17511,24 @@ fn lower_call_runtime_abi(
         //                       msg: *const u8, len: usize) -> i32
         // (`hew-runtime/src/lambda_actor.rs:918`). Same ABI shape as
         // hew_duplex_send: load the actor handle pointer from
-        // `Place::LambdaActorHandle(N)`'s alloca, spill the message
-        // value into a fresh i64 stack slot and pass its address,
-        // load the constant 8-byte length. The i32 status is discarded
-        // in statement context and materialized into `Result<(),
-        // SendError>` in value context (see the `dest` branch below).
-        // MVP single-vertebra (8-byte spill); multi-byte/variable-length
-        // marshalling is a follow-on slice.
-        "hew_lambda_actor_send" => {
+        // `Place::LambdaActorHandle(N)`'s alloca and materialise the
+        // message as `(ptr, len)` via `lambda_msg_ptr_len` — scalar
+        // messages spill into the 8-byte zero-padded single-vertebra
+        // slot; struct-typed messages (packed-args multi-arg record,
+        // tuple, record) pass `(alloca, sizeof(struct))` directly. The
+        // i32 status is discarded in statement context and materialized
+        // into `Result<(), SendError>` in value context (see the `dest`
+        // branch below).
+        "hew_lambda_actor_send" | "hew_lambda_actor_weak_send" => {
             if args.len() != 3 {
                 return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_lambda_actor_send): expected 3 args \
+                    "Instr::CallRuntimeAbi({symbol}): expected 3 args \
                      (actor_handle, msg, len), got {}",
                     args.len()
                 )));
             }
             let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_send arg0")?;
-            let msg_ptr = spill_msg_arg_as_ptr(fn_ctx, args[1], "lambda_send_msg")?;
-            let len = load_int_arg(fn_ctx, args[2], i64_ty, "lambda_send_len")?;
+            let (msg_ptr, len) = lambda_msg_ptr_len(fn_ctx, args[1], args[2], "lambda_send_msg")?;
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -17483,8 +17579,7 @@ fn lower_call_runtime_abi(
                 )));
             }
             let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_ask arg0")?;
-            let msg_ptr = spill_msg_arg_as_ptr(fn_ctx, args[1], "lambda_ask_msg")?;
-            let len = load_int_arg(fn_ctx, args[2], i64_ty, "lambda_ask_len")?;
+            let (msg_ptr, len) = lambda_msg_ptr_len(fn_ctx, args[1], args[2], "lambda_ask_msg")?;
             let (reply_out_ptr, _) = place_pointer(fn_ctx, args[3])?;
             let (reply_len_out_ptr, _) = place_pointer(fn_ctx, args[4])?;
             // args[5]: codegen-only `AskError` Place::Local — the Err-path
@@ -21406,6 +21501,36 @@ fn spill_msg_arg_as_ptr<'ctx>(
     Ok(slot)
 }
 
+/// Materialise a lambda-actor message payload as `(ptr, byte_len)` for the
+/// `hew_lambda_actor_send` / `hew_lambda_actor_ask` runtime calls.
+///
+/// Scalar messages ride the single-vertebra wire: an 8-byte zero-padded
+/// spill slot (`spill_msg_arg_as_ptr`) plus the MIR-emitted constant length
+/// operand (always 8). Struct-typed messages — the packed-args multi-arg
+/// record, a tuple, or a user record — pass their alloca address directly
+/// with `sizeof(struct)` derived from the LLVM type. Codegen is the single
+/// size authority for aggregates (MIR has no sizeof expression); the MIR
+/// length operand is NOT consumed on the aggregate path, so the scalar
+/// constant can never mis-size an aggregate send. This is the same
+/// `(ptr, sizeof)` shape the declared-actor wire uses
+/// (`actor_payload_ptr_size`), keeping one payload mechanism across both
+/// actor families.
+fn lambda_msg_ptr_len<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    msg: Place,
+    len: Place,
+    label: &str,
+) -> CodegenResult<(PointerValue<'ctx>, IntValue<'ctx>)> {
+    let (_, msg_llvm_ty) = place_pointer(fn_ctx, msg)?;
+    if matches!(msg_llvm_ty, BasicTypeEnum::StructType(_)) {
+        actor_payload_ptr_size(fn_ctx, msg, label)
+    } else {
+        let ptr = spill_msg_arg_as_ptr(fn_ctx, msg, label)?;
+        let len = load_int_arg(fn_ctx, len, fn_ctx.ctx.i64_type(), &format!("{label}_len"))?;
+        Ok((ptr, len))
+    }
+}
+
 /// Materialise a `Place::DuplexHandle(N)` (or `Place::Local(N)` whose
 /// underlying alloca is `ptr`-typed) as a loaded `*mut HewDuplexHandle`.
 /// Used by `hew_duplex_send`'s receiver arg and the `hew_duplex_close`
@@ -22031,11 +22156,33 @@ fn emit_remote_pid_tell_call<'ctx>(
                  receiver T)"
             ))
         })?;
+    // Only single-parameter handlers are remote-dispatchable: the remote
+    // wire carries exactly ONE message value, while a multi-arg handler's
+    // local wire is the packed-args anonymous record. Matching a multi-arg
+    // handler here would send a single-field payload to a body that unpacks
+    // the full record — an out-of-bounds read on the receiving node. Fail
+    // closed with the E_REMOTE_PAYLOAD_UNSUPPORTED marker
+    // (`serializer-fail-closed`); the cross-node payload serialization lane
+    // lands the positive path for packed-args shapes.
     let handler = actor_layout
         .handlers
         .iter()
-        .find(|h| h.param_tys.first().is_some_and(|p| *p == msg_ty))
+        .find(|h| h.param_tys.len() == 1 && h.param_tys.first().is_some_and(|p| *p == msg_ty))
         .ok_or_else(|| {
+            if let Some(multi) = actor_layout.handlers.iter().find(|h| {
+                h.param_tys.len() > 1 && h.param_tys.first().is_some_and(|p| *p == msg_ty)
+            }) {
+                return CodegenError::FailClosed(format!(
+                    "E_REMOTE_PAYLOAD_UNSUPPORTED: remote tell on `{actor_name}` would \
+                     dispatch to multi-parameter receive fn `{}` ({} parameters); a \
+                     remote send carries one message value and the cross-node codec is \
+                     not seeded for packed multi-arg payloads. Declare a \
+                     single-parameter handler (e.g. wrapping the fields in a record) \
+                     for remote dispatch.",
+                    multi.name,
+                    multi.param_tys.len()
+                ));
+            }
             CodegenError::FailClosed(format!(
                 "hew_remote_pid_tell: actor `{actor_name}` has no receive handler whose \
                  first param type matches the msg type `{msg_ty:?}` (handlers: {:?})",
@@ -28761,23 +28908,37 @@ fn lower_terminator<'ctx>(
             shape,
             mailbox_capacity,
             next,
+            env,
+            env_field_drops,
         } => {
             // Lambda-actor construction (`hew-runtime/src/lambda_actor.rs`).
             // The MIR producer (`lower_spawn_lambda_actor`) emitted this
             // terminator with the deterministic `__hew_lambda_body_*` body-fn
-            // name and `__hew_lambda_state_drop_*` drop-fn name; codegen
-            // resolves both functions' addresses and calls
-            // `hew_lambda_actor_new(mailbox_cap, shape, body_fn, null,
-            // state_drop_fn)`, storing the returned `*mut HewLambdaActorHandle`
-            // into `dest`. The constructed handle's drop
-            // (`hew_lambda_actor_release`) is scheduled at scope exit by the
-            // enclosing function's LIFO drop plan via `place_aware_drop_fn`.
+            // name and the state-drop name; codegen resolves the body
+            // function's address and calls `hew_lambda_actor_new(mailbox_cap,
+            // shape, body_fn, state, state_drop_fn)`, storing the returned
+            // `*mut HewLambdaActorHandle` into `dest`. The constructed
+            // handle's drop (`hew_lambda_actor_release`) is scheduled at
+            // scope exit by the enclosing function's LIFO drop plan via
+            // `place_aware_drop_fn`.
             //
-            // The state arg is null today: the MVP rejects closure captures
-            // (state-bearing lambdas land with the closure-capture lane).
-            // When captures arrive, this passes the address of the boxed
-            // capture environment instead, and `state_drop_fn` becomes the
-            // real env-dropper rather than the no-op stub.
+            // The state arg is null for a capture-free lambda. With captures
+            // (`env` is Some) this site owns the WHOLE env heap protocol:
+            //   1. malloc(sizeof(env_struct)) and memcpy the stack record in.
+            //   2. String fields: replace the copied alias with an
+            //      independent `hew_string_clone` — the env owns its copy,
+            //      the caller's binding keeps the original.
+            //   3. Weak self fields: store null (the handle does not exist
+            //      yet) — back-filled with the DOWNGRADED weak handle after
+            //      construction, before any message can be dispatched (the
+            //      first send happens-after this block in program order and
+            //      the mailbox channel publishes the write).
+            //   4. Synthesize the per-env `state_drop_fn`: field drops
+            //      (`hew_string_drop` / `hew_lambda_actor_weak_drop`) then
+            //      `free(env)`. The runtime calls it exactly once after the
+            //      dispatch loop stops (`lifecycle-symmetry`); body-side
+            //      capture reads are non-owning views
+            //      (`ffi-ownership-contracts`).
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeLambdaActor: body fn `{body_fn}` was not declared \
@@ -28785,26 +28946,142 @@ fn lower_terminator<'ctx>(
                      register the `__hew_lambda_body_*` function in the pipeline"
                 ))
             })?;
-            // Resolve or synthesise the state-drop function. For the MVP
-            // (no captures), all lambda actors share a single module-local
-            // no-op stub: `extern "C-unwind" fn(*mut c_void) {}`. The
-            // runtime requires a non-null `state_drop` even when `state`
-            // is null (`hew_lambda_actor_new` validates both), so we
-            // always emit a callable address. Synthesising once at the
-            // first MakeLambdaActor site (rather than during pipeline
-            // module emission) keeps the substrate addition contained to
-            // the lambda-actor seam and avoids declaring a runtime
-            // symbol for what is structurally a codegen detail.
-            //
-            // When closure captures land, the producer will mint per-
-            // spawn drop names that release the boxed environment, and
-            // this fallback shrinks to "look up the named function only".
+            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+            let i64_ty = fn_ctx.ctx.i64_type();
+            let i32_ty = fn_ctx.ctx.i32_type();
+
+            // ── Env boxing (steps 1-3) ──
+            let env_struct_and_heap: Option<(StructType, PointerValue)> = match env {
+                None => None,
+                Some(env_place) => {
+                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, *env_place)?;
+                    let BasicTypeEnum::StructType(env_struct) = env_slot_ty else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "MakeLambdaActor env place {env_place:?} is not struct-typed \
+                             (got {env_slot_ty:?}); the capture env must be the \
+                             RecordInit'd anonymous env record"
+                        )));
+                    };
+                    if env_field_drops.len() != env_struct.get_field_types().len() {
+                        return Err(CodegenError::FailClosed(format!(
+                            "MakeLambdaActor env drop-class count {} does not match env \
+                             field count {} — producer and layout drifted",
+                            env_field_drops.len(),
+                            env_struct.get_field_types().len()
+                        )));
+                    }
+                    let env_size = env_struct.size_of().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "MakeLambdaActor env struct has no static size".into(),
+                        )
+                    })?;
+                    let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+                    let env_size_arg = reconcile_int_width_signed(
+                        fn_ctx,
+                        env_size.into(),
+                        size_ty.into(),
+                        "lambda env malloc size",
+                    )?;
+                    let malloc_fn = get_or_declare_libc_malloc(fn_ctx.ctx, fn_ctx.llvm_mod);
+                    let heap_env = fn_ctx
+                        .builder
+                        .build_call(malloc_fn, &[env_size_arg.into()], "lambda_env_malloc")
+                        .llvm_ctx("lambda env malloc call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| CodegenError::FailClosed("malloc returned void".into()))?
+                        .into_pointer_value();
+                    fn_ctx
+                        .builder
+                        .build_memcpy(heap_env, 1, env_slot, 1, env_size)
+                        .map_err(|e| {
+                            CodegenError::FailClosed(format!(
+                                "MakeLambdaActor env memcpy failed: {e:?}"
+                            ))
+                        })?;
+                    for (idx, drop_class) in env_field_drops.iter().enumerate() {
+                        let field_idx = u32::try_from(idx).map_err(|_| {
+                            CodegenError::FailClosed(
+                                "lambda env field count exceeds u32::MAX".into(),
+                            )
+                        })?;
+                        match drop_class {
+                            LambdaEnvFieldDrop::None => {}
+                            LambdaEnvFieldDrop::String => {
+                                let field_ptr = fn_ctx
+                                    .builder
+                                    .build_struct_gep(
+                                        env_struct,
+                                        heap_env,
+                                        field_idx,
+                                        &format!("lambda_env_str_{idx}_ptr"),
+                                    )
+                                    .llvm_ctx("lambda env string field gep")?;
+                                let alias = fn_ctx
+                                    .builder
+                                    .build_load(
+                                        ptr_ty,
+                                        field_ptr,
+                                        &format!("lambda_env_str_{idx}_alias"),
+                                    )
+                                    .llvm_ctx("lambda env string alias load")?;
+                                let clone_fn = fn_ctx
+                                    .llvm_mod
+                                    .get_function("hew_string_clone")
+                                    .unwrap_or_else(|| {
+                                        fn_ctx.llvm_mod.add_function(
+                                            "hew_string_clone",
+                                            ptr_ty.fn_type(&[ptr_ty.into()], false),
+                                            Some(Linkage::External),
+                                        )
+                                    });
+                                let owned = fn_ctx
+                                    .builder
+                                    .build_call(
+                                        clone_fn,
+                                        &[alias.into()],
+                                        &format!("lambda_env_str_{idx}_clone"),
+                                    )
+                                    .llvm_ctx("lambda env string clone call")?
+                                    .try_as_basic_value()
+                                    .basic()
+                                    .ok_or_else(|| {
+                                        CodegenError::FailClosed(
+                                            "hew_string_clone returned void".into(),
+                                        )
+                                    })?;
+                                fn_ctx
+                                    .builder
+                                    .build_store(field_ptr, owned)
+                                    .llvm_ctx("lambda env string clone store")?;
+                            }
+                            LambdaEnvFieldDrop::WeakSelfHandle => {
+                                let field_ptr = fn_ctx
+                                    .builder
+                                    .build_struct_gep(
+                                        env_struct,
+                                        heap_env,
+                                        field_idx,
+                                        &format!("lambda_env_weak_{idx}_ptr"),
+                                    )
+                                    .llvm_ctx("lambda env weak field gep")?;
+                                fn_ctx
+                                    .builder
+                                    .build_store(field_ptr, ptr_ty.const_null())
+                                    .llvm_ctx("lambda env weak field null store")?;
+                            }
+                        }
+                    }
+                    Some((env_struct, heap_env))
+                }
+            };
+
+            // ── State-drop function (step 4) ──
             let drop_function = match fn_ctx.llvm_mod.get_function(state_drop_fn) {
                 Some(f) => f,
                 None if state_drop_fn == "__hew_lambda_state_drop_noop" => {
                     let void_ty = fn_ctx.ctx.void_type();
-                    let ptr_arg_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-                    let fn_ty = void_ty.fn_type(&[ptr_arg_ty.into()], false);
+                    let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
                     let func = fn_ctx.llvm_mod.add_function(
                         "__hew_lambda_state_drop_noop",
                         fn_ty,
@@ -28818,21 +29095,32 @@ fn lower_terminator<'ctx>(
                         .llvm_ctx("lambda state-drop noop ret void")?;
                     func
                 }
+                None if env_struct_and_heap.is_some() => {
+                    let (env_struct, _) = env_struct_and_heap
+                        .as_ref()
+                        .expect("guarded by match arm condition");
+                    emit_lambda_env_dropper(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        state_drop_fn,
+                        *env_struct,
+                        env_field_drops,
+                    )?
+                }
                 None => {
                     return Err(CodegenError::FailClosed(format!(
                         "Terminator::MakeLambdaActor: state-drop fn `{state_drop_fn}` was \
-                         not declared before its construction site — \
-                         `lower_spawn_lambda_actor` must register the \
-                         `__hew_lambda_state_drop_*` function in the pipeline"
+                         not declared before its construction site and the terminator \
+                         carries no env to synthesize it from — producer and codegen \
+                         drifted on the state-drop contract"
                     )));
                 }
             };
             let body_fn_ptr = body_function.as_global_value().as_pointer_value();
             let drop_fn_ptr = drop_function.as_global_value().as_pointer_value();
-            let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let null_state = ptr_ty.const_null();
-            let i64_ty = fn_ctx.ctx.i64_type();
-            let i32_ty = fn_ctx.ctx.i32_type();
+            let state_arg: PointerValue = env_struct_and_heap
+                .as_ref()
+                .map_or_else(|| ptr_ty.const_null(), |(_, heap)| *heap);
             let mailbox_const = i64_ty.const_int(u64::from(*mailbox_capacity), false);
             // i32 shape — sign-extended widening matches the cabi i32 ABI.
             let shape_const =
@@ -28851,7 +29139,7 @@ fn lower_terminator<'ctx>(
                         mailbox_const.into(),
                         shape_const.into(),
                         body_fn_ptr.into(),
-                        null_state.into(),
+                        state_arg.into(),
                         drop_fn_ptr.into(),
                     ],
                     "hew_lambda_actor_new_call",
@@ -28867,6 +29155,53 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(dest_slot, handle)
                 .llvm_ctx("hew_lambda_actor_new handle store")?;
+
+            // ── Weak self back-fill (step 3, second half) ──
+            if let Some((env_struct, heap_env)) = &env_struct_and_heap {
+                for (idx, drop_class) in env_field_drops.iter().enumerate() {
+                    if !matches!(drop_class, LambdaEnvFieldDrop::WeakSelfHandle) {
+                        continue;
+                    }
+                    let field_idx = u32::try_from(idx).map_err(|_| {
+                        CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
+                    })?;
+                    let downgrade_fn = intern_runtime_decl(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &mut fn_ctx.runtime_decls.borrow_mut(),
+                        "hew_lambda_actor_downgrade",
+                    )?;
+                    let weak = fn_ctx
+                        .builder
+                        .build_call(
+                            downgrade_fn,
+                            &[handle.into()],
+                            &format!("lambda_env_weak_{idx}_downgrade"),
+                        )
+                        .llvm_ctx("hew_lambda_actor_downgrade call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "hew_lambda_actor_downgrade returned void".into(),
+                            )
+                        })?;
+                    let field_ptr = fn_ctx
+                        .builder
+                        .build_struct_gep(
+                            *env_struct,
+                            *heap_env,
+                            field_idx,
+                            &format!("lambda_env_weak_{idx}_fill_ptr"),
+                        )
+                        .llvm_ctx("lambda env weak back-fill gep")?;
+                    fn_ctx
+                        .builder
+                        .build_store(field_ptr, weak)
+                        .llvm_ctx("lambda env weak back-fill store")?;
+                }
+            }
+
             let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                 CodegenError::FailClosed(format!("MakeLambdaActor next bb{next} missing"))
             })?;
@@ -32208,52 +32543,112 @@ fn lower_function<'ctx>(
             )
             .llvm_ctx("lambda body msg ptr load")?
             .into_pointer_value();
-        // For each user param, copy EXACTLY `sizeof(user_ty)` bytes
-        // from the wire's 8-byte slot at offset 0 into the user param's
-        // alloca. The sender (`spill_msg_arg_as_ptr`) zero-pads the
-        // high bytes of the 8-byte slot, so the low `sizeof(user_ty)`
-        // bytes are the source value and the rest is zero padding —
-        // we read back only the meaningful prefix.
-        //
-        // CRITICAL: do NOT hardcode the copy width to 8. The user
-        // param's alloca is sized to its own ABI byte width (1 for
-        // `bool`, 4 for `i32`, 8 for `i64`/`ptr`/`f64`); a memcpy of
-        // 8 bytes into a 1-byte alloca is a stack OVER-WRITE that
-        // corrupts adjacent stack objects (the security review's HIGH
-        // finding). Bounding the copy to the user param's actual size
-        // makes both ends agree on the meaningful payload width
-        // without changing the uniform 8-byte wire format.
-        for user_local_id in &func.lambda_actor_user_param_locals {
-            let (user_slot, user_ty) = *locals.get(user_local_id).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "lambda-actor body `{}` missing user-param Local({user_local_id}) slot",
-                    func.name
-                ))
-            })?;
-            let (user_size, _user_align) = abi_size_align(user_ty, Some(target_data))?;
-            if user_size > 8 {
-                return Err(CodegenError::FailClosed(format!(
-                    "lambda-actor body `{}` user-param Local({user_local_id}) has \
-                     ABI byte size {user_size} > 8 — the single-vertebra wire \
-                     format is 8 bytes; aggregate / multi-vertebra packing is a \
-                     follow-on slice",
-                    func.name
-                )));
-            }
-            builder
-                .build_memcpy(
-                    user_slot,
-                    1,
-                    msg_ptr_val,
-                    1,
-                    ctx.i64_type().const_int(user_size, false),
-                )
-                .map_err(|e| {
+        if func.lambda_actor_user_param_locals.len() > 1 {
+            // Multi-param packed-record wire: the sender packed the N args
+            // into an anonymous non-packed record whose field types are the
+            // user params' types in declaration order. Rebuild the identical
+            // literal struct here and copy each param from its natural field
+            // offset, each at exactly `sizeof(field)` bytes — a base-pointer
+            // copy per param would read every param from offset 0. LLVM
+            // literal and named structs with one body share one layout, so
+            // both wire ends agree by construction.
+            let mut field_tys: Vec<BasicTypeEnum> =
+                Vec::with_capacity(func.lambda_actor_user_param_locals.len());
+            let mut slots: Vec<PointerValue> =
+                Vec::with_capacity(func.lambda_actor_user_param_locals.len());
+            for user_local_id in &func.lambda_actor_user_param_locals {
+                let (user_slot, user_ty) = *locals.get(user_local_id).ok_or_else(|| {
                     CodegenError::FailClosed(format!(
-                        "lambda-actor body `{}` user-param Local({user_local_id}) memcpy failed: {e:?}",
+                        "lambda-actor body `{}` missing user-param Local({user_local_id}) slot",
                         func.name
                     ))
                 })?;
+                field_tys.push(user_ty);
+                slots.push(user_slot);
+            }
+            let packed_st = ctx.struct_type(&field_tys, false);
+            for (idx, (user_slot, field_ty)) in slots.iter().zip(field_tys.iter()).enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(format!(
+                        "lambda-actor body `{}` param count exceeds u32::MAX — \
+                         impossible in Hew",
+                        func.name
+                    ))
+                })?;
+                let field_ptr = builder
+                    .build_struct_gep(
+                        packed_st,
+                        msg_ptr_val,
+                        field_idx,
+                        &format!("lambda_body_msg_field_{idx}_ptr"),
+                    )
+                    .llvm_ctx("lambda body packed msg field gep")?;
+                let (field_size, _align) = abi_size_align(*field_ty, Some(target_data))?;
+                builder
+                    .build_memcpy(
+                        *user_slot,
+                        1,
+                        field_ptr,
+                        1,
+                        ctx.i64_type().const_int(field_size, false),
+                    )
+                    .map_err(|e| {
+                        CodegenError::FailClosed(format!(
+                            "lambda-actor body `{}` packed param {idx} memcpy failed: {e:?}",
+                            func.name
+                        ))
+                    })?;
+            }
+        } else {
+            // Single user param: copy EXACTLY `sizeof(user_ty)` bytes from
+            // the wire at offset 0 into the param's alloca.
+            //
+            // Scalar params ride the 8-byte zero-padded single-vertebra slot
+            // (`spill_msg_arg_as_ptr` zero-pads the high bytes; we read back
+            // only the meaningful prefix). Struct-typed params (a tuple or
+            // record message) arrive as `sizeof(struct)` bytes sent through
+            // the aggregate `(ptr, sizeof)` path — the copy width equals the
+            // bytes the sender transmitted, so the bounded-copy invariant
+            // holds on both wires.
+            //
+            // CRITICAL: do NOT hardcode the copy width to 8. The user
+            // param's alloca is sized to its own ABI byte width (1 for
+            // `bool`, 4 for `i32`, 8 for `i64`/`ptr`/`f64`); a memcpy of
+            // 8 bytes into a 1-byte alloca is a stack OVER-WRITE that
+            // corrupts adjacent stack objects (the security review's HIGH
+            // finding). A scalar wider than 8 bytes cannot ride the
+            // zero-padded slot and stays fail-closed.
+            for user_local_id in &func.lambda_actor_user_param_locals {
+                let (user_slot, user_ty) = *locals.get(user_local_id).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "lambda-actor body `{}` missing user-param Local({user_local_id}) slot",
+                        func.name
+                    ))
+                })?;
+                let (user_size, _user_align) = abi_size_align(user_ty, Some(target_data))?;
+                if user_size > 8 && !matches!(user_ty, BasicTypeEnum::StructType(_)) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "lambda-actor body `{}` user-param Local({user_local_id}) has \
+                         ABI byte size {user_size} > 8 and is not an aggregate — the \
+                         scalar single-vertebra wire format is 8 bytes",
+                        func.name
+                    )));
+                }
+                builder
+                    .build_memcpy(
+                        user_slot,
+                        1,
+                        msg_ptr_val,
+                        1,
+                        ctx.i64_type().const_int(user_size, false),
+                    )
+                    .map_err(|e| {
+                        CodegenError::FailClosed(format!(
+                            "lambda-actor body `{}` user-param Local({user_local_id}) memcpy failed: {e:?}",
+                            func.name
+                        ))
+                    })?;
+            }
         }
     }
 
@@ -33004,12 +33399,53 @@ fn emit_actor_dispatch_trampoline<'ctx>(
         // `resume_park` after the trampoline frame has unwound).
         let mut args: Vec<BasicMetadataValueEnum> = Vec::with_capacity(2 + handler.param_tys.len());
         args.push(ctx_arg.into());
-        for (idx, param_ty) in handler.param_tys.iter().enumerate() {
-            let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
-            let loaded = builder
-                .build_load(llvm_ty, payload_src, &format!("msg_arg_{idx}"))
-                .llvm_ctx("actor dispatch arg load")?;
-            args.push(metadata_value_from_basic(loaded));
+        if handler.param_tys.len() > 1 {
+            // Multi-arg packed-record wire: the sender (`lower_packed_args_
+            // payload`) packed the args into an anonymous non-packed record
+            // whose field types are exactly this handler's `param_tys` in
+            // declaration order. Rebuild the identical literal struct type
+            // here and read each param from its natural field offset — a
+            // single base-pointer load per param (the pre-wire shape) would
+            // read every param from offset 0. LLVM literal and named structs
+            // with the same body share one layout, so both wire ends agree
+            // by construction. Each field load reads exactly
+            // `sizeof(field_ty)` bytes at its offset — the bounded-copy
+            // invariant the single-arg wire carries.
+            let mut packed_field_tys: Vec<BasicTypeEnum> =
+                Vec::with_capacity(handler.param_tys.len());
+            for param_ty in &handler.param_tys {
+                packed_field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
+            }
+            let packed_st = ctx.struct_type(&packed_field_tys, false);
+            for (idx, field_ty) in packed_field_tys.iter().enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(format!(
+                        "actor dispatch `{dispatch_name}`: handler `{}` param count \
+                         exceeds u32::MAX — impossible in Hew",
+                        handler.symbol
+                    ))
+                })?;
+                let field_ptr = builder
+                    .build_struct_gep(
+                        packed_st,
+                        payload_src,
+                        field_idx,
+                        &format!("msg_arg_{idx}_ptr"),
+                    )
+                    .llvm_ctx("actor dispatch packed arg gep")?;
+                let loaded = builder
+                    .build_load(*field_ty, field_ptr, &format!("msg_arg_{idx}"))
+                    .llvm_ctx("actor dispatch packed arg load")?;
+                args.push(metadata_value_from_basic(loaded));
+            }
+        } else {
+            for (idx, param_ty) in handler.param_tys.iter().enumerate() {
+                let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
+                let loaded = builder
+                    .build_load(llvm_ty, payload_src, &format!("msg_arg_{idx}"))
+                    .llvm_ctx("actor dispatch arg load")?;
+                args.push(metadata_value_from_basic(loaded));
+            }
         }
         args.push(borrow_mode.into());
         let call = builder
@@ -35990,7 +36426,17 @@ fn emit_xnode_codec_module_init<'ctx>(
     let mut entries: Vec<(i32, ResolvedTy, ResolvedTy)> = Vec::new();
     for actor in actor_layouts {
         for h in &actor.handlers {
-            let Some(msg_ty) = h.param_tys.first() else {
+            // Single-parameter handlers only. A multi-arg handler's wire
+            // payload is the packed-args anonymous record; seeding a codec
+            // keyed to its FIRST param type would register a serializer
+            // that encodes one field of an N-field payload — a remote peer
+            // dispatching that msg_type would then deliver short bytes to
+            // a body that unpacks the full record (out-of-bounds read).
+            // Leaving the msg_type unseeded keeps the receive direction on
+            // the runtime's no-codec fail-closed drop path. The cross-node
+            // payload serialization lane seeds packed-args shapes with
+            // real structural codecs and lifts this skip.
+            let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
             if entries.iter().any(|(mt, _, _)| *mt == h.msg_type) {

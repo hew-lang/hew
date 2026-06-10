@@ -1,0 +1,21 @@
+// Accept fixture: recursive lambda actor (self-reference via let-binding).
+//
+// The forward-bound let name is a WEAK capture (§5.9 ratification 2):
+// the spawn boxes a capture env whose self field is back-filled with the
+// DOWNGRADED handle after construction, and the body's recursive send
+// dispatches through `hew_lambda_actor_weak_send` — upgraded just long
+// enough to deliver, so the body never keeps its own actor alive past
+// external refcount zero. The countdown self-sends 10 → 1 and prints
+// once at the base case, proving every recursive hop delivered.
+fn main() {
+    let count = actor |n: i64| {
+        if n == 1 {
+            println("liftoff");
+        }
+        if n > 1 {
+            count(n - 1);
+        }
+    };
+    count(10);
+    sleep_ms(400);
+}

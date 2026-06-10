@@ -276,11 +276,37 @@ fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
     }
 }
 
+/// `true` when `input` is the compiler's own `std/builtins.hew` substrate
+/// inside a Hew source checkout. Recognised by canonical path shape plus an
+/// enclosing checkout root (so an unrelated external `std/builtins.hew` is not
+/// matched). The substrate is pre-registered via `include_str!` and never
+/// compiled standalone, so `hew check` skips its HIR/MIR deep gates.
+fn is_embedded_stdlib_builtins(input: &str) -> bool {
+    let Ok(path) = std::path::Path::new(input).canonicalize() else {
+        return false;
+    };
+    if !path.ends_with("std/builtins.hew") {
+        return false;
+    }
+    hew_types::module_registry::find_enclosing_hew_root(&path).is_some()
+}
+
 fn run_check_deep_gates(
     input: &str,
     target: &target::TargetSpec,
     state: &hew_compile::FileFrontendState,
 ) -> Result<(), ()> {
+    // `std/builtins.hew` is the compiler's embedded builtin-surface substrate:
+    // it is consumed by the checker's builtins pre-registration (`include_str!`)
+    // and is never compiled as a standalone program. It carries inherent impls
+    // on builtin pid types (`LocalPid`/`RemotePid`) and `Display` blanket impls
+    // that route through the compiler-magic `to_string` — constructs the
+    // user-facing HIR/MIR deep gates correctly reject in user position. The
+    // type-check above already validated its declarations; the substrate has no
+    // standalone lowering to gate, so stop here.
+    if is_embedded_stdlib_builtins(input) {
+        return Ok(());
+    }
     let Some(tco) = state.typecheck_result.tco.as_ref() else {
         return Ok(());
     };

@@ -10,6 +10,12 @@
 # the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
 [test-groups]
 subprocess-intensive = { max-threads = 8 }
+# process-timing: tests that measure process-group signal delivery timing (SIGKILL
+# propagation to grandchildren, process-group watchdog latency).  Under 16-core
+# concurrent load the OS scheduler takes variable time to deliver signals and
+# reap children; capping at 4 concurrent process-timing tests prevents the
+# scheduler saturation that caused bounded_child_timeout false-failures in S117.
+process-timing = { max-threads = 4 }
 
 [profile.default]
 # Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
@@ -87,5 +93,66 @@ retries = 1
 filter = "test(eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout)"
 retries = 1
 
+[[profile.ci.overrides]]
+# bounded_child_timeout_kills_grandchild_process_group measures SIGKILL delivery
+# to a process group (spawned via BoundedChild::spawn) and polls for grandchild
+# reaping via /proc checks.  The test already uses adaptive polling (up to 5 s
+# per phase) instead of fixed sleeps, but under 16-core concurrent preflight load
+# the OS scheduler can delay signal delivery past the adaptive window.
+#
+# Two-part mitigation:
+#   1. process-timing group (max-threads = 4): limits concurrent process-group
+#      tests so the scheduler has headroom for signal delivery.
+#   2. retries = 1: absorbs any remaining scheduler jitter that slips past the
+#      group cap, using the strict eventual-invariant assertion already in the test.
+#
+# SHIM: retry absorbs OS scheduler jitter under concurrent load.
+# WHEN obsolete: when the de-flake work replaces the adaptive-poll loop with a
+#   kernel-level handshake (e.g. a pipe from the grandchild that the test reads
+#   with a blocking call rather than a 25ms-tick poll), the scheduler jitter risk
+#   is eliminated and this retry can be removed.
+# WHAT the real solution looks like: grandchild writes its PID to a pipe (not a
+#   file); test blocks on pipe read; signal delivery test proceeds only after the
+#   pipe delivers. Tracked: .tmp/deferred-v05-followups.md
+#   "bounded_child de-flake: pipe-based handshake replaces file-poll".
+# Correctness invariant: the retry does not mask real regressions — a genuine
+#   broken killpg() would fail on BOTH attempts because the grandchild would
+#   still be alive after the kill, causing the kill(pid, 0) == 0 assertion to
+#   fail on both the first try and the retry.
+filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
+test-group = "process-timing"
+retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
+
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.smoke]
+# Smoke profile: fast, deterministic in-process tests only.  Designed to give
+# a pass/fail signal in under 5 minutes before committing to a full build.
+# Used by the `ci-preflight-smoke` tier in the dispatcher's fallback lane.
+#
+# What it runs: pure in-process unit and integration tests that do not spawn
+# the full `hew` compiler binary or the sandbox Node runner, do not need
+# pre-built libhew.a or wasm32 runtimes, and do not connect to network services.
+# Key oracle: `fmt_roundtrip_corpus::every_hew_file_roundtrips_through_formatter`
+# in hew-parser — a deterministic corpus scan that surfaced the S115/S119
+# formatter-AST regressions before the heavy tier ran.
+#
+# What it excludes (intentional; the ci profile covers these):
+#   eval_e2e     — spawns `hew` binary, needs pre-built runtimes, slow
+#   test_runner_e2e — same (subprocess-intensive)
+#   parity        — needs Node runner + npm install
+#   hew-wasm      — requires wasmtime
+#
+# Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
+# (test-rust / make test) still runs on smoke pass and provides full coverage.
+# The smoke tier does NOT replace the ci profile — it precedes it.
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity)"
+test-threads = "num-cpus"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.smoke.overrides]]
+# Route any eval_e2e tests that slip past the default-filter into the group cap.
+# This is a safety net; the default-filter above should exclude them entirely.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"

@@ -32,6 +32,7 @@
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
+#   make ci-preflight-smoke        — fast smoke tier: fmt + clippy + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — Rust workspace tests (fast path; excludes test-hew)
@@ -55,7 +56,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-strict wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-runtime-net test-runtime-unit test-stdlib test-hew test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -175,6 +176,28 @@ playground-wasi-check:
 # Usage: make ci-preflight ARGS="--dry-run" or ARGS="--base origin/main"
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
+
+# Fast smoke preflight: Rust fmt + clippy + the workspace's deterministic in-process
+# tests (nextest smoke profile).  Designed to complete in <5 min and surface format,
+# lint, and fast oracle failures before the full heavy tier is invoked.
+#
+# This target is invoked by the dispatcher as the first step of the fallback/heavy
+# lane; the full suite (make test) still runs on smoke pass.  Run it directly for
+# a quick sanity pass on any diff without waiting for E2E compilation.
+#
+# The smoke nextest profile excludes subprocess-intensive tests (eval_e2e,
+# test_runner_e2e, parity) and hew-wasm; see .config/nextest.toml [profile.smoke].
+#
+# Build-graph note: cargo clippy and cargo nextest both compile the hew-cli
+# library, so `make hew` (cargo build -p hew-cli) after them only pays for the
+# final link step (~1–2 s on a warm tree).  Running it here eliminates the
+# redundant compile triggered by make lint → hew-fmt-check later in the fallback
+# lane (hew-fmt-check requires target/debug/hew but nextest does not produce it).
+ci-preflight-smoke:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --tests -- -D warnings
+	cargo nextest run --workspace --profile smoke
+	$(MAKE) hew
 
 # Assert that target/debug/libhew.a is not stale relative to hew-lib and hew-runtime sources.
 # Run after `make stdlib` as a fast gate; exits non-zero if the .a predates any source input.

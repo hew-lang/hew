@@ -403,6 +403,79 @@ def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
     assert "make test-vertical-slice" not in result.stdout, result.stdout
 
 
+def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
+    """Fallback lane runs the smoke tier (make ci-preflight-smoke) before make lint and make test.
+
+    The smoke tier surfaces fmt/clippy/fast-oracle failures in <5 min before
+    the expensive full suite (make lint + make playground-check + make test) is
+    invoked.  Coverage is unchanged: the heavy tier runs on smoke pass.
+    """
+    # An unclassified path routes to the fallback (comprehensive) lane.
+    result = run_dispatcher("some-unclassified-root-file.txt")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert "make ci-preflight-smoke" in result.stdout, (
+        "Expected 'make ci-preflight-smoke' in fallback lane commands.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert "make lint" in result.stdout, (
+        f"Expected 'make lint' in fallback lane commands.\nstdout:\n{result.stdout}"
+    )
+    assert "make test" in result.stdout, (
+        f"Expected 'make test' in fallback lane commands.\nstdout:\n{result.stdout}"
+    )
+    # Smoke tier must appear before make lint in the command list.
+    smoke_pos = result.stdout.index("make ci-preflight-smoke")
+    lint_pos = result.stdout.index("make lint")
+    test_pos = result.stdout.index("make test")
+    assert smoke_pos < lint_pos < test_pos, (
+        f"Expected order: make ci-preflight-smoke < make lint < make test.\n"
+        f"smoke_pos={smoke_pos}, lint_pos={lint_pos}, test_pos={test_pos}\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_ci_parity_script_passes() -> None:
+    """scripts/check-preflight-ci-parity.sh exits 0 on the current fallback lane.
+
+    This is the Stage 6 lock: any future change that drops a CI-required check
+    from the dispatcher fallback lane will cause this test to fail.
+    """
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "check-preflight-ci-parity.sh")],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"CI parity check failed — the fallback lane is missing a CI-required step.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "6/6 checks present" in result.stdout, (
+        f"Expected '6/6 checks present' in parity output.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
+    """Parser + type-checker changes route to the types lane, not fallback.
+
+    test-types runs hew-types + hew-parser + hew-lexer, covering both buckets.
+    This avoids the 9156-test fallback suite for a change that only touches the
+    parser/types dependency closure.
+    """
+    result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: types" in result.stdout, (
+        f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-types" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full suite.
+    assert (
+        "make test\n" not in result.stdout and "  - make test\n" not in result.stdout
+    ), f"Expected narrow types lane, not full fallback.\nstdout:\n{result.stdout}"
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -432,6 +505,9 @@ _TESTS = [
     test_zero_timeout_fails_closed,
     test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
     test_docs_only_change_does_not_include_vertical_slice_oracle,
+    test_fallback_lane_includes_smoke_tier_before_heavy,
+    test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
+    test_ci_parity_script_passes,
 ]
 
 if __name__ == "__main__":

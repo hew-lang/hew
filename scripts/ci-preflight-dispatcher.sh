@@ -468,8 +468,24 @@ elif (( bucket_count == 0 )); then
     LANE="docs"
     LANE_REASON="docs-only change"
 elif (( bucket_count > 1 )); then
-    LANE="fallback"
-    LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
+    # Before falling back unconditionally, check for narrow multi-bucket
+    # combinations where the union of narrow targets provably covers all
+    # changed crates' reverse-dep closure.  Only promote when every bucket
+    # in the set is covered by a known-complete narrow target.
+    #
+    # Conservative invariant: any unrecognised combination falls back.
+    # Every promoted combination must have a dispatcher test case.
+    #
+    #   parser + types:  test-types runs hew-types + hew-parser + hew-lexer,
+    #     covering both buckets.  Dependency closure: types ← parser ← lexer
+    #     (no runtime/codegen downstream in this narrow set).
+    if (( has_parser == 1 && has_types == 1 && bucket_count == 2 )); then
+        LANE="types"
+        LANE_REASON="parser + type-checker changed; test-types covers both (parser + types dep closure)"
+    else
+        LANE="fallback"
+        LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
+    fi
 elif (( has_scripts_config == 1 )); then
     LANE="scripts-config"
     LANE_REASON="build / scripts / workflow configuration changed"
@@ -587,7 +603,17 @@ case "$LANE" in
         add_command "make playground-check"
         ;;
     fallback)
-        # make lint already runs cargo clippy --workspace --tests; no pre-clippy needed.
+        # Smoke tier first: fast fail-early on format, clippy, and deterministic
+        # in-process oracles (including fmt_roundtrip_corpus) before committing
+        # to the heavy build + E2E suite.  The smoke tier completes in <5 min and
+        # catches the most common regression classes (bad formatting, clippy
+        # violations, formatter-AST bugs) without building and running test-codegen.
+        #
+        # On smoke pass, the heavy tier runs in full — no coverage is dropped.
+        # make lint follows smoke because it adds hew-fmt-check (Hew file
+        # formatting), runtime-poison-safe-lint, lint-wasm-todo, and verify-ffi
+        # which the smoke tier does not include.
+        add_command "make ci-preflight-smoke"
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"

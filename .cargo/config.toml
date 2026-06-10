@@ -1,6 +1,32 @@
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
 
+# ── Shared compilation cache (opt-in) ─────────────────────────────────────────
+# sccache provides a content-addressed object cache that is safe to share across
+# concurrent worktrees.  Each worktree keeps its own CARGO_TARGET_DIR (separate
+# Cargo locks, no contention on linking or index files) while sccache deduplicates
+# compilation units across worktrees.
+#
+# To opt in, install sccache and start the server:
+#   cargo install sccache          # or: brew install sccache
+#   sccache --start-server
+#
+# Then set RUSTC_WRAPPER=sccache in your shell or per-session env:
+#   export RUSTC_WRAPPER=sccache
+#
+# WHY opt-in not forced: sccache requires a running server; forcing it via this
+# file would cause every CI agent and cold checkout to fail if the server is absent.
+# WHEN obsolete: if this project adopts a managed remote build cache (e.g. GitHub
+# Actions cache with sccache-action) or Cargo's own shared-cache protocol lands, the
+# per-developer opt-in can be promoted to a project-wide default.
+# WHAT the real solution looks like: `RUSTC_WRAPPER=sccache` in the CI action env
+# (one shared server per CI runner) and in team `~/.profile` for local use.
+#
+# Do NOT set build.target-dir here to a shared path: concurrent worktrees need
+# separate Cargo target directories to avoid Cargo lock contention and artifact
+# poisoning from killed builds.  The sccache layer above the target dir is the
+# correct sharing point.  See LESSONS.md `lsp-first-cargo-confirmation`.
+
 # ── macOS deployment target ────────────────────────────────────────────────────
 # Default MACOSX_DEPLOYMENT_TARGET to 13.0 (Ventura — project minimum; see
 # Makefile and PR #771) so that Rust-compiled objects inside libhew.a carry

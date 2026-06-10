@@ -32879,15 +32879,24 @@ fn lower_function<'ctx>(
         // slot is pointer-sized and the `hew_alloc` prologue below can store
         // the heap pointer without type-mismatch.
         let llvm_ty = {
-            let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
-            if let ResolvedTy::Named { name, .. } = ty {
-                if is_indirect_enum(name, enum_layouts) {
-                    ctx.ptr_type(inkwell::AddressSpace::default()).into()
+            // Never-typed locals are produced for diverging expressions
+            // (e.g. the result slot of `panic(...)`). The diverging path
+            // never returns so no instruction ever reads or writes this
+            // local. Allocate an i8 stand-in so the slot exists without
+            // calling `resolve_ty` which fails on `Never`.
+            if matches!(ty, ResolvedTy::Never) {
+                ctx.i8_type().into()
+            } else {
+                let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
+                if let ResolvedTy::Named { name, .. } = ty {
+                    if is_indirect_enum(name, enum_layouts) {
+                        ctx.ptr_type(inkwell::AddressSpace::default()).into()
+                    } else {
+                        raw_ty
+                    }
                 } else {
                     raw_ty
                 }
-            } else {
-                raw_ty
             }
         };
         let idx_u32 = u32::try_from(idx).map_err(|_| {

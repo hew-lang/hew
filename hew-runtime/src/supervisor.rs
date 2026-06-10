@@ -1010,13 +1010,17 @@ fn spawn_deferred_supervisor_stop(
     }
 
     let child_addr = child_sup as usize;
-    if std::thread::Builder::new()
+    if let Ok(handle) = std::thread::Builder::new()
         .name("deferred-sup-stop".into())
         .spawn(move || {
             stop_deferred_supervisor(DeferredSupervisorStop(child_addr as *mut HewSupervisor));
         })
-        .is_err()
     {
+        // Register the teardown thread so `cleanup_all_actors` joins it
+        // before sweeping the actors this thread still dereferences.
+        crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+        true
+    } else {
         if allow_sync_fallback {
             eprintln!(
                 "hew: warning: failed to spawn deferred supervisor-stop thread, cleaning up synchronously"
@@ -1025,9 +1029,8 @@ fn spawn_deferred_supervisor_stop(
         } else {
             eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
         }
-        return false;
+        false
     }
-    true
 }
 
 fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
@@ -1041,17 +1044,20 @@ fn spawn_owned_deferred_supervisor_stop(sup: *mut HewSupervisor) -> bool {
     }
 
     let sup_addr = sup as usize;
-    if std::thread::Builder::new()
+    if let Ok(handle) = std::thread::Builder::new()
         .name("deferred-sup-stop".into())
         .spawn(move || {
             stop_owned_deferred_supervisor(DeferredSupervisorStop(sup_addr as *mut HewSupervisor));
         })
-        .is_err()
     {
+        // Register the teardown thread so `cleanup_all_actors` joins it
+        // before sweeping the actors this thread still dereferences.
+        crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+        true
+    } else {
         eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
-        return false;
+        false
     }
-    true
 }
 
 fn current_actor_supervisor(current: *mut HewActor) -> *mut HewSupervisor {
@@ -2287,13 +2293,18 @@ mod tests {
         // current actor context within the test thread.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
+            // Probe liveness by (id, ptr): sibling tests in this process spawn
+            // actors concurrently, and a recycled allocation address would make
+            // a pointer-only probe report the freed actor as live again (ABA).
+            let child_id = (*child).id;
+            let self_id = (*self_actor).id;
             (*child)
                 .actor_state
                 .store(HewActorState::Running as i32, Ordering::Release);
 
             let _ctx = TestExecutionContext::install(HewExecutionContext {
                 actor: child,
-                actor_id: (*child).id,
+                actor_id: child_id,
                 ..HewExecutionContext::default()
             });
             let unblock = defer_state_transition(
@@ -2309,14 +2320,14 @@ mod tests {
             unblock.join().unwrap();
 
             assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
-                    child
-                )),
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live_with_id(child_id, child)
+                }),
                 "child actor should be freed asynchronously after deferred supervisor stop"
             );
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live(self_actor)
+                    !actor::is_actor_live_with_id(self_id, self_actor)
                 }),
                 "supervisor self actor should be freed asynchronously after deferred stop"
             );
@@ -2334,6 +2345,11 @@ mod tests {
         // terminate callback by controlling the child actor state directly.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
+            // Probe liveness by (id, ptr) — see
+            // stop_supervisor_from_child_dispatch_is_deferred for the ABA
+            // rationale.
+            let child_id = (*child).id;
+            let self_id = (*self_actor).id;
             let child_ref = &*child;
             child_ref
                 .actor_state
@@ -2343,7 +2359,7 @@ mod tests {
 
             let _ctx = TestExecutionContext::install(HewExecutionContext {
                 actor: child,
-                actor_id: (*child).id,
+                actor_id: child_id,
                 ..HewExecutionContext::default()
             });
             let start = std::time::Instant::now();
@@ -2353,14 +2369,14 @@ mod tests {
             child_ref.terminate_finished.store(true, Ordering::Release);
 
             assert!(
-                wait_for_condition(std::time::Duration::from_secs(2), || !actor::is_actor_live(
-                    child
-                )),
+                wait_for_condition(std::time::Duration::from_secs(2), || {
+                    !actor::is_actor_live_with_id(child_id, child)
+                }),
                 "child should be released after deferred supervisor stop"
             );
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live(self_actor)
+                    !actor::is_actor_live_with_id(self_id, self_actor)
                 }),
                 "supervisor self actor should be released after deferred stop"
             );
@@ -2373,12 +2389,78 @@ mod tests {
     }
 
     #[test]
+    fn drain_deferred_teardown_joins_in_flight_supervisor_stop() {
+        // The deferred-sup-stop thread dereferences the supervisor's child and
+        // self actors for the whole teardown. `cleanup_all_actors` joins the
+        // registered teardown threads before sweeping `LIVE_ACTORS`; this test
+        // exercises that join barrier directly. The teardown is held open
+        // across the drain call by an unfinished child terminate, so a drain
+        // that does not join the deferred-sup-stop thread returns while the
+        // supervisor self actor is still tracked.
+        // SAFETY: this test owns the supervisor tree and gates the teardown
+        // through test-controlled atomics, mirroring the reentrant-terminate
+        // test above.
+        unsafe {
+            let (sup, child, self_actor) = make_supervisor_with_child();
+            let child_id = (*child).id;
+            let self_id = (*self_actor).id;
+            let child_ref = &*child;
+            child_ref
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            child_ref.terminate_called.store(true, Ordering::Release);
+            child_ref.terminate_finished.store(false, Ordering::Release);
+
+            let _ctx = TestExecutionContext::install(HewExecutionContext {
+                actor: child,
+                actor_id: child_id,
+                ..HewExecutionContext::default()
+            });
+            // Deferred path: the current thread owns the supervisor tree.
+            hew_supervisor_stop(sup);
+
+            // Release the gated terminate while the drain below is joining the
+            // teardown thread. The store always happens-before the child's
+            // allocation is freed: the teardown thread blocks on
+            // `terminate_finished` before reclaiming the child.
+            let child_addr = child as usize;
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                // SAFETY: the teardown thread cannot free the child before
+                // observing this store (see comment above).
+                (*(child_addr as *mut HewActor))
+                    .terminate_finished
+                    .store(true, Ordering::Release);
+            });
+
+            crate::lifetime::live_actors::drain_deferred_teardown_threads();
+
+            // The join barrier guarantees the teardown finished — no polling.
+            assert!(
+                !actor::is_actor_live_with_id(child_id, child),
+                "joined teardown must have released the child actor"
+            );
+            assert!(
+                !actor::is_actor_live_with_id(self_id, self_actor),
+                "joined teardown must have released the supervisor self actor"
+            );
+
+            release.join().unwrap();
+        }
+    }
+
+    #[test]
     fn concurrent_second_stop_returns_while_deferred_owner_waits() {
         // SAFETY: this test owns the supervisor tree, injects a synthetic
         // current actor for the owner-thread path, and only mutates actor
         // states through test-controlled atomics.
         unsafe {
             let (sup, child, self_actor) = make_supervisor_with_child();
+            // Probe liveness by (id, ptr) — see
+            // stop_supervisor_from_child_dispatch_is_deferred for the ABA
+            // rationale.
+            let child_id = (*child).id;
+            let self_id = (*self_actor).id;
             let child_sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1);
             assert!(!child_sup.is_null());
             assert_eq!(hew_supervisor_add_child_supervisor(sup, child_sup), 0);
@@ -2443,13 +2525,13 @@ mod tests {
 
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live(child)
+                    !actor::is_actor_live_with_id(child_id, child)
                 }),
                 "child actor should still be released after the deferred winner completes"
             );
             assert!(
                 wait_for_condition(std::time::Duration::from_secs(2), || {
-                    !actor::is_actor_live(self_actor)
+                    !actor::is_actor_live_with_id(self_id, self_actor)
                 }),
                 "supervisor self actor should still be released after the deferred winner completes"
             );

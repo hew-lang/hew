@@ -167,6 +167,11 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).
+///
+/// Pointer-identity only: a freed allocation whose address is reused by a
+/// concurrently spawned actor probes as live again (ABA). Probes that wait
+/// for an actor to *disappear* while other threads may spawn actors must use
+/// [`is_actor_live_with_id`] instead.
 #[cfg_attr(
     not(test),
     allow(
@@ -176,6 +181,21 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
 )]
 pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
     with_live_actor(actor, |_| ()).is_some()
+}
+
+/// Check whether `actor_id` still maps to the expected live actor pointer.
+///
+/// ABA-proof variant of [`is_actor_live`]: actor ids are never reused, so a
+/// recycled allocation address cannot resurrect liveness for a freed actor.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "supervisor and actor tests rely on the liveness probe"
+    )
+)]
+pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> bool {
+    with_live_actor_by_id(actor_id, expected, |_| ()).is_some()
 }
 
 /// Take all currently tracked actors out of the live map.
@@ -189,21 +209,26 @@ pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
     })
 }
 
-// ── DEFERRED_ACTOR_FREE_THREADS ─────────────────────────────────────────────
+// ── DEFERRED_TEARDOWN_THREADS ───────────────────────────────────────────────
 
+/// Background teardown threads (deferred actor frees and deferred supervisor
+/// stops) that hold raw actor/supervisor pointers while they run. They MUST
+/// be joined before any global sweep (`cleanup_all_actors`) frees the actors
+/// they still reference, or the sweep races an in-flight teardown into a
+/// use-after-free / double-free.
 #[cfg(not(target_arch = "wasm32"))]
-static DEFERRED_ACTOR_FREE_THREADS: PoisonSafe<Vec<std::thread::JoinHandle<()>>> =
+static DEFERRED_TEARDOWN_THREADS: PoisonSafe<Vec<std::thread::JoinHandle<()>>> =
     PoisonSafe::new(Vec::new());
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn push_deferred_actor_free_thread(handle: std::thread::JoinHandle<()>) {
-    DEFERRED_ACTOR_FREE_THREADS.access(|threads| threads.push(handle));
+pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>) {
+    DEFERRED_TEARDOWN_THREADS.access(|threads| threads.push(handle));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn drain_deferred_actor_free_threads() {
+pub(crate) fn drain_deferred_teardown_threads() {
     loop {
-        let handles = DEFERRED_ACTOR_FREE_THREADS.access(|threads| {
+        let handles = DEFERRED_TEARDOWN_THREADS.access(|threads| {
             if threads.is_empty() {
                 None
             } else {
@@ -213,7 +238,7 @@ pub(crate) fn drain_deferred_actor_free_threads() {
         let Some(handles) = handles else { return };
         for handle in handles {
             if handle.join().is_err() {
-                eprintln!("hew: warning: deferred actor free thread panicked");
+                eprintln!("hew: warning: deferred teardown thread panicked");
             }
         }
     }

@@ -1091,6 +1091,22 @@ pub(crate) fn is_actor_live(actor: *mut HewActor) -> bool {
     live_actors::is_actor_live(actor)
 }
 
+/// ABA-proof liveness probe: matches both the actor id and the pointer.
+///
+/// See [`live_actors::is_actor_live_with_id`]; required for any test that
+/// waits for an actor to be released while sibling threads may spawn actors
+/// (a recycled allocation address would otherwise probe as live again).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "supervisor and actor tests rely on the liveness probe"
+    )
+)]
+pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> bool {
+    live_actors::is_actor_live_with_id(actor_id, expected)
+}
+
 /// Stable runtime actor identifier.
 pub type ActorId = u64;
 
@@ -1152,7 +1168,7 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
         crate::set_last_error("hew_actor_free: failed to spawn deferred free thread");
         return -1;
     };
-    live_actors::push_deferred_actor_free_thread(handle);
+    live_actors::push_deferred_teardown_thread(handle);
     0
 }
 
@@ -1252,8 +1268,13 @@ unsafe fn finalize_quiescent_actor_cleanup_with_options(
 /// Must only be called after all worker threads have stopped (native)
 /// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
+    // Join every in-flight background teardown (deferred actor frees AND
+    // deferred supervisor stops) before sweeping the registry. A deferred
+    // supervisor-stop thread dereferences its supervisor's self actor and
+    // child actors while it waits for quiescence; freeing those allocations
+    // out from under it would be a use-after-free followed by a double-free.
     #[cfg(not(target_arch = "wasm32"))]
-    live_actors::drain_deferred_actor_free_threads();
+    live_actors::drain_deferred_teardown_threads();
 
     let actors = live_actors::drain_all_for_cleanup();
 

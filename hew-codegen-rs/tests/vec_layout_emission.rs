@@ -140,6 +140,7 @@ fn vec_layout_new_constructs_with_descriptor() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "Vec::new".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("Vec::new"),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,
@@ -168,6 +169,7 @@ fn vec_bitcopy_tuple_new_constructs_with_plain_descriptor() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "Vec::new".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("Vec::new"),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,
@@ -201,6 +203,7 @@ fn vec_non_bitcopy_tuple_new_constructor_routes_to_owned_abi() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "Vec::new".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("Vec::new"),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,
@@ -256,6 +259,7 @@ fn vec_payload_free_enum_new_routes_bitcopy_not_owned() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "Vec::new".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("Vec::new"),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,
@@ -322,6 +326,7 @@ fn vec_scalar_payload_enum_new_routes_bitcopy_not_owned() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "Vec::new".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol("Vec::new"),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,
@@ -371,6 +376,9 @@ fn vec_layout_push_synthesizes_descriptor_and_data_pointer() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_push_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_push_layout",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -403,6 +411,9 @@ fn vec_layout_get_loads_returned_element_pointer_into_dest() {
         }],
         terminator: Terminator::Call {
             callee: "hew_vec_get_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_get_layout",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -440,6 +451,9 @@ fn vec_layout_set_synthesizes_descriptor_index_and_data_pointer() {
         }],
         terminator: Terminator::Call {
             callee: "hew_vec_set_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_set_layout",
+            ),
             args: vec![Place::Local(0), Place::Local(1), Place::Local(2)],
             dest: None,
             next: 1,
@@ -473,6 +487,9 @@ fn vec_layout_pop_traps_when_runtime_reports_empty() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_pop_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_pop_layout",
+            ),
             args: vec![Place::Local(0)],
             dest: Some(Place::Local(1)),
             next: 1,
@@ -508,6 +525,9 @@ fn vec_layout_contains_thunk_emits_per_type_equality_function() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_contains_thunk",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -573,6 +593,9 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_contains_thunk",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 2,
@@ -584,6 +607,9 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_contains_thunk",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -706,6 +732,9 @@ fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_contains_thunk",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -785,6 +814,9 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_contains_thunk".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_contains_thunk",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -844,6 +876,9 @@ fn vec_layout_clone_synthesizes_descriptor_and_returns_new_vec() {
         instructions: vec![],
         terminator: Terminator::Call {
             callee: "hew_vec_clone_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_clone_layout",
+            ),
             args: vec![Place::Local(0)],
             dest: Some(Place::Local(1)),
             next: 1,
@@ -900,6 +935,9 @@ fn vec_layout_remove_synthesizes_descriptor_and_index() {
         }],
         terminator: Terminator::Call {
             callee: "hew_vec_remove_at_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_vec_remove_at_layout",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,

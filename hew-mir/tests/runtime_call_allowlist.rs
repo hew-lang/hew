@@ -116,6 +116,17 @@ fn every_c_symbol_resolves_to_a_real_symbol() {
         "hew_stream_next_layout",
         "hew_stream_try_next_layout",
         "hew_stream_send_layout",
+        // Layout-backed HashMap projection ops: `Terminator::Call`
+        // identities lowered by `lower_hashmap_layout_direct_call`
+        // (`is_hashmap_layout_runtime_symbol`) and classified by the
+        // layout-fact walker on their carried family.
+        "hew_hashmap_keys_layout",
+        "hew_hashmap_values_layout",
+        // Constructor surface forms: `CalleeNameDispatchOnly` catalog
+        // rows lowered by `lower_hashmap_constructor_call`
+        // (`is_hashmap_constructor_symbol`).
+        "HashMap::new",
+        "HashSet::new",
     ]
     .into_iter()
     .collect();

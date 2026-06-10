@@ -5721,8 +5721,38 @@ impl LowerCtx {
                 type_params: Vec::new(),
                 builtin_family: None,
             };
-            self.fn_registry
-                .insert(builtin.name.to_string(), entry.clone());
+            // Catalog rows whose NAME is itself a codegen `Terminator::Call`
+            // intercept identity resolve to `ResolvedRef::Builtin(family)`
+            // so MIR threads the typed family onto the call and codegen
+            // dispatches on it, never on the callee string. Deliberately
+            // narrow: only the families whose intercepts are family-keyed
+            // today (`Node::lookup` and the `HashMap::new` / `HashSet::new`
+            // constructor surface forms — `pid.tell` / `conn.attach` and
+            // the channel/stream layout entries arrive typed through the
+            // checker's method-call rewrites instead). Widening this to
+            // every catalog-named row (e.g. the math intrinsic names)
+            // changes their value-position acceptance and belongs to the
+            // math-intercept migration, not this seam.
+            //
+            // The lift must NOT apply to the `runtime_symbol()` alias
+            // insert below: the alias callee name (e.g.
+            // `hew_node_api_lookup`) is a different callee identity than
+            // the family's `c_symbol()`, and carrying the family there
+            // would break the `Terminator::Call` builtin↔callee invariant.
+            let primary_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                builtin.name,
+            )
+            .filter(|family| {
+                use hew_types::runtime_call::RuntimeCallFamily as F;
+                matches!(family, F::NodeLookup | F::HashMapNew | F::HashSetNew)
+            });
+            self.fn_registry.insert(
+                builtin.name.to_string(),
+                FnEntry {
+                    builtin_family: primary_family,
+                    ..entry.clone()
+                },
+            );
             if let Some(symbol) = builtin.linkage.runtime_symbol() {
                 self.fn_registry.insert(symbol.to_string(), entry);
             }
@@ -5899,6 +5929,17 @@ impl LowerCtx {
             ),
             ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
         ] {
+            // The registry name IS the catalog `c_symbol`, so the bijection
+            // lift cannot fail. Carrying the family here covers the stdlib
+            // impl bodies (`std/channel/channel.hew` calls these entries as
+            // bare identifiers inside `unsafe {}`) — the call inside the
+            // body must reach codegen's family-keyed `Terminator::Call`
+            // intercept exactly like a checker-rewritten call site does.
+            let builtin_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(name);
+            debug_assert!(
+                builtin_family.is_some(),
+                "layout entry `{name}` not in catalog"
+            );
             self.fn_registry.insert(
                 name.to_string(),
                 FnEntry {
@@ -5907,7 +5948,7 @@ impl LowerCtx {
                     param_tys: Vec::new(),
                     linkage: None,
                     type_params: Vec::new(),
-                    builtin_family: None,
+                    builtin_family,
                 },
             );
         }

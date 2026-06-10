@@ -15929,61 +15929,100 @@ fn finalize_layout_facts_against_pipeline(
 ) {
     use hew_types::{HashMapAbi, HashMapLoweringFactState, HashSetAbi};
 
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+
     for mir_fn in &pipeline.raw_mir {
         for block in &mir_fn.blocks {
             let Terminator::Call {
-                callee, args, dest, ..
+                builtin: Some(family),
+                args,
+                dest,
+                ..
             } = &block.terminator
             else {
                 continue;
             };
 
             // Two classes of call sites finalize a `Pending` fact:
-            //   (a) The 9 op-call arms from slice-i/iii — handle is `args[0]`.
-            //   (b) The 2 constructor arms from slice-ii — handle is the
+            //   (a) The op-call families from slice-i/iii (insert / get /
+            //       remove / contains / len / is_empty / keys / values) —
+            //       handle is `args[0]`.
+            //   (b) The constructor families from slice-ii — handle is the
             //       return value (`dest`); arg list is empty.
-            // Probe callees and `*_free_layout` are NOT
+            // Probe callees and the `*FreeLayout` families are NOT
             // included here; their fact-lifecycle wiring is either
             // already done (probes) or drops are dispatched through the
             // `drop_helper_for_kind` path, not through this walker.
-            let (key_or_elem_name, is_hashset) = if is_hashmap_layout_runtime_symbol(callee)
-                || is_hashmap_layout_get_symbol(callee)
-            {
-                if args.is_empty() {
-                    continue;
+            // Classification keys on the carried typed family — a layout
+            // op minted without its family never finalizes a fact, and the
+            // stuck `Pending` fact fails closed at
+            // `verify_hashmap_lowering_facts_consistent`.
+            let (key_or_elem_name, is_hashset) = match family {
+                F::HashMapInsertLayout
+                | F::HashMapContainsKeyLayout
+                | F::HashMapRemoveLayout
+                | F::HashMapLenLayout
+                | F::HashMapKeysLayout
+                | F::HashMapValuesLayout
+                | F::HashMapGetLayout
+                | F::HashSetInsertLayout
+                | F::HashSetContainsLayout
+                | F::HashSetRemoveLayout
+                | F::HashSetLenLayout
+                | F::HashSetIsEmptyLayout => {
+                    if args.is_empty() {
+                        continue;
+                    }
+                    let arg0_ty = match args[0] {
+                        Place::Local(id) => mir_fn.locals.get(id as usize),
+                        _ => None,
+                    };
+                    let Some(resolved_ty) = arg0_ty else {
+                        continue;
+                    };
+                    let is_set = matches!(
+                        family,
+                        F::HashSetInsertLayout
+                            | F::HashSetContainsLayout
+                            | F::HashSetRemoveLayout
+                            | F::HashSetLenLayout
+                            | F::HashSetIsEmptyLayout
+                    );
+                    let expected_outer = if is_set { "HashSet" } else { "HashMap" };
+                    let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
+                        continue;
+                    };
+                    (name, is_set)
                 }
-                let arg0_ty = match args[0] {
-                    Place::Local(id) => mir_fn.locals.get(id as usize),
-                    _ => None,
-                };
-                let Some(resolved_ty) = arg0_ty else {
-                    continue;
-                };
-                let is_set = callee.starts_with("hew_hashset_");
-                let expected_outer = if is_set { "HashSet" } else { "HashMap" };
-                let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
-                    continue;
-                };
-                (name, is_set)
-            } else if is_hashmap_constructor_symbol(callee) {
-                let Some(dest_place) = dest else {
-                    continue;
-                };
-                let dest_ty = match dest_place {
-                    Place::Local(id) => mir_fn.locals.get(*id as usize),
-                    _ => None,
-                };
-                let Some(resolved_ty) = dest_ty else {
-                    continue;
-                };
-                let is_set = callee == "hew_hashset_new_with_layout";
-                let expected_outer = if is_set { "HashSet" } else { "HashMap" };
-                let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
-                    continue;
-                };
-                (name, is_set)
-            } else {
-                continue;
+                F::HashMapNewWithLayout
+                | F::HashSetNewWithLayout
+                | F::HashMapNew
+                | F::HashSetNew => {
+                    let Some(dest_place) = dest else {
+                        continue;
+                    };
+                    let dest_ty = match dest_place {
+                        Place::Local(id) => mir_fn.locals.get(*id as usize),
+                        _ => None,
+                    };
+                    let Some(resolved_ty) = dest_ty else {
+                        continue;
+                    };
+                    // Faithful transcription of the historical string compare
+                    // (`callee == "hew_hashset_new_with_layout"`): the
+                    // `HashSet::new` surface form was NOT classified as a set
+                    // constructor (its dest then fails the `HashMap` outer
+                    // check below and the site never finalizes a fact).
+                    // Preserved byte-identically; reclassifying it is a
+                    // behaviour change owned by the layout-fact lane.
+                    let is_set = matches!(family, F::HashSetNewWithLayout);
+                    let expected_outer = if is_set { "HashSet" } else { "HashMap" };
+                    let Some(name) = extract_layout_record_name(resolved_ty, expected_outer) else {
+                        continue;
+                    };
+                    (name, is_set)
+                }
+                _ => continue,
             };
 
             if is_hashset {
@@ -28714,16 +28753,18 @@ fn lower_terminator<'ctx>(
         }
         Terminator::Call {
             callee,
+            builtin,
             args,
             dest,
             next,
         } => {
+            use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
             // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>` in-place
             // from the runtime extern's raw `u64` packed-pid return. The generic
             // FnSymbol::Real arm's `dest_ty == return_ty` check rejects this shape
             // (Result outer struct vs. i64), so we handle it before the symbol
             // lookup. See `emit_node_lookup_call`.
-            if callee == "Node::lookup" {
+            if *builtin == Some(RtFamily::NodeLookup) {
                 emit_node_lookup_call(fn_ctx, fn_symbols, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -28734,14 +28775,14 @@ fn lower_terminator<'ctx>(
             // Membership in MIR's `module_fn_names` comes from the
             // non-`CompilerIntrinsic` filter at `hew-mir/src/lower.rs:761-767`,
             // which inserts every catalog entry whose linkage is not
-            // `CompilerIntrinsic { .. }`.  Codegen intercepts by the string
-            // match `callee_name == "hew_remote_pid_tell"` here (in the
+            // `CompilerIntrinsic { .. }`.  Codegen intercepts on the carried
+            // `RuntimeCallFamily::RemotePidTell` here (in the
             // `Terminator::Call` lowering arm) and emits the real
             // `hew_actor_send_by_id` sequence plus the user-visible
             // `Result<(), SendError>` construction in-place.
-            // Dispatch is callee-name-based (no new `FnSymbol::*Pid*` variant),
+            // Dispatch is family-keyed (no new `FnSymbol::*Pid*` variant),
             // matching the R82-era Node::lookup precedent.
-            if callee == "hew_remote_pid_tell" {
+            if *builtin == Some(RtFamily::RemotePidTell) {
                 emit_remote_pid_tell_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -28749,10 +28790,11 @@ fn lower_terminator<'ctx>(
             // for `conn.attach(handler)` on a `net.Connection` receiver. Codegen
             // resolves the concrete actor from the handler's `LocalPid<A>`,
             // synthesises the `on_data` / `on_close` msg_ids, and emits the
-            // 4-arg runtime attach ABI. Dispatch is by callee name, matching
-            // the `hew_remote_pid_tell` precedent. `attach` returns Unit, so
-            // any `dest` would be a checker-boundary bug — fail closed.
-            if callee == "hew_tcp_attach_local" {
+            // 4-arg runtime attach ABI. Dispatch is on the carried family,
+            // matching the `hew_remote_pid_tell` precedent. `attach` returns
+            // Unit, so any `dest` would be a checker-boundary bug — fail
+            // closed.
+            if *builtin == Some(RtFamily::TcpAttachLocal) {
                 if dest.is_some() {
                     return Err(CodegenError::FailClosed(
                         "hew_tcp_attach_local (conn.attach) returns Unit and must not carry a \
@@ -28783,14 +28825,16 @@ fn lower_terminator<'ctx>(
             // type comes from the dest local's checker-resolved `Option<T>`
             // payload — never from the symbol name; the runtime decodes the
             // element directly into the Option's Some payload slot and the
-            // return code selects the tag. Dispatch by callee name, mirroring
-            // the `Node::lookup` / `hew_remote_pid_tell` precedent.
+            // return code selects the tag. Dispatch on the carried family,
+            // mirroring the `Node::lookup` / `hew_remote_pid_tell` precedent.
             if matches!(
-                callee.as_str(),
-                "hew_stream_next_layout"
-                    | "hew_stream_try_next_layout"
-                    | "hew_channel_recv_layout"
-                    | "hew_channel_try_recv_layout"
+                builtin,
+                Some(
+                    RtFamily::StreamNextLayout
+                        | RtFamily::StreamTryNextLayout
+                        | RtFamily::ChannelRecvLayout
+                        | RtFamily::ChannelTryRecvLayout
+                )
             ) {
                 let [handle_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
@@ -28833,8 +28877,8 @@ fn lower_terminator<'ctx>(
             // a string slot, a BytesTriple, raw Plain bytes, or the owned
             // representation).
             if matches!(
-                callee.as_str(),
-                "hew_channel_send_layout" | "hew_stream_send_layout"
+                builtin,
+                Some(RtFamily::ChannelSendLayout | RtFamily::StreamSendLayout)
             ) {
                 let [handle_arg, value_arg] = args.as_slice() else {
                     return Err(CodegenError::FailClosed(format!(
@@ -28887,6 +28931,37 @@ fn lower_terminator<'ctx>(
                     .build_unconditional_branch(next_bb)
                     .llvm_ctx_with(|| format!("{callee} br next"))?;
                 return Ok(());
+            }
+            // Producer-gap backstop (fail-closed): the five intercepts above
+            // dispatch on the carried `builtin` family. A callee whose NAME
+            // is one of those intercept identities but which arrived with
+            // `builtin: None` means a MIR producer minted the call without
+            // threading the checker-resolved family — refuse loudly here
+            // with the gap named, instead of falling through to the generic
+            // symbol path (which would fail closed too, but with an
+            // unrelated "no declared symbol" / dest-shape message that
+            // hides the real defect). LESSONS `boundary-fail-closed`.
+            if builtin.is_none() {
+                if let Some(family) = RtFamily::from_c_symbol(callee) {
+                    if matches!(
+                        family,
+                        RtFamily::NodeLookup
+                            | RtFamily::RemotePidTell
+                            | RtFamily::TcpAttachLocal
+                            | RtFamily::StreamNextLayout
+                            | RtFamily::StreamTryNextLayout
+                            | RtFamily::ChannelRecvLayout
+                            | RtFamily::ChannelTryRecvLayout
+                            | RtFamily::ChannelSendLayout
+                            | RtFamily::StreamSendLayout
+                    ) {
+                        return Err(CodegenError::FailClosed(format!(
+                            "Terminator::Call to intercept callee `{callee}` arrived without \
+                             its typed builtin family ({family:?}); the MIR producer must \
+                             carry the checker-resolved RuntimeCallFamily on the call"
+                        )));
+                    }
+                }
             }
             if let Some(intrinsic) = math_builtin_intrinsic(callee) {
                 if !fn_symbols.contains_key(callee) {
@@ -37737,6 +37812,8 @@ mod tests {
             instructions: Vec::new(),
             terminator: Terminator::Call {
                 callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
+                // Probe callee: codegen-internal synthetic, no catalog family.
+                builtin: None,
                 args: vec![Place::Local(0), Place::Local(1)],
                 dest: None,
                 next: 1,

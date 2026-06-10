@@ -234,9 +234,25 @@ pub enum RuntimeCallFamily {
     HashMapFreeLayout,
     HashMapGetLayout,
     HashMapInsertLayout,
+    /// `m.keys()` / `m.values()` projection ops. Pre-staged: they ride
+    /// the `Terminator::Call` route (checker `MethodTarget.symbol_name`),
+    /// not `Instr::CallRuntimeAbi`, so their symbols are not in
+    /// `MIR_EMITTER_RUNTIME_SYMBOLS`. Catalogued so the codegen
+    /// layout-fact walker classifies them by family, not symbol prefix.
+    HashMapKeysLayout,
     HashMapLenLayout,
+    /// The `HashMap::new` constructor surface form. A distinct callee
+    /// identity from [`Self::HashMapNewWithLayout`]: the catalog row
+    /// `"HashMap::new"` (`BuiltinLinkage::CalleeNameDispatchOnly`)
+    /// survives to codegen as the literal callee name when the checker
+    /// did not rewrite the construction to the synthesized
+    /// `hew_hashmap_new_with_layout` form. Both identities are real at
+    /// the `Terminator::Call` intercept; the bijection demands one
+    /// variant per callee identity.
+    HashMapNew,
     HashMapNewWithLayout,
     HashMapRemoveLayout,
+    HashMapValuesLayout,
 
     // --- Layout-backed HashSet ---------------------------------------------
     HashSetContainsLayout,
@@ -244,6 +260,9 @@ pub enum RuntimeCallFamily {
     HashSetInsertLayout,
     HashSetIsEmptyLayout,
     HashSetLenLayout,
+    /// The `HashSet::new` constructor surface form; see
+    /// [`Self::HashMapNew`] for the two-identity rationale.
+    HashSetNew,
     HashSetNewWithLayout,
     HashSetRemoveLayout,
 
@@ -500,15 +519,19 @@ impl RuntimeCallFamily {
             Self::HashMapFreeLayout => "hew_hashmap_free_layout",
             Self::HashMapGetLayout => "hew_hashmap_get_layout",
             Self::HashMapInsertLayout => "hew_hashmap_insert_layout",
+            Self::HashMapKeysLayout => "hew_hashmap_keys_layout",
             Self::HashMapLenLayout => "hew_hashmap_len_layout",
+            Self::HashMapNew => "HashMap::new",
             Self::HashMapNewWithLayout => "hew_hashmap_new_with_layout",
             Self::HashMapRemoveLayout => "hew_hashmap_remove_layout",
+            Self::HashMapValuesLayout => "hew_hashmap_values_layout",
             // HashSet
             Self::HashSetContainsLayout => "hew_hashset_contains_layout",
             Self::HashSetFreeLayout => "hew_hashset_free_layout",
             Self::HashSetInsertLayout => "hew_hashset_insert_layout",
             Self::HashSetIsEmptyLayout => "hew_hashset_is_empty_layout",
             Self::HashSetLenLayout => "hew_hashset_len_layout",
+            Self::HashSetNew => "HashSet::new",
             Self::HashSetNewWithLayout => "hew_hashset_new_with_layout",
             Self::HashSetRemoveLayout => "hew_hashset_remove_layout",
             // Instant
@@ -726,15 +749,19 @@ impl RuntimeCallFamily {
             "hew_hashmap_free_layout" => Self::HashMapFreeLayout,
             "hew_hashmap_get_layout" => Self::HashMapGetLayout,
             "hew_hashmap_insert_layout" => Self::HashMapInsertLayout,
+            "hew_hashmap_keys_layout" => Self::HashMapKeysLayout,
             "hew_hashmap_len_layout" => Self::HashMapLenLayout,
+            "HashMap::new" => Self::HashMapNew,
             "hew_hashmap_new_with_layout" => Self::HashMapNewWithLayout,
             "hew_hashmap_remove_layout" => Self::HashMapRemoveLayout,
+            "hew_hashmap_values_layout" => Self::HashMapValuesLayout,
             // HashSet
             "hew_hashset_contains_layout" => Self::HashSetContainsLayout,
             "hew_hashset_free_layout" => Self::HashSetFreeLayout,
             "hew_hashset_insert_layout" => Self::HashSetInsertLayout,
             "hew_hashset_is_empty_layout" => Self::HashSetIsEmptyLayout,
             "hew_hashset_len_layout" => Self::HashSetLenLayout,
+            "HashSet::new" => Self::HashSetNew,
             "hew_hashset_new_with_layout" => Self::HashSetNewWithLayout,
             "hew_hashset_remove_layout" => Self::HashSetRemoveLayout,
             // Instant
@@ -989,14 +1016,18 @@ impl RuntimeCallFamily {
             | F::HashMapFreeLayout
             | F::HashMapGetLayout
             | F::HashMapInsertLayout
+            | F::HashMapKeysLayout
             | F::HashMapLenLayout
+            | F::HashMapNew
             | F::HashMapNewWithLayout
             | F::HashMapRemoveLayout
+            | F::HashMapValuesLayout
             | F::HashSetContainsLayout
             | F::HashSetFreeLayout
             | F::HashSetInsertLayout
             | F::HashSetIsEmptyLayout
             | F::HashSetLenLayout
+            | F::HashSetNew
             | F::HashSetNewWithLayout
             | F::HashSetRemoveLayout
             | F::InstantDurationSince
@@ -1408,15 +1439,19 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::HashMapFreeLayout,
         F::HashMapGetLayout,
         F::HashMapInsertLayout,
+        F::HashMapKeysLayout,
         F::HashMapLenLayout,
+        F::HashMapNew,
         F::HashMapNewWithLayout,
         F::HashMapRemoveLayout,
+        F::HashMapValuesLayout,
         // HashSet
         F::HashSetContainsLayout,
         F::HashSetFreeLayout,
         F::HashSetInsertLayout,
         F::HashSetIsEmptyLayout,
         F::HashSetLenLayout,
+        F::HashSetNew,
         F::HashSetNewWithLayout,
         F::HashSetRemoveLayout,
         // Instant
@@ -1577,7 +1612,9 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 7] {
 }
 
 /// Families pre-staged (Channel, Stream, Sink, `Node::lookup`,
-/// math intrinsics, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`).
+/// math intrinsics, `RemotePidTell`, `RemoteActorAsk`, `TcpAttachLocal`,
+/// the `HashMap::new` / `HashSet::new` constructor surface forms, and
+/// the `keys()` / `values()` projection ops).
 /// Their `c_symbol()` is NOT in `MIR_EMITTER_RUNTIME_SYMBOLS` today
 /// because they go through `Terminator::Call` callee-name intercepts
 /// (codegen callee-name intercept), not `Instr::CallRuntimeAbi`. The bijection test
@@ -1595,6 +1632,10 @@ pub fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::ChannelTryRecvLayout
             | F::ChannelSenderClose
             | F::ChannelReceiverClose
+            | F::HashMapKeysLayout
+            | F::HashMapNew
+            | F::HashMapValuesLayout
+            | F::HashSetNew
             | F::MathIntrinsic(_)
             | F::NodeLookup
             | F::RemotePidTell

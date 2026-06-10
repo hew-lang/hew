@@ -323,6 +323,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "classify",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -342,6 +343,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -375,6 +377,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "classify",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -394,6 +397,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -426,6 +430,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "classify",
+                builtin: None,
                 args: [
                     Local(
                         4,
@@ -445,6 +450,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         5,
@@ -654,6 +660,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_is_match",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -811,6 +818,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_is_match",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -968,6 +976,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_find",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1138,6 +1147,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_replace",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1335,6 +1345,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_find_all",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1626,6 +1637,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_capture_index_one",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1708,6 +1720,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         5,
@@ -1839,6 +1854,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_str",
+                builtin: Some(
+                    VecGet(
+                        Str,
+                    ),
+                ),
                 args: [
                     Local(
                         5,
@@ -2350,6 +2370,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_capture_name_one",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2432,6 +2453,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         5,
@@ -2563,6 +2587,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_str",
+                builtin: Some(
+                    VecGet(
+                        Str,
+                    ),
+                ),
                 args: [
                     Local(
                         5,
@@ -3009,6 +3038,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_captures_flat",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3084,6 +3114,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_regex_capture_width",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3479,6 +3510,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_find_all_submatch_flat",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3554,6 +3586,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_regex_capture_width",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3909,6 +3942,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_clone",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4053,6 +4087,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_free",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4298,6 +4333,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         6,
@@ -4698,6 +4736,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "CaptureMatches::len",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -5278,6 +5317,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "CaptureMatches::len",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -5604,6 +5644,11 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_vec_get_str",
+                builtin: Some(
+                    VecGet(
+                        Str,
+                    ),
+                ),
                 args: [
                     Local(
                         22,
@@ -6138,6 +6183,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "CaptureMatches::group",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6295,6 +6341,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_regex_new",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6420,6 +6467,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6512,6 +6560,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6604,6 +6653,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6696,6 +6746,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6788,6 +6839,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6880,6 +6932,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6972,6 +7025,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

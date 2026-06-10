@@ -169,6 +169,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "channel$new",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -403,6 +404,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_channel_send_layout",
+                builtin: Some(
+                    ChannelSendLayout,
+                ),
                 args: [
                     Local(
                         5,
@@ -448,6 +452,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_sender_close",
+                builtin: Some(
+                    ChannelSenderClose,
+                ),
                 args: [
                     Local(
                         5,
@@ -572,6 +579,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_try_recv_layout",
+                builtin: Some(
+                    ChannelTryRecvLayout,
+                ),
                 args: [
                     Local(
                         7,
@@ -624,6 +634,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         16,
@@ -653,6 +664,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         17,
@@ -874,6 +886,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         25,
@@ -902,6 +915,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         26,
@@ -1074,6 +1088,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         39,
@@ -1116,6 +1131,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_receiver_close",
+                builtin: Some(
+                    ChannelReceiverClose,
+                ),
                 args: [
                     Local(
                         7,
@@ -1189,6 +1207,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         36,
@@ -1218,6 +1237,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         37,
@@ -1998,6 +2018,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "sleep_ms",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -2178,6 +2199,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_send_layout",
+                builtin: Some(
+                    ChannelSendLayout,
+                ),
                 args: [
                     Local(
                         0,
@@ -2326,6 +2350,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_sender_clone",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2478,6 +2503,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_sender_close",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2623,6 +2649,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_recv_layout",
+                builtin: Some(
+                    ChannelRecvLayout,
+                ),
                 args: [
                     Local(
                         0,
@@ -2816,6 +2845,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_try_recv_layout",
+                builtin: Some(
+                    ChannelTryRecvLayout,
+                ),
                 args: [
                     Local(
                         0,
@@ -2980,6 +3012,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_channel_receiver_close",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3174,6 +3207,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_channel_new",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -3234,6 +3268,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_channel_pair_sender",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -3294,6 +3329,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_channel_pair_receiver",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -3354,6 +3390,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_channel_pair_free",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -3696,6 +3733,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3788,6 +3826,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3880,6 +3919,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3972,6 +4012,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4064,6 +4105,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4156,6 +4198,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4248,6 +4291,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

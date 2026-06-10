@@ -94,6 +94,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "HashSet::new",
+                builtin: Some(
+                    HashSetNew,
+                ),
                 args: [],
                 dest: Some(
                     Local(
@@ -164,6 +167,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_insert_layout",
+                builtin: Some(
+                    HashSetInsertLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -220,6 +226,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_insert_layout",
+                builtin: Some(
+                    HashSetInsertLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -276,6 +285,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_insert_layout",
+                builtin: Some(
+                    HashSetInsertLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -325,6 +337,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_hashset_len_layout",
+                builtin: Some(
+                    HashSetLenLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -390,6 +405,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_contains_layout",
+                builtin: Some(
+                    HashSetContainsLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -458,6 +476,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_remove_layout",
+                builtin: Some(
+                    HashSetRemoveLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -520,6 +541,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         9,
@@ -539,6 +561,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         16,
@@ -575,6 +598,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         18,
@@ -609,6 +633,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         12,
@@ -628,6 +653,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         20,
@@ -667,6 +693,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         22,
@@ -701,6 +728,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         15,
@@ -720,6 +748,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         24,
@@ -742,6 +771,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         26,
@@ -784,6 +814,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_hashset_is_empty_layout",
+                builtin: Some(
+                    HashSetIsEmptyLayout,
+                ),
                 args: [
                     Local(
                         1,
@@ -834,6 +867,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_bool",
+                builtin: None,
                 args: [
                     Local(
                         28,
@@ -856,6 +890,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "HashSet::new",
+                builtin: Some(
+                    HashSetNew,
+                ),
                 args: [],
                 dest: Some(
                     Local(
@@ -933,6 +970,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_insert_layout",
+                builtin: Some(
+                    HashSetInsertLayout,
+                ),
                 args: [
                     Local(
                         30,
@@ -999,6 +1039,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_insert_layout",
+                builtin: Some(
+                    HashSetInsertLayout,
+                ),
                 args: [
                     Local(
                         30,
@@ -1062,6 +1105,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_contains_layout",
+                builtin: Some(
+                    HashSetContainsLayout,
+                ),
                 args: [
                     Local(
                         30,
@@ -1137,6 +1183,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_hashset_len_layout",
+                builtin: Some(
+                    HashSetLenLayout,
+                ),
                 args: [
                     Local(
                         30,
@@ -1156,6 +1205,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         39,
@@ -1175,6 +1225,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         38,
@@ -1211,6 +1262,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         41,
@@ -1245,6 +1297,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         37,
@@ -1264,6 +1317,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         43,
@@ -1286,6 +1340,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         45,
@@ -2042,6 +2097,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2134,6 +2190,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2226,6 +2283,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2318,6 +2376,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2410,6 +2469,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2502,6 +2562,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -2594,6 +2655,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

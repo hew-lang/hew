@@ -338,6 +338,9 @@ fn op_pipeline(
     let mut pipeline = pipeline_with_entry_terminator(
         Terminator::Call {
             callee: callee.to_string(),
+            // Mirror the producer lift: the walker classifies layout-op
+            // sites by their carried typed family.
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
             args,
             dest,
             next: 1,
@@ -359,6 +362,9 @@ fn set_op_pipeline(
     let mut pipeline = pipeline_with_entry_terminator(
         Terminator::Call {
             callee: callee.to_string(),
+            // Mirror the producer lift: the walker classifies layout-op
+            // sites by their carried typed family.
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
             args,
             dest,
             next: 1,
@@ -586,6 +592,9 @@ fn finalize_walk_is_idempotent_on_already_finalized_fact() {
     let mut pipeline = pipeline_with_entry_terminator(
         Terminator::Call {
             callee: "hew_hashmap_contains_key_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_hashmap_contains_key_layout",
+            ),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: Some(Place::Local(2)),
             next: 1,
@@ -709,6 +718,9 @@ fn hashmap_new_without_pending_fact_still_emits() {
     let pipeline = pipeline_with_entry_terminator(
         Terminator::Call {
             callee: "hew_hashmap_new_with_layout".to_string(),
+            builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                "hew_hashmap_new_with_layout",
+            ),
             args: vec![],
             dest: Some(Place::Local(0)),
             next: 1,

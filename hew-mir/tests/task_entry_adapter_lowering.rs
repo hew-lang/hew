@@ -97,6 +97,7 @@ fn free_fn_spawn_uses_task_entry_adapter_shape() {
             args,
             dest: None,
             next: 1,
+            ..
         } if callee == "worker" && args.is_empty()
     ));
     assert!(matches!(

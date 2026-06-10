@@ -727,6 +727,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -819,6 +820,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -911,6 +913,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1003,6 +1006,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1095,6 +1099,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1187,6 +1192,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -1279,6 +1285,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

@@ -7079,8 +7079,13 @@ impl Builder {
                     return;
                 };
                 let next = self.alloc_block();
+                // The callee identity is the typed family; the symbol string
+                // is derived from the catalog bijection at construction so
+                // the two can never drift.
+                let family = hew_types::runtime_call::RuntimeCallFamily::HashMapInsertLayout;
                 self.finish_current_block(Terminator::Call {
-                    callee: "hew_hashmap_insert_layout".to_string(),
+                    callee: family.c_symbol().to_string(),
+                    builtin: Some(family),
                     args: vec![map_place, key_place, src],
                     dest: None,
                     next,
@@ -8477,8 +8482,18 @@ impl Builder {
                     Some(self.alloc_local(ret_ty.clone()))
                 };
                 let next = self.alloc_block();
+                // Catalog lift: the checker resolved this collection op to a
+                // concrete runtime symbol; recover the typed family through
+                // the sanctioned `from_c_symbol` bijection (the same lift
+                // `record_runtime_method_call_rewrite` performs) so the
+                // codegen layout-fact walker dispatches on the family.
+                // Non-catalog symbols (e.g. the per-element Vec push
+                // variants) carry `None` until their families are
+                // enumerated.
+                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&callee);
                 self.finish_current_block(Terminator::Call {
                     callee,
+                    builtin,
                     args: arg_places,
                     dest,
                     next,
@@ -8643,6 +8658,7 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: callee_symbol,
+                    builtin: None,
                     args: arg_places,
                     dest,
                     next,
@@ -8948,6 +8964,7 @@ impl Builder {
                 let next = self.alloc_block();
                 self.finish_current_block(Terminator::Call {
                     callee: mangle_machine_step(short_name(machine_name)),
+                    builtin: None,
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
                     next,
@@ -14601,6 +14618,7 @@ impl Builder {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: callee_symbol.to_string(),
+                    builtin: None,
                     args: vec![],
                     dest: None,
                     next: 1,
@@ -15202,6 +15220,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol,
+            builtin: None,
             args: arg_places,
             dest: Some(tuple_place),
             next,
@@ -15242,6 +15261,18 @@ impl Builder {
         ret_ty: &ResolvedTy,
         _site: hew_hir::SiteId,
     ) -> Option<Place> {
+        // `Terminator::Call` invariant (model.rs): a carried family IS the
+        // callee identity — the symbol string must be its catalog
+        // presentation. Enforced in all build profiles; a violation here
+        // means a HIR resolution stored the wrong family for the callee
+        // name it minted (LESSONS `boundary-fail-closed`).
+        assert!(
+            builtin.is_none_or(|f| f.c_symbol() == callee_symbol),
+            "lower_direct_call: builtin family {:?} does not match callee \
+             `{callee_symbol}` (family c_symbol is `{}`)",
+            builtin,
+            builtin.map_or("", |f| f.c_symbol()),
+        );
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
@@ -15359,6 +15390,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
+            builtin,
             args: arg_places,
             dest,
             next,
@@ -17046,6 +17078,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_read".to_string(),
+                builtin: None,
                 args: vec![conn_place],
                 dest: Some(bytes_dest),
                 next,
@@ -17061,6 +17094,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_bytes_to_string".to_string(),
+            builtin: None,
             args: vec![bytes_dest],
             dest: Some(string_dest),
             next,
@@ -17158,6 +17192,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_accept".to_string(),
+                builtin: None,
                 args: vec![listener_place],
                 dest: Some(conn_dest),
                 next,
@@ -17983,6 +18018,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: fn_symbol.to_string(),
+            builtin: None,
             args: arg_places.clone(),
             dest: Some(Place::ReturnSlot),
             next: ret_block_id,
@@ -25253,29 +25289,35 @@ fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
               of the borrowed actor-pid / timeout operands stays explicit"
 )]
 fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<Place> {
-    let arg_is_borrowed = |callee: &str, place: &Place| -> bool {
-        let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
-        // A no-close actor-pid leaf is a borrow under ANY callee; the
-        // `is_borrowing_call_abi` allowlist additionally borrows the callee's
-        // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
-        // LocalPid handler — but its `conn` is consumed, so the per-arg
-        // owned-handle-leaf guard keeps `conn` poisoned). The
-        // `is_handle_borrowing_call_abi` allowlist promotes the stricter
-        // shape: the callee borrows EVERY arg including owned-handle leaves
-        // (the stream recv / try_recv runtime entries borrow the stream
-        // handle to read one item — the handle continues to live in the
-        // caller's slot afterwards, identical drop semantics to the
-        // suspending `Terminator::SuspendingStreamNext` path).
-        arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
-            || (is_borrowing_call_abi(callee)
-                && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
-            || is_handle_borrowing_call_abi(callee)
-    };
+    let arg_is_borrowed =
+        |builtin: Option<hew_types::runtime_call::RuntimeCallFamily>, place: &Place| -> bool {
+            let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
+            // A no-close actor-pid leaf is a borrow under ANY callee; the
+            // `is_borrowing_call_abi` allowlist additionally borrows the callee's
+            // non-handle-leaf args by value (e.g. `hew_tcp_attach_local`'s
+            // LocalPid handler — but its `conn` is consumed, so the per-arg
+            // owned-handle-leaf guard keeps `conn` poisoned). The
+            // `is_handle_borrowing_call_abi` allowlist promotes the stricter
+            // shape: the callee borrows EVERY arg including owned-handle leaves
+            // (the stream recv / try_recv runtime entries borrow the stream
+            // handle to read one item — the handle continues to live in the
+            // caller's slot afterwards, identical drop semantics to the
+            // suspending `Terminator::SuspendingStreamNext` path).
+            //
+            // Both allowlists key on the call's carried typed family — a
+            // callee that arrives without its family (`None`) is never
+            // exempted, which fails CLOSED: the arg stays poisoned and the
+            // gate over-refuses rather than ever admitting a phantom borrow.
+            arg_ty.is_some_and(ty_is_nonowning_handle_leaf)
+                || (is_borrowing_call_abi(builtin)
+                    && arg_ty.is_some_and(|t| !ty_is_owned_handle_leaf(t)))
+                || is_handle_borrowing_call_abi(builtin)
+        };
     match term {
-        Terminator::Call { callee, args, .. } => args
+        Terminator::Call { builtin, args, .. } => args
             .iter()
             .copied()
-            .filter(|place| !arg_is_borrowed(callee, place))
+            .filter(|place| !arg_is_borrowed(*builtin, place))
             .collect(),
         Terminator::Yield { value, .. } => vec![*value],
         Terminator::Send { value, .. }
@@ -25358,8 +25400,11 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
 /// non-handle-leaf args are borrowed; owned-handle-leaf args are still poisoned
 /// (e.g. `hew_tcp_attach_local`'s `conn`). For callees that borrow EVERY arg
 /// including owned-handle leaves, see [`is_handle_borrowing_call_abi`].
-fn is_borrowing_call_abi(callee: &str) -> bool {
-    matches!(callee, "hew_tcp_attach_local")
+fn is_borrowing_call_abi(builtin: Option<hew_types::runtime_call::RuntimeCallFamily>) -> bool {
+    matches!(
+        builtin,
+        Some(hew_types::runtime_call::RuntimeCallFamily::TcpAttachLocal)
+    )
 }
 
 /// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just
@@ -25380,11 +25425,11 @@ fn is_borrowing_call_abi(callee: &str) -> bool {
 /// one queued item without mutating the handle's ownership; adding a callee
 /// that actually consumes the handle here would silently disable the
 /// double-free gate for its caller.
-fn is_handle_borrowing_call_abi(callee: &str) -> bool {
-    matches!(
-        callee,
-        "hew_stream_next_layout" | "hew_stream_try_next_layout"
-    )
+fn is_handle_borrowing_call_abi(
+    builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+) -> bool {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+    matches!(builtin, Some(F::StreamNextLayout | F::StreamTryNextLayout))
 }
 
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
@@ -26808,6 +26853,7 @@ fn enumerate_exits(
                 args: _,
                 dest: _,
                 next,
+                ..
             } => (
                 ExitPath::Call {
                     block: block_id,
@@ -29758,6 +29804,10 @@ mod w3053_aggregate_handle_double_free_gate {
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: callee.to_string(),
+                // Mirror the producer lift: hand-built escape-gate MIR
+                // carries the typed family exactly as the real lowering
+                // does, so family-keyed borrow classification is exercised.
+                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee),
                 args,
                 dest: None,
                 next: 0,
@@ -30276,6 +30326,7 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Call {
                 callee: "hew_hashmap_len_layout".to_string(),
+                builtin: Some(hew_types::runtime_call::RuntimeCallFamily::HashMapLenLayout),
                 args: vec![Place::Local(2)],
                 dest: Some(Place::Local(3)),
                 next: 1,

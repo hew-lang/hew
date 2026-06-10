@@ -1,75 +1,188 @@
 RawMirFunction {
-    name: "Counter__recv__increment",
+    name: "main",
     return_ty: Unit,
-    call_conv: ActorHandler,
-    params: [
-        I64,
-    ],
+    call_conv: Default,
+    params: [],
     locals: [
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                I64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "HashMap",
+            args: [
+                String,
+                I64,
+            ],
+            builtin: Some(
+                HashMap,
+            ),
+            is_opaque: false,
+        },
+        String,
+        I64,
+        String,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                String,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
         I64,
         I64,
-        I64,
-        Bool,
     ],
     blocks: [
         BasicBlock {
             id: 0,
-            statements: [
-                Use {
-                    binding: BindingId(
-                        1,
-                    ),
-                    name: "n",
-                    site: SiteId(
-                        4,
-                    ),
-                    ty: I64,
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                EnterContext,
-                ActorStateFieldLoad {
-                    field_offset: FieldOffset(
-                        0,
-                    ),
-                    dest: Local(
-                        1,
-                    ),
-                },
-                IntArithChecked {
-                    op: Add,
-                    signed: Signed,
-                    dest: Local(
-                        2,
-                    ),
-                    lhs: Local(
-                        1,
-                    ),
-                    rhs: Local(
-                        0,
-                    ),
-                    overflow_flag: Local(
-                        3,
-                    ),
-                },
-            ],
-            terminator: Branch {
-                cond: Local(
-                    3,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "HashMap::new",
+                builtin: Some(
+                    HashMapNew,
                 ),
-                then_target: 1,
-                else_target: 2,
+                args: [],
+                dest: Some(
+                    Local(
+                        0,
+                    ),
+                ),
+                next: 1,
             },
         },
         BasicBlock {
             id: 1,
-            statements: [],
-            instructions: [
-                ExitContext,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        3,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
             ],
-            terminator: Trap {
-                kind: IntegerOverflow,
+            instructions: [
+                Move {
+                    dest: Local(
+                        1,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                },
+                StringLit {
+                    bytes: [
+                        97,
+                        108,
+                        105,
+                        99,
+                        101,
+                    ],
+                    dest: Local(
+                        2,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        3,
+                    ),
+                    value: 10,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        2,
+                    ),
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: None,
+                next: 2,
             },
         },
         BasicBlock {
@@ -81,37 +194,380 @@ RawMirFunction {
                     ),
                     ty: Unit,
                 },
-            ],
-            instructions: [
-                ActorStateFieldStore {
-                    field_offset: FieldOffset(
+                Use {
+                    binding: BindingId(
                         0,
                     ),
-                    src: Local(
-                        2,
+                    name: "m",
+                    site: SiteId(
+                        7,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        98,
+                        111,
+                        98,
+                    ],
+                    dest: Local(
+                        4,
                     ),
                 },
-                ExitContext,
+                ConstI64 {
+                    dest: Local(
+                        5,
+                    ),
+                    value: 20,
+                },
             ],
+            terminator: Call {
+                callee: "hew_hashmap_insert_layout",
+                builtin: Some(
+                    HashMapInsertLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        4,
+                    ),
+                    Local(
+                        5,
+                    ),
+                ],
+                dest: None,
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        6,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_hashmap_keys_layout",
+                builtin: Some(
+                    HashMapKeysLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        6,
+                    ),
+                ),
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "ks",
+                    site: SiteId(
+                        10,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "m",
+                    site: SiteId(
+                        13,
+                    ),
+                    ty: Named {
+                        name: "HashMap",
+                        args: [
+                            String,
+                            I64,
+                        ],
+                        builtin: Some(
+                            HashMap,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        7,
+                    ),
+                    src: Local(
+                        6,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_hashmap_values_layout",
+                builtin: Some(
+                    HashMapValuesLayout,
+                ),
+                args: [
+                    Local(
+                        1,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        8,
+                    ),
+                ),
+                next: 5,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "vs",
+                    site: SiteId(
+                        12,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "ks",
+                    site: SiteId(
+                        16,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            String,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        9,
+                    ),
+                    src: Local(
+                        8,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
+                args: [
+                    Local(
+                        7,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        10,
+                    ),
+                ),
+                next: 6,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        10,
+                    ),
+                ],
+                dest: None,
+                next: 7,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        14,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "vs",
+                    site: SiteId(
+                        20,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
+                args: [
+                    Local(
+                        9,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        11,
+                    ),
+                ),
+                next: 8,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        11,
+                    ),
+                ],
+                dest: None,
+                next: 9,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        18,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
             terminator: Return,
         },
     ],
     decisions: [
         DecisionFact {
             site: SiteId(
-                2,
+                0,
             ),
-            ty: I64,
-            value_class: BitCopy,
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
             intent: Consume,
             strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
-                3,
+                2,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -119,62 +575,34 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                4,
+                3,
             ),
-            ty: I64,
-            value_class: BitCopy,
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
             intent: Read,
-            strategy: BorrowRead,
+            strategy: CowShare,
             why: "first vertical-slice classifier",
         },
-    ],
-    intrinsic_id: None,
-    await_deadline_ns: {},
-    lambda_actor_user_param_locals: [],
-}
-RawMirFunction {
-    name: "Counter__recv__total",
-    return_ty: I64,
-    call_conv: ActorHandler,
-    params: [],
-    locals: [
-        I64,
-    ],
-    blocks: [
-        BasicBlock {
-            id: 0,
-            statements: [
-                Return {
-                    site: Some(
-                        SiteId(
-                            5,
-                        ),
-                    ),
-                    ty: I64,
-                },
-            ],
-            instructions: [
-                EnterContext,
-                ActorStateFieldLoad {
-                    field_offset: FieldOffset(
-                        0,
-                    ),
-                    dest: Local(
-                        0,
-                    ),
-                },
-                Move {
-                    dest: ReturnSlot,
-                    src: Local(
-                        0,
-                    ),
-                },
-                ExitContext,
-            ],
-            terminator: Return,
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
         },
-    ],
-    decisions: [
         DecisionFact {
             site: SiteId(
                 5,
@@ -185,647 +613,9 @@ RawMirFunction {
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
-    ],
-    intrinsic_id: None,
-    await_deadline_ns: {},
-    lambda_actor_user_param_locals: [],
-}
-RawMirFunction {
-    name: "main",
-    return_ty: Unit,
-    call_conv: Default,
-    params: [],
-    locals: [
-        Named {
-            name: "Counter",
-            args: [],
-            builtin: None,
-            is_opaque: false,
-        },
-        I64,
-        Named {
-            name: "LocalPid",
-            args: [
-                Named {
-                    name: "Counter",
-                    args: [],
-                    builtin: None,
-                    is_opaque: false,
-                },
-            ],
-            builtin: Some(
-                LocalPid,
-            ),
-            is_opaque: false,
-        },
-        I64,
-        I64,
-        Unit,
-        Named {
-            name: "Result",
-            args: [
-                I64,
-                Named {
-                    name: "AskError",
-                    args: [],
-                    builtin: Some(
-                        AskError,
-                    ),
-                    is_opaque: false,
-                },
-            ],
-            builtin: Some(
-                Result,
-            ),
-            is_opaque: false,
-        },
-        I64,
-        Named {
-            name: "AskError",
-            args: [],
-            builtin: Some(
-                AskError,
-            ),
-            is_opaque: false,
-        },
-        Named {
-            name: "Result",
-            args: [
-                I64,
-                Named {
-                    name: "AskError",
-                    args: [],
-                    builtin: Some(
-                        AskError,
-                    ),
-                    is_opaque: false,
-                },
-            ],
-            builtin: Some(
-                Result,
-            ),
-            is_opaque: false,
-        },
-        Unit,
-        I64,
-        I64,
-        Bool,
-        I64,
-        Bool,
-        I64,
-        I64,
-        I64,
-        Bool,
-    ],
-    blocks: [
-        BasicBlock {
-            id: 0,
-            statements: [
-                Bind {
-                    binding: BindingId(
-                        3,
-                    ),
-                    name: "c",
-                    site: SiteId(
-                        6,
-                    ),
-                    ty: Named {
-                        name: "LocalPid",
-                        args: [
-                            Named {
-                                name: "Counter",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            LocalPid,
-                        ),
-                        is_opaque: false,
-                    },
-                },
-                Use {
-                    binding: BindingId(
-                        3,
-                    ),
-                    name: "c",
-                    site: SiteId(
-                        9,
-                    ),
-                    ty: Named {
-                        name: "LocalPid",
-                        args: [
-                            Named {
-                                name: "Counter",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            LocalPid,
-                        ),
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                ConstI64 {
-                    dest: Local(
-                        1,
-                    ),
-                    value: 0,
-                },
-                RecordInit {
-                    ty: Named {
-                        name: "Counter",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                    fields: [
-                        (
-                            FieldOffset(
-                                0,
-                            ),
-                            Local(
-                                1,
-                            ),
-                        ),
-                    ],
-                    dest: Local(
-                        0,
-                    ),
-                },
-                SpawnActor {
-                    actor_name: "Counter",
-                    state: Some(
-                        Local(
-                            0,
-                        ),
-                    ),
-                    init_args: [],
-                    dest: ActorHandle(
-                        2,
-                    ),
-                    max_heap_bytes: None,
-                    cycle_capable: false,
-                },
-                ConstI64 {
-                    dest: Local(
-                        3,
-                    ),
-                    value: 10,
-                },
-            ],
-            terminator: Send {
-                actor: ActorHandle(
-                    2,
-                ),
-                msg_type: -376790880,
-                value: Local(
-                    3,
-                ),
-                next: 1,
-                alias_mode: Copy,
-            },
-        },
-        BasicBlock {
-            id: 1,
-            statements: [
-                Evaluate {
-                    site: SiteId(
-                        8,
-                    ),
-                    ty: Unit,
-                },
-                Use {
-                    binding: BindingId(
-                        3,
-                    ),
-                    name: "c",
-                    site: SiteId(
-                        12,
-                    ),
-                    ty: Named {
-                        name: "LocalPid",
-                        args: [
-                            Named {
-                                name: "Counter",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            LocalPid,
-                        ),
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                ConstI64 {
-                    dest: Local(
-                        4,
-                    ),
-                    value: 32,
-                },
-            ],
-            terminator: Send {
-                actor: ActorHandle(
-                    2,
-                ),
-                msg_type: -376790880,
-                value: Local(
-                    4,
-                ),
-                next: 2,
-                alias_mode: Copy,
-            },
-        },
-        BasicBlock {
-            id: 2,
-            statements: [
-                Evaluate {
-                    site: SiteId(
-                        11,
-                    ),
-                    ty: Unit,
-                },
-                Use {
-                    binding: BindingId(
-                        3,
-                    ),
-                    name: "c",
-                    site: SiteId(
-                        16,
-                    ),
-                    ty: Named {
-                        name: "LocalPid",
-                        args: [
-                            Named {
-                                name: "Counter",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            LocalPid,
-                        ),
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [],
-            terminator: Ask {
-                actor: ActorHandle(
-                    2,
-                ),
-                msg_type: 1031992982,
-                value: Local(
-                    5,
-                ),
-                result_dest: Local(
-                    6,
-                ),
-                reply_dest: Local(
-                    7,
-                ),
-                error_dest: Local(
-                    8,
-                ),
-                next: 3,
-            },
-        },
-        BasicBlock {
-            id: 3,
-            statements: [
-                Bind {
-                    binding: BindingId(
-                        4,
-                    ),
-                    name: "r",
-                    site: SiteId(
-                        15,
-                    ),
-                    ty: Named {
-                        name: "Result",
-                        args: [
-                            I64,
-                            Named {
-                                name: "AskError",
-                                args: [],
-                                builtin: Some(
-                                    AskError,
-                                ),
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            Result,
-                        ),
-                        is_opaque: false,
-                    },
-                },
-                Use {
-                    binding: BindingId(
-                        4,
-                    ),
-                    name: "r",
-                    site: SiteId(
-                        18,
-                    ),
-                    ty: Named {
-                        name: "Result",
-                        args: [
-                            I64,
-                            Named {
-                                name: "AskError",
-                                args: [],
-                                builtin: Some(
-                                    AskError,
-                                ),
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            Result,
-                        ),
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                Move {
-                    dest: Local(
-                        9,
-                    ),
-                    src: Local(
-                        6,
-                    ),
-                },
-                Move {
-                    dest: Local(
-                        11,
-                    ),
-                    src: EnumTag(
-                        9,
-                    ),
-                },
-                ConstI64 {
-                    dest: Local(
-                        12,
-                    ),
-                    value: 0,
-                },
-                IntCmp {
-                    dest: Local(
-                        13,
-                    ),
-                    pred: Eq,
-                    lhs: Local(
-                        11,
-                    ),
-                    rhs: Local(
-                        12,
-                    ),
-                },
-            ],
-            terminator: Branch {
-                cond: Local(
-                    13,
-                ),
-                then_target: 5,
-                else_target: 8,
-            },
-        },
-        BasicBlock {
-            id: 4,
-            statements: [
-                Return {
-                    site: Some(
-                        SiteId(
-                            17,
-                        ),
-                    ),
-                    ty: Unit,
-                },
-            ],
-            instructions: [
-                Move {
-                    dest: ReturnSlot,
-                    src: Local(
-                        10,
-                    ),
-                },
-            ],
-            terminator: Return,
-        },
-        BasicBlock {
-            id: 5,
-            statements: [
-                Bind {
-                    binding: BindingId(
-                        5,
-                    ),
-                    name: "v",
-                    site: SiteId(
-                        19,
-                    ),
-                    ty: I64,
-                },
-                Use {
-                    binding: BindingId(
-                        5,
-                    ),
-                    name: "v",
-                    site: SiteId(
-                        20,
-                    ),
-                    ty: I64,
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                Move {
-                    dest: Local(
-                        16,
-                    ),
-                    src: MachineVariant {
-                        local: 9,
-                        variant_idx: 0,
-                        field_idx: 0,
-                    },
-                },
-            ],
-            terminator: Call {
-                callee: "println_i64",
-                builtin: None,
-                args: [
-                    Local(
-                        16,
-                    ),
-                ],
-                dest: None,
-                next: 9,
-            },
-        },
-        BasicBlock {
-            id: 6,
-            statements: [],
-            instructions: [
-                ConstI64 {
-                    dest: Local(
-                        17,
-                    ),
-                    value: 1,
-                },
-                IntNegChecked {
-                    signed: Signed,
-                    dest: Local(
-                        18,
-                    ),
-                    operand: Local(
-                        17,
-                    ),
-                    overflow_flag: Local(
-                        19,
-                    ),
-                },
-            ],
-            terminator: Branch {
-                cond: Local(
-                    19,
-                ),
-                then_target: 10,
-                else_target: 11,
-            },
-        },
-        BasicBlock {
-            id: 7,
-            statements: [],
-            instructions: [],
-            terminator: Trap {
-                kind: ExhaustivenessFallthrough,
-            },
-        },
-        BasicBlock {
-            id: 8,
-            statements: [],
-            instructions: [
-                ConstI64 {
-                    dest: Local(
-                        14,
-                    ),
-                    value: 1,
-                },
-                IntCmp {
-                    dest: Local(
-                        15,
-                    ),
-                    pred: Eq,
-                    lhs: Local(
-                        11,
-                    ),
-                    rhs: Local(
-                        14,
-                    ),
-                },
-            ],
-            terminator: Branch {
-                cond: Local(
-                    15,
-                ),
-                then_target: 6,
-                else_target: 7,
-            },
-        },
-        BasicBlock {
-            id: 9,
-            statements: [],
-            instructions: [],
-            terminator: Goto {
-                target: 4,
-            },
-        },
-        BasicBlock {
-            id: 10,
-            statements: [],
-            instructions: [],
-            terminator: Trap {
-                kind: IntegerOverflow,
-            },
-        },
-        BasicBlock {
-            id: 11,
-            statements: [],
-            instructions: [],
-            terminator: Call {
-                callee: "println_i64",
-                builtin: None,
-                args: [
-                    Local(
-                        18,
-                    ),
-                ],
-                dest: None,
-                next: 12,
-            },
-        },
-        BasicBlock {
-            id: 12,
-            statements: [],
-            instructions: [],
-            terminator: Goto {
-                target: 4,
-            },
-        },
-    ],
-    decisions: [
         DecisionFact {
             site: SiteId(
                 6,
-            ),
-            ty: Named {
-                name: "LocalPid",
-                args: [
-                    Named {
-                        name: "Counter",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                ],
-                builtin: Some(
-                    LocalPid,
-                ),
-                is_opaque: false,
-            },
-            value_class: AffineResource,
-            intent: Consume,
-            strategy: Move,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                7,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                8,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -835,24 +625,40 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                9,
+                7,
             ),
             ty: Named {
-                name: "LocalPid",
+                name: "HashMap",
                 args: [
-                    Named {
-                        name: "Counter",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
+                    String,
+                    I64,
                 ],
                 builtin: Some(
-                    LocalPid,
+                    HashMap,
                 ),
                 is_opaque: false,
             },
-            value_class: AffineResource,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -861,20 +667,39 @@ RawMirFunction {
             site: SiteId(
                 10,
             ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            ty: Named {
+                name: "Vec",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
                 11,
             ),
-            ty: Unit,
-            value_class: BitCopy,
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
             intent: Read,
-            strategy: BorrowRead,
+            strategy: CowShare,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -882,30 +707,45 @@ RawMirFunction {
                 12,
             ),
             ty: Named {
-                name: "LocalPid",
+                name: "Vec",
                 args: [
-                    Named {
-                        name: "Counter",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
+                    I64,
                 ],
                 builtin: Some(
-                    LocalPid,
+                    Vec,
                 ),
                 is_opaque: false,
             },
-            value_class: AffineResource,
-            intent: Read,
-            strategy: BorrowRead,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
                 13,
             ),
-            ty: I64,
+            ty: Named {
+                name: "HashMap",
+                args: [
+                    String,
+                    I64,
+                ],
+                builtin: Some(
+                    HashMap,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -915,27 +755,10 @@ RawMirFunction {
             site: SiteId(
                 15,
             ),
-            ty: Named {
-                name: "Result",
-                args: [
-                    I64,
-                    Named {
-                        name: "AskError",
-                        args: [],
-                        builtin: Some(
-                            AskError,
-                        ),
-                        is_opaque: false,
-                    },
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
+            ty: I64,
             value_class: BitCopy,
-            intent: Consume,
-            strategy: Move,
+            intent: Read,
+            strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -943,57 +766,25 @@ RawMirFunction {
                 16,
             ),
             ty: Named {
-                name: "LocalPid",
+                name: "Vec",
                 args: [
-                    Named {
-                        name: "Counter",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
+                    String,
                 ],
                 builtin: Some(
-                    LocalPid,
+                    Vec,
                 ),
                 is_opaque: false,
             },
-            value_class: AffineResource,
+            value_class: CowValue,
             intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                17,
-            ),
-            ty: Unit,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            strategy: CowShare,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
                 18,
             ),
-            ty: Named {
-                name: "Result",
-                args: [
-                    I64,
-                    Named {
-                        name: "AskError",
-                        args: [],
-                        builtin: Some(
-                            AskError,
-                        ),
-                        is_opaque: false,
-                    },
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1003,7 +794,7 @@ RawMirFunction {
             site: SiteId(
                 19,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1013,40 +804,19 @@ RawMirFunction {
             site: SiteId(
                 20,
             ),
-            ty: I64,
-            value_class: BitCopy,
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
             intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                22,
-            ),
-            ty: Unit,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                23,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                24,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            strategy: CowShare,
             why: "first vertical-slice classifier",
         },
     ],
@@ -1071,11 +841,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        9,
+                        6,
                     ),
                     name: "val",
                     site: SiteId(
-                        55,
+                        51,
                     ),
                     ty: I32,
                     intent: Read,
@@ -1104,7 +874,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            54,
+                            50,
                         ),
                     ),
                     ty: String,
@@ -1124,7 +894,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                54,
+                50,
             ),
             ty: String,
             value_class: CowValue,
@@ -1134,7 +904,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                55,
+                51,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -1164,11 +934,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        10,
+                        7,
                     ),
                     name: "val",
                     site: SiteId(
-                        58,
+                        54,
                     ),
                     ty: I64,
                     intent: Read,
@@ -1197,7 +967,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            57,
+                            53,
                         ),
                     ),
                     ty: String,
@@ -1217,7 +987,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                57,
+                53,
             ),
             ty: String,
             value_class: CowValue,
@@ -1227,7 +997,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                58,
+                54,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1257,11 +1027,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        11,
+                        8,
                     ),
                     name: "val",
                     site: SiteId(
-                        61,
+                        57,
                     ),
                     ty: U32,
                     intent: Read,
@@ -1290,7 +1060,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            60,
+                            56,
                         ),
                     ),
                     ty: String,
@@ -1310,7 +1080,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                60,
+                56,
             ),
             ty: String,
             value_class: CowValue,
@@ -1320,7 +1090,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                61,
+                57,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -1350,11 +1120,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        12,
+                        9,
                     ),
                     name: "val",
                     site: SiteId(
-                        64,
+                        60,
                     ),
                     ty: U64,
                     intent: Read,
@@ -1383,7 +1153,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            63,
+                            59,
                         ),
                     ),
                     ty: String,
@@ -1403,7 +1173,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                63,
+                59,
             ),
             ty: String,
             value_class: CowValue,
@@ -1413,7 +1183,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                64,
+                60,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -1443,11 +1213,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        13,
+                        10,
                     ),
                     name: "val",
                     site: SiteId(
-                        67,
+                        63,
                     ),
                     ty: Bool,
                     intent: Read,
@@ -1476,7 +1246,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            66,
+                            62,
                         ),
                     ),
                     ty: String,
@@ -1496,7 +1266,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                66,
+                62,
             ),
             ty: String,
             value_class: CowValue,
@@ -1506,7 +1276,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                67,
+                63,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -1536,11 +1306,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        14,
+                        11,
                     ),
                     name: "val",
                     site: SiteId(
-                        70,
+                        66,
                     ),
                     ty: Char,
                     intent: Read,
@@ -1569,7 +1339,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            69,
+                            65,
                         ),
                     ),
                     ty: String,
@@ -1589,7 +1359,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                69,
+                65,
             ),
             ty: String,
             value_class: CowValue,
@@ -1599,7 +1369,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                70,
+                66,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -1629,11 +1399,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        15,
+                        12,
                     ),
                     name: "val",
                     site: SiteId(
-                        73,
+                        69,
                     ),
                     ty: F64,
                     intent: Read,
@@ -1662,7 +1432,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            72,
+                            68,
                         ),
                     ),
                     ty: String,
@@ -1682,7 +1452,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                72,
+                68,
             ),
             ty: String,
             value_class: CowValue,
@@ -1692,7 +1462,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                73,
+                69,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -1721,11 +1491,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        16,
+                        13,
                     ),
                     name: "val",
                     site: SiteId(
-                        75,
+                        71,
                     ),
                     ty: String,
                     intent: Read,
@@ -1733,7 +1503,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            75,
+                            71,
                         ),
                     ),
                     ty: String,
@@ -1753,7 +1523,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                75,
+                71,
             ),
             ty: String,
             value_class: CowValue,

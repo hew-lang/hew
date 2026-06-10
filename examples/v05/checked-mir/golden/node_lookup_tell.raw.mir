@@ -611,6 +611,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::set_transport",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -652,6 +653,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::start",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -790,6 +792,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::register",
+                builtin: None,
                 args: [
                     Local(
                         5,
@@ -846,6 +849,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::lookup",
+                builtin: Some(
+                    NodeLookup,
+                ),
                 args: [
                     Local(
                         7,
@@ -1029,6 +1035,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "assert_eq_i64",
+                builtin: None,
                 args: [
                     Local(
                         31,
@@ -1135,6 +1142,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_remote_pid_tell",
+                builtin: Some(
+                    RemotePidTell,
+                ),
                 args: [
                     Local(
                         16,
@@ -1465,6 +1475,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::lookup",
+                builtin: Some(
+                    NodeLookup,
+                ),
                 args: [
                     Local(
                         33,
@@ -1631,6 +1644,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "Node::shutdown",
+                builtin: None,
                 args: [],
                 dest: None,
                 next: 41,
@@ -1730,6 +1744,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_remote_pid_tell",
+                builtin: Some(
+                    RemotePidTell,
+                ),
                 args: [
                     Local(
                         42,
@@ -2251,6 +2268,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "assert_eq_i64",
+                builtin: None,
                 args: [
                     Local(
                         74,
@@ -3420,6 +3438,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3512,6 +3531,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3604,6 +3624,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3696,6 +3717,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3788,6 +3810,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3880,6 +3903,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -3972,6 +3996,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

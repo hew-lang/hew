@@ -155,6 +155,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "stream$bytes_pipe",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -471,6 +472,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         8,
@@ -552,6 +554,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_sink_close",
+                builtin: Some(
+                    SinkClose,
+                ),
                 args: [
                     Local(
                         5,
@@ -567,6 +572,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         13,
@@ -589,6 +595,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_string_to_bytes",
+                builtin: None,
                 args: [
                     Local(
                         15,
@@ -785,6 +792,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_close",
+                builtin: Some(
+                    StreamClose,
+                ),
                 args: [
                     Local(
                         7,
@@ -928,6 +938,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_bytes_to_string",
+                builtin: None,
                 args: [
                     Local(
                         30,
@@ -1018,6 +1029,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_str",
+                builtin: None,
                 args: [
                     Local(
                         31,
@@ -1694,6 +1706,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "sleep_ms",
+                builtin: None,
                 args: [
                     Local(
                         4,
@@ -4552,6 +4565,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         21,
@@ -4628,6 +4642,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         27,
@@ -4701,6 +4716,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         33,
@@ -4778,6 +4794,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         39,
@@ -4850,6 +4867,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         45,
@@ -4918,6 +4936,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         51,
@@ -4987,6 +5006,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         57,
@@ -5066,6 +5086,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         63,
@@ -5131,6 +5152,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         69,
@@ -5406,6 +5428,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         22,
@@ -5437,6 +5460,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         24,
@@ -5476,6 +5500,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         28,
@@ -5507,6 +5532,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         30,
@@ -5546,6 +5572,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         34,
@@ -5577,6 +5604,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         36,
@@ -5616,6 +5644,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         40,
@@ -5647,6 +5676,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         42,
@@ -5686,6 +5716,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         46,
@@ -5717,6 +5748,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         48,
@@ -5756,6 +5788,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         52,
@@ -5787,6 +5820,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         54,
@@ -5826,6 +5860,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         58,
@@ -5857,6 +5892,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         60,
@@ -5896,6 +5932,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         64,
@@ -5927,6 +5964,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         66,
@@ -5966,6 +6004,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         70,
@@ -5997,6 +6036,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "string_concat",
+                builtin: None,
                 args: [
                     Local(
                         72,
@@ -6858,6 +6898,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$dirname",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -6956,6 +6997,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -7156,6 +7198,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$strip_trailing_slash",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -7206,6 +7249,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$last_slash_pos",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -7453,6 +7497,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_slice",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -7881,6 +7926,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_length",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -7960,6 +8006,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_ends_with",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -8041,6 +8088,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_length",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -8174,6 +8222,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_string_slice",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -8578,6 +8627,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_find",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -8879,6 +8929,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_string_length",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -8932,6 +8983,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_string_length",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -9015,6 +9067,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_string_slice",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -9079,6 +9132,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_string_find",
+                builtin: None,
                 args: [
                     Local(
                         19,
@@ -9840,6 +9894,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$missing_parent",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -10193,6 +10248,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -10567,6 +10623,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -10665,6 +10722,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$missing_parent",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -11134,6 +11192,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -11241,6 +11300,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$missing_parent",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -11658,6 +11718,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_read",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -11904,6 +11965,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_from_file_read",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -11964,6 +12026,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_is_valid",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -12027,6 +12090,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_collect_string",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -12046,6 +12110,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_last_errno",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -12161,6 +12226,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_error",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -12219,6 +12285,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$io_error_from_errno",
+                builtin: None,
                 args: [
                     Local(
                         14,
@@ -12599,6 +12666,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_write",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -12830,6 +12898,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_write",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -12964,6 +13033,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$write_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -13261,6 +13331,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_append",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -13492,6 +13563,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_append",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -13626,6 +13698,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$write_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -13909,6 +13982,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14021,6 +14095,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_delete",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14226,6 +14301,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_delete",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14357,6 +14433,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$missing_path_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14630,6 +14707,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_size",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14741,6 +14819,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_read_bytes",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -14976,6 +15055,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_read_bytes",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -15015,6 +15095,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_errno",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -15128,6 +15209,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$io_error_from_errno",
+                builtin: None,
                 args: [
                     Local(
                         10,
@@ -15599,6 +15681,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_write_bytes",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -15830,6 +15913,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_file_write_bytes",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -15964,6 +16048,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$write_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -16248,6 +16333,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_mkdir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -16453,6 +16539,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_mkdir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -16584,6 +16671,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$mkdir_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -16858,6 +16946,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_mkdir_all",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -17155,6 +17244,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_mkdir_all",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -17271,6 +17361,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -17909,6 +18000,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_list_dir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -18189,6 +18281,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$exists",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -18355,6 +18448,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "fs$is_dir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -18544,6 +18638,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_fs_list_dir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -18981,6 +19076,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_rename",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -19212,6 +19308,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_rename",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -19357,6 +19454,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$move_copy_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -19667,6 +19765,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_copy",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -19898,6 +19997,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_copy",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -20043,6 +20143,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$move_copy_error",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -20339,6 +20440,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_fs_is_dir",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -20583,6 +20685,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_channel",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -20643,6 +20746,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_sink",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -20707,6 +20811,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_stream",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -20771,6 +20876,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_free",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -21333,6 +21439,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_channel",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -21393,6 +21500,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_sink_bytes",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -21457,6 +21565,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_stream_bytes",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -21521,6 +21630,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_pair_free",
+                builtin: None,
                 args: [
                     Local(
                         3,
@@ -22111,6 +22221,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_from_file_read",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -22179,6 +22290,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_is_valid",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -22314,6 +22426,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_error",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -22911,6 +23024,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_from_file_read",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -22979,6 +23093,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_is_valid",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -23099,6 +23214,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_last_errno",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -23188,6 +23304,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_error",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -23246,6 +23363,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$io_error_from_errno",
+                builtin: None,
                 args: [
                     Local(
                         13,
@@ -23829,6 +23947,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_from_file_write",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -23897,6 +24016,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_sink_is_valid",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -24032,6 +24152,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_error",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -24629,6 +24750,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_from_file_write",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -24697,6 +24819,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_sink_is_valid",
+                builtin: None,
                 args: [
                     Local(
                         2,
@@ -24817,6 +24940,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_last_errno",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -24906,6 +25030,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_stream_last_error",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -24964,6 +25089,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "fs$io_error_from_errno",
+                builtin: None,
                 args: [
                     Local(
                         13,
@@ -25451,6 +25577,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_stream_pipe",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -25571,6 +25698,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -25663,6 +25791,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -25755,6 +25884,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -25847,6 +25977,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -25939,6 +26070,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -26031,6 +26163,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -26123,6 +26256,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

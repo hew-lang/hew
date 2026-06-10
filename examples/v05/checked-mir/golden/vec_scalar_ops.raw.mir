@@ -303,6 +303,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "Vec::new",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -373,6 +374,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_i64",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -425,6 +427,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_i64",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -477,6 +480,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_i64",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -522,6 +526,9 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         1,
@@ -541,6 +548,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         5,
@@ -590,6 +598,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_i64",
+                builtin: Some(
+                    VecGet(
+                        I64,
+                    ),
+                ),
                 args: [
                     Local(
                         1,
@@ -612,6 +625,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         7,
@@ -809,6 +823,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         14,
@@ -828,6 +845,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         15,
@@ -870,6 +888,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "hew_vec_pop_i64",
+                builtin: None,
                 args: [
                     Local(
                         1,
@@ -920,6 +939,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         17,
@@ -942,6 +962,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "Vec::new",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -1013,6 +1034,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_f64",
+                builtin: None,
                 args: [
                     Local(
                         19,
@@ -1066,6 +1088,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_f64",
+                builtin: None,
                 args: [
                     Local(
                         19,
@@ -1118,6 +1141,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_f64",
+                builtin: Some(
+                    VecGet(
+                        F64,
+                    ),
+                ),
                 args: [
                     Local(
                         19,
@@ -1140,6 +1168,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_f64",
+                builtin: None,
                 args: [
                     Local(
                         23,
@@ -1337,6 +1366,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         30,
@@ -1356,6 +1388,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         31,
@@ -1378,6 +1411,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "Vec::new",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -1448,6 +1482,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_bool",
+                builtin: None,
                 args: [
                     Local(
                         33,
@@ -1500,6 +1535,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_bool",
+                builtin: Some(
+                    VecGet(
+                        Bool,
+                    ),
+                ),
                 args: [
                     Local(
                         33,
@@ -1553,6 +1593,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_bool",
+                builtin: None,
                 args: [
                     Local(
                         37,
@@ -1575,6 +1616,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "Vec::new",
+                builtin: None,
                 args: [],
                 dest: Some(
                     Local(
@@ -1645,6 +1687,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_i32",
+                builtin: None,
                 args: [
                     Local(
                         39,
@@ -1697,6 +1740,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_push_i32",
+                builtin: None,
                 args: [
                     Local(
                         39,
@@ -1749,6 +1793,11 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_get_i32",
+                builtin: Some(
+                    VecGet(
+                        I32,
+                    ),
+                ),
                 args: [
                     Local(
                         39,
@@ -1965,6 +2014,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         51,
@@ -1984,6 +2036,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         52,
@@ -2057,6 +2110,7 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         54,
@@ -2273,6 +2327,9 @@ RawMirFunction {
             ],
             terminator: Call {
                 callee: "hew_vec_len",
+                builtin: Some(
+                    VecLen,
+                ),
                 args: [
                     Local(
                         63,
@@ -2316,6 +2373,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "println_i64",
+                builtin: None,
                 args: [
                     Local(
                         56,
@@ -4463,6 +4521,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4555,6 +4614,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_i64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4647,6 +4707,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u32",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4739,6 +4800,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_u64",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4831,6 +4893,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_bool",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -4923,6 +4986,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_char",
+                builtin: None,
                 args: [
                     Local(
                         0,
@@ -5015,6 +5079,7 @@ RawMirFunction {
             instructions: [],
             terminator: Call {
                 callee: "to_string_f64",
+                builtin: None,
                 args: [
                     Local(
                         0,

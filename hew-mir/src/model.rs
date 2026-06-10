@@ -2069,8 +2069,23 @@ pub enum Terminator {
     },
     /// Call into a sibling function by name, optionally store its return value,
     /// then branch to `next`.
+    ///
+    /// `builtin` carries the checker/HIR-resolved [`RuntimeCallFamily`]
+    /// when the callee is a compiler-known runtime builtin that rides the
+    /// `Terminator::Call` route (codegen callee intercepts, the
+    /// layout-fact walker, and the double-free escape gate all dispatch
+    /// on it instead of re-matching the callee string). `None` for user
+    /// functions, mangled monomorphisations, machine-step helpers, and
+    /// every other open-set callee.
+    ///
+    /// Invariant: `builtin == Some(f)` implies `callee == f.c_symbol()`
+    /// — the family IS the callee identity; the string is its
+    /// presentation. Producers go through `lower_direct_call` (which
+    /// asserts the invariant) or construct both sides from the same
+    /// family.
     Call {
         callee: String,
+        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
         args: Vec<Place>,
         dest: Option<Place>,
         next: u32,

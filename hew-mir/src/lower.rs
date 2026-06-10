@@ -26659,6 +26659,35 @@ fn enumerate_exits(
             .collect()
     };
 
+    // Variant of `drops_for_exit` for `Terminator::Return`: excludes
+    // `AliasedIntoAggregate` bindings because on a normal return the
+    // aggregate IS the return value — the caller now owns the handle.
+    // Dropping the source binding here would free the handle BEFORE the
+    // caller receives it, producing a use-after-free.
+    //
+    // On `Terminator::Trap` / cancel the aggregate is being abandoned, so
+    // `drops_for_exit` (which includes `AliasedIntoAggregate`) is correct
+    // for those paths.
+    let drops_for_return = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = exit_states.get(&block_id) else {
+            return drops_template.clone();
+        };
+        drops_template
+            .iter()
+            .filter(|drop| match place_to_binding.get(&drop.place) {
+                Some(binding) => matches!(
+                    state_map
+                        .get(binding)
+                        .copied()
+                        .unwrap_or(dataflow::BindingState::Uninit),
+                    dataflow::BindingState::Live | dataflow::BindingState::MaybeConsumed(_)
+                ),
+                None => true,
+            })
+            .cloned()
+            .collect()
+    };
+
     // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
     // `drops_for_exit` to bindings declared in this loop body's scope so the
     // back-edge releases ONLY per-iteration bindings (`let opt = await
@@ -26699,7 +26728,12 @@ fn enumerate_exits(
             Terminator::Return => (
                 ExitPath::Return { block: block_id },
                 DropPlan {
-                    drops: drops_for_exit(block_id),
+                    // Use `drops_for_return` (not `drops_for_exit`) so that
+                    // bindings in `AliasedIntoAggregate` state are excluded:
+                    // the aggregate being returned owns the handle; dropping
+                    // the source binding here would free it before the caller
+                    // receives the return value (use-after-free).
+                    drops: drops_for_return(block_id),
                 },
             ),
             Terminator::Goto { target } => {

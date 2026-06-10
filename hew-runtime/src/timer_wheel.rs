@@ -285,6 +285,64 @@ fn mark_entry_cancelled(w: &WheelInner, entry: *mut HewTimerEntry, generation: u
     let _ = mark_entry_cancelled_in_list(w.overflow, entry, generation);
 }
 
+/// Unlink the entry matching `entry`/`generation` from the list rooted at
+/// `*slot_head`, free its node, and return its `data` pointer. Returns `None`
+/// if no matching live entry is present in this list.
+///
+/// Caller must hold the lock.
+fn remove_entry_from_list(
+    slot_head: &mut *mut HewTimerEntry,
+    entry: *mut HewTimerEntry,
+    generation: u64,
+) -> Option<*mut c_void> {
+    let mut prev: *mut HewTimerEntry = ptr::null_mut();
+    let mut cur = *slot_head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a live node in this slot list; caller holds the lock.
+        let next = unsafe { (*cur).next };
+        // SAFETY: reading identity fields of a live node under the lock.
+        let matches = cur == entry && unsafe { (*cur).generation } == generation;
+        if matches {
+            if prev.is_null() {
+                *slot_head = next;
+            } else {
+                // SAFETY: `prev` is a live preceding node.
+                unsafe {
+                    (*prev).next = next;
+                }
+            }
+            // SAFETY: `cur` was unlinked and is exclusively owned now; capture
+            // its data before freeing the node.
+            let data = unsafe { (*cur).data };
+            // SAFETY: `cur` was Box-allocated by schedule_handle; reclaim it.
+            unsafe {
+                drop(Box::from_raw(cur));
+            }
+            return Some(data);
+        }
+        prev = cur;
+        cur = next;
+    }
+    None
+}
+
+fn remove_entry(w: &mut WheelInner, entry: *mut HewTimerEntry, generation: u64) -> *mut c_void {
+    for slot in &mut w.l0 {
+        if let Some(data) = remove_entry_from_list(slot, entry, generation) {
+            return data;
+        }
+    }
+    for slot in &mut w.l1 {
+        if let Some(data) = remove_entry_from_list(slot, entry, generation) {
+            return data;
+        }
+    }
+    if let Some(data) = remove_entry_from_list(&mut w.overflow, entry, generation) {
+        return data;
+    }
+    ptr::null_mut()
+}
+
 // ---------------------------------------------------------------------------
 // C ABI exports
 // ---------------------------------------------------------------------------
@@ -423,6 +481,42 @@ pub unsafe extern "C" fn hew_timer_wheel_cancel(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     mark_entry_cancelled(&w, entry, generation);
+}
+
+/// Remove a timer entry from the wheel and return its `data` pointer so the
+/// caller can reclaim ownership of the callback payload.
+///
+/// Returns null if no matching live entry is present (it already fired, was
+/// collected for firing, or was never scheduled on this wheel). Unlike
+/// [`hew_timer_wheel_cancel`], this unlinks and frees the entry node
+/// immediately and hands the `data` pointer back to the caller — the wheel no
+/// longer references it. Removal is atomic with deadline firing: an entry that
+/// the tick has already collected (unlinked) will not be found here, so the
+/// payload is reclaimed by exactly one party (this call or the firing
+/// callback), never both.
+///
+/// # Safety
+///
+/// `tw` must be valid. `entry` must have been returned by
+/// [`hew_timer_wheel_schedule_handle`] on the same wheel and `generation` must
+/// be the generation returned in the same handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_timer_wheel_remove(
+    tw: *mut HewTimerWheel,
+    entry: *mut HewTimerEntry,
+    generation: u64,
+) -> *mut c_void {
+    cabi_guard!(
+        tw.is_null() || entry.is_null() || generation == 0,
+        ptr::null_mut()
+    );
+    // SAFETY: caller guarantees `tw` is valid.
+    let wheel = unsafe { &*tw };
+    let mut w = wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    remove_entry(&mut w, entry, generation)
 }
 
 unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {

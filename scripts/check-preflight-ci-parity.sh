@@ -9,6 +9,10 @@
 # .github/workflows/ci.yml, or .github/workflows/release-gate.yml to confirm
 # local preflight still predicts CI outcomes (LESSONS: preflight-perf-discipline).
 #
+# The required-check list is derived from the dispatcher itself via
+# --ci-required so there is a single source of truth: update the
+# CI_REQUIRED_CHECKS array in ci-preflight-dispatcher.sh, not here.
+#
 # Usage:
 #   scripts/check-preflight-ci-parity.sh              # check only
 #   scripts/check-preflight-ci-parity.sh --verbose    # include full command list
@@ -20,53 +24,25 @@ DISPATCHER="$REPO_ROOT/scripts/ci-preflight-dispatcher.sh"
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
-# ── CI-required checks (from ci.yml and release-gate.yml) ──────────────────────
-# These are the checks that the merge queue's required signal depends on.
-# For each entry: (label, command-substring-to-match-in-dispatcher-output).
-# Matching is substring; order does not matter (we check presence, not ordering).
+# ── CI-required checks (derived from dispatcher --ci-required) ─────────────────
+# The authoritative list lives in CI_REQUIRED_CHECKS inside ci-preflight-dispatcher.sh.
+# Read it from there so this script never diverges.
 
 declare -a CI_CHECKS_LABEL
 declare -a CI_CHECKS_PATTERN
 i=0
-# Patterns match either the direct command name OR a Makefile target that
-# subsumes it (e.g. make ci-preflight-smoke runs cargo fmt + clippy;
-# make lint runs verify-ffi + runtime-poison-safe-lint + clippy).
-# Transitive inclusion via make targets is documented here so reviewers can
-# verify the chain: command → make target → fallback-lane command.
-CI_CHECKS_LABEL[i]="Rust fmt check (ci.yml: cargo fmt --all -- --check)";
-CI_CHECKS_PATTERN[i]="make ci-preflight-smoke"; ((i++))
-# ↑ make ci-preflight-smoke runs: cargo fmt --all -- --check + cargo clippy +
-#   cargo nextest run --workspace --profile smoke + make hew
-
-CI_CHECKS_LABEL[i]="Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)";
-CI_CHECKS_PATTERN[i]="make ci-preflight-smoke"; ((i++))
-# ↑ same: make ci-preflight-smoke includes cargo clippy --workspace --tests
-
-CI_CHECKS_LABEL[i]="verify-ffi (ci.yml: make verify-ffi)";               CI_CHECKS_PATTERN[i]="make lint"; ((i++))
-# ↑ make lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi hew-fmt-check + clippy
-
-CI_CHECKS_LABEL[i]="runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)"; CI_CHECKS_PATTERN[i]="make lint"; ((i++))
-# ↑ same: make lint includes runtime-poison-safe-lint
-
-CI_CHECKS_LABEL[i]="nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)";
-CI_CHECKS_PATTERN[i]="make test"; ((i++))
-# ↑ make test = make test-rust: cargo nextest run --workspace --profile ci
-
-CI_CHECKS_LABEL[i]="playground-check (release-gate.yml: make playground-check)";
-CI_CHECKS_PATTERN[i]="make playground-check"; ((i++))
-
-CI_CHECKS_LABEL[i]="Hew test suite ratchet (ci.yml: make test-hew-ratchet)";
-CI_CHECKS_PATTERN[i]="make test-hew-ratchet"; ((i++))
-# ↑ ci.yml build-and-test: make test-hew-ratchet (runs scripts/hew-suite-ratchet.sh).
-# Also in dispatcher fallback lane.  The ratchet gates on the tracked-failures list;
-# unexpected failures or unexpected passes both cause exit 1.
-
-CI_CHECKS_LABEL[i]="Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)";
-CI_CHECKS_PATTERN[i]="make test-stdlib-ratchet"; ((i++))
-# ↑ ci.yml build-and-test: make test-stdlib-ratchet (runs scripts/stdlib-ratchet.sh).
-# Also in dispatcher fallback lane.
-
+while IFS=$'\t' read -r label pattern; do
+    [[ -n "$label" && -n "$pattern" ]] || continue
+    CI_CHECKS_LABEL[i]="$label"
+    CI_CHECKS_PATTERN[i]="$pattern"
+    (( i++ ))
+done < <("$DISPATCHER" --ci-required)
 CI_CHECKS_COUNT=$i
+
+if (( CI_CHECKS_COUNT == 0 )); then
+    echo "error: $DISPATCHER --ci-required returned no entries; cannot verify parity." >&2
+    exit 1
+fi
 
 # ── Capture fallback-lane command set via --dry-run ────────────────────────────
 # Use a path that routes to the fallback (comprehensive) lane.

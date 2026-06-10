@@ -762,6 +762,21 @@ impl Discovery<'_> {
         args: &[ResolvedTy],
         span: &Range<usize>,
     ) {
+        // A builtin opaque-handle type surfaced in std as a fieldless generic
+        // `type X<T> {}` (e.g. `Stream<T>` / `Sink<T>`) lowers to the runtime's
+        // opaque pointer, never a per-instantiation struct. Emitting a
+        // `X$$arg` record layout here would hand codegen a second, empty-struct
+        // representation that collides with the opaque pointer at call
+        // boundaries (a `Call dest` pointer vs a `{}` struct return). Defer to
+        // the builtin.
+        if crate::builtin_type_classes::builtin_type_registration(name).is_some_and(|reg| {
+            matches!(
+                reg.shape,
+                crate::builtin_type_classes::BuiltinTypeShape::Opaque
+            )
+        }) {
+            return;
+        }
         let RecordDecl {
             id, type_params, ..
         } = decl;

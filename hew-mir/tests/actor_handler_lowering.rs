@@ -325,12 +325,14 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
 }
 
 /// The defining-module identity carried on `HirActorDecl` must survive the
-/// HIR→MIR boundary into `ActorLayout` — every downstream qualified re-key
-/// of layout maps and symbols is a no-op unless this discriminator arrives.
-/// Equally load-bearing: carrying it must NOT change behaviour yet — the
-/// layout key and every mangled symbol still derive from the bare name.
+/// HIR→MIR boundary into `ActorLayout`. The layout REGISTRY key is the
+/// dotted qualified identity (`bank.Account`) and every native symbol
+/// derives from the `$`-mangled base (`bank$Account`), so two same-named
+/// module actors occupy distinct entries AND distinct LLVM symbols —
+/// producer (MIR mangle) and consumer (codegen `get_function`) flip
+/// together through the single `actor_symbol_base` authority.
 #[test]
-fn defining_module_survives_to_actor_layout_with_symbols_still_bare() {
+fn defining_module_survives_to_actor_layout_with_qualified_key() {
     let mut ids = IdGen::default();
     let bump_body = block(&mut ids, vec![], None, ResolvedTy::Unit);
     let mut imported = actor(
@@ -353,18 +355,18 @@ fn defining_module_survives_to_actor_layout_with_symbols_still_bare() {
         Some("bank"),
         "ActorLayout must preserve HirActorDecl.defining_module"
     );
-    // No behaviour change with the carrier present: bare-name keys/symbols.
-    assert_eq!(layout.name, "Account");
+    // Registry key dotted; symbols `$`-mangled from the same identity.
+    assert_eq!(layout.name, "bank.Account");
     assert_eq!(
         layout.state_clone_fn_symbol.as_deref(),
-        Some("__hew_state_clone_Account")
+        Some("__hew_state_clone_bank$Account")
     );
     assert_eq!(
         layout.state_drop_fn_symbol.as_deref(),
-        Some("__hew_state_drop_Account")
+        Some("__hew_state_drop_bank$Account")
     );
-    assert_eq!(layout.init_symbol.as_deref(), Some("Account__init"));
-    assert_eq!(layout.handlers[0].symbol, "Account__recv__bump");
+    assert_eq!(layout.init_symbol.as_deref(), Some("bank$Account__init"));
+    assert_eq!(layout.handlers[0].symbol, "bank$Account__recv__bump");
 }
 
 /// A root-program actor (no defining module) lowers with `None` in the

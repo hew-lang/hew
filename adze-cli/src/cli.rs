@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
-    checksum, client, config, credentials, index, lockfile, manifest, native,
-    package_fs, registry, resolver, signing, tarball,
+    checksum, client, config, credentials, index, lockfile, manifest, native, package_fs, registry,
+    resolver, signing, tarball,
 };
 
 /// adze — the Hew package manager
@@ -1966,7 +1966,7 @@ fn replace_local_package_link(link: &Path, target: &Path) -> std::io::Result<()>
         )));
     }
 
-    atomic_fs::replace_symlink_atomic(link, target)
+    crate::atomic_fs::replace_symlink_atomic(link, target)
 }
 
 /// Find the latest (highest semver) version of `package_name` in the registry.

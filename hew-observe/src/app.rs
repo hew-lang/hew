@@ -3,9 +3,9 @@
 use std::cmp::Reverse;
 #[cfg(unix)]
 use std::path::Path;
-use std::time::Instant;
 #[cfg(unix)]
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::client::{
     ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
@@ -1250,6 +1250,7 @@ mod tests {
         Arc, Mutex,
     };
     use std::thread::{self, JoinHandle};
+    #[cfg(not(unix))]
     use std::time::Duration;
 
     struct TestTraceServer {

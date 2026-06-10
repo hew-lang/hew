@@ -87,7 +87,7 @@ mod tests {
     fn allocator_pairing_tracker_lifecycle() {
         let _guard = ALLOC_TRACKER_TEST_MUTEX
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: libc::malloc for a small test buffer; null-checked immediately.
         let ptr = unsafe { libc::malloc(8) }.cast::<u8>();
         assert!(!ptr.is_null());
@@ -108,7 +108,7 @@ mod tests {
     fn allocator_pairing_globalalloc_ptr_not_libc_tracked() {
         let _guard = ALLOC_TRACKER_TEST_MUTEX
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let b: Box<u8> = Box::new(0);
         // ALLOCATOR-PAIRING: GlobalAlloc — Box::into_raw for testing only.
         let ptr = Box::into_raw(b);
@@ -125,7 +125,7 @@ mod tests {
     fn allocator_pairing_tracker_two_ptrs_independent() {
         let _guard = ALLOC_TRACKER_TEST_MUTEX
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: libc::malloc for small test buffers; null-checked immediately.
         let p1 = unsafe { libc::malloc(4) }.cast::<u8>();
         // SAFETY: same as p1.

@@ -148,13 +148,17 @@ fn glob_expand(pattern: &CStr) -> Vec<String> {
     {
         glob_expand_unix(pattern)
     }
-    // PLATFORM-TODO: Windows glob not yet implemented.  Returning an empty
-    // result keeps the symbols present and link-clean while deferring the
-    // WinAPI FindFirstFile/FindNextFile impl to when a Windows target is
-    // tested end-to-end.
+    // SHIM: Windows glob not yet implemented.  The symbols stay present and
+    // link-clean, and the gap is RECORDED (fail-closed: an empty result with
+    // last_error set is diagnosable; a silent empty result would fabricate
+    // "no matches").
+    // WHEN obsolete: when a Windows target gains an end-to-end path/glob test
+    // lane.  WHAT the real solution looks like: FindFirstFileW/FindNextFileW
+    // expansion with the same HewGlobResult ownership contract.
     #[cfg(not(target_family = "unix"))]
     {
         let _ = pattern;
+        crate::set_last_error("hew_glob: glob expansion is not implemented on this platform");
         vec![]
     }
 }

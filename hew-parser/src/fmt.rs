@@ -2625,6 +2625,39 @@ impl<'a> Formatter<'a> {
     // Expressions
     // ------------------------------------------------------------------
 
+    /// Return `true` when `expr` must be parenthesised before a postfix operator
+    /// (`.field`, `.method()`, `[index]`, `?`).
+    ///
+    /// Postfix operators bind at the highest precedence in the Pratt loop.  Any
+    /// expression at a strictly lower precedence level — binary ops, prefix unary
+    /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
+    /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
+    /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
+    fn needs_receiver_parens(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Binary { .. }
+                | Expr::Unary { .. }
+                | Expr::Clone(_)
+                | Expr::Range { .. }
+                | Expr::Is { .. }
+                | Expr::Await(_)
+        )
+    }
+
+    /// Format an expression that appears as the object/receiver of a postfix
+    /// operation (`.`, `[]`, `?`), adding parentheses when required for correct
+    /// re-parsing.
+    fn format_receiver(&mut self, expr: &Expr) {
+        if Self::needs_receiver_parens(expr) {
+            self.write("(");
+            self.format_expr(expr);
+            self.write(")");
+        } else {
+            self.format_expr(expr);
+        }
+    }
+
     /// Format an expression with precedence tracking for correct parenthesization.
     ///
     /// `parent_prec` is the precedence of the enclosing binary operator (0 at top level).
@@ -2926,7 +2959,7 @@ impl<'a> Formatter<'a> {
                 method,
                 args,
             } => {
-                self.format_expr(&receiver.0);
+                self.format_receiver(&receiver.0);
                 self.write(".");
                 self.write(method);
                 self.write("(");
@@ -3003,23 +3036,23 @@ impl<'a> Formatter<'a> {
             }
             Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
-                self.format_expr(&object.0);
+                self.format_receiver(&object.0);
                 self.write(".");
                 self.write(field);
             }
             Expr::Index { object, index } => {
-                self.format_expr(&object.0);
+                self.format_receiver(&object.0);
                 self.write("[");
                 self.format_expr(&index.0);
                 self.write("]");
             }
             Expr::Cast { expr, ty } => {
-                self.format_expr(&expr.0);
+                self.format_receiver(&expr.0);
                 self.write(" as ");
                 self.format_type_expr(&ty.0);
             }
             Expr::PostfixTry(expr) => {
-                self.format_expr(&expr.0);
+                self.format_receiver(&expr.0);
                 self.write("?");
             }
             Expr::Range {

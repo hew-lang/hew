@@ -1999,3 +1999,44 @@ fn fmt_borrow_type_preserved_distinct_from_pointer() {
         "formatter must not coerce `&T` to `*const T`, got: {borrow_fmt}",
     );
 }
+
+// -----------------------------------------------------------------------
+// Receiver parenthesisation (postfix precedence)
+// -----------------------------------------------------------------------
+
+#[test]
+fn fmt_binary_receiver_of_method_call_is_parenthesised() {
+    // `("p-" + "q").len()` — the binary expr is receiver of a method call.
+    // Without parens the formatter would emit `"p-" + "q".len()`, which
+    // reparses as `"p-" + ("q".len())` — a different AST.
+    exact_roundtrip("fn f() -> i64 {\n    let _b = (\"p-\" + \"q\").len();\n    0\n}\n");
+}
+
+#[test]
+fn fmt_binary_receiver_of_field_access_is_parenthesised() {
+    // `(a + b).x` — binary expr as object of a field access.
+    exact_roundtrip("fn f(a: Point, b: Point) -> i64 {\n    (a + b).x\n}\n");
+}
+
+#[test]
+fn fmt_unary_receiver_of_method_call_is_parenthesised() {
+    // `(-x).abs()` — unary negate as receiver; without parens `-(x.abs())`
+    // is a different AST.
+    exact_roundtrip("fn f(x: i64) -> i64 {\n    (-x).abs()\n}\n");
+}
+
+#[test]
+fn fmt_method_chain_on_plain_binary_receiver_roundtrips() {
+    // Multi-level: `("left-" + "right").len()` with AST-equality check.
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+    let src = "fn f() -> i64 {\n    let _a = (\"left-\" + \"right\").len();\n    0\n}\n";
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty());
+    let formatted = format_program(&p1.program);
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse failed: {:?}", p2.errors);
+    assert!(
+        program_eq_ignoring_spans(&p1.program, &p2.program),
+        "AST mismatch after format.\nFormatted:\n{formatted}"
+    );
+}

@@ -20445,6 +20445,25 @@ fn elaborate(
             }
         }
     }
+    // Interior-alias INGRESS exclusion (fail-closed). The dataflow consume
+    // filter above removes an owned Vec MOVED out of its slot, but not one
+    // whose slot received an interior pointer of a still-live parent in the
+    // first place — an owned-element handle loaded via `vec.get(i)` /
+    // `data.get(row)` (`hew_vec_get_owned` / `hew_vec_get_ptr`) or a record/
+    // tuple field is a BORROW the parent still owns. `hew_vec_free_owned` on
+    // such a handle double-frees (the same class as the csv `Table::get` plain
+    // Vec UAF, one level up). Exclude every interior-alias-tainted binding;
+    // over-exclusion only leaks (`boundary-fail-closed`, `cleanup-all-exits`).
+    {
+        let owned_vec_interior_alias = compute_collection_interior_alias_taint(&checked.blocks);
+        owned_vec_drop_allowed.retain(|binding| {
+            builder
+                .binding_locals
+                .get(binding)
+                .and_then(|place| base_local(*place))
+                .is_none_or(|local| !owned_vec_interior_alias.contains(&local))
+        });
+    }
 
     // Local `HashMap` / `HashSet` handle scope-exit drop allow-set. A local
     // collection handle earns its `hew_hashmap_free_layout` /
@@ -22635,6 +22654,96 @@ fn compute_projection_alias_taint(
     tainted
 }
 
+/// True when `callee` is a vector ELEMENT getter that returns a BORROW of the
+/// parent vector's element slot rather than a fresh, independently-owned value.
+///
+/// `hew_vec_get_ptr` / `hew_vec_get_owned` hand back the live heap handle (or
+/// the heap-boxed pair address) stored in the slot; the vector keeps ownership
+/// (`Builder::*` element-load routing doc: "a for-in / index read is a BORROW,
+/// not an independent owner"). A collection/owned-vector binding bound from one
+/// of these therefore aliases interior storage of a still-live parent vector
+/// and must never earn its own scope-exit free.
+///
+/// Deliberately NARROW — the move-out and copy-out element ops are EXCLUDED so
+/// their genuinely-owned results stay droppable:
+///   - `hew_vec_pop_*` MOVES the element out of the buffer (the slot is gone),
+///     so the popped handle is the sole owner now;
+///   - `hew_vec_slice_range_*` / `hew_vec_clone*` build a FRESH vector;
+///   - `hew_vec_get_str` returns a `+1` retained string (a fresh owner — see
+///     `fresh_string_producer_term_dest`), not a vector handle;
+///   - `hew_vec_get_layout` / the typed scalar getters copy a `BitCopy` value
+///     out (no heap alias, never a collection candidate).
+///
+/// Listing the two borrowing getters explicitly (not a prefix test) keeps the
+/// classifier fail-closed: a future getter must be classified deliberately, and
+/// the default (not borrowing → eligible) is the SAFE side only for the
+/// move/copy producers enumerated above.
+fn is_vec_interior_borrow_getter(callee: &str) -> bool {
+    matches!(callee, "hew_vec_get_ptr" | "hew_vec_get_owned")
+}
+
+/// Interior-alias taint for the COLLECTION / owned-vector sole-owner provers:
+/// the locals that hold an interior pointer of a still-live aggregate and must
+/// therefore never earn an independent scope-exit free.
+///
+/// Extends [`compute_projection_alias_taint`] (the record/tuple/closure-env/
+/// actor-state field loads + enum/machine payload destructures the string and
+/// bytes leaf provers already exclude) with the owned-element VECTOR getters
+/// (`is_vec_interior_borrow_getter`), which lower as either an
+/// `Instr::CallRuntimeAbi` (the `xs[i]` index path) or a `Terminator::Call`
+/// (the `xs.get(i)` method path). A handle loaded out of a parent vector's slot
+/// is a borrow of that slot; dropping it double-frees the element the parent's
+/// own drop path owns. Taint propagates forward through whole-value `Move` so a
+/// rebind (`let r2 = r;`) of a borrowed element handle stays tainted.
+///
+/// Fail-closed: an empty exempt set is passed to the projection-alias seed
+/// (taint strictly more), and over-tainting only ever over-EXCLUDES a binding
+/// from drop (a leak, never a double-free).
+#[must_use]
+fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+    // Seed the borrowing vector element getters (both lowering shapes).
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::CallRuntimeAbi(call) = instr {
+                if is_vec_interior_borrow_getter(call.symbol()) {
+                    if let Some(local) = call.dest().and_then(base_local) {
+                        tainted.insert(local);
+                    }
+                }
+            }
+        }
+        if let Terminator::Call { callee, dest, .. } = &block.terminator {
+            if is_vec_interior_borrow_getter(callee) {
+                if let Some(local) = dest.and_then(base_local) {
+                    tainted.insert(local);
+                }
+            }
+        }
+    }
+    // Forward-propagate the new seeds through whole-value `Move` to a fixpoint
+    // (the field-load seeds were already propagated by the call above; the
+    // getter seeds need a fresh pass).
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                if let Instr::Move { dest, src } = instr {
+                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                        if tainted.contains(&sl) && tainted.insert(dl) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
 /// W5.011 P3 — the destination place of an instruction that produces a fresh,
 /// solely-owned `string` (a `+1` owner the caller must balance with exactly one
 /// `hew_string_drop`). Only the validated runtime-ABI producers
@@ -24116,8 +24225,30 @@ fn derive_local_collection_drop_allowed(
         }
     }
 
+    // Interior-alias INGRESS exclusion (fail-closed). The escape scan above
+    // catches a handle aliased OUT of its slot (read as an owning sink); it
+    // does NOT catch a candidate whose slot received an interior pointer of a
+    // still-live aggregate in the first place. Such a handle is never a sole
+    // owner — the parent aggregate's own drop path owns the release — so a
+    // scope-exit free here double-frees (the csv `Table::get`
+    // `let r = data.get(row)` UAF, where `r` is `hew_vec_get_ptr(data, row)`,
+    // a borrow of `data`'s element slot). `compute_collection_interior_alias_
+    // taint` seeds the record/tuple/closure-env/actor-state field loads and
+    // enum/machine payload destructures shared with the string/bytes provers,
+    // PLUS the owned-element vector getters (`hew_vec_get_ptr` /
+    // `hew_vec_get_owned`) those leaf provers do not need, and propagates the
+    // taint forward through whole-value `Move`. Over-tainting only
+    // over-excludes (leak), never double-frees.
+    let interior_alias = compute_collection_interior_alias_taint(blocks);
+
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
+        // A candidate holding an interior pointer of a still-live aggregate is
+        // a borrow, not a sole owner — exclude it before any admit (see the
+        // `interior_alias` rationale above).
+        if interior_alias.contains(&local) {
+            continue;
+        }
         // Resolve the candidate to its whole-value alias ROOT before testing
         // exclusion. Escapes are recorded by ROOT (`note_escape` inserts
         // `alias_of[local]`), so a candidate that is itself an alias member —
@@ -24279,8 +24410,11 @@ fn derive_local_bytes_drop_allowed(
     // Projection-alias taint: a candidate whose local aliases interior storage
     // of a still-live aggregate must never drop (the parent's drop path owns
     // the release). Conservative empty exemption set — over-tainting only
-    // over-excludes (leak, never double-free).
-    let tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+    // over-excludes (leak, never double-free). Uses the collection-aware taint
+    // so a `bytes` triple borrowed out of a `Vec<bytes>` slot
+    // (`hew_vec_get_ptr` / `hew_vec_get_owned`) is excluded too, not only the
+    // record/tuple/closure-env/actor-state field-load aliases.
+    let tainted = compute_collection_interior_alias_taint(blocks);
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
@@ -31190,6 +31324,391 @@ mod f1_suspending_escape_poison {
             !allowed.contains(&binding),
             "an aggregate-ingress bytes triple must not earn a producer-side \
              drop; allowed: {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plain_vec_drop_interior_alias_and_escape {
+    //! Revision regression net for the plain-`Vec` scope-exit release
+    //! (`fix/v050-plain-vec-local-drop`). The shipped
+    //! `derive_local_collection_drop_allowed` escape scan caught a handle
+    //! aliased OUT of its slot (read as an owning sink) but had NO interior-alias
+    //! INGRESS exclusion: a candidate whose slot is itself a BORROW of a
+    //! still-live parent — `let r = data.get(row)` lowering to
+    //! `hew_vec_get_ptr(data, row)` → `Move` → `r` — was admitted for
+    //! `hew_vec_free`, double-freeing the element the parent vector still owns
+    //! (the csv `Table::get` UAF). These fixtures pin the prover's allow-set —
+    //! the authority that drives the `hew_vec_free` drop plan — for the
+    //! aggregate-escape and interior-alias shapes, NOT behaviourally.
+    use super::*;
+
+    fn vec_string_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::String],
+            builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
+        }
+    }
+
+    fn ty_is_vec_handle(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec),
+                ..
+            }
+        )
+    }
+
+    fn tbl_ty() -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Tbl".to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    fn push_str(receiver: u32, value: u32, next: u32) -> Terminator {
+        Terminator::Call {
+            callee: "hew_vec_push_str".to_string(),
+            args: vec![Place::Local(receiver), Place::Local(value)],
+            dest: None,
+            next,
+        }
+    }
+
+    /// (a) push-then-record-return. A `Vec<string>` mutated via `push` (a
+    /// receiver-borrow interior read, NOT an escape) and then moved into a
+    /// record constructed at the return position. The handle escapes into the
+    /// returned aggregate — the caller owns it now — so a producer-side
+    /// `hew_vec_free` would double-free; the prover must exclude it.
+    #[test]
+    fn push_then_record_return_excludes_escaping_vec() {
+        let hdrs = BindingId(401);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: push_str(1, 4, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::RecordInit {
+                    ty: tbl_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(6),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let owned_locals = vec![(hdrs, "hdrs".to_string(), vec_string_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(hdrs, Place::Local(1))].into_iter().collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            !allowed.contains(&hdrs),
+            "a Vec pushed-to then moved into a returned record escapes; the \
+             caller owns the buffer now and a producer-side hew_vec_free \
+             double-frees. allowed: {allowed:?}"
+        );
+    }
+
+    /// (b) empty-literal alias + push + aggregate (the double-drop). The `[]`
+    /// desugar mints a synthetic `__hew_array_0` temp that the binding `hdrs`
+    /// whole-value-aliases (`Move` chain `arr → t → hdrs`); `hdrs` is then
+    /// pushed-to and moved into a returned record. BOTH alias-group members map
+    /// to the same buffer, so admitting EITHER for `hew_vec_free` double-frees
+    /// even before the escape is considered. The prover must clear NEITHER.
+    #[test]
+    fn empty_literal_alias_group_into_aggregate_excludes_both() {
+        let arr = BindingId(411);
+        let hdrs = BindingId(412);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    // arr (Local 1) → temp (Local 2) → hdrs (Local 3): the
+                    // array-literal-desugar whole-value hand-off chain.
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(3),
+                        src: Place::Local(2),
+                    },
+                ],
+                terminator: push_str(3, 4, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::RecordInit {
+                    ty: tbl_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(3))],
+                    dest: Place::Local(6),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let owned_locals = vec![
+            (arr, "__hew_array_0".to_string(), vec_string_ty()),
+            (hdrs, "hdrs".to_string(), vec_string_ty()),
+        ];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(arr, Place::Local(1)), (hdrs, Place::Local(3))]
+                .into_iter()
+                .collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            allowed.is_empty(),
+            "neither the empty-literal temp nor its `hdrs` alias may earn a \
+             free: they share one buffer (double-free) and that buffer escapes \
+             into the returned record. allowed: {allowed:?}"
+        );
+    }
+
+    /// (c) the csv `parse_impl` shape: a `Vec<string>` `headers` mutated by
+    /// nested-loop pushes and moved into the returned `Table` at TWO return
+    /// sites (an early `return Table{..}` and the tail `Table{..}`). The
+    /// whole-function escape scan must exclude it at both — a handle that
+    /// escapes on ANY exit can never earn a producer-side free.
+    #[test]
+    fn csv_parse_impl_two_return_sites_excludes_returned_vec() {
+        let headers = BindingId(421);
+        let blocks = vec![
+            // Branch: early-return arm (block 1) vs body (block 2).
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            // Early return: `return Table { hdrs: headers, .. }`.
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::RecordInit {
+                    ty: tbl_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(6),
+                }],
+                terminator: Terminator::Return,
+            },
+            // Body: a loop-body push, then the tail `Table { hdrs: headers }`.
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: push_str(1, 4, 3),
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![Instr::RecordInit {
+                    ty: tbl_ty(),
+                    fields: vec![(FieldOffset(0), Place::Local(1))],
+                    dest: Place::Local(7),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let owned_locals = vec![(headers, "headers".to_string(), vec_string_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(headers, Place::Local(1))].into_iter().collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            !allowed.contains(&headers),
+            "`headers` escapes into the returned Table on both return paths; it \
+             must not earn a producer-side free. allowed: {allowed:?}"
+        );
+    }
+
+    /// (d) the interior-alias UAF the revision fixes (csv `Table::get`). A
+    /// `Vec<string>` element loaded out of a `Vec<Vec<string>>` parent via the
+    /// borrowing getter `hew_vec_get_ptr` (a `Terminator::Call`, the
+    /// `data.get(row)` method-path lowering) is rebound (`let r = ..`) and only
+    /// read (`r.len()`). The slot is a BORROW of the parent vector's element —
+    /// the parent still owns the buffer — so a scope-exit `hew_vec_free(r)`
+    /// double-frees. The prover must exclude `r`.
+    #[test]
+    fn interior_borrow_terminator_getter_excludes_aliased_element() {
+        let r = BindingId(431);
+        let blocks = vec![
+            // parent = tbl.data (a record field load — an interior alias seed);
+            // then r_tmp = hew_vec_get_ptr(parent, idx) (a borrow of the slot).
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![Instr::RecordFieldLoad {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(11),
+                }],
+                terminator: Terminator::Call {
+                    callee: "hew_vec_get_ptr".to_string(),
+                    args: vec![Place::Local(11), Place::Local(1)],
+                    dest: Some(Place::Local(12)),
+                    next: 1,
+                },
+            },
+            // r = r_tmp (rebind), then a receiver-borrow read `r.len()`.
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(13),
+                    src: Place::Local(12),
+                }],
+                terminator: Terminator::Call {
+                    callee: "hew_vec_len".to_string(),
+                    args: vec![Place::Local(13)],
+                    dest: Some(Place::Local(18)),
+                    next: 2,
+                },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let owned_locals = vec![(r, "r".to_string(), vec_string_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(r, Place::Local(13))].into_iter().collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            !allowed.contains(&r),
+            "`r = data.get(row)` is a borrow of the parent vector's element \
+             slot (hew_vec_get_ptr); a producer-side hew_vec_free double-frees \
+             the buffer the parent still owns. allowed: {allowed:?}"
+        );
+    }
+
+    /// (d′) the same interior-alias UAF via the `xs[i]` INDEX-path lowering,
+    /// where the borrowing getter is an `Instr::CallRuntimeAbi` rather than a
+    /// `Terminator::Call`. Both lowering shapes must taint the result.
+    #[test]
+    fn interior_borrow_instr_getter_excludes_aliased_element() {
+        let r = BindingId(441);
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::CallRuntimeAbi(
+                    crate::model::RuntimeCall::new(
+                        "hew_vec_get_ptr",
+                        vec![Place::Local(11), Place::Local(1)],
+                        Some(Place::Local(12)),
+                    )
+                    .expect("hew_vec_get_ptr is an allowlisted runtime symbol"),
+                ),
+                Instr::Move {
+                    dest: Place::Local(13),
+                    src: Place::Local(12),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        let owned_locals = vec![(r, "r".to_string(), vec_string_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(r, Place::Local(13))].into_iter().collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            !allowed.contains(&r),
+            "the index-path (Instr) hew_vec_get_ptr borrow must be tainted too; \
+             allowed: {allowed:?}"
+        );
+    }
+
+    /// Positive control: a FRESH, non-escaping local `Vec<string>` (built in
+    /// place, mutated via `push`, read via `len`, never moved out or aliased
+    /// in) is the sole owner and MUST stay admitted — the interior-alias
+    /// exclusion must not over-exclude and silently reintroduce the very leak
+    /// the lane exists to close.
+    #[test]
+    fn fresh_non_escaping_local_vec_stays_admitted() {
+        let xs = BindingId(451);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: push_str(1, 4, 1),
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Call {
+                    callee: "hew_vec_len".to_string(),
+                    args: vec![Place::Local(1)],
+                    dest: Some(Place::Local(2)),
+                    next: 2,
+                },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let owned_locals = vec![(xs, "xs".to_string(), vec_string_ty())];
+        let binding_locals: HashMap<BindingId, Place> =
+            [(xs, Place::Local(1))].into_iter().collect();
+
+        let allowed = derive_local_collection_drop_allowed(
+            &blocks,
+            &owned_locals,
+            &binding_locals,
+            ty_is_vec_handle,
+        );
+        assert!(
+            allowed.contains(&xs),
+            "a fresh sole-owner local Vec must stay admitted for its scope-exit \
+             hew_vec_free (the leak the lane closes); allowed: {allowed:?}"
         );
     }
 }

@@ -1272,26 +1272,23 @@ fn make() {
 
 // ── unlink rejection ───────────────────────────────────────────────────────
 //
-// `link` and `monitor` now pass through HIR so MIR can distinguish discarded
-// statement-position calls from value-needed composite returns. `unlink` has no
-// producer arm in this slice and remains fail-closed here.
+// `link`, `monitor`, and `unlink` all pass through HIR so MIR can emit
+// the matching `hew_actor_*` runtime ABI calls. Statement-position use
+// is wired; value-needed composite returns remain fail-closed at MIR.
 
 #[test]
-fn unlink_call_emits_not_yet_implemented_not_unresolved() {
+fn unlink_call_lowers_without_diagnostics() {
+    // `unlink(pid)` now has a MIR producer arm (mirroring `link`/`monitor`).
+    // HIR lowers it cleanly — no NotYetImplemented, no UnresolvedSymbol.
+    // The MIR producer synthesizes `hew_actor_self()` as arg0 and the
+    // user target as arg1, matching the `hew_actor_unlink(a, b)` ABI.
     let output = lower(
         "actor Probe { receive fn crash() { exit(1) } }
          fn main() { let p = spawn Probe; unlink(p); }",
     );
-    let is_nyi = output.diagnostics.iter().any(|d| match &d.kind {
-        HirDiagnosticKind::NotYetImplemented {
-            construct,
-            owning_pass,
-        } => construct.contains("unlink") && owning_pass == "cluster-runtime",
-        _ => false,
-    });
     assert!(
-        is_nyi,
-        "unlink() call must emit NotYetImplemented(cluster-runtime), got: {:?}",
+        output.diagnostics.is_empty(),
+        "unlink() call must lower without HIR diagnostics, got: {:?}",
         output.diagnostics
     );
     let unresolved_name = output.diagnostics.iter().any(

@@ -253,6 +253,13 @@ const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 /// `ResolvedRef::Item(_)` guard via [`is_synthetic_builtin_item`].
 const SYNTHETIC_LINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 9);
 const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
+/// Synthetic-builtin sentinel `ItemId` for the user-facing `unlink` builtin.
+/// Mirrors `SYNTHETIC_LINK_ITEM` / `SYNTHETIC_MONITOR_ITEM`; the checker
+/// (`registration.rs`) registers `unlink` as a 1-arg `LocalPid<T> → Unit`
+/// builtin with no AST `fn` item. MIR routes
+/// `BindingRef { name: "unlink", resolved: Item(_) }` through
+/// `user_name_to_c_symbol` → `hew_actor_unlink`.
+const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
 
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
 /// constructor. The checker (`Checker::register_builtins`) registers it as a
@@ -5528,6 +5535,7 @@ impl LowerCtx {
         for (name, id) in [
             ("link", SYNTHETIC_LINK_ITEM),
             ("monitor", SYNTHETIC_MONITOR_ITEM),
+            ("unlink", SYNTHETIC_UNLINK_ITEM),
         ] {
             self.fn_registry.insert(
                 name.to_string(),
@@ -9891,29 +9899,6 @@ impl LowerCtx {
                                 ResolvedTy::Unit,
                             )
                         }
-                    } else if name == "unlink" {
-                        // `unlink` remains a checker-registered actor-lifecycle
-                        // builtin without a MIR producer arm. `link` and `monitor`
-                        // now pass through to MIR so statement-position calls can
-                        // emit `CallRuntimeAbi` while value-needed composite returns
-                        // fail closed at the producer boundary.
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: format!("builtin call `{name}`"),
-                                owning_pass: "cluster-runtime".to_string(),
-                            },
-                            span.clone(),
-                            "unlink requires a MIR producer arm before it can reach \
-                             the runtime substrate",
-                        ));
-                        let callee = self.unresolved_builtin_callee(name, function.1.clone());
-                        (
-                            HirExprKind::Call {
-                                callee: Box::new(callee),
-                                args,
-                            },
-                            ResolvedTy::Unit,
-                        )
                     } else {
                         self.lower_regular_call(function, args, &span, site)
                     }
@@ -16126,13 +16111,31 @@ impl LowerCtx {
             });
         }
 
+        // Derive the event name from the event index into `current_machine_events`.
+        let event_name = self
+            .current_machine_events
+            .as_ref()
+            .and_then(|ev| ev.get(event_idx))
+            .cloned()
+            .unwrap_or_else(|| format!("{machine_name}Event"));
+        let available: Vec<String> = event_fields.iter().map(|f| f.name.clone()).collect();
+        let note = if available.is_empty() {
+            format!("event `{event_name}` has no payload fields; `{field}` does not exist")
+        } else {
+            format!(
+                "event `{event_name}` has fields: [{}]; `{field}` is not one of them",
+                available.join(", ")
+            )
+        };
         self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::NotYetImplemented {
-                construct: format!("`event.{field}` — field not declared on current event"),
-                owning_pass: "machine event payload field validation".to_string(),
+            HirDiagnosticKind::MachineEventFieldNotFound {
+                machine_name: machine_name.clone(),
+                event_name,
+                field_name: field.to_string(),
+                available_fields: available,
             },
             span.clone(),
-            "event payload field is not declared on this transition's event",
+            note,
         ));
         Some(HirExpr {
             node: self.ids.node(),
@@ -20977,6 +20980,7 @@ fn build_callable_set(
     // `user_name_to_c_symbol` (`hew_actor_link` / `hew_actor_monitor`).
     set.insert("link".to_string());
     set.insert("monitor".to_string());
+    set.insert("unlink".to_string());
     // User-facing `duplex_pair` constructor — seeded into `fn_registry` by
     // `seed_stdlib_fn_registry` and bridged in MIR via
     // `user_name_to_c_symbol("duplex_pair")` → `hew_duplex_pair`.

@@ -434,3 +434,74 @@ fn value_needed_monitor_stays_fail_closed_until_monitor_ref_construction() {
         pipeline.diagnostics
     );
 }
+
+// ---------------------------------------------------------------------------
+// actor unlink lowering — mirroring link/monitor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn discarded_unlink_emits_call_runtime_abi_without_dest() {
+    // 1-arg user surface: `unlink(target)`. The producer synthesizes the
+    // implicit `self` subject via `hew_actor_self()` as ABI arg0 and
+    // threads the user target as arg1, matching `hew_actor_unlink(a, b)`.
+    let source = link_monitor_source(
+        r"
+        let p = spawn Probe;
+        unlink(p);
+        return 0;
+        ",
+    );
+    let pipeline = pipeline_with_tc(&source);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "unlink() in statement position must lower without diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
+
+    let raw = main_raw(&pipeline);
+
+    let self_calls = calls_for(raw, "hew_actor_self");
+    // One `hew_actor_self` synthesis for the single `unlink(p)` call.
+    assert_eq!(
+        self_calls.len(),
+        1,
+        "expected exactly one hew_actor_self synthesis for unlink(p); got {self_calls:?}"
+    );
+
+    let unlink_calls = calls_for(raw, "hew_actor_unlink");
+    assert_eq!(
+        unlink_calls.len(),
+        1,
+        "expected exactly one CallRuntimeAbi for hew_actor_unlink; got {unlink_calls:?}"
+    );
+    let call = unlink_calls[0];
+    assert_eq!(
+        call.args().len(),
+        2,
+        "hew_actor_unlink must carry two actor handles (synthesized self, user target)"
+    );
+    // arg0: the synthesized `hew_actor_self()` result.
+    let Place::Local(self_idx) = call.args()[0] else {
+        panic!(
+            "hew_actor_unlink arg0 must be the synthesized self Local; got {:?}",
+            call.args()[0]
+        );
+    };
+    assert!(
+        self_calls
+            .iter()
+            .any(|c| c.dest() == Some(Place::Local(self_idx))),
+        "hew_actor_unlink arg0 Local({self_idx}) must be produced by a hew_actor_self call"
+    );
+    // arg1: the user-provided target ActorHandle from `spawn Probe`.
+    assert!(
+        matches!(call.args()[1], Place::ActorHandle(_)),
+        "hew_actor_unlink arg1 must be the user target ActorHandle; got {:?}",
+        call.args()[1]
+    );
+    assert!(
+        call.dest().is_none(),
+        "discarded unlink() call must use dest=None; got {:?}",
+        call.dest()
+    );
+}

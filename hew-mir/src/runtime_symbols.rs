@@ -87,6 +87,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_actor_self",
     "hew_actor_send_by_id",
     "hew_actor_spawn",
+    // `hew_actor_unlink(a, b)` — removes the bidirectional process link
+    // between `a` and `b`. The Hew user-facing name is `unlink(target)`;
+    // the linking subject is the implicit calling actor (`self`), mirroring
+    // the `link` ABI. The 2-arg runtime ABI is satisfied by synthesizing
+    // `hew_actor_self()` as arg0 and the user target as arg1. Implemented
+    // at `hew-runtime/src/link.rs:148`.
+    "hew_actor_unlink",
     // --- Auto-injected mutex substrate  -----------------
     // `hew_auto_mutex_alloc() -> *mut HewAutoMutex`
     // (`hew-runtime/src/auto_mutex.rs`). Allocates one opaque mutex
@@ -681,6 +688,7 @@ pub fn user_name_to_c_symbol(name: &str) -> Option<&'static str> {
         // symbol adds the `hew_actor_` prefix.
         "link" => Some("hew_actor_link"),
         "monitor" => Some("hew_actor_monitor"),
+        "unlink" => Some("hew_actor_unlink"),
         // supervisor_stop(sup) — the Hew source name; the C-ABI symbol adds the
         // `hew_supervisor_` prefix.  The checker registers the builtin under the
         // user-facing name so HIR emits the bare name.

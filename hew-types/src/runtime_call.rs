@@ -161,7 +161,7 @@ pub enum MathIntrinsic {
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallFamily {
-    // --- Actor cooperate/link/monitor/spawn surface -------------------------
+    // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
     ActorAskWithChannel,
     ActorCooperate,
@@ -170,6 +170,7 @@ pub enum RuntimeCallFamily {
     ActorSelf,
     ActorSendById,
     ActorSpawn,
+    ActorUnlink,
 
     // --- Auto-injected mutex substrate (closure-env / generator-state) ------
     AutoMutexAlloc,
@@ -440,6 +441,7 @@ impl RuntimeCallFamily {
             Self::ActorSelf => "hew_actor_self",
             Self::ActorSendById => "hew_actor_send_by_id",
             Self::ActorSpawn => "hew_actor_spawn",
+            Self::ActorUnlink => "hew_actor_unlink",
             // Auto-mutex
             Self::AutoMutexAlloc => "hew_auto_mutex_alloc",
             Self::AutoMutexFree => "hew_auto_mutex_free",
@@ -659,6 +661,7 @@ impl RuntimeCallFamily {
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
             "hew_actor_send_by_id" => Self::ActorSendById,
+            "hew_actor_unlink" => Self::ActorUnlink,
             "hew_actor_spawn" => Self::ActorSpawn,
             // Auto-mutex
             "hew_auto_mutex_alloc" => Self::AutoMutexAlloc,
@@ -934,6 +937,7 @@ impl RuntimeCallFamily {
             | F::ActorSelf
             | F::ActorSendById
             | F::ActorSpawn
+            | F::ActorUnlink
             | F::AutoMutexAlloc
             | F::AutoMutexFree
             | F::AutoMutexLock
@@ -1321,6 +1325,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
         F::ActorSelf,
         F::ActorSendById,
         F::ActorSpawn,
+        F::ActorUnlink,
         // Auto-mutex
         F::AutoMutexAlloc,
         F::AutoMutexFree,

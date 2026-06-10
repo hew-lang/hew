@@ -14979,6 +14979,7 @@ impl Builder {
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
             }
+            "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
             "hew_bytes_index" => self.lower_bytes_get_i32(hir_args, site, context),
@@ -15348,6 +15349,67 @@ impl Builder {
         self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
 
         self.push_runtime_call(symbol, vec![self_handle, target], None);
+        None
+    }
+
+    /// Emit `Instr::CallRuntimeAbi` for discarded `unlink` calls.
+    ///
+    /// The user-facing surface is `unlink(target)` — 1 arg. The runtime ABI
+    /// is `hew_actor_unlink(self_ptr, target_ptr)` — 2 args. The calling
+    /// actor is the implicit first argument, synthesized via
+    /// `hew_actor_self()`, mirroring `lower_actor_link_or_monitor`.
+    ///
+    /// `unlink` is a statement-position-only builtin in v0.5: it returns
+    /// `Unit` and has no value-needed path, so value-needed context fails
+    /// closed here rather than silently discarding the call.
+    fn lower_actor_unlink(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_actor_unlink` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_actor_unlink` expects exactly 1 argument (target), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        if context == RuntimeCallContext::ValueNeeded {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_actor_unlink` value result".to_string(),
+                    site,
+                },
+                note: "`hew_actor_unlink` returns unit; use it in statement position only"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        // arg1: the user-provided target handle. Lower it first so a failure
+        // to lower the target is reported before emitting the self-handle call.
+        let target = self.lower_value(&hir_args[0])?;
+
+        // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
+        let self_handle = self.alloc_local(ResolvedTy::Named {
+            name: hew_types::BuiltinType::LocalPid
+                .canonical_name()
+                .to_string(),
+            args: vec![ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::LocalPid),
+            is_opaque: false,
+        });
+        self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
+
+        self.push_runtime_call("hew_actor_unlink", vec![self_handle, target], None);
         None
     }
 

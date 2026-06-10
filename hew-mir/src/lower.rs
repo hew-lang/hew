@@ -6417,6 +6417,57 @@ impl Builder {
             .is_some_and(|elem| self.is_owned_vec_element(elem))
     }
 
+    /// True when `ty` is the builtin `Vec<T>` whose element `T` is a PLAIN
+    /// element — a `BitCopy` scalar (`i64`, `u8`, `bool`, `f64`, `char`,
+    /// `Duration`, …) or `string` (whose element release lives inside the
+    /// runtime's `ElemKind::String` walk). These are exactly the Vecs codegen
+    /// constructs WITHOUT an owned-element descriptor, so the matching
+    /// scope-exit release is the plain `hew_vec_free` (buffer + handle; the
+    /// runtime walks string elements itself). Substitutes through the
+    /// monomorphisation map first (mirroring `vec_receiver_has_owned_element`)
+    /// so a polymorphic binding type resolves to its concrete element.
+    ///
+    /// Default-deny: ONLY the positively enumerated plain element shapes
+    /// admit. An owned-element Vec and a closure-pair Vec have their own
+    /// dedicated release arms (`hew_vec_free_owned` /
+    /// `hew_vec_free_closure_pairs`) and are structurally excluded here (their
+    /// elements are `Named` / fn-typed, never a scalar leaf). A `bytes` /
+    /// container / composite element, or an unresolved type parameter, is NOT
+    /// plain — those stay on the leak-as-before posture rather than risking a
+    /// wrong-ABI free against a descriptor-constructed handle
+    /// (`boundary-fail-closed`).
+    fn binding_ty_is_plain_vec(&self, ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(ty)
+        else {
+            return false;
+        };
+        args.first().is_some_and(|elem| {
+            matches!(
+                elem,
+                ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::Duration
+                    | ResolvedTy::String
+            )
+        })
+    }
+
     /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
     /// Substitutes through the monomorphisation map first so a polymorphic
     /// receiver type resolves to its concrete element before the owned-ness
@@ -20357,62 +20408,53 @@ fn elaborate(
             }
         }
     }
-    // Whole-value hand-off dedup. The array-literal desugar binds the fresh
-    // vec to a synthetic let (`__hew_array_N`) and the user binding then
-    // receives the SAME handle through a chain of whole-value `Move`s
-    // (synthetic slot → expression temp → binding slot) — TWO admitted
-    // bindings whose slots hold ONE handle, which would emit two scope-exit
-    // releases (a double free; the dataflow does not mark the synthetic
-    // source consumed). Ownership follows the `Move` chain: strip every
-    // admitted binding whose handle transitively flows into ANOTHER
-    // admitted binding's slot, so exactly the final owner releases.
-    // LESSONS: raii-null-after-move, cleanup-all-exits.
-    {
-        let admitted_locals: HashMap<u32, BindingId> = closure_vec_drop_allowed
-            .iter()
-            .filter_map(|b| {
-                builder
-                    .binding_locals
-                    .get(b)
-                    .and_then(|p| base_local(*p))
-                    .map(|l| (l, *b))
-            })
-            .collect();
-        let mut move_edges: Vec<(u32, u32)> = Vec::new();
-        for block in &checked.blocks {
-            for instr in &block.instructions {
-                if let Instr::Move { dest, src } = instr {
-                    if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if sl != dl {
-                            move_edges.push((sl, dl));
-                        }
-                    }
-                }
-            }
-        }
-        for (&start_local, start_binding) in &admitted_locals {
-            // BFS the Move graph from this admitted local; if the handle
-            // reaches another admitted binding's slot, the downstream
-            // binding owns the release and this one must not also fire.
-            let mut frontier = vec![start_local];
-            let mut seen: HashSet<u32> = HashSet::new();
-            seen.insert(start_local);
-            let mut handed_off = false;
-            while let Some(cur) = frontier.pop() {
-                for &(s, d) in &move_edges {
-                    if s == cur && seen.insert(d) {
-                        if d != start_local && admitted_locals.contains_key(&d) {
-                            handed_off = true;
-                        }
-                        frontier.push(d);
-                    }
-                }
-            }
-            if handed_off {
-                closure_vec_drop_allowed.remove(start_binding);
+    // Plain `Vec<T>` handle scope-exit drop allow-set — a Vec local whose
+    // element is a BitCopy scalar or `string` (`Vec<i64>`, `Vec<u8>`,
+    // `Vec<bool>`, `Vec<f64>`, `Vec<string>`, …). Pre-fix these had no drop
+    // class at all: a plain Vec is `ValueClass::CowValue` but
+    // `cow_value_leaf_drop_symbol` only handles the leaf `string` case, so
+    // every plain Vec local fell through to the no-op CowValue arm and LEAKED
+    // its backing buffer (and, for `Vec<string>`, every element) on every
+    // exit. Rides the same receiver-borrow escape model as the
+    // HashMap/HashSet and closure-pair derivations (the handle is the owner;
+    // push/index/len reads borrow it via `is_vec_receiver_borrow_symbol`),
+    // narrowed by the same consume filter. The matching release is the plain
+    // `hew_vec_free` — buffer + handle, with the runtime's own
+    // `ElemKind::String` element walk for string vecs; BitCopy elements have
+    // no element-release path, so the single unconditional free is sound
+    // under the same no-retain-on-share invariant the collection handles
+    // document above. An excluded handle leaks (as before this fix), never
+    // double-frees (`boundary-fail-closed`, `cleanup-all-exits`).
+    let mut plain_vec_drop_allowed = derive_local_collection_drop_allowed(
+        &checked.blocks,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        |ty| builder.binding_ty_is_plain_vec(ty),
+    );
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) {
+                plain_vec_drop_allowed.remove(binding);
             }
         }
     }
+
+    // Whole-value hand-off dedup for both Vec-handle allow-sets (the
+    // closure-pair set and the plain set; a handle never changes element
+    // class across a `Move`, so the two sets cannot hand off to each other).
+    dedup_whole_value_handoff(
+        &checked.blocks,
+        &builder.binding_locals,
+        &mut closure_vec_drop_allowed,
+    );
+    dedup_whole_value_handoff(
+        &checked.blocks,
+        &builder.binding_locals,
+        &mut plain_vec_drop_allowed,
+    );
 
     // Value-class capstone — owned-aggregate-record scope-exit drop allow-set.
     // A by-value owned record (RC-4 bytes field / RC-6 string field / G12
@@ -20525,6 +20567,7 @@ fn elaborate(
         &consumed_local_aggregate_members,
         &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
+        &plain_vec_drop_allowed,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -20754,6 +20797,19 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
                 drop_fn: "hew_vec_free_closure_pairs",
             }
         }
+        // Plain `Vec<T>` scope-exit release: same dedicated-kind acceptance
+        // shape as the owned-Vec / closure-pair arms — a local Vec may carry
+        // the plain `hew_vec_free` release symbol (the admit authority is the
+        // function-scoped `plain_vec_drop_allowed` derivation, not the
+        // type-only `drop_kind_for` dispatcher); any other shape re-derives
+        // via the Place-driven dispatcher so a non-Vec place cannot silently
+        // carry the plain-Vec release symbol. Codegen re-validates the
+        // (type, symbol) congruence again before emitting the call.
+        DropKind::CowHeap {
+            drop_fn: "hew_vec_free",
+        } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
+            drop_fn: "hew_vec_free",
+        },
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
         // in-place helper), while the place is an ordinary stack `Local`
@@ -23782,7 +23838,7 @@ fn derive_local_collection_drop_allowed(
     blocks: &[BasicBlock],
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
-    ty_filter: fn(&ResolvedTy) -> bool,
+    ty_filter: impl Fn(&ResolvedTy) -> bool,
 ) -> HashSet<BindingId> {
     // Candidate collection locals: base locals of owned handle bindings of
     // the caller-selected type class (HashMap/HashSet handles, or
@@ -26395,6 +26451,69 @@ fn derive_closure_pair_drop_allowed(
         .collect()
 }
 
+/// Whole-value hand-off dedup for a Vec-handle drop allow-set. The
+/// array-literal desugar binds the fresh vec to a synthetic let
+/// (`__hew_array_N`) and the user binding then receives the SAME handle
+/// through a chain of whole-value `Move`s (synthetic slot → expression temp →
+/// binding slot) — TWO admitted bindings whose slots hold ONE handle, which
+/// would emit two scope-exit releases (a double free; the dataflow does not
+/// mark the synthetic source consumed). Ownership follows the `Move` chain:
+/// strip every admitted binding whose handle transitively flows into ANOTHER
+/// admitted binding's slot, so exactly the final owner releases.
+/// LESSONS: raii-null-after-move, cleanup-all-exits.
+fn dedup_whole_value_handoff(
+    blocks: &[BasicBlock],
+    binding_locals: &HashMap<BindingId, Place>,
+    allowed: &mut HashSet<BindingId>,
+) {
+    let admitted_locals: HashMap<u32, BindingId> = allowed
+        .iter()
+        .filter_map(|b| {
+            binding_locals
+                .get(b)
+                .and_then(|p| base_local(*p))
+                .map(|l| (l, *b))
+        })
+        .collect();
+    if admitted_locals.is_empty() {
+        return;
+    }
+    let mut move_edges: Vec<(u32, u32)> = Vec::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            if let Instr::Move { dest, src } = instr {
+                if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
+                    if sl != dl {
+                        move_edges.push((sl, dl));
+                    }
+                }
+            }
+        }
+    }
+    for (&start_local, start_binding) in &admitted_locals {
+        // BFS the Move graph from this admitted local; if the handle
+        // reaches another admitted binding's slot, the downstream
+        // binding owns the release and this one must not also fire.
+        let mut frontier = vec![start_local];
+        let mut seen: HashSet<u32> = HashSet::new();
+        seen.insert(start_local);
+        let mut handed_off = false;
+        while let Some(cur) = frontier.pop() {
+            for &(s, d) in &move_edges {
+                if s == cur && seen.insert(d) {
+                    if d != start_local && admitted_locals.contains_key(&d) {
+                        handed_off = true;
+                    }
+                    frontier.push(d);
+                }
+            }
+        }
+        if handed_off {
+            allowed.remove(start_binding);
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "drop elaboration threads the binding ledgers, the per-class \
@@ -26424,6 +26543,7 @@ fn build_lifo_drops(
     consumed_local_aggregate_members: &HashSet<BindingId>,
     closure_pair_drop_allowed: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
+    plain_vec_drop_allowed: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -26497,6 +26617,42 @@ fn build_lifo_drops(
                 drop_fn: None,
                 kind: DropKind::CowHeap {
                     drop_fn: "hew_vec_free_owned",
+                },
+            });
+            continue;
+        }
+        // Plain `Vec<T>` local (BitCopy-scalar or `string` element — the
+        // shapes neither the closure-pair nor the owned-element class above
+        // claims). Pre-fix it fell through to the no-op `CowValue` arm and
+        // LEAKED its backing buffer (and, for `Vec<string>`, every element)
+        // on every exit path. Its scope-exit release is the plain
+        // `hew_vec_free`: frees the buffer and the handle, with the runtime's
+        // own `ElemKind::String` element walk for string vecs. Intercept
+        // AFTER the closure-pair and owned-Vec arms so those specialised
+        // releases are never displaced (the allow-set's default-deny element
+        // filter `binding_ty_is_plain_vec` already excludes both shapes; the
+        // ordering is belt-and-suspenders). Gated fail-closed on
+        // `plain_vec_drop_allowed`: a handle that escapes (returned, moved
+        // into an aggregate / actor state, consumed by a by-value call or
+        // for-in `into_iter`) is excluded by the escape-scan + dataflow
+        // consume filter, so it is never double-freed. A binding the prover
+        // did not clear leaks (as before this fix).
+        // LESSONS: cleanup-all-exits, raii-null-after-move,
+        // boundary-fail-closed.
+        if plain_vec_drop_allowed.contains(binding) && ty_is_vec(ty) {
+            let place = *binding_locals.get(binding).unwrap_or_else(|| {
+                panic!(
+                    "build_lifo_drops invariant: plain Vec binding {binding:?} is in \
+                     owned_locals but missing from binding_locals; lowering must wire a \
+                     Place before the drop-elaboration pass observes the binding"
+                )
+            });
+            drops.push(ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: DropKind::CowHeap {
+                    drop_fn: "hew_vec_free",
                 },
             });
             continue;
@@ -26938,23 +27094,99 @@ fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 /// confirmed against the runtime signature to take the handle by shared/mutable
 /// borrow (`*const` / `*mut`, never freed): `hew-runtime/src/hashmap.rs`,
 /// `hew-runtime/src/hashset.rs`.
-/// Receiver-borrowing Vec runtime ops: arg 0 is the vec handle, read but
-/// never owned by the callee. The closure-pair Vec drop derivation treats
-/// these as interior reads (mirroring `is_collection_receiver_borrow_callee`)
-/// so ordinary push/index/len use does not exclude the handle from its
-/// scope-exit `hew_vec_free_closure_pairs` release. `push`/`set` DO consume
-/// their element operand — the arg-tail scan still records that escape.
+/// Receiver-borrowing Vec runtime ops: arg 0 is the vec handle, read or
+/// mutated in place but never owned/freed by the callee. The closure-pair and
+/// plain Vec drop derivations treat these as interior reads (mirroring
+/// `is_collection_receiver_borrow_callee`) so ordinary push/index/len use does
+/// not exclude the handle from its scope-exit release. `push`/`set`/`append`
+/// DO consume (or borrow without releasing) their non-receiver operands — the
+/// arg-tail scan still records those as escapes, which only ever
+/// over-excludes (leak), never re-admits.
+///
+/// This is an EXPLICIT allow-list, deliberately NOT a `hew_vec_` prefix test
+/// (LESSONS: `boundary-fail-closed`). The consuming releases (`hew_vec_free`,
+/// `hew_vec_free_owned`, `hew_vec_free_closure_pairs`) and the constructors
+/// (`hew_vec_new*`, which write a fresh handle and never read an existing one
+/// as arg[0]) are intentionally absent. Every family below is confirmed
+/// against `hew-runtime/src/vec.rs` (`hew_vec_join_str`:
+/// `hew-runtime/src/string.rs`) to take the receiver by `*const` / `*mut`
+/// borrow and never free it:
+///   - `len` / `is_empty` / `contains_*` / `join_str` — pure reads.
+///   - `get_*` — element reads; `get_str` hands out a RETAINED owner (the vec
+///     keeps its own element reference), `get_owned` clones via the element
+///     descriptor.
+///   - `push_*` / `set_*` — in-place writes of an independent copy of the
+///     element (`set_str` releases the displaced element itself).
+///   - `pop_*` / `remove_at*` / `clear*` — in-place removal; the vec's own
+///     reference to a removed element is transferred out or released by the
+///     callee, so the later buffer free cannot touch it again.
+///   - `slice_range_*` — returns a FRESH vec (content-copying; the string
+///     form clones elements), never an alias of the receiver's buffer.
+///   - `append` / `append_layout` — extends arg[0] with copies of arg[1]'s
+///     elements; borrows BOTH vecs (arg[1] is scanned by the arg-tail rule
+///     and over-excludes — a leak, never a double free).
+///   - `clone` / `clone_layout` — deep copy; the result is a fresh handle.
+///
+/// The typed scalar variants (`*_bool` / `*_i32` / `*_i64` / `*_f64`) are the
+/// MIR-level symbols the checker / HIR array-literal desugar resolve for
+/// `BitCopy` elements; codegen may remap them onto generic entry points, but
+/// the receiver-borrow contract is per family, not per suffix.
 fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
     matches!(
         callee,
         "hew_vec_len"
             | "hew_vec_is_empty"
             | "hew_vec_clear"
+            | "hew_vec_clear_layout"
+            | "hew_vec_push_bool"
+            | "hew_vec_push_i32"
+            | "hew_vec_push_i64"
+            | "hew_vec_push_f64"
+            | "hew_vec_push_str"
+            | "hew_vec_push_layout"
             | "hew_vec_push_ptr"
+            | "hew_vec_push_owned"
+            | "hew_vec_get_bool"
+            | "hew_vec_get_i32"
+            | "hew_vec_get_i64"
+            | "hew_vec_get_f64"
+            | "hew_vec_get_str"
+            | "hew_vec_get_layout"
             | "hew_vec_get_ptr"
+            | "hew_vec_get_owned"
+            | "hew_vec_set_bool"
+            | "hew_vec_set_i32"
+            | "hew_vec_set_i64"
+            | "hew_vec_set_f64"
+            | "hew_vec_set_str"
+            | "hew_vec_set_layout"
             | "hew_vec_set_ptr"
+            | "hew_vec_set_owned"
+            | "hew_vec_pop_bool"
+            | "hew_vec_pop_i32"
+            | "hew_vec_pop_i64"
+            | "hew_vec_pop_f64"
+            | "hew_vec_pop_str"
+            | "hew_vec_pop_layout"
             | "hew_vec_pop_ptr"
+            | "hew_vec_pop_owned"
             | "hew_vec_remove_at"
+            | "hew_vec_remove_at_layout"
+            | "hew_vec_contains_i32"
+            | "hew_vec_contains_i64"
+            | "hew_vec_contains_f64"
+            | "hew_vec_contains_str"
+            | "hew_vec_contains_thunk"
+            | "hew_vec_slice_range_i32"
+            | "hew_vec_slice_range_i64"
+            | "hew_vec_slice_range_f64"
+            | "hew_vec_slice_range_str"
+            | "hew_vec_slice_range_ptr"
+            | "hew_vec_append"
+            | "hew_vec_append_layout"
+            | "hew_vec_clone"
+            | "hew_vec_clone_layout"
+            | "hew_vec_join_str"
     )
 }
 

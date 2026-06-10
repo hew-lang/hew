@@ -226,6 +226,7 @@ stable = [
   "hew_file_exists",
   "hew_file_read",
   "hew_file_read_bytes",
+  "hew_file_read_bytes_raw",
   "hew_file_size",
   "hew_file_write",
   "hew_file_write_bytes",

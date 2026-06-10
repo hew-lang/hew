@@ -2292,6 +2292,36 @@ fn cross_module_fn_value_seven_line_oracle() {
     );
 }
 
+/// A local binding that shadows an imported module name resolves as a field
+/// access, not a fn-value `BindingRef`.  The checker's `receiver_is_binding`
+/// guard records i64 (record field) for `helpers.double`; the HIR must
+/// honour that resolution even when the `fn_registry` has a hit for the
+/// qualified key.
+#[test]
+fn cross_module_fn_value_shadowed_local_binding_resolves_as_field() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/cross_module_fn_value_shadow/main.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "shadowing fixture should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/cross_module_fn_value_shadow/main.expected"),
+    )
+    .expect("read main.expected");
+    assert_eq!(
+        actual, expected,
+        "expected field access to print 7; got: {actual:?}"
+    );
+}
+
 /// A GENERIC cross-module named function used as a value stays deferred:
 /// the checker diagnostic names the exported generic function and the
 /// lambda workaround instead of misreporting a missing constant.

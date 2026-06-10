@@ -2,9 +2,17 @@
 // diagnostic must name the exported generic function and the lambda
 // workaround, never misreport a missing constant or crash. The non-generic
 // case is accepted (see accept/cross_module_fn_value).
+//
+// Both the bare unannotated form and the context-determined form (where the
+// binding annotation fully determines the type parameters) must be rejected —
+// the check is declaration-based, not context-dependent.
 import helpers;
 
 fn main() {
     let f = helpers.first;
     println(f([1, 2, 3]));
+    // Context-determined: type params fully known from the annotation; must
+    // still be rejected with the named generic diagnostic.
+    let g: fn(Vec<i64>) -> i64 = helpers.first;
+    println(g([4, 5, 6]));
 }

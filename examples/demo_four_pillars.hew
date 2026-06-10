@@ -4,7 +4,7 @@
 // demo_four_pillars.hew — Overview of Hew's four pillars
 // Demonstrates functions, actors, wire types, and supervision.
 actor Counter {
-    let count: i32;
+    var count: i32;
     receive fn increment(amount: i32) {
         count = count + amount;
     }

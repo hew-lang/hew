@@ -8,7 +8,7 @@
 // Output is deterministic: all prints run inside Sink in mailbox FIFO
 // order; the trailing ask fences main until every tell has dispatched.
 actor Sink {
-    let total: i64;
+    var total: i64;
     receive fn process(label: string, count: i64) {
         total = total + count;
         println(f"{label}: count={count} total={total}");

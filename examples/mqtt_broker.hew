@@ -143,7 +143,7 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 // ClientHandler — one per TCP connection.
 actor ClientHandler {
     let conn: Connection;
-    let client_id: string;
+    var client_id: string;
     let router: LocalPid<Router>;
     receive fn start() {
         var buf = bytes::new();
@@ -267,11 +267,11 @@ actor ClientHandler {
 // Parallel arrays: client_conns[i] <-> client_actors[i]
 // Parallel arrays: sub_topics[i] <-> sub_conns[i] <-> sub_qos[i]
 actor Router {
-    let client_conns: Vec<Connection>;
-    let client_actors: Vec<LocalPid<ClientHandler>>;
-    let sub_topics: Vec<string>;
-    let sub_conns: Vec<Connection>;
-    let sub_qos: Vec<i32>;
+    var client_conns: Vec<Connection>;
+    var client_actors: Vec<LocalPid<ClientHandler>>;
+    var sub_topics: Vec<string>;
+    var sub_conns: Vec<Connection>;
+    var sub_qos: Vec<i32>;
     receive fn register_client(conn: Connection, handler: LocalPid<ClientHandler>) {
         client_conns.push(conn);
         client_actors.push(handler);

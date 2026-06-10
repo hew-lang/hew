@@ -3,7 +3,7 @@
 
 // Regression: compound assignment on field
 actor Counter {
-    let value: i64;
+    var value: i64;
     receive fn set(v: i64) {
         value = v;
     }

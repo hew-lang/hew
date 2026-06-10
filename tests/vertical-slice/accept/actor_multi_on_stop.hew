@@ -9,7 +9,7 @@
 // This fixture proves the fix at the compile+run level. The MIR and codegen
 // unit tests prove lexical ordering and per-symbol emission separately.
 actor Sequencer {
-    let counter: i64;
+    var counter: i64;
     init(start: i64) {
         counter = start;
     }

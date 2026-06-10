@@ -49,7 +49,7 @@ fn divide(a: i64, b: i64) -> Result<i64, string> {
 }
 
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment() {
         count = count + 1;
     }

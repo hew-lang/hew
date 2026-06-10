@@ -2,7 +2,7 @@
 //! Description: Actor Live Demo example.
 
 actor Counter {
-    let count: i64;
+    var count: i64;
 
     receive fn increment(amount: i64) -> i64 {
         count = count + amount;

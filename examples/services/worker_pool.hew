@@ -25,7 +25,7 @@ fn fib(n: i64) -> i64 {
 
 actor Worker {
     let id: i64;
-    let jobs_done: i64;
+    var jobs_done: i64;
     receive fn compute(n: i64) -> i64 {
         jobs_done = jobs_done + 1;
         let result = fib(n);

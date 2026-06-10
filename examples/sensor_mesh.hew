@@ -29,7 +29,7 @@ actor Logger {
     // let monitor = Node::lookup("monitor");
 
     // Simulate 6 ticks
-    let count: i32;
+    var count: i32;
     receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");

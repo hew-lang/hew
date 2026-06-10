@@ -7,7 +7,7 @@
 // codegen lowering. Only Node::start/shutdown/register/lookup are
 // typechecker builtins today.
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment(n: i64) {
         count = count + n;
         println(count);

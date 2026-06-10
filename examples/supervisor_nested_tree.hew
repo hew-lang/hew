@@ -18,7 +18,7 @@
 //          Worker(1)  Worker(2)  Cache(42)
 actor Worker {
     let id: i32;
-    let count: i32;
+    var count: i32;
     receive fn process(item: i32) {
         count = count + 1;
         print("[worker ");
@@ -39,7 +39,7 @@ actor Worker {
 
 actor Cache {
     let capacity: i32;
-    let entries: i32;
+    var entries: i32;
     receive fn store(key: i32) {
         entries = entries + 1;
         print("[cache] stored key=");

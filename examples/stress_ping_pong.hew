@@ -5,7 +5,7 @@
 // Two actors exchange messages in a pipeline pattern, exercising
 // rapid message passing and actor scheduling under load.
 actor Pinger {
-    let count: i64;
+    var count: i64;
     receive fn ping(n: i64) {
         count = n;
     }
@@ -16,7 +16,7 @@ actor Pinger {
 }
 
 actor Ponger {
-    let count: i64;
+    var count: i64;
     receive fn pong(n: i64) {
         count = n;
     }

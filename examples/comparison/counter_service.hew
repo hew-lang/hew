@@ -1,7 +1,7 @@
 // Hew: Counter Service
 // The compiler enforces that actor state is never shared.
 actor Counter {
-    let count: i64;
+    var count: i64;
     receive fn increment(amount: i64) {
         count = count + amount;
     }

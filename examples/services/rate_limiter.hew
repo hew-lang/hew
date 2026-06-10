@@ -35,7 +35,7 @@ actor RateLimiter {
     // Wait for refill, then send more
 
     // Final stats
-    let tokens: i64;
+    var tokens: i64;
     let max_tokens: i64;
     let refill_amount: i64;
     receive fn acquire() -> i64 {
@@ -62,8 +62,8 @@ actor RateLimiter {
 actor ApiWorker {
     let id: i64;
     let limiter: LocalPid<RateLimiter>;
-    let accepted: i64;
-    let rejected: i64;
+    var accepted: i64;
+    var rejected: i64;
     receive fn handle_request(request_id: i64) {
         scope {
             let allowed_r = await limiter.acquire();

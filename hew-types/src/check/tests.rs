@@ -1530,11 +1530,20 @@ fn mem_intrinsic_in_non_floor_module_is_rejected() {
 #[test]
 fn checker_output_contract_intersects_assignment_target_side_tables() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker
-        .assign_target_kinds
-        .insert(SpanKey { start: 1, end: 2 }, AssignTargetKind::LocalVar);
+    checker.assign_target_kinds.insert(
+        SpanKey {
+            start: 1,
+            end: 2,
+            module_idx: 0,
+        },
+        AssignTargetKind::LocalVar,
+    );
     checker.assign_target_shapes.insert(
-        SpanKey { start: 3, end: 4 },
+        SpanKey {
+            start: 3,
+            end: 4,
+            module_idx: 0,
+        },
         AssignTargetShape { is_unsigned: false },
     );
 
@@ -1568,7 +1577,11 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let sender_var = TypeVar::fresh();
     let covered_var = TypeVar::fresh();
-    let span = SpanKey { start: 10, end: 20 };
+    let span = SpanKey {
+        start: 10,
+        end: 20,
+        module_idx: 0,
+    };
     let mut expr_types = HashMap::from([(
         span.clone(),
         Ty::Tuple(vec![
@@ -1604,7 +1617,11 @@ fn expr_output_contract_rechecks_normalized_unresolved_subset() {
 #[test]
 fn checker_output_contract_retains_valid_method_call_metadata() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let span = SpanKey { start: 10, end: 20 };
+    let span = SpanKey {
+        start: 10,
+        end: 20,
+        module_idx: 0,
+    };
     checker.method_call_receiver_kinds.insert(
         span.clone(),
         MethodCallReceiverKind::NamedTypeInstance {
@@ -1664,13 +1681,21 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     // Insert metadata keyed to spans that have NO corresponding expr_types entry.
     checker.method_call_receiver_kinds.insert(
-        SpanKey { start: 10, end: 20 },
+        SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        },
         MethodCallReceiverKind::NamedTypeInstance {
             type_name: "Bar".to_string(),
         },
     );
     checker.method_call_rewrites.insert(
-        SpanKey { start: 30, end: 40 },
+        SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        },
         MethodCallRewrite::RewriteToFunction {
             c_symbol: "hew_bar_method".to_string(),
             descriptor: None,
@@ -1712,8 +1737,16 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
 #[test]
 fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_expr() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let leaked_span = SpanKey { start: 50, end: 60 };
-    let good_span = SpanKey { start: 70, end: 80 };
+    let leaked_span = SpanKey {
+        start: 50,
+        end: 60,
+        module_idx: 0,
+    };
+    let good_span = SpanKey {
+        start: 70,
+        end: 80,
+        module_idx: 0,
+    };
 
     // The leaked span has an unresolved inference var — validate_expr_output_contract
     // will strip it from expr_types, so the method-call metadata must follow.
@@ -2716,6 +2749,7 @@ fn let_bound_literal_unifies_to_i32_width_when_compared_against_i32_fn() {
         let key = SpanKey {
             start: pos,
             end: pos + 1,
+            module_idx: 0,
         };
         let recorded = output.expr_types.get(&key);
         assert_eq!(
@@ -3197,6 +3231,7 @@ fn span_key_for(source: &str, needle: &str) -> SpanKey {
     SpanKey {
         start,
         end: start + needle.len(),
+        module_idx: 0,
     }
 }
 
@@ -9960,7 +9995,11 @@ fn mutable_var_initializer_keeps_integer_literal_inferable() {
     assert_eq!(
         checker
             .expr_types
-            .get(&SpanKey { start: 8, end: 9 })
+            .get(&SpanKey {
+                start: 8,
+                end: 9,
+                module_idx: 0
+            })
             .cloned(),
         Some(binding.ty.clone())
     );
@@ -18675,7 +18714,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn unresolved_closure_capture_mode_diagnostic_fires_on_missing_fact() {
         let span: Span = 10..20;
-        let sites = vec![(span.clone(), Some("f".to_string()))];
+        let sites = vec![(span.clone(), Some("f".to_string()), 0u32)];
         let capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
         let mut escape_facts: HashMap<SpanKey, ClosureEscapeFact> = HashMap::new();
         // Populate escape so ONLY the capture-mode diagnostic fires.
@@ -18710,7 +18749,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn unresolved_closure_escape_kind_diagnostic_fires_on_missing_fact() {
         let span: Span = 30..40;
-        let sites = vec![(span.clone(), None)];
+        let sites = vec![(span.clone(), None, 0u32)];
         let mut capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
         // Populate capture so ONLY the escape diagnostic fires.
         capture_facts.insert(SpanKey::from(&span), Vec::new());
@@ -18739,7 +18778,7 @@ mod for_loop_iterable_fail_closed {
     #[test]
     fn unresolved_closure_diagnostics_silent_when_contract_holds() {
         let span: Span = 50..60;
-        let sites = vec![(span.clone(), Some("f".to_string()))];
+        let sites = vec![(span.clone(), Some("f".to_string()), 0u32)];
         let mut capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>> = HashMap::new();
         capture_facts.insert(SpanKey::from(&span), Vec::new());
         let mut escape_facts: HashMap<SpanKey, ClosureEscapeFact> = HashMap::new();
@@ -18788,6 +18827,42 @@ mod for_loop_iterable_fail_closed {
             "Ty::Never iterable must not emit InvalidOperation; got: {errors:?}",
         );
     }
+}
+
+/// Regression (L23 / `SpanKey` per-module discriminator): a closure literal
+/// living in a *non-root* module must not trip the fail-closed
+/// `ClosureCaptureModeUnresolved` / `ClosureEscapeKindUnresolved` contract
+/// enforcers. The checker stamps capture/escape facts with the module's
+/// 1-based `module_idx`; the validator must look them up at that same index
+/// rather than the hardcoded root `0`. Before the fix this checked with a
+/// spurious internal error for any imported module containing a closure.
+#[test]
+fn closure_in_imported_module_does_not_trip_fail_closed_contract() {
+    let output = check_source_in_module(
+        r"
+pub fn compute(n: i64) -> i64 {
+    let f = |x: i64| -> i64 { x * 2 };
+    f(n)
+}
+",
+        vec!["mylib".to_string()],
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::ClosureCaptureModeUnresolved { .. })),
+        "closure in a non-root module must not raise ClosureCaptureModeUnresolved; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ClosureEscapeKindUnresolved),
+        "closure in a non-root module must not raise ClosureEscapeKindUnresolved; got: {:?}",
+        output.errors
+    );
 }
 
 // ── Sub-issue 2: bind-then-return bypass regression tests ──────────────────
@@ -23294,8 +23369,16 @@ fn vec_index_rejects_unsigned_i32_index() {
 #[test]
 fn insert_expr_type_mirrors_boundary_concreteness_split() {
     let mut out = TypeCheckOutput::default();
-    let concrete = SpanKey { start: 0, end: 4 };
-    let leaked = SpanKey { start: 4, end: 8 };
+    let concrete = SpanKey {
+        start: 0,
+        end: 4,
+        module_idx: 0,
+    };
+    let leaked = SpanKey {
+        start: 4,
+        end: 8,
+        module_idx: 0,
+    };
 
     out.insert_expr_type(concrete.clone(), Ty::I64);
     out.insert_expr_type(leaked.clone(), Ty::Var(TypeVar::fresh()));

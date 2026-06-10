@@ -409,7 +409,11 @@ fn probe(mat: Matcher, s: string) {
 
         let mut expr_types = HashMap::new();
         expr_types.insert(
-            SpanKey { start: 0, end: 7 },
+            SpanKey {
+                start: 0,
+                end: 7,
+                module_idx: 0,
+            },
             Ty::Named {
                 name: "ChannelModule".to_string(),
                 args: vec![],
@@ -503,7 +507,11 @@ fn probe(mat: Matcher, s: string) {
 
         let mut expr_types = HashMap::new();
         expr_types.insert(
-            SpanKey { start: 0, end: 5 },
+            SpanKey {
+                start: 0,
+                end: 5,
+                module_idx: 0,
+            },
             Ty::Named {
                 name: "Widget".to_string(),
                 args: vec![],

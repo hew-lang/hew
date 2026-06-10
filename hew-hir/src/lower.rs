@@ -998,6 +998,100 @@ fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
     output
 }
 
+/// Map each *spliced file-import* entry in `program.items` to the `module_idx`
+/// the checker stamped its `SpanKey` facts with, so HIR's `mk_key` lookups for
+/// those items agree byte-for-byte with the checker.
+///
+/// File-path imports (`import "x.hew";`) are FLATTENED: after type-checking,
+/// `flatten_file_import_items` (hew-compile) appends each file-import decl's
+/// resolved items to the tail of `program.items` under their bare names so the
+/// unqualified surface (`spawn Counter()`) lowers as a root item. But the
+/// checker validated those same items during its `module_graph.topo_order`
+/// walk, stamping their `SpanKey` facts with a non-root `current_module_idx`
+/// (1-based, incremented per present module — see `Checker::check_program`).
+/// If HIR lowers the spliced item at the default root index 0, every
+/// `mk_key`-keyed lookup (actor-state guards, closure facts, conn/listener
+/// await reads, range bounds, channel/stream rewrites, expr types, …) misses
+/// the checker fact recorded at index N and the fail-closed contract fires
+/// (e.g. `ActorStateGuardMissing`).
+///
+/// This reconstructs, deterministically and without a stored marker, which
+/// tail entries are the flattened block and which non-root module each came
+/// from, keyed by the per-item canonical source path (`resolved_item_source_paths`)
+/// matched against each module's `source_paths`. The index assignment mirrors
+/// `Checker::check_program` exactly: skip the root, bump a 1-based counter for
+/// every module present in `modules`. Returns a map from `program.items` index
+/// to module index; absent entries (genuine root items) are index 0.
+fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
+    use std::path::{Path, PathBuf};
+
+    let mut map = HashMap::new();
+    let Some(mg) = &program.module_graph else {
+        return map;
+    };
+
+    // Module index by canonical source path, counted exactly as the checker
+    // counts `current_module_idx` during its non-root body-check walk.
+    let mut idx_by_path: HashMap<PathBuf, u32> = HashMap::new();
+    let mut module_idx: u32 = 0;
+    for mod_id in &mg.topo_order {
+        if *mod_id == mg.root {
+            continue;
+        }
+        if let Some(module) = mg.modules.get(mod_id) {
+            module_idx += 1;
+            for p in &module.source_paths {
+                idx_by_path.entry(p.clone()).or_insert(module_idx);
+            }
+        }
+    }
+    if idx_by_path.is_empty() {
+        return map;
+    }
+
+    // Re-derive the flattened tail block, mirroring `flatten_file_import_items`:
+    // each file-path import decl contributed its resolved items (minus nested
+    // `Item::Import` stubs) to the tail, in decl order. Attribute each appended
+    // item to its own source file's module index via the parallel
+    // `resolved_item_source_paths`.
+    let mut appended: Vec<u32> = Vec::new();
+    for (item, _) in &program.items {
+        let Item::Import(decl) = item else {
+            continue;
+        };
+        if decl.file_path.is_none() {
+            continue;
+        }
+        let Some(resolved) = &decl.resolved_items else {
+            continue;
+        };
+        for (k, (ritem, _)) in resolved.iter().enumerate() {
+            if matches!(ritem, Item::Import(_)) {
+                continue;
+            }
+            let path: Option<&Path> = decl
+                .resolved_item_source_paths
+                .get(k)
+                .map(PathBuf::as_path)
+                .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
+            let idx = path.and_then(|p| idx_by_path.get(p).copied()).unwrap_or(0);
+            appended.push(idx);
+        }
+    }
+
+    let total = appended.len();
+    if total == 0 || total > program.items.len() {
+        return map;
+    }
+    let start = program.items.len() - total;
+    for (offset, idx) in appended.into_iter().enumerate() {
+        if idx != 0 {
+            map.insert(start + offset, idx);
+        }
+    }
+    map
+}
+
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2207,8 +2301,18 @@ pub fn lower_program_with_mono_cap(
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
+    //
+    // Spliced file-import items (flattened into the tail of `program.items` by
+    // `flatten_file_import_items`) were validated by the checker under their
+    // originating module's non-root `current_module_idx`, so their bodies must
+    // be lowered under that same index for every `mk_key` lookup (actor-state
+    // guards, closure facts, await reads, range bounds, channel/stream
+    // rewrites, expr types) to resolve to the checker's facts. Genuine root
+    // items stay at index 0. See `file_import_item_module_indices`.
+    let file_import_module_idx = file_import_item_module_indices(program);
     let mut items: Vec<HirItem> = Vec::new();
-    for (item, span) in &program.items {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         match item {
             Item::TypeDecl(decl) => {
                 // Retrieve the already-lowered decl so diagnostics are not
@@ -2340,6 +2444,10 @@ pub fn lower_program_with_mono_cap(
             }
         }
     }
+    // Restore the root index after the file-import-aware third pass so any
+    // subsequent root-context reads default to 0 before the module-graph walk
+    // re-assigns it per non-root module.
+    ctx.current_module_idx = 0;
 
     // Fourth pass: lower pub fn bodies from non-root modules under their
     // qualified, native-symbol-safe names (e.g. `greeting$hello`).
@@ -2385,11 +2493,28 @@ pub fn lower_program_with_mono_cap(
                 _ => None,
             })
             .collect();
+        // Mirror the checker's 1-based non-root module index. The checker
+        // increments `current_module_idx` before each non-root topo-order
+        // module and uses it to stamp `SpanKey`s in `expr_types`. The HIR
+        // lowering must assign the same index when looking up those keys so
+        // `self.mk_key(span)` resolves to the correct entry and byte-offset
+        // collisions across files are not misread as same-file types.
+        let mut module_idx: u32 = 0;
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
+                // Increment INSIDE the `Some(module)` guard so this walk's
+                // 1-based index stays byte-for-byte isomorphic with the
+                // checker, which bumps `current_module_idx` only for modules
+                // present in `modules` (see `Checker::check_program`). A
+                // `topo_order` id absent from `modules` (e.g. a dangling
+                // import that survived to lowering) must NOT advance the index
+                // on one side only, or every subsequent module would read the
+                // wrong file's checker facts.
+                module_idx += 1;
+                ctx.current_module_idx = module_idx;
                 let source_module = mod_id.path.join(".");
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
@@ -2836,6 +2961,9 @@ pub fn lower_program_with_mono_cap(
                 );
             }
         }
+        // Restore to 0 so any subsequent root-level expression lowering (e.g.
+        // `check_await_task_result`) uses module_idx=0 matching the checker.
+        ctx.current_module_idx = 0;
     }
 
     // Inject the std builtins.hew receiver impls through the same lowering path
@@ -4210,6 +4338,12 @@ struct LowerCtx {
     /// identity fact rather than a short-name heuristic.
     opaque_type_short_names: HashSet<String>,
     non_opaque_type_short_names: HashSet<String>,
+    /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
+    /// non-root module's items (1-based, matching topo order).  Used by
+    /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
+    /// the checker's module-scoped inserts, preventing byte-offset collisions
+    /// across stdlib files (L23 defect root cause).
+    current_module_idx: u32,
 }
 
 impl LowerCtx {
@@ -4293,6 +4427,7 @@ impl LowerCtx {
             trait_default_methods: HashMap::new(),
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
+            current_module_idx: 0,
         }
     }
 
@@ -4365,7 +4500,19 @@ impl LowerCtx {
     /// compiles away.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
-        self.resolved_expr_types.get(&SpanKey::from(span))
+        self.resolved_expr_types.get(&self.mk_key(span))
+    }
+
+    /// Construct a `SpanKey` for `span` in the current module context.
+    ///
+    /// The checker records types with `SpanKey::in_module(span, current_module_idx)`
+    /// so that two stdlib files with expressions at the same byte offset do not
+    /// collide in the flat `expr_types` map (L23 defect root cause). Every HIR
+    /// lookup into `expr_types` / `resolved_expr_types` / `method_call_rewrites`
+    /// / etc. must use this instead of bare `self.mk_key(span)`.
+    #[inline]
+    fn mk_key(&self, span: &Span) -> SpanKey {
+        SpanKey::in_module(span, self.current_module_idx)
     }
 
     /// W4.047 P1.2 — the totality assert net (zero behaviour change).
@@ -4390,7 +4537,7 @@ impl LowerCtx {
     fn assert_resolved_ty_totality(&self, span: &Span) {
         #[cfg(debug_assertions)]
         {
-            let key = SpanKey::from(span);
+            let key = self.mk_key(span);
             let live = self
                 .expr_types
                 .get(&key)
@@ -4550,7 +4697,7 @@ impl LowerCtx {
             return;
         };
         let mut type_args = receiver_args.clone();
-        let key = SpanKey::from(call_span);
+        let key = self.mk_key(call_span);
         if let Some(raw_call_args) = self.call_type_args.get(&key).cloned() {
             let mut call_args = Vec::with_capacity(raw_call_args.len());
             for ty in &raw_call_args {
@@ -4648,7 +4795,7 @@ impl LowerCtx {
         }
         let origin = entry.id;
         let origin_name = registry_name.to_string();
-        let key = SpanKey::from(call_span);
+        let key = self.mk_key(call_span);
         let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
             // Generic callee with no recorded type args at this site.
             // The checker records every callsite whose freshened type
@@ -4777,7 +4924,7 @@ impl LowerCtx {
         let type_params = entry.type_params.clone();
         let source_fields = entry.fields.clone();
 
-        let key = SpanKey::from(init_span);
+        let key = self.mk_key(init_span);
         let Some(type_args_raw) = self.record_init_type_args.get(&key).cloned() else {
             // No recorded type args at this init site.  Two legitimate
             // causes: (1) the site failed type-checking and was pruned
@@ -6747,7 +6894,7 @@ impl LowerCtx {
         // call-expression span. The checker records the call result type here
         // for checker-registered builtins that have no AST `fn` item and
         // therefore no `fn_registry` hit. (LESSONS: checker-authority P0)
-        let checker_key = SpanKey::from(span);
+        let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
@@ -8398,7 +8545,7 @@ impl LowerCtx {
             self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
         let state_guard = match self
             .actor_handler_state_guards
-            .get(&SpanKey::from(&rf.span))
+            .get(&self.mk_key(&rf.span))
             .copied()
         {
             Some(ActorStateGuard::Exclusive) => HirActorStateGuard::Exclusive,
@@ -8789,7 +8936,7 @@ impl LowerCtx {
                     // whose resume edge binds the value.
                     let is_bindable_await = match &val_expr.0 {
                         Expr::Await(inner) => {
-                            let inner_key = SpanKey::from(&inner.1);
+                            let inner_key = self.mk_key(&inner.1);
                             matches!(
                                 self.actor_method_dispatch.get(&inner_key),
                                 Some(ActorMethodKind::Ask(_, _))
@@ -9087,7 +9234,7 @@ impl LowerCtx {
                 self.try_register_enum_instantiation(&expr.1);
 
                 let pattern_span = &pattern.1;
-                let key = SpanKey::from(pattern_span);
+                let key = self.mk_key(pattern_span);
                 let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
                     self.unsupported(
                         pattern_span.clone(),
@@ -9337,7 +9484,7 @@ impl LowerCtx {
                         // WHAT (real solution): read the checker-recorded
                         //   `Range<T>` at the iterable span and extract `T`.
                         let elem_ty = {
-                            let range_key = SpanKey::from(&iterable.1);
+                            let range_key = self.mk_key(&iterable.1);
                             self.expr_types
                                 .get(&range_key)
                                 .and_then(|ty| ty.as_range().cloned())
@@ -9571,7 +9718,7 @@ impl LowerCtx {
         self.try_register_enum_instantiation(&scrutinee_expr.1);
 
         let pattern_span = &pattern.1;
-        let key = SpanKey::from(pattern_span);
+        let key = self.mk_key(pattern_span);
         let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
             self.unsupported(
                 pattern_span.clone(),
@@ -9767,7 +9914,7 @@ impl LowerCtx {
                 // If checker recorded `IntLiteral` (unconstrained) or no entry exists,
                 // `from_ty` returns Err and we fall back to the `lower_literal` default.
                 let ty = {
-                    let checker_key = SpanKey::from(&span);
+                    let checker_key = self.mk_key(&span);
                     if let Some(checker_ty) = self.expr_types.get(&checker_key) {
                         ResolvedTy::from_ty(checker_ty).unwrap_or(default_ty)
                     } else {
@@ -9787,7 +9934,7 @@ impl LowerCtx {
                 // fall back to the canonical `Named` form. Using the checker's
                 // resolved type rather than hard-coding keeps capture / generic
                 // resolution consistent with the rest of the pipeline.
-                let checker_key = SpanKey::from(&span);
+                let checker_key = self.mk_key(&span);
                 let resolved_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                     ResolvedTy::from_ty(&ty).unwrap_or(ResolvedTy::Named {
                         name: "regex.Pattern".to_string(),
@@ -10073,7 +10220,7 @@ impl LowerCtx {
                     // so codegen computes the mangled registry key.
                     // Fall back to bare-name with a diagnostic if expr_types
                     // has no entry or boundary conversion fails.
-                    let checker_key = SpanKey::from(&span);
+                    let checker_key = self.mk_key(&span);
                     let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                         match ResolvedTy::from_ty(&ty) {
                             Ok(resolved) => resolved,
@@ -10298,7 +10445,7 @@ impl LowerCtx {
                 // a suspendable caller, else the blocking read). The HIR type is
                 // the method's return type (`bytes` for read, `string` for
                 // read_string), already assigned to `expr` by the checker.
-                if let Some(&to_string) = self.conn_await_reads.get(&SpanKey::from(&inner.1)) {
+                if let Some(&to_string) = self.conn_await_reads.get(&self.mk_key(&inner.1)) {
                     if let Expr::MethodCall { receiver, .. } = &inner.0 {
                         let conn = self.lower_expr(receiver, IntentKind::Read);
                         // The await's value type is the read's return type:
@@ -10331,15 +10478,12 @@ impl LowerCtx {
                 // the accept's return type (`Connection`), captured from the
                 // checker's resolved type table (falling back to the qualified
                 // opaque name, which the codegen handle map recognises).
-                if self
-                    .listener_await_accepts
-                    .contains(&SpanKey::from(&inner.1))
-                {
+                if self.listener_await_accepts.contains(&self.mk_key(&inner.1)) {
                     if let Expr::MethodCall { receiver, .. } = &inner.0 {
                         let listener = self.lower_expr(receiver, IntentKind::Read);
                         let result_ty = self
                             .resolved_expr_types
-                            .get(&SpanKey::from(&inner.1))
+                            .get(&self.mk_key(&inner.1))
                             .cloned()
                             .unwrap_or(ResolvedTy::Named {
                                 name: "net.Connection".to_string(),
@@ -10371,7 +10515,7 @@ impl LowerCtx {
                 // suspendable-caller flip in `lower_direct_call`), or the
                 // blocking call for a context-free caller. Mirrors the
                 // actor-ask / conn-read bindable-await paths.
-                if self.is_stream_recv_await(&SpanKey::from(&inner.1)) {
+                if self.is_stream_recv_await(&self.mk_key(&inner.1)) {
                     return self.lower_expr(inner, intent);
                 }
                 // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
@@ -10382,7 +10526,7 @@ impl LowerCtx {
                 // suspendable-caller flip in `lower_direct_call`), or the blocking
                 // call for a context-free caller. Mirrors the stream-recv /
                 // conn-read bindable-await paths.
-                if self.is_channel_recv_await(&SpanKey::from(&inner.1)) {
+                if self.is_channel_recv_await(&self.mk_key(&inner.1)) {
                     return self.lower_expr(inner, intent);
                 }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
@@ -10390,7 +10534,7 @@ impl LowerCtx {
                 // `await` and lower the inner send directly (unit); the MIR
                 // `SuspendingStreamSend` suspends on a full ring. Statement
                 // position only (unit value), like `await actor.close()`.
-                if self.is_stream_send_await(&SpanKey::from(&inner.1)) {
+                if self.is_stream_send_await(&self.mk_key(&inner.1)) {
                     if !in_stmt_position {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::AwaitOutOfPosition,
@@ -10413,7 +10557,7 @@ impl LowerCtx {
                 }
                 if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
                     .actor_method_dispatch
-                    .get(&SpanKey::from(&inner.1))
+                    .get(&self.mk_key(&inner.1))
                     .cloned()
                 {
                     // Lower the inner ask expression (type = raw reply_ty) then
@@ -10463,7 +10607,7 @@ impl LowerCtx {
                 // and the inner close call is lowered directly, matching the existing
                 // `ActorMethodKind::Ask` path above.
                 if matches!(
-                    self.method_call_rewrites.get(&SpanKey::from(&inner.1)),
+                    self.method_call_rewrites.get(&self.mk_key(&inner.1)),
                     Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
                         if c_symbol == "hew_duplex_close"
                 ) {
@@ -10638,7 +10782,7 @@ impl LowerCtx {
                 // index expression's span. LESSONS: `checker-authority` P0 —
                 // we never re-derive the element type from the container;
                 // the checker is the sole owner.
-                let checker_key = SpanKey::from(&span);
+                let checker_key = self.mk_key(&span);
                 let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
                     match ResolvedTy::from_ty(&ty) {
                         Ok(resolved) => resolved,
@@ -10694,7 +10838,7 @@ impl LowerCtx {
                     let index_expr = self.lower_expr(index, IntentKind::Read);
                     if let Some(dyn_call) = self
                         .dyn_trait_method_calls
-                        .get(&SpanKey::from(&span))
+                        .get(&self.mk_key(&span))
                         .cloned()
                     {
                         return HirExpr {
@@ -10731,7 +10875,7 @@ impl LowerCtx {
                         && matches!(&container.ty, ResolvedTy::Named { name, .. } if name == "HashMap")
                     {
                         if let Some(resolved) =
-                            self.resolved_calls.get(&SpanKey::from(&span)).cloned()
+                            self.resolved_calls.get(&self.mk_key(&span)).cloned()
                         {
                             // Register the `Option<V>` instantiation so the
                             // module enum-layout table carries the matching key
@@ -10809,7 +10953,7 @@ impl LowerCtx {
                 }
             }
             Expr::Is { lhs, rhs } => {
-                if self.is_type_patterns.contains_key(&SpanKey::from(&rhs.1)) {
+                if self.is_type_patterns.contains_key(&self.mk_key(&rhs.1)) {
                     // The checker only records this side-table entry after
                     // proving the static lhs type matches the RHS type pattern.
                     // Do not lower the RHS identifier through the value namespace.
@@ -11003,7 +11147,7 @@ impl LowerCtx {
                             )
                         }
                     } else {
-                        let checker_key = SpanKey::from(&span);
+                        let checker_key = self.mk_key(&span);
                         let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned()
                         {
                             match ResolvedTy::from_ty(&ty) {
@@ -11112,7 +11256,7 @@ impl LowerCtx {
                 // side-table, mirroring `Expr::If` (same authority path).
                 let result_ty = self
                     .resolved_expr_types
-                    .get(&SpanKey::from(&span))
+                    .get(&self.mk_key(&span))
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
                 match self.lower_if_let_inner(
@@ -11164,7 +11308,7 @@ impl LowerCtx {
         // `Instr::CoerceToDynTrait`. The wrapping ResolvedTy is the
         // destination trait-object type, which the wrapping HirExpr
         // carries; the inner expression keeps its concrete type.
-        let coercion_key = SpanKey::from(&span);
+        let coercion_key = self.mk_key(&span);
         if let Some(coercion) = self.dyn_trait_coercions.get(&coercion_key).cloned() {
             let mut resolved_bounds = Vec::new();
             for name in coercion.trait_name.split('+') {
@@ -11252,7 +11396,7 @@ impl LowerCtx {
             HirSelectArmKind::ActorAsk { .. } => {
                 match self
                     .actor_method_dispatch
-                    .get(&SpanKey::from(source_span))
+                    .get(&self.mk_key(source_span))
                     .cloned()
                 {
                     Some(ActorMethodKind::Ask(_, reply_ty)) => {
@@ -11480,7 +11624,7 @@ impl LowerCtx {
         // reply type itself, mirroring the checker's `Expr::Join` rule.
         let result_ty = self
             .expr_types
-            .get(&SpanKey::from(&span))
+            .get(&self.mk_key(&span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
             .unwrap_or_else(|| {
                 if hir_branches.len() == 1 {
@@ -11526,7 +11670,7 @@ impl LowerCtx {
         {
             if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
                 .actor_method_dispatch
-                .get(&SpanKey::from(call_span))
+                .get(&self.mk_key(call_span))
                 .cloned()
             {
                 let actor = self.lower_expr(receiver, IntentKind::Read);
@@ -11656,7 +11800,7 @@ impl LowerCtx {
         body: &Block,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let checker_key = SpanKey::from(&span);
+        let checker_key = self.mk_key(&span);
         let gen_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
@@ -11733,7 +11877,7 @@ impl LowerCtx {
         body: &Spanned<Expr>,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let checker_key = SpanKey::from(&span);
+        let checker_key = self.mk_key(&span);
         let closure_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
@@ -11982,7 +12126,7 @@ impl LowerCtx {
             .iter()
             .map(|(name, expr)| (name.clone(), self.lower_expr(expr, IntentKind::Read)))
             .collect::<Vec<_>>();
-        let ty = if let Some(ty) = self.expr_types.get(&SpanKey::from(&span)).cloned() {
+        let ty = if let Some(ty) = self.expr_types.get(&self.mk_key(&span)).cloned() {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
                 Err(err) => {
@@ -12178,7 +12322,7 @@ impl LowerCtx {
                 // on this method-call span; recognise it as a ChannelRecv arm
                 // before the generic actor-ask interpretation. The element
                 // type rides the checker-resolved `Receiver<T>` receiver type.
-                if method == "recv" && self.is_channel_recv_rewrite(&SpanKey::from(&span)) {
+                if method == "recv" && self.is_channel_recv_rewrite(&self.mk_key(&span)) {
                     let recv = self.lower_expr(receiver, IntentKind::Read);
                     return HirSelectArmKind::ChannelRecv {
                         receiver: Box::new(recv),
@@ -12332,7 +12476,7 @@ impl LowerCtx {
     }
 
     fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
-        let key = SpanKey::from(span);
+        let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -12366,7 +12510,7 @@ impl LowerCtx {
         operand: &Spanned<Expr>,
         result_ty: &ResolvedTy,
     ) -> Option<ResolvedTy> {
-        let key = SpanKey::from(&operand.1);
+        let key = self.mk_key(&operand.1);
         match self.expr_types.get(&key).cloned() {
             Some(ty) => match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => {
@@ -12534,7 +12678,7 @@ impl LowerCtx {
     }
 
     fn array_literal_vec_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
-        let key = SpanKey::from(span);
+        let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -12780,7 +12924,7 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
-            let key = SpanKey::from(&span);
+            let key = self.mk_key(&span);
             if self
                 .expr_types
                 .get(&key)
@@ -12827,7 +12971,7 @@ impl LowerCtx {
         // chosen type into a qualified lookup. This keeps bare references to
         // unit ctors resolving correctly across builtin/user name collisions
         // without depending on registration-order races in the pre-pass.
-        let key = SpanKey::from(&span);
+        let key = self.mk_key(&span);
         let checker_qualified = match self.expr_types.get(&key) {
             Some(Ty::Named { name: n, .. }) => Some(format!("{n}::{name}")),
             _ => None,
@@ -14382,7 +14526,7 @@ impl LowerCtx {
         // unresolved `.clone()` call is a compile error with an explicit
         // diagnostic so the user is never left guessing why their code "works"
         // but produces aliased references instead of independent copies.
-        let key = SpanKey::from(&span);
+        let key = self.mk_key(&span);
         if method == "clone"
             && args.is_empty()
             && !self.resolved_calls.contains_key(&key)
@@ -14622,7 +14766,7 @@ impl LowerCtx {
         // fail-closed per `checker-output-boundary`. The checker MUST
         // populate `dyn_trait_method_calls` for every accepted call on
         // a trait-object receiver; missing entry is a hard diagnostic.
-        if let Some(receiver_ty) = self.expr_types.get(&SpanKey::from(&receiver.1)) {
+        if let Some(receiver_ty) = self.expr_types.get(&self.mk_key(&receiver.1)) {
             if matches!(receiver_ty, hew_types::Ty::TraitObject { .. }) {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TraitObjectMethodNoSideTableEntry {
@@ -15417,7 +15561,7 @@ impl LowerCtx {
         span: &std::ops::Range<usize>,
         name: &str,
     ) -> Option<ResolvedTy> {
-        let checker_key = SpanKey::from(span);
+        let checker_key = self.mk_key(span);
         let checker_ty = self.expr_types.get(&checker_key).cloned()?;
         match ResolvedTy::from_ty(&checker_ty) {
             Ok(resolved) => Some(resolved),
@@ -15760,7 +15904,7 @@ impl LowerCtx {
     fn try_register_enum_instantiation(&mut self, span: &std::ops::Range<usize>) {
         // Collect concrete Named types reachable from the expression type at
         // this span. Uses a worklist to avoid recursion depth issues.
-        let Some(checker_ty) = self.expr_types.get(&SpanKey::from(span)).cloned() else {
+        let Some(checker_ty) = self.expr_types.get(&self.mk_key(span)).cloned() else {
             return;
         };
         let Ok(resolved) = ResolvedTy::from_ty(&checker_ty) else {
@@ -15895,7 +16039,7 @@ impl LowerCtx {
         // mangled registry key (e.g. `"Option$$i64"`).  Fall back to bare-name
         // with a diagnostic if expr_types has no entry — absence is a real
         // signal (checker should always populate this site).
-        let checker_key = SpanKey::from(span);
+        let checker_key = self.mk_key(span);
         let result_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
             match ResolvedTy::from_ty(&ty) {
                 Ok(resolved) => resolved,
@@ -16261,7 +16405,7 @@ impl LowerCtx {
         // The suspendable awaits whose timeout `Result` is concretely specced are
         // local actor asks (`Result<R, AskError>`, `AskError::Timeout`) and raw
         // connection reads (`Result<bytes, IoError>`, `IoError::TimedOut`).
-        let inner_key = SpanKey::from(&await_inner.1);
+        let inner_key = self.mk_key(&await_inner.1);
         let is_local_ask = matches!(
             self.actor_method_dispatch.get(&inner_key),
             Some(ActorMethodKind::Ask(_, _))
@@ -16498,7 +16642,7 @@ impl LowerCtx {
 
         for arm in &expanded_arms {
             let pattern_span = &arm.pattern.1;
-            let key = SpanKey::from(pattern_span);
+            let key = self.mk_key(pattern_span);
 
             // Resolve the pattern classification. For arms expanded from
             // or-patterns (or any arm whose resolution is not in the side table),
@@ -17230,7 +17374,7 @@ impl LowerCtx {
                 // For now, we rely on the inline checks at lowering time
 
                 // (3) Check captures are Send (or conservatively reject if facts missing)
-                let closure_span_key = SpanKey::from(&function.1);
+                let closure_span_key = self.mk_key(&function.1);
                 if let Some(captures) = self.closure_capture_facts.get(&closure_span_key) {
                     for capture in captures {
                         if !capture.is_send {
@@ -19788,7 +19932,7 @@ fn check_fork_child_shape(
             // The validate_task_spawn_call helper and inline lowering gates will catch this.
 
             // FC-P1-A1 Blocker 3: Check closure captures are Send
-            let span_key = SpanKey::from(&function.1);
+            let span_key = SpanKey::in_module(&function.1, ctx.current_module_idx);
             if let Some(captures) = ctx.closure_capture_facts.get(&span_key) {
                 for capture in captures {
                     if !capture.is_send {
@@ -19933,7 +20077,7 @@ fn check_scope_deadline_shape(body: &hew_parser::ast::Block, span: &Span, ctx: &
 /// Site: hew-mir/src/lower.rs:7871 (`AwaitTask` result)
 fn check_await_task_result(_expr: &Expr, span: &Span, ctx: &mut LowerCtx, _program: &Program) {
     // Look up the type of the awaited expression
-    let span_key = SpanKey::from(span);
+    let span_key = SpanKey::in_module(span, ctx.current_module_idx);
     if let Some(hew_types::Ty::Named { name, args, .. }) = ctx.expr_types.get(&span_key) {
         // Check if it's a Task<T> where T != unit
         if name == "Task" && !args.is_empty() && !matches!(args[0], hew_types::Ty::Unit) {
@@ -19968,12 +20112,14 @@ fn check_actor_send_gates(ctx: &mut LowerCtx, program: &Program) {
         ref mut diagnostics,
         ref expr_types,
         ref actor_protocol_descriptors,
+        current_module_idx,
         ..
     } = *ctx;
     let mut gate_ctx = ActorSendGateCtx {
         expr_types,
         actor_protocol_descriptors,
         diagnostics,
+        module_idx: current_module_idx,
     };
     for (item, _span) in &program.items {
         match item {
@@ -20033,6 +20179,8 @@ struct ActorSendGateCtx<'a> {
     expr_types: &'a HashMap<SpanKey, Ty>,
     actor_protocol_descriptors: &'a HashMap<String, hew_types::ActorProtocolDescriptor>,
     diagnostics: &'a mut Vec<HirDiagnostic>,
+    /// Module index of the module whose bodies are being scanned.
+    module_idx: u32,
 }
 
 fn scan_block_for_actor_send(block: &hew_parser::ast::Block, gate: &mut ActorSendGateCtx<'_>) {
@@ -20325,7 +20473,10 @@ fn check_actor_send_method_call(
     call_span: &Span,
     gate: &mut ActorSendGateCtx<'_>,
 ) {
-    let Some(receiver_ty) = gate.expr_types.get(&SpanKey::from(&receiver.1)) else {
+    let Some(receiver_ty) = gate
+        .expr_types
+        .get(&SpanKey::in_module(&receiver.1, gate.module_idx))
+    else {
         return;
     };
     let inner = receiver_ty
@@ -20344,7 +20495,10 @@ fn check_actor_send_method_call(
     let mut arg_tys: Vec<ResolvedTy> = Vec::with_capacity(args.len());
     for arg in args {
         let (_, sp) = arg.expr();
-        let Some(ty) = gate.expr_types.get(&SpanKey::from(sp)) else {
+        let Some(ty) = gate
+            .expr_types
+            .get(&SpanKey::in_module(sp, gate.module_idx))
+        else {
             return;
         };
         let Ok(resolved) = ResolvedTy::from_ty(ty) else {
@@ -20861,7 +21015,11 @@ fn apply_binop_gates(
 /// MIR's own gate at `:5564` remains as a backstop, so under-rejection
 /// here does not lose safety).
 fn operand_is_isize(operand: &Spanned<Expr>, expr_types: &HashMap<SpanKey, Ty>) -> bool {
-    matches!(expr_types.get(&SpanKey::from(&operand.1)), Some(Ty::Isize))
+    // These gates scan root-program AST items only (module_idx = 0).
+    matches!(
+        expr_types.get(&SpanKey::in_module(&operand.1, 0)),
+        Some(Ty::Isize)
+    )
 }
 
 /// True iff the operand's checker-resolved type is `Ty::Isize` or
@@ -20870,8 +21028,9 @@ fn operand_is_platform_sized_int(
     operand: &Spanned<Expr>,
     expr_types: &HashMap<SpanKey, Ty>,
 ) -> bool {
+    // These gates scan root-program AST items only (module_idx = 0).
     matches!(
-        expr_types.get(&SpanKey::from(&operand.1)),
+        expr_types.get(&SpanKey::in_module(&operand.1, 0)),
         Some(Ty::Isize | Ty::Usize)
     )
 }
@@ -22309,7 +22468,8 @@ fn check_vec_index_element_type(
     // Look up the container type at the object's span. If absent, the
     // checker already emitted an error for this expression (e.g. indexing
     // into a non-Vec) — defer to that diagnostic and skip the gate.
-    let Some(container_ty) = expr_types.get(&SpanKey::from(&object.1)) else {
+    // This gate scans root-program AST items only (module_idx = 0).
+    let Some(container_ty) = expr_types.get(&SpanKey::in_module(&object.1, 0)) else {
         return;
     };
     let Ok(resolved) = ResolvedTy::from_ty(container_ty) else {

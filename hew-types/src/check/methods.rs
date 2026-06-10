@@ -253,7 +253,7 @@ impl Checker {
     }
 
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         // If deferred admission was already recorded for this span, the
         // lowering-fact finalizer becomes the sole authority for any
         // InferenceFailed diagnostic at this site.  Remove the deferred entry
@@ -1062,7 +1062,7 @@ impl Checker {
         kind: MethodCallReceiverKind,
     ) {
         self.method_call_receiver_kinds
-            .insert(SpanKey::from(span), kind);
+            .insert(SpanKey::in_module(span, self.current_module_idx), kind);
     }
 
     /// Returns whether the qualified method name `Trait::method` is in the
@@ -1108,14 +1108,14 @@ impl Checker {
             return;
         }
         self.method_call_consumes_receiver
-            .insert(SpanKey::from(span));
+            .insert(SpanKey::in_module(span, self.current_module_idx));
         let resolved_ty = self.subst.resolve(receiver_ty);
         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
     }
 
     fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
         self.method_call_rewrites
-            .insert(SpanKey::from(span), rewrite);
+            .insert(SpanKey::in_module(span, self.current_module_idx), rewrite);
     }
 
     fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
@@ -1125,7 +1125,7 @@ impl Checker {
             ActorMethodKind::Ask(method_id, reply_ty)
         };
         self.actor_method_dispatch
-            .insert(SpanKey::from(span), dispatch);
+            .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
     }
 
     fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
@@ -1514,7 +1514,7 @@ impl Checker {
         inner_ty: Ty,
     ) {
         self.deferred_channel_rewrites.insert(
-            SpanKey::from(span),
+            SpanKey::in_module(span, self.current_module_idx),
             DeferredChannelMethodRewrite {
                 handle_kind: handle_kind.to_string(),
                 method: method.to_string(),
@@ -1890,7 +1890,9 @@ impl Checker {
             .iter()
             .map(|arg| {
                 let (_expr, sp) = arg.expr();
-                self.expr_types.get(&SpanKey::from(sp)).cloned()
+                self.expr_types
+                    .get(&SpanKey::in_module(sp, self.current_module_idx))
+                    .cloned()
             })
             .collect();
         for (arg, ty_opt) in args.iter().zip(arg_types) {
@@ -1905,7 +1907,9 @@ impl Checker {
         args.iter()
             .map(|arg| {
                 let (_expr, sp) = arg.expr();
-                self.expr_types.get(&SpanKey::from(sp)).cloned()
+                self.expr_types
+                    .get(&SpanKey::in_module(sp, self.current_module_idx))
+                    .cloned()
             })
             .collect()
     }
@@ -2428,7 +2432,7 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send_half");
                 // Consuming: the Duplex<S, R> binding is moved.
                 self.method_call_consumes_receiver
-                    .insert(SpanKey::from(span));
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                 let resolved_s = self.subst.resolve(&s_ty);
@@ -2443,7 +2447,7 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_recv_half");
                 // Consuming: the Duplex<S, R> binding is moved.
                 self.method_call_consumes_receiver
-                    .insert(SpanKey::from(span));
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                 let resolved_r = self.subst.resolve(&r_ty);
@@ -2458,7 +2462,7 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
                 // Consuming: the Duplex<S, R> binding is moved.
                 self.method_call_consumes_receiver
-                    .insert(SpanKey::from(span));
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                 Ty::result(Ty::Unit, Ty::duplex_close_error())
@@ -2560,7 +2564,7 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
                 // Consuming: the SendHalf<S> binding is moved.
                 self.method_call_consumes_receiver
-                    .insert(SpanKey::from(span));
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(&receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                 Ty::result(Ty::Unit, Ty::duplex_close_error())
@@ -2637,7 +2641,7 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
                 // Consuming: the RecvHalf<R> binding is moved.
                 self.method_call_consumes_receiver
-                    .insert(SpanKey::from(span));
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(&receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                 Ty::result(Ty::Unit, Ty::duplex_close_error())
@@ -2827,7 +2831,8 @@ impl Checker {
             });
         match resolved {
             Ok(call) => {
-                self.resolved_calls.insert(SpanKey::from(span), call);
+                self.resolved_calls
+                    .insert(SpanKey::in_module(span, self.current_module_idx), call);
             }
             Err(LookupError::BoundsNotSatisfied {
                 unsatisfied,
@@ -2918,7 +2923,7 @@ impl Checker {
             ctor: "Vec".to_string(),
             args: vec![self.ty_to_dispatch_pattern(&elem_ty)],
         };
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         self.record_resolved_collection_call("Seq", method, &receiver, span);
         if !self.resolved_calls.contains_key(&key) {
             return;
@@ -4271,8 +4276,10 @@ impl Checker {
                 && (name == "Connection" || name == "net.Connection")
                 && matches!(method, "read" | "read_string");
             if is_conn_await_read {
-                self.conn_await_reads
-                    .insert(SpanKey::from(span), method == "read_string");
+                self.conn_await_reads.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    method == "read_string",
+                );
             } else {
                 // NEW-2: `await listener.accept()` is the non-blocking suspending
                 // accept (the listener-readiness sibling of `await conn.read()`).
@@ -4284,7 +4291,8 @@ impl Checker {
                     && (name == "Listener" || name == "net.Listener")
                     && method == "accept";
                 if is_listener_await_accept {
-                    self.listener_await_accepts.insert(SpanKey::from(span));
+                    self.listener_await_accepts
+                        .insert(SpanKey::in_module(span, self.current_module_idx));
                 } else {
                     // The blocking-call warning is correct for a bare (non-awaited)
                     // `conn.read()`; suppress it when the read is the non-blocking
@@ -4702,7 +4710,7 @@ impl Checker {
                                 resolved.clone()
                             };
                             let prior = self.numeric_method_lowerings.insert(
-                                SpanKey::from(span),
+                                SpanKey::in_module(span, self.current_module_idx),
                                 NumericMethodLowering {
                                     family,
                                     op,
@@ -4715,7 +4723,7 @@ impl Checker {
                             debug_assert!(
                                 prior.is_none(),
                                 "duplicate numeric method lowering for span {:?}",
-                                SpanKey::from(span)
+                                SpanKey::in_module(span, self.current_module_idx)
                             );
                             result_ty
                         } else if is_checked {
@@ -4890,8 +4898,10 @@ impl Checker {
                                     &return_type,
                                     span,
                                 );
-                                self.method_call_rewrites
-                                    .insert(SpanKey::from(span), MethodCallRewrite::RemoteActorAsk);
+                                self.method_call_rewrites.insert(
+                                    SpanKey::in_module(span, self.current_module_idx),
+                                    MethodCallRewrite::RemoteActorAsk,
+                                );
                             }
                         }
                         if method == "tell" {
@@ -4907,7 +4917,7 @@ impl Checker {
                             // checker output (no re-inference in codegen
                             // per the `checker-authority` invariant).
                             self.method_call_rewrites.insert(
-                                SpanKey::from(span),
+                                SpanKey::in_module(span, self.current_module_idx),
                                 MethodCallRewrite::RewriteToFunction {
                                     c_symbol: "hew_remote_pid_tell".to_string(),
                                     // Closed runtime call dispatched by callee-
@@ -5701,7 +5711,7 @@ impl Checker {
                                     self.env.mark_written(n);
                                 }
                                 self.machine_method_dispatch.insert(
-                                    SpanKey::from(span),
+                                    SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::Step {
                                         machine_name: name.clone(),
                                     },
@@ -5709,7 +5719,7 @@ impl Checker {
                             }
                             "state_name" => {
                                 self.machine_method_dispatch.insert(
-                                    SpanKey::from(span),
+                                    SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::StateName {
                                         machine_name: name.clone(),
                                     },
@@ -5724,7 +5734,7 @@ impl Checker {
                     // contributed this method.
                     if self.named_type_method_consumes_receiver(name, method) {
                         self.method_call_consumes_receiver
-                            .insert(SpanKey::from(span));
+                            .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                     }
@@ -5749,7 +5759,7 @@ impl Checker {
                     // by HIR before `method_call_rewrites` (machine
                     // `step`/`state_name`, actor send/ask, dyn-trait,
                     // resolved-impl call kernel).
-                    let span_key = SpanKey::from(span);
+                    let span_key = SpanKey::in_module(span, self.current_module_idx);
                     let already_rewritten = self.method_call_rewrites.contains_key(&span_key)
                         || self.machine_method_dispatch.contains_key(&span_key)
                         || self.actor_method_dispatch.contains_key(&span_key)
@@ -6060,7 +6070,7 @@ impl Checker {
                                 // `boundary-fail-closed`).
                                 let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
                                 self.dyn_trait_method_calls.insert(
-                                    SpanKey::from(span),
+                                    SpanKey::in_module(span, self.current_module_idx),
                                     crate::check::types::DynMethodCall {
                                         trait_name: bound.trait_name.clone(),
                                         method_name: method.to_string(),
@@ -6488,7 +6498,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 10..20;
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::Error,
@@ -6514,7 +6524,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 30..40;
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::String,
@@ -6547,7 +6557,7 @@ mod tests {
         let span_b = 200..210;
 
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span_a),
+            SpanKey::in_module(&span_a, 0),
             DeferredHashMapAdmission {
                 span: span_a.clone(),
                 key_ty: Ty::Var(key_var),
@@ -6556,7 +6566,7 @@ mod tests {
             },
         );
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span_b),
+            SpanKey::in_module(&span_b, 0),
             DeferredHashMapAdmission {
                 span: span_b.clone(),
                 key_ty: Ty::Var(key_var),
@@ -6591,7 +6601,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 50..60;
         checker.deferred_hashset_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashSetAdmission {
                 span: span.clone(),
                 elem_ty: Ty::Error,
@@ -6617,7 +6627,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 70..80;
         checker.deferred_hashset_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashSetAdmission {
                 span: span.clone(),
                 elem_ty: Ty::Var(TypeVar::fresh()),
@@ -6654,7 +6664,7 @@ mod tests {
             args: vec![Ty::Error, Ty::I64],
         };
         checker.deferred_vec_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredVecAdmission {
                 span: span.clone(),
                 elem_ty,
@@ -6679,7 +6689,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 110..120;
         checker.deferred_vec_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredVecAdmission {
                 span: span.clone(),
                 elem_ty: Ty::Var(TypeVar::fresh()),

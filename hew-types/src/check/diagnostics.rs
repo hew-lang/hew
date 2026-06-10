@@ -63,7 +63,7 @@ impl Checker {
         if !self.wasm_target {
             return;
         }
-        let key = (SpanKey::from(span), feature);
+        let key = (SpanKey::in_module(span, self.current_module_idx), feature);
         if !self.wasm_warning_spans.insert(key) {
             return;
         }
@@ -97,7 +97,7 @@ impl Checker {
         if !self.wasm_target {
             return;
         }
-        let key = (SpanKey::from(span), feature);
+        let key = (SpanKey::in_module(span, self.current_module_idx), feature);
         if !self.wasm_reject_spans.insert(key) {
             return;
         }

@@ -74,7 +74,16 @@ mod tests {
     ) -> HashMap<SpanKey, ActorSendAliasing> {
         entries
             .into_iter()
-            .map(|(start, end, decision)| (SpanKey { start, end }, decision))
+            .map(|(start, end, decision)| {
+                (
+                    SpanKey {
+                        start,
+                        end,
+                        module_idx: 0,
+                    },
+                    decision,
+                )
+            })
             .collect()
     }
 

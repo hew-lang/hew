@@ -576,6 +576,7 @@ fn hover_binding_in_stmt(
                 let span_key = SpanKey {
                     start: value_span.start,
                     end: value_span.end,
+                    module_idx: 0,
                 };
                 type_output
                     .expr_types
@@ -607,6 +608,7 @@ fn hover_binding_in_stmt(
                 let span_key = SpanKey {
                     start: value_span.start,
                     end: value_span.end,
+                    module_idx: 0,
                 };
                 type_output
                     .expr_types
@@ -1685,6 +1687,7 @@ mod tests {
             SpanKey {
                 start: x_offset,
                 end: x_offset + 1,
+                module_idx: 0,
             },
             Ty::I32,
         );
@@ -1747,6 +1750,7 @@ mod tests {
             SpanKey {
                 start: count_offset,
                 end: count_offset + "count".len(),
+                module_idx: 0,
             },
             Ty::I64,
         );
@@ -1863,6 +1867,7 @@ mod tests {
             SpanKey {
                 start: use_offset,
                 end: use_offset + "count".len(),
+                module_idx: 0,
             },
             Ty::I32,
         );
@@ -2029,6 +2034,7 @@ mod tests {
             SpanKey {
                 start: x_offset,
                 end: x_offset + 1,
+                module_idx: 0,
             },
             Ty::IntLiteral,
         );

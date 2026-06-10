@@ -315,7 +315,7 @@ impl Checker {
         let dedup_key = (
             machine_name.to_string(),
             type_args.to_vec(),
-            SpanKey::from(span),
+            SpanKey::in_module(span, self.current_module_idx),
         );
         if !self.reported_machine_bound_violations.insert(dedup_key) {
             return;
@@ -379,7 +379,7 @@ impl Checker {
         let dedup_key = (
             actor_name.to_string(),
             type_args.to_vec(),
-            SpanKey::from(span),
+            SpanKey::in_module(span, self.current_module_idx),
         );
         if !self.reported_actor_bound_violations.insert(dedup_key) {
             return;

@@ -476,7 +476,7 @@ impl Checker {
             .errors
             .iter()
             .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-            .map(|e| SpanKey::from(&e.span))
+            .map(|e| SpanKey::in_module(&e.span, self.current_module_idx))
             .collect();
         let mut leaked_expr_type_spans = Vec::new();
         for (span, ty) in expr_types.iter_mut() {
@@ -837,7 +837,7 @@ impl Checker {
         // inference has settled, mirroring the HashSet lowering-fact pattern.
         if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
             self.deferred_hashmap_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashMapAdmission {
                     span: span.clone(),
                     key_ty: key_ty.clone(),
@@ -852,7 +852,7 @@ impl Checker {
         // finalize will fail closed with a diagnostic if the key is ineligible.
         if matches!(&resolved_key, Ty::Named { .. }) {
             self.deferred_hashmap_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashMapAdmission {
                     span: span.clone(),
                     key_ty: resolved_key.clone(),
@@ -947,7 +947,7 @@ impl Checker {
         // inference has settled, mirroring the HashMap deferred-admission pattern.
         if matches!(resolved, Ty::Var(_)) {
             self.deferred_hashset_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashSetAdmission {
                     span: span.clone(),
                     elem_ty: elem_ty.clone(),
@@ -1021,9 +1021,10 @@ impl Checker {
     /// from `validate_concrete_hashmap_type` and again from the
     /// right-hand-side expression's inferred-type validation).
     fn has_bounds_not_satisfied_at(&self, span: &Span) -> bool {
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         self.errors.iter().any(|e| {
-            matches!(e.kind, TypeErrorKind::BoundsNotSatisfied) && SpanKey::from(&e.span) == key
+            matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
+                && SpanKey::in_module(&e.span, self.current_module_idx) == key
         })
     }
 
@@ -1129,7 +1130,7 @@ impl Checker {
 
         if resolved.has_inference_var() {
             self.deferred_vec_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredVecAdmission {
                     span: span.clone(),
                     elem_ty: elem_ty.clone(),
@@ -1619,7 +1620,11 @@ mod tests {
     #[test]
     fn validate_expr_output_contract_reports_and_prunes_ty_var_leak() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let leaked_span = SpanKey { start: 10, end: 20 };
+        let leaked_span = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let leaked_var = TypeVar::fresh();
         let mut expr_types = HashMap::from([(leaked_span.clone(), Ty::Var(leaked_var))]);
 
@@ -1651,8 +1656,16 @@ mod tests {
     fn validate_method_call_receiver_kinds_prunes_unknown_named_type_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let known_key = SpanKey { start: 10, end: 20 };
-        let unknown_key = SpanKey { start: 30, end: 40 };
+        let known_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
+        let unknown_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
 
         checker.method_call_receiver_kinds.insert(
             known_key.clone(),
@@ -1715,7 +1728,11 @@ mod tests {
     fn validate_method_call_receiver_kinds_retains_qualified_handle_type_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let handle_key = SpanKey { start: 50, end: 60 };
+        let handle_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         checker.method_call_receiver_kinds.insert(
             handle_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
@@ -1750,10 +1767,15 @@ mod tests {
     fn validate_method_call_receiver_kinds_prunes_unknown_trait_object_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let known_trait_key = SpanKey { start: 70, end: 80 };
+        let known_trait_key = SpanKey {
+            start: 70,
+            end: 80,
+            module_idx: 0,
+        };
         let unknown_trait_key = SpanKey {
             start: 90,
             end: 100,
+            module_idx: 0,
         };
 
         checker.method_call_receiver_kinds.insert(
@@ -1821,6 +1843,7 @@ mod tests {
         let param_key = SpanKey {
             start: 110,
             end: 120,
+            module_idx: 0,
         };
         checker.method_call_receiver_kinds.insert(
             param_key.clone(),
@@ -1875,7 +1898,11 @@ mod tests {
     /// present in `expr_types` and whose type arguments contain no inference vars.
     #[test]
     fn validate_call_type_args_output_contract_retains_valid_entries() {
-        let valid_key = SpanKey { start: 10, end: 20 };
+        let valid_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let mut call_type_args = HashMap::from([(valid_key.clone(), vec![Ty::I32, Ty::Bool])]);
         let expr_types = HashMap::from([(valid_key.clone(), Ty::I32)]);
 
@@ -1894,7 +1921,11 @@ mod tests {
     /// is orphaned and must not reach codegen.
     #[test]
     fn validate_call_type_args_output_contract_prunes_orphaned_entries() {
-        let orphan_key = SpanKey { start: 30, end: 40 };
+        let orphan_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
         let mut call_type_args = HashMap::from([(orphan_key.clone(), vec![Ty::I32])]);
         // expr_types is empty — the owning expression was pruned.
         let expr_types: HashMap<SpanKey, Ty> = HashMap::new();
@@ -1912,7 +1943,11 @@ mod tests {
     /// `expr_types`.  Leaked inference state must not cross the output boundary.
     #[test]
     fn validate_call_type_args_output_contract_prunes_leaked_inference_vars() {
-        let present_key = SpanKey { start: 50, end: 60 };
+        let present_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         let inference_var = Ty::Var(crate::ty::TypeVar(42));
         let mut call_type_args =
             HashMap::from([(present_key.clone(), vec![Ty::I32, inference_var])]);
@@ -1931,9 +1966,21 @@ mod tests {
     /// inference state — only the valid entry must survive.
     #[test]
     fn validate_call_type_args_output_contract_mixed() {
-        let valid_key = SpanKey { start: 10, end: 20 };
-        let orphan_key = SpanKey { start: 30, end: 40 };
-        let leaked_key = SpanKey { start: 50, end: 60 };
+        let valid_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
+        let orphan_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
+        let leaked_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         let inference_var = Ty::Var(crate::ty::TypeVar(7));
 
         let mut call_type_args = HashMap::from([
@@ -2311,7 +2358,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 1, end: 5 };
+        let key = SpanKey {
+            start: 1,
+            end: 5,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             LoweringFact {
@@ -2337,7 +2388,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 10, end: 20 };
+        let key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             LoweringFact {
@@ -2364,7 +2419,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 30, end: 40 };
+        let key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             // Intentionally wrong pairing: Str element with Int64 ABI.
@@ -2596,7 +2655,7 @@ mod tests {
         );
         // Insert a deferred entry: HashMap<Point, i64>
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("Point".to_string(), vec![]),
@@ -2610,7 +2669,7 @@ mod tests {
             "eligible Named key with i64 value must produce no errors; got: {:?}",
             checker.errors
         );
-        let key = SpanKey::from(&span);
+        let key = SpanKey::in_module(&span, 0);
         let fact = checker.hashmap_layout_facts.get(&key).expect(
             "finalize_hashmap_admission must produce a HashMapLoweringFact for eligible Named key",
         );
@@ -2678,7 +2737,7 @@ mod tests {
             .type_defs
             .insert("Bad".to_string(), make_record("Bad", vec![("x", Ty::F64)]));
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("Bad".to_string(), vec![]),
@@ -2711,7 +2770,7 @@ mod tests {
         // (the Named path is admitted inline, then finalize_lowering_facts is called).
         // We bypass record_hashset_lowering_fact and inject directly into pending_lowering_facts.
         checker.pending_lowering_facts.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             crate::check::types::PendingLoweringFact {
                 hashset_element_ty: Ty::normalize_named("Point".to_string(), vec![]),
                 source_module: None,
@@ -2723,7 +2782,7 @@ mod tests {
             "eligible Named element must produce no errors; got: {:?}",
             checker.errors
         );
-        let key = SpanKey::from(&span);
+        let key = SpanKey::in_module(&span, 0);
         let fact = checker.hashset_layout_facts.get(&key).expect(
             "finalize_lowering_facts must produce a HashSetLoweringFact for eligible Named element",
         );
@@ -2758,7 +2817,7 @@ mod tests {
             .type_defs
             .insert("Bad".to_string(), make_record("Bad", vec![("v", Ty::F32)]));
         checker.pending_lowering_facts.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             crate::check::types::PendingLoweringFact {
                 hashset_element_ty: Ty::normalize_named("Bad".to_string(), vec![]),
                 source_module: None,
@@ -2786,7 +2845,7 @@ mod tests {
         td.field_order = vec!["s".to_string()];
         checker.type_defs.insert("K".to_string(), td);
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("K".to_string(), vec![]),
@@ -2821,7 +2880,7 @@ mod tests {
         td.is_indirect = true;
         checker.type_defs.insert("Handle".to_string(), td);
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("Handle".to_string(), vec![]),
@@ -2859,7 +2918,7 @@ mod tests {
         };
         checker.type_defs.insert("Color".to_string(), td);
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("Color".to_string(), vec![]),
@@ -2896,7 +2955,7 @@ mod tests {
             make_record("Pos", vec![("lat", Ty::I64), ("lon", Ty::I64)]),
         );
         checker.deferred_hashmap_admission.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             DeferredHashMapAdmission {
                 span: span.clone(),
                 key_ty: Ty::normalize_named("Point".to_string(), vec![]),
@@ -2910,7 +2969,7 @@ mod tests {
             "eligible Named key + Named value must produce no errors; got: {:?}",
             checker.errors
         );
-        let key = SpanKey::from(&span);
+        let key = SpanKey::in_module(&span, 0);
         let fact = checker
             .hashmap_layout_facts
             .get(&key)
@@ -2942,7 +3001,7 @@ mod tests {
         td.is_indirect = true;
         checker.type_defs.insert("Handle".to_string(), td);
         checker.pending_lowering_facts.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             crate::check::types::PendingLoweringFact {
                 hashset_element_ty: Ty::normalize_named("Handle".to_string(), vec![]),
                 source_module: None,
@@ -2967,7 +3026,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 6..15;
         checker.pending_lowering_facts.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             crate::check::types::PendingLoweringFact {
                 hashset_element_ty: Ty::String,
                 source_module: None,
@@ -2979,7 +3038,7 @@ mod tests {
             "String element must produce no errors; got: {:?}",
             checker.errors
         );
-        let key = SpanKey::from(&span);
+        let key = SpanKey::in_module(&span, 0);
         let fact = lowering_facts
             .get(&key)
             .expect("finalize_lowering_facts must produce a LoweringFact for String element");
@@ -3002,7 +3061,7 @@ mod tests {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 7..16;
         checker.pending_lowering_facts.insert(
-            SpanKey::from(&span),
+            SpanKey::in_module(&span, 0),
             crate::check::types::PendingLoweringFact {
                 hashset_element_ty: Ty::I64,
                 source_module: None,
@@ -3014,7 +3073,7 @@ mod tests {
             "I64 element must produce no errors; got: {:?}",
             checker.errors
         );
-        let key = SpanKey::from(&span);
+        let key = SpanKey::in_module(&span, 0);
         let fact = lowering_facts
             .get(&key)
             .expect("finalize_lowering_facts must produce a LoweringFact for I64 element");

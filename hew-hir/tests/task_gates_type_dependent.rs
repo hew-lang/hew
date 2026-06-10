@@ -39,6 +39,7 @@ fn awaited_task_span_key(source: &str) -> SpanKey {
     SpanKey {
         start,
         end: start + "task".len(),
+        module_idx: 0,
     }
 }
 

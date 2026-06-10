@@ -1343,8 +1343,10 @@ impl Checker {
     ) {
         // Validate #[every(duration)] attribute if present.
         self.validate_every_attribute(rf);
-        self.actor_handler_state_guards
-            .insert(SpanKey::from(&rf.span), ActorStateGuard::Exclusive);
+        self.actor_handler_state_guards.insert(
+            SpanKey::in_module(&rf.span, self.current_module_idx),
+            ActorStateGuard::Exclusive,
+        );
 
         let prev_in_receive_fn = self.in_receive_fn;
         self.in_receive_fn = true;

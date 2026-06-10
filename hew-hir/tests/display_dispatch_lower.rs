@@ -201,6 +201,7 @@ fn fstring_without_display_fmt_lang_item_is_fail_closed() {
             SpanKey {
                 start: sp.start,
                 end: sp.end,
+                module_idx: 0,
             },
             Ty::I64,
         );
@@ -286,6 +287,7 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         SpanKey {
             start: interp_span.start,
             end: interp_span.end,
+            module_idx: 0,
         },
         Ty::Named {
             builtin: None,

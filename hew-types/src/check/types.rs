@@ -1060,18 +1060,42 @@ pub struct AssignTargetShape {
     pub is_unsigned: bool,
 }
 
-/// Span used as map key (byte offsets).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Span used as map key (byte offsets + module index).
+///
+/// `module_idx` is 0 for the root compilation unit and N for the N-th
+/// non-root module in topological order.  Without it, two source files that
+/// both have an expression at the same byte offset collide in the flat
+/// `expr_types` map, causing the type-checker's annotation for one file to
+/// overwrite the other's — the root cause of cross-module span-key collisions
+/// (std/fs.hew + std/path.hew unary-minus and `StringLit` defects).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct SpanKey {
     pub start: usize,
     pub end: usize,
+    /// 0 = root compilation unit; N = N-th non-root module (1-based topo order).
+    pub module_idx: u32,
 }
 
 impl From<&Span> for SpanKey {
+    /// Constructs a root-module key (`module_idx` = 0).
+    /// Use [`SpanKey::in_module`] when recording types for non-root modules.
     fn from(s: &Span) -> Self {
         Self {
             start: s.start,
             end: s.end,
+            module_idx: 0,
+        }
+    }
+}
+
+impl SpanKey {
+    /// Construct a key for a span in module `module_idx` (0 = root).
+    #[must_use]
+    pub fn in_module(s: &Span, module_idx: u32) -> Self {
+        Self {
+            start: s.start,
+            end: s.end,
+            module_idx,
         }
     }
 }
@@ -2108,6 +2132,10 @@ pub struct Checker {
     pub(super) in_unsafe: bool,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
+    /// 1-based index of the non-root module currently being type-checked.
+    /// 0 = root; N = N-th non-root module in topo order. Combined with
+    /// `SpanKey.module_idx` to prevent byte-offset collisions across files.
+    pub(super) current_module_idx: u32,
     /// Tracks which types are defined locally (in the current compilation unit).
     pub(super) local_type_defs: HashSet<String>,
     /// Tracks source-authored type definitions that can shadow builtin names.
@@ -2205,7 +2233,14 @@ pub struct Checker {
     /// `UnaryOperatorUnsupportedInMir` width mismatch in HIR.
     /// Processed in `apply_deferred_range_bound_types` after all inference and
     /// literal defaulting is complete.
-    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>, Option<Span>)>,
+    // The tuple carries (span, var, literal_value, inner_span, module_idx). A named
+    // struct would be cleaner but the field is private and short-lived — it never
+    // escapes the deferred-resolution pass.
+    #[allow(
+        clippy::type_complexity,
+        reason = "short-lived tuple; a named struct would be overkill for an internal deferred-resolution pass"
+    )]
+    pub(super) deferred_range_bounds: Vec<(Span, TypeVar, Option<i64>, Option<Span>, u32)>,
     /// Intrinsic declarations seen during registration: fn name → intrinsic key.
     ///
     /// Populated in `register_fn` for functions with `#[intrinsic("key")]`.
@@ -2403,6 +2438,7 @@ impl Checker {
             in_actor_handler_context: false,
             in_unsafe: false,
             current_module: None,
+            current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),

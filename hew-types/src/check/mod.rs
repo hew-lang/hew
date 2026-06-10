@@ -213,6 +213,10 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name.clone());
+                    // Assign a fresh 1-based index so `record_type` stamps a
+                    // per-file discriminator onto `SpanKey`, preventing byte-
+                    // offset collisions across module files.
+                    self.current_module_idx += 1;
                     // Temporarily scope local_type_defs / local_trait_defs to
                     // this module so orphan-rule checks see module-local
                     // definitions and locally_non_generic works correctly.
@@ -276,6 +280,9 @@ impl Checker {
                 }
             }
             self.current_module = None;
+            // Restore to 0 so subsequent root-level checks (program.items below)
+            // still use module_idx = 0 for their span keys.
+            self.current_module_idx = 0;
         }
 
         for (item, span) in &program.items {
@@ -698,21 +705,35 @@ impl Checker {
         for (item, _) in &program.items {
             self.classify_escapes_in_item(item);
         }
-        if let Some(mg) = &program.module_graph {
-            // Snapshot the module names so we don't borrow `program`
-            // while mutating `self`.
-            let module_ids: Vec<_> = mg.modules.keys().cloned().collect();
-            for mod_id in module_ids {
-                if let Some(module) = program
-                    .module_graph
-                    .as_ref()
-                    .and_then(|mg| mg.modules.get(&mod_id))
-                {
-                    for (item, _) in &module.items {
-                        self.classify_escapes_in_item(item);
-                    }
+        // Mirror the per-module index assignment used during body checking
+        // (topo order, skip root, 1-based index bumped only when the module
+        // is present) so each `closure_escape_facts` entry is stamped with
+        // the same `module_idx` the HIR consumer reads back via `mk_key` and
+        // the fail-closed validator keys on. `current_module_idx` was reset
+        // to 0 before this pass, so the root items above used idx 0.
+        let module_order: Vec<_> = match &program.module_graph {
+            Some(mg) => mg
+                .topo_order
+                .iter()
+                .filter(|mod_id| **mod_id != mg.root)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        for mod_id in &module_order {
+            if let Some(module) = program
+                .module_graph
+                .as_ref()
+                .and_then(|mg| mg.modules.get(mod_id))
+            {
+                self.current_module_idx += 1;
+                for (item, _) in &module.items {
+                    self.classify_escapes_in_item(item);
                 }
             }
+        }
+        if program.module_graph.is_some() {
+            self.current_module_idx = 0;
         }
     }
 
@@ -773,8 +794,10 @@ impl Checker {
                             binding_name,
                             in_fork,
                         );
-                        self.closure_escape_facts
-                            .insert(SpanKey::from(lambda_span), fact);
+                        self.closure_escape_facts.insert(
+                            SpanKey::in_module(lambda_span, self.current_module_idx),
+                            fact,
+                        );
                         self.maybe_emit_escape_advisory(lambda_span, fact);
                     }
                 }
@@ -969,7 +992,7 @@ impl Checker {
                 // Only insert if not already inserted by the let-bound
                 // path (in which case the let-bound fact wins).
                 self.closure_escape_facts
-                    .entry(SpanKey::from(expr_span))
+                    .entry(SpanKey::in_module(expr_span, self.current_module_idx))
                     .or_insert(fact);
                 self.maybe_emit_escape_advisory(expr_span, fact);
                 // Recurse into the body so nested closures inside this
@@ -1269,7 +1292,7 @@ impl Checker {
     /// the checker has a structural gap and silent when the contract
     /// holds. It does NOT classify or default; it only reports gaps.
     fn validate_closure_facts_complete(&mut self, program: &Program) {
-        let mut sites: Vec<(Span, Option<String>)> = Vec::new();
+        let mut sites: Vec<(Span, Option<String>, u32)> = Vec::new();
         collect_closure_literal_spans(program, &mut sites);
         let mut diagnostics = Vec::new();
         emit_unresolved_closure_diagnostics(
@@ -1288,15 +1311,39 @@ impl Checker {
 /// (`Expr::Lambda` / `Expr::SpawnLambdaActor`) it finds, paired with
 /// the capture-name when the literal is the value of a top-level
 /// `let <name> = |...| ...` binding (None otherwise — for diagnostic
-/// hint only).
-fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<String>)>) {
+/// hint only) and the owning `module_idx` (0 for the root unit, N for
+/// the N-th non-root module in topo order).
+///
+/// The `module_idx` MUST be assigned exactly as the checker assigns
+/// `current_module_idx` while body-checking (`check_program`: iterate
+/// `module_graph.topo_order`, skip the root, and bump a 1-based index
+/// only when the module is actually present in `modules`). The
+/// capture/escape facts for each closure are stamped with that same
+/// index, so the fail-closed lookup below can only line up if this walk
+/// reproduces the assignment site-for-site.
+fn collect_closure_literal_spans(program: &Program, out: &mut Vec<(Span, Option<String>, u32)>) {
+    let mut root_sites: Vec<(Span, Option<String>)> = Vec::new();
     for (item, _) in &program.items {
-        collect_lambda_spans_in_item(item, out);
+        collect_lambda_spans_in_item(item, &mut root_sites);
+    }
+    for (span, name) in root_sites {
+        out.push((span, name, 0));
     }
     if let Some(mg) = &program.module_graph {
-        for module in mg.modules.values() {
-            for (item, _) in &module.items {
-                collect_lambda_spans_in_item(item, out);
+        let mut module_idx: u32 = 0;
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            if let Some(module) = mg.modules.get(mod_id) {
+                module_idx += 1;
+                let mut module_sites: Vec<(Span, Option<String>)> = Vec::new();
+                for (item, _) in &module.items {
+                    collect_lambda_spans_in_item(item, &mut module_sites);
+                }
+                for (span, name) in module_sites {
+                    out.push((span, name, module_idx));
+                }
             }
         }
     }
@@ -1608,13 +1655,17 @@ fn collect_lambda_spans_in_expr(
 /// emit the corresponding `Unresolved` diagnostic if a fact is missing.
 /// Pure function so unit tests can drive it with synthetic maps.
 pub(crate) fn emit_unresolved_closure_diagnostics(
-    sites: &[(Span, Option<String>)],
+    sites: &[(Span, Option<String>, u32)],
     capture_facts: &HashMap<SpanKey, Vec<ClosureCaptureFact>>,
     escape_facts: &HashMap<SpanKey, ClosureEscapeFact>,
     out: &mut Vec<TypeError>,
 ) {
-    for (span, hint_name) in sites {
-        let key = SpanKey::from(span);
+    for (span, hint_name, module_idx) in sites {
+        // Key each site with its owning module index (assigned by
+        // `collect_closure_literal_spans` to mirror the checker), so the
+        // lookup matches the `SpanKey::in_module(span, current_module_idx)`
+        // the capture/escape facts were stamped with.
+        let key = SpanKey::in_module(span, *module_idx);
         if !capture_facts.contains_key(&key) {
             let name = hint_name.clone().unwrap_or_else(|| "<closure>".to_string());
             out.push(TypeError {

@@ -596,6 +596,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     use hew_hir::HirDiagnosticKind as K;
     match kind {
         K::NotYetImplemented { .. } => "NotYetImplemented",
+        K::MachineEventFieldNotFound { .. } => "MachineEventFieldNotFound",
         K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
         K::ImportMissing { .. } => "ImportMissing",
         K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",

@@ -2602,4 +2602,56 @@ mod tests {
             result.err()
         );
     }
+
+    /// Importing `std::fs` and `std::path` together previously produced two
+    /// defects caused by `SpanKey` lacking a per-module discriminator:
+    ///
+    /// * Defect A — `hew check`: `unsupported unary - for operand i64 -> string`
+    ///   at `std/path.hew:227` (ordinary `return -1;`).  The negation was
+    ///   mis-typed as `-> string` because `std/fs.hew` has a string literal at
+    ///   the same byte offset as `path.hew`'s negation expression, and both
+    ///   shared the same `SpanKey` in the flat `expr_types` map.
+    ///
+    /// * Defect B — `hew compile`: `Instr::StringLit dest is not a pointer type:
+    ///   dest_ty=i64` because the same collision made codegen see an i64 type
+    ///   where a pointer-to-string was required.
+    ///
+    /// The fix adds `module_idx: u32` to `SpanKey` so each non-root module gets
+    /// a distinct 1-based index and byte-offset collisions across files are
+    /// impossible.
+    ///
+    /// Regression guard: if this test starts failing, re-examine
+    /// `SpanKey::in_module` stamping in the checker and HIR lowering.
+    #[test]
+    fn cross_module_span_key_collision_unary_minus_and_string_lit_do_not_collide() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives under repo root");
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        // Import both std::fs and std::path — the two modules whose functions
+        // have byte-offset-colliding sub-expressions of different types.
+        // A plain function call exercises path resolution without needing
+        // full stdlib ABI support for the imported functions.
+        let source = concat!(
+            "import std::path;\n",
+            "import std::fs;\n",
+            "\n",
+            "fn main() -> i64 { 0 }\n",
+        );
+        let input = write_source(dir.path(), "main.hew", source);
+
+        let options = FrontendOptions {
+            project_dir: Some(repo_root.to_path_buf()),
+            ..Default::default()
+        };
+
+        let result = check_file(&input, &options);
+        assert!(
+            result.is_ok(),
+            "importing std::path and std::fs together must not produce \
+             cross-module SpanKey collisions; got: {:#?}",
+            result.err()
+        );
+    }
 }

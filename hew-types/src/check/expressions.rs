@@ -385,7 +385,7 @@ impl Checker {
                     // an `ActorMethodKind::Ask` entry for the inner method-call span;
                     // unify with the lambda/remote paths by returning `Result<R, AskError>`.
                     _ if matches!(inner.0, Expr::MethodCall { .. }) => {
-                        let inner_span_key = SpanKey::from(&inner.1);
+                        let inner_span_key = SpanKey::in_module(&inner.1, self.current_module_idx);
                         if let Some(ActorMethodKind::Ask(_, reply_ty)) =
                             self.actor_method_dispatch.get(&inner_span_key).cloned()
                         {
@@ -886,8 +886,10 @@ impl Checker {
         // the alias path its no-write-after-send invariant.
         let decision = self.classify_actor_send_aliasing(expr, &ty);
         self.mark_expr_moved_if_non_copy(expr, move_span, &ty);
-        self.actor_send_aliasing
-            .insert(SpanKey::from(move_span), decision);
+        self.actor_send_aliasing.insert(
+            SpanKey::in_module(move_span, self.current_module_idx),
+            decision,
+        );
     }
 
     /// Decide whether an actor-send arg should ride the alias (refcount-bumped
@@ -1515,7 +1517,7 @@ impl Checker {
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
         let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
         self.dyn_trait_method_calls.insert(
-            SpanKey::from(span),
+            SpanKey::in_module(span, self.current_module_idx),
             crate::check::types::DynMethodCall {
                 trait_name: trait_name.to_string(),
                 method_name: "at".to_string(),
@@ -1770,7 +1772,7 @@ impl Checker {
                 // spurious diagnostics here (the precise deferred diagnostic is
                 // raised during lowering).
                 if let Expr::Await(await_inner) = &inner.0 {
-                    let inner_key = SpanKey::from(&await_inner.1);
+                    let inner_key = SpanKey::in_module(&await_inner.1, self.current_module_idx);
                     if let Some(ActorMethodKind::Ask(_, reply_ty)) =
                         self.actor_method_dispatch.get(&inner_key).cloned()
                     {
@@ -3030,12 +3032,14 @@ impl Checker {
                                 var_tv,
                                 extract_integer_literal_value(&left.0),
                                 left_inner_span,
+                                self.current_module_idx,
                             ));
                             self.deferred_range_bounds.push((
                                 right.1.clone(),
                                 var_tv,
                                 extract_integer_literal_value(&right.0),
                                 right_inner_span,
+                                self.current_module_idx,
                             ));
                             Ty::range(Ty::Var(var_tv))
                         } else {
@@ -4234,7 +4238,7 @@ impl Checker {
                         });
                         if let Some((slot, child_type)) = resolved_slot {
                             self.supervisor_child_slots
-                                .insert(SpanKey::from(span), slot);
+                                .insert(SpanKey::in_module(span, self.current_module_idx), slot);
                             // Path-4 defense-in-depth bound enforcement on
                             // supervisor-child PID synthesis. The
                             // `SupervisorChildren` table stores child types
@@ -4771,8 +4775,10 @@ impl Checker {
             }
             capture_facts.push(fact);
         }
-        self.closure_capture_facts
-            .insert(SpanKey::from(span), capture_facts.clone());
+        self.closure_capture_facts.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            capture_facts.clone(),
+        );
 
         // Keep the public callable type shape unchanged while deriving its
         // capture payload from the binding-accurate ledger.
@@ -5484,7 +5490,7 @@ impl Checker {
         type_args: Vec<Ty>,
         span: &Span,
     ) {
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         self.actor_spawn_type_args
             .entry(key)
             .or_insert_with(|| (actor_name.to_string(), type_args));
@@ -5492,7 +5498,7 @@ impl Checker {
 
     /// Check if an expression is typically used for side effects (not for its return value).
     pub(super) fn record_type(&mut self, span: &Span, ty: &Ty) {
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
         self.expr_types.insert(key, ty.clone());
@@ -5725,7 +5731,7 @@ impl Checker {
         if matches!(expr, Expr::Lambda { .. }) {
             return AllocationClass::ClosureEnv;
         }
-        let key = SpanKey::from(span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
         match self.expr_types.get(&key) {
             Some(ty) => Self::classify_ty(&self.subst.resolve(ty)),
             // Type not recorded — happens for some inferred or rewritten
@@ -5765,7 +5771,7 @@ impl Checker {
             return;
         }
         self.stack_hints.push(StackHint {
-            span_key: SpanKey::from(stmt_span),
+            span_key: SpanKey::in_module(stmt_span, self.current_module_idx),
             binding_name: binding_name.to_string(),
             alloc_class: class,
         });
@@ -5889,7 +5895,7 @@ impl Checker {
                 );
                 return Ty::Bool;
             }
-            let rhs_key = SpanKey::from(&rhs.1);
+            let rhs_key = SpanKey::in_module(&rhs.1, self.current_module_idx);
             self.is_type_patterns.insert(rhs_key, rhs_resolved.clone());
             self.record_type(&rhs.1, &rhs_resolved);
             // Static-tautology warning: the LHS type already equals the RHS

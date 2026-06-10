@@ -243,11 +243,23 @@ fn attach_lowering_facts_clones_typecheck_output() {
 
     let mut tco = TypeCheckOutput::default();
     let fact = hashmap_layout_key_fact("Point".to_string(), 16, 8, HashMapValueType::I64);
-    tco.hashmap_layout_facts
-        .insert(SpanKey { start: 0, end: 0 }, fact);
+    tco.hashmap_layout_facts.insert(
+        SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        },
+        fact,
+    );
     let set_fact = hashset_layout_fact("Point".to_string(), 16, 8);
-    tco.hashset_layout_facts
-        .insert(SpanKey { start: 1, end: 1 }, set_fact);
+    tco.hashset_layout_facts.insert(
+        SpanKey {
+            start: 1,
+            end: 1,
+            module_idx: 0,
+        },
+        set_fact,
+    );
 
     let mut pipeline =
         pipeline_with_entry_terminator(Terminator::Return, vec![], vec![point_layout()]);

@@ -137,7 +137,8 @@ impl Checker {
     pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
         let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
         if concrete.iter().all(|ty| !ty.has_inference_var()) {
-            self.call_type_args.insert(SpanKey::from(span), concrete);
+            self.call_type_args
+                .insert(SpanKey::in_module(span, self.current_module_idx), concrete);
         }
     }
 
@@ -166,12 +167,14 @@ impl Checker {
         }
         let snapshot: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
         self.record_init_type_args
-            .insert(SpanKey::from(span), snapshot);
+            .insert(SpanKey::in_module(span, self.current_module_idx), snapshot);
     }
 
     fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
-        self.builtin_result_output_type_args
-            .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));
+        self.builtin_result_output_type_args.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            (ok_ty.clone(), err_ty.clone()),
+        );
     }
 
     pub(super) fn apply_instantiated_call_signature(
@@ -1011,7 +1014,10 @@ impl Checker {
             if let Some(sig) = binding
                 .def_span
                 .as_ref()
-                .and_then(|def_span| self.lambda_poly_sig_map.get(&SpanKey::from(def_span)))
+                .and_then(|def_span| {
+                    self.lambda_poly_sig_map
+                        .get(&SpanKey::in_module(def_span, self.current_module_idx))
+                })
                 .cloned()
             {
                 return self

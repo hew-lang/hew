@@ -207,6 +207,7 @@ fn collect_inlay_hints_from_stmt(
                     let span_key = SpanKey {
                         start: value_expr.1.start,
                         end: value_expr.1.end,
+                        module_idx: 0,
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         hints.push(InlayHint {
@@ -230,6 +231,7 @@ fn collect_inlay_hints_from_stmt(
                     let span_key = SpanKey {
                         start: value_expr.1.start,
                         end: value_expr.1.end,
+                        module_idx: 0,
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = find_var_name_end(source, &value_expr.1, name);
@@ -348,6 +350,7 @@ fn collect_inlay_hints_from_expr(
                 let span_key = SpanKey {
                     start: body.1.start,
                     end: body.1.end,
+                    module_idx: 0,
                 };
                 if let Some(body_ty) = tc.expr_types.get(&span_key) {
                     hints.push(InlayHint {
@@ -547,6 +550,7 @@ fn find_method_call_signature(
         .get(&SpanKey {
             start: receiver_span.start,
             end: receiver_span.end,
+            module_idx: 0,
         })
         .or_else(|| find_receiver_type(tc, receiver_span.end))?;
     collect_method_sigs_for_receiver(tc, receiver_ty)
@@ -643,6 +647,7 @@ mod tests {
             SpanKey {
                 start: span_start,
                 end: span_end,
+                module_idx: 0,
             },
             ty,
         );

@@ -299,6 +299,7 @@ fn verifier_catches_arity_mismatch() {
     let span_key = SpanKey {
         start: tuple_span.start,
         end: tuple_span.end,
+        module_idx: 0,
     };
     let mut tc = TypeCheckOutput::default();
     tc.insert_expr_type(

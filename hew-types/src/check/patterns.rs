@@ -700,7 +700,7 @@ impl Checker {
         pattern_span: &Span,
         scrutinee_ty: &Ty,
     ) {
-        let key = super::types::SpanKey::from(pattern_span);
+        let key = super::types::SpanKey::in_module(pattern_span, self.current_module_idx);
 
         let resolution = match pattern {
             Pattern::Wildcard => ArmResolution {

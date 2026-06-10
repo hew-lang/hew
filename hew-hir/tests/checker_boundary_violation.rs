@@ -65,6 +65,7 @@ fn poisoned_expr_types_emits_checker_boundary_violation() {
     let span_key = SpanKey {
         start: call_span.start,
         end: call_span.end,
+        module_idx: 0,
     };
     // W4.015: behavior pin — hand-poison expr_types with an unresolved
     // TypeVar to cover the permanent CheckerBoundaryViolation path.

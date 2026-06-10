@@ -615,7 +615,7 @@ impl Checker {
         };
 
         self.dyn_trait_coercions.insert(
-            SpanKey::from(span),
+            SpanKey::in_module(span, self.current_module_idx),
             DynCoercion {
                 trait_name: composite_trait_name,
                 concrete_type: concrete_type.clone(),

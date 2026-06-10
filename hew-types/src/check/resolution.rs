@@ -669,7 +669,8 @@ impl Checker {
         &mut self,
         expr_types: &mut HashMap<SpanKey, Ty>,
     ) {
-        for (span, var, maybe_value, inner_span) in std::mem::take(&mut self.deferred_range_bounds)
+        for (span, var, maybe_value, inner_span, module_idx) in
+            std::mem::take(&mut self.deferred_range_bounds)
         {
             let resolved = self
                 .subst
@@ -713,7 +714,7 @@ impl Checker {
             // Re-record the outer span with the resolved element type so the
             // codegen generates the bound constant with the correct integer
             // width.
-            expr_types.insert(SpanKey::from(&span), resolved.clone());
+            expr_types.insert(SpanKey::in_module(&span, module_idx), resolved.clone());
             // For negated integer literals (`-5`), also re-record the inner
             // literal's span.  Without this, the inner `5` keeps the
             // `IntLiteral`→`I64` materialized default, while the outer `-5`
@@ -721,7 +722,7 @@ impl Checker {
             // `operand_ty = I64` vs `result_ty = I32` and the `MIR lower`
             // `IntNegChecked` check rejects them as mismatched.
             if let Some(inner) = inner_span {
-                expr_types.insert(SpanKey::from(&inner), resolved);
+                expr_types.insert(SpanKey::in_module(&inner, module_idx), resolved);
             }
         }
     }
@@ -1427,7 +1428,10 @@ impl Checker {
                 *size,
             ),
             TypeExpr::Slice(_) => {
-                if self.unsupported_slice_spans.insert(SpanKey::from(&te.1)) {
+                if self
+                    .unsupported_slice_spans
+                    .insert(SpanKey::in_module(&te.1, self.current_module_idx))
+                {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &te.1,

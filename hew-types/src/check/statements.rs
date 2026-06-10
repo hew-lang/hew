@@ -498,8 +498,10 @@ impl Checker {
                     // lambda expression.
                     if value_is_direct_generic_lambda {
                         if let Some(sig) = generic_sig {
-                            self.lambda_poly_sig_map
-                                .insert(SpanKey::from(&pattern.1), sig);
+                            self.lambda_poly_sig_map.insert(
+                                SpanKey::in_module(&pattern.1, self.current_module_idx),
+                                sig,
+                            );
                         }
                     }
                     // Track let-bound numeric literals for later coercion at use
@@ -586,7 +588,8 @@ impl Checker {
                     .define_with_span(name.clone(), val_ty, true, span.clone());
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
-                        self.lambda_poly_sig_map.insert(SpanKey::from(span), sig);
+                        self.lambda_poly_sig_map
+                            .insert(SpanKey::in_module(span, self.current_module_idx), sig);
                     }
                 }
             }
@@ -619,7 +622,7 @@ impl Checker {
                 };
                 if let Some(kind) = assign_target_kind {
                     self.assign_target_kinds
-                        .insert(SpanKey::from(&target.1), kind);
+                        .insert(SpanKey::in_module(&target.1, self.current_module_idx), kind);
                 }
 
                 // Record fields follow the same write rule as other aggregate
@@ -687,13 +690,15 @@ impl Checker {
                 // falling back to the unreliable `resolvedTypeOf` path.
                 if self
                     .assign_target_kinds
-                    .contains_key(&SpanKey::from(&target.1))
+                    .contains_key(&SpanKey::in_module(&target.1, self.current_module_idx))
                 {
                     let shape = AssignTargetShape {
                         is_unsigned: target_ty.is_unsigned(),
                     };
-                    self.assign_target_shapes
-                        .insert(SpanKey::from(&target.1), shape);
+                    self.assign_target_shapes.insert(
+                        SpanKey::in_module(&target.1, self.current_module_idx),
+                        shape,
+                    );
                 }
                 let root_binding_name = match &target.0 {
                     Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {

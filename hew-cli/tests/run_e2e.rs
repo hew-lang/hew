@@ -3321,6 +3321,67 @@ fn run_file_imported_actor_spawns_and_calls() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "bumped: 1\n");
 }
 
+/// Revision-2 regression: a FILE-IMPORTED actor whose receive body exercises
+/// checker-owned `SpanKey`-keyed facts that are consumed during HIR body
+/// lowering — a closure literal (`closure_capture_facts` / `closure_escape_facts`)
+/// and a `for i in 0..n` range loop (`deferred_range_bounds`).
+///
+/// File-import flattening splices the imported actor into the root program AFTER
+/// type-checking, so the checker validated the body under its originating
+/// module's non-root `current_module_idx` (stamping every fact at index N) while
+/// HIR formerly lowered the spliced item at the default root index 0. Every
+/// `mk_key` lookup then missed and the fail-closed contracts fired
+/// (`ActorStateGuardMissing` at the spawn, and — had the body reached closure /
+/// range lowering — `ClosureCaptureModeUnresolved` / range-bound diagnostics).
+/// The fix makes HIR lower spliced file-import items under the same module index
+/// the checker used, so all body-level facts resolve. This guards the closure
+/// and range-bound facts on the file-import path specifically.
+#[test]
+fn run_file_imported_actor_closure_and_range_body_runs() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    std::fs::write(
+        dir.path().join("summer.hew"),
+        "pub actor Summer {\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   receive fn add_doubled(n: i64) -> i64 {\n\
+         \x20       let f = |x: i64| -> i64 { x * 2 };\n\
+         \x20       var sum: i64 = 0;\n\
+         \x20       for i in 0..n {\n\
+         \x20           sum = sum + f(i);\n\
+         \x20       }\n\
+         \x20       total = total + sum;\n\
+         \x20       total\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    let main = dir.path().join("main.hew");
+    std::fs::write(
+        &main,
+        "import \"summer.hew\";\n\
+         fn main() {\n\
+         \x20   let s = spawn Summer();\n\
+         \x20   match await s.add_doubled(4) {\n\
+         \x20       Ok(v) => println(f\"sum: {v}\"),\n\
+         \x20       Err(_) => println(\"err\"),\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = run_bounded_hew_run(&main, dir.path());
+    assert!(
+        output.status.success(),
+        "file-imported actor with closure + range body should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // 2*(0+1+2+3) = 12
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "sum: 12\n");
+}
+
 /// Regression for ecosystem Blocker 2 (package-import half): an actor exported
 /// from a separate compilation unit (`import hew::bank;`, resolved via the
 /// source-relative `hew/<pkg>/` layout) must spawn with `spawn bank.Account(...)`

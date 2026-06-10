@@ -49,6 +49,7 @@ fn poisoned_call_type_args_ty_error_emits_violation_and_fails_closed() {
     let span_key = SpanKey {
         start: call_span.start,
         end: call_span.end,
+        module_idx: 0,
     };
     let mut tc = TypeCheckOutput::default();
     tc.call_type_args.insert(span_key, vec![Ty::Error]);

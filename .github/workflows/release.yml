@@ -1028,7 +1028,10 @@ jobs:
     needs: [build, build-linux]
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
-    timeout-minutes: 60
+    # 180: the arm64 leg compiles the workspace under QEMU emulation —
+    # three 60-minute attempts timed out at exactly the wall. Native local
+    # builds + a manifest push are the faster path when iterating.
+    timeout-minutes: 180
     permissions:
       packages: write   # push multi-arch image to ghcr.io
       contents: read    # checkout for Dockerfile

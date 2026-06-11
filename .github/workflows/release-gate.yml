@@ -108,10 +108,13 @@ jobs:
       - name: Free runner disk
         # The full gate (release crates + debug test workspace + WASM + the
         # browser-analysis build) leaves the runner disk-marginal; the runner
-        # itself died with ENOSPC after all steps passed. Drop large
-        # preinstalled toolchains this job never uses.
+        # itself died with ENOSPC twice (after all steps passed, and again
+        # mid-test-step). Drop every large preinstalled toolchain this job
+        # never uses, including the hosted toolcache and docker images.
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
       - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
@@ -175,8 +178,14 @@ jobs:
       - name: Run Rust workspace tests
         # Driven-SWIM tests use a deliberately tight timing envelope; hosted
         # 4-core runners need the test-only scale knob even unsanitized.
+        # line-tables-only: the release build + debug test workspace + WASM +
+        # browser-analysis builds together leave the runner disk-marginal —
+        # the runner process itself died of ENOSPC twice mid-run even after
+        # the free-disk step. Full debug info is the dominant target/ cost
+        # and nothing in CI reads it.
         env:
           HEW_SWIM_TEST_TIME_SCALE: "5"
+          CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
       # Browser-analysis WASM gate — Linux x86_64 only.

@@ -740,10 +740,15 @@ jobs:
           release: "15.0"
           mem: 8192
           prepare: |
-            pkg install -y rust cmake ninja git pkgconf libffi
+            pkg install -y rust cmake ninja git pkgconf libffi libxml2
 
           run: |
             set -eux
+
+            # The VM user differs from the synced checkout owner; without
+            # this the build script cannot read git metadata and the shipped
+            # binaries report `unknown` for their commit hash.
+            git config --global --add safe.directory "$(pwd)"
 
             # ── LLVM ───────────────────────────────────────────────────────
             # Pre-built toolchain downloaded and checksum-verified on the
@@ -1070,7 +1075,8 @@ jobs:
   homebrew:
     needs: release
     runs-on: ubuntu-24.04
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    # Formula updates are for final releases; -rc tags must not touch the tap.
+    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.ref_name, '-rc') }}
     timeout-minutes: 5
 
     steps:

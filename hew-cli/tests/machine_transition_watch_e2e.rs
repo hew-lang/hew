@@ -6,16 +6,20 @@
 //! publishes each observed transition into a std/channel `Sender`; the
 //! observer waits with the sealed `from ... recv()` select arm composed
 //! with `after`. This file pins the green baseline
-//! (`examples/machine/transition_watch_baseline.hew`) and the named
-//! fail-closed refusal for the cross-actor handoff gap:
+//! (`examples/machine/transition_watch_baseline.hew`), the local
+//! channel-handle transfer through actor messages, and its ownership
+//! contract:
 //!
-//! - channel handles (`Sender`/`Receiver`) as actor message arguments are
-//!   routed into the cross-node serializer and refused
-//!   (`E_NOT_YET_IMPLEMENTED: cross-node serialize`). Local handle
-//!   transfer flips this pin to a green run.
-//!
-//! Each pinned refusal is an executable contract: the gap fails closed
-//! with a named diagnostic — never a miscompile — until the surface lands.
+//! - a `Sender`/`Receiver` actor message argument transfers the retained
+//!   handle to the receiving handler (the local mailbox copies the handle
+//!   pointer; no cross-node codec is emitted for handle-bearing
+//!   handlers);
+//! - the caller binding is consumed at the send site — any later use
+//!   (`close()`, a second send) is refused with `UseAfterConsume`, the
+//!   double-close / racing-owner guard;
+//! - cross-node transfer is statically unreachable: `RemotePid` exposes
+//!   no receive-fn dispatch, and tell/ask payloads are
+//!   Serializable-enforced (channel handles are not Serializable).
 
 mod support;
 
@@ -209,31 +213,135 @@ fn receiver_param_source() -> &'static str {
      }\n"
 }
 
-/// Gap pin: a channel handle as an actor message argument is refused with
-/// the named cross-node-serialize diagnostic (it never miscompiles). The
-/// local handle-transfer stage flips this to a green `hew run`.
+/// A channel handle as an actor message argument transfers locally: the
+/// observer receives the live receiver, drains it, and closes it. Was the
+/// stage-0 cross-node-serialize refusal pin before handle-bearing handlers
+/// stopped emitting xnode codecs.
 #[test]
-fn channel_receiver_actor_message_arg_fails_closed() {
+fn channel_receiver_actor_message_arg_transfers_locally() {
+    run_inline_scribbled(
+        "receiver_param_transfer",
+        receiver_param_source(),
+        "hello\n",
+    );
+}
+
+/// Ownership contract: the caller binding is consumed by the transfer.
+/// A later `rx.close()` would double-close the channel the new owner now
+/// holds — refused with the named `UseAfterConsume` diagnostic.
+#[test]
+fn channel_handle_use_after_transfer_refused() {
     require_codegen();
 
     let dir = support::tempdir();
-    let source = dir.path().join("receiver_param.hew");
-    std::fs::write(&source, receiver_param_source()).unwrap();
+    let source = dir.path().join("use_after_transfer.hew");
+    std::fs::write(
+        &source,
+        "import std::channel::channel;\n\
+         \n\
+         actor Observer {\n\
+         \x20   receive fn watch(rx: channel.Receiver<string>, label: string) {\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+         \x20   tx.close();\n\
+         \x20   let obs = spawn Observer;\n\
+         \x20   obs.watch(rx, \"watch\");\n\
+         \x20   rx.close();\n\
+         \x20   sleep_ms(100);\n\
+         }\n",
+    )
+    .unwrap();
 
     let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
 
     assert!(
         !output.status.success(),
-        "channel.Receiver as an actor message arg must fail closed today; \
-         it compiled instead:\n{}",
+        "rx.close() after transferring rx must be refused; it compiled:\n{}",
         support::describe_output(&output),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("cross-node serialize")
-            && stderr.contains("channel.Receiver"),
-        "expected the named cross-node-serialize refusal for channel.Receiver; \
-         got:\n{stderr}",
+        stderr.contains("used after it was consumed") && stderr.contains("`rx`"),
+        "expected the UseAfterConsume refusal on rx; got:\n{stderr}",
+    );
+}
+
+/// The lane's target composition: a machine-owning service publishes
+/// record transitions into a channel whose receiver was handed to a
+/// separate observer actor through a message; the observer selects on
+/// transitions with an `after` safety net and reacts to the Faulted edge.
+#[test]
+fn cross_actor_record_transition_watch_runs_clean() {
+    run_inline_scribbled(
+        "cross_actor_transition_watch",
+        "import std::concurrency::lifecycle;\n\
+         import std::channel::channel;\n\
+         \n\
+         record Transition {\n\
+         \x20   from_state: string,\n\
+         \x20   to_state: string\n\
+         }\n\
+         \n\
+         actor Service {\n\
+         \x20   receive fn drive(tx: channel.Sender<Transition>) {\n\
+         \x20       var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;\n\
+         \x20       let before1 = lc.state_name();\n\
+         \x20       lc.step(Initialise);\n\
+         \x20       let after1 = lc.state_name();\n\
+         \x20       if before1 != after1 {\n\
+         \x20           tx.send(Transition { from_state: before1, to_state: after1 });\n\
+         \x20       }\n\
+         \x20       let before2 = lc.state_name();\n\
+         \x20       lc.step(lifecycle.LifecycleEvent::Crashed { error: Error::Code(7) });\n\
+         \x20       let after2 = lc.state_name();\n\
+         \x20       if before2 != after2 {\n\
+         \x20           tx.send(Transition { from_state: before2, to_state: after2 });\n\
+         \x20       }\n\
+         \x20       tx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         actor Observer {\n\
+         \x20   receive fn watch(rx: channel.Receiver<Transition>) {\n\
+         \x20       var waiting = true;\n\
+         \x20       while waiting {\n\
+         \x20           select {\n\
+         \x20               t from rx.recv() => {\n\
+         \x20                   match t {\n\
+         \x20                       Some(tr) => {\n\
+         \x20                           println(f\"{tr.from_state} -> {tr.to_state}\");\n\
+         \x20                           if tr.to_state == \"Faulted\" {\n\
+         \x20                               println(\"observer: child faulted\");\n\
+         \x20                           }\n\
+         \x20                       },\n\
+         \x20                       None => {\n\
+         \x20                           println(\"watch closed\");\n\
+         \x20                           waiting = false;\n\
+         \x20                       },\n\
+         \x20                   }\n\
+         \x20               },\n\
+         \x20               after 2s => {\n\
+         \x20                   println(\"timeout\");\n\
+         \x20                   waiting = false;\n\
+         \x20               },\n\
+         \x20           };\n\
+         \x20       }\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);\n\
+         \x20   let obs = spawn Observer;\n\
+         \x20   obs.watch(rx);\n\
+         \x20   let svc = spawn Service;\n\
+         \x20   svc.drive(tx);\n\
+         \x20   sleep_ms(300);\n\
+         }\n",
+        "Created -> Initialising\nInitialising -> Faulted\nobserver: child faulted\nwatch closed\n",
     );
 }

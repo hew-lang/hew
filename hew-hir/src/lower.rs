@@ -4587,6 +4587,29 @@ impl LowerCtx {
         self.resolved_expr_types.get(&self.mk_key(span))
     }
 
+    /// True when the checker typed the expression at `span` as a channel
+    /// handle (`Sender<T>` / `Receiver<T>`). Resolves through
+    /// `ResolvedTy::from_ty` so the decision rides the typed builtin
+    /// discriminant, never the (possibly module-qualified) name string.
+    /// Absent or unconvertible entries answer `false` — the conservative
+    /// no-ownership-transfer default.
+    fn checked_span_is_channel_handle(&self, span: &Span) -> bool {
+        self.expr_types
+            .get(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .is_some_and(|resolved| {
+                matches!(
+                    resolved,
+                    ResolvedTy::Named {
+                        builtin: Some(
+                            hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver
+                        ),
+                        ..
+                    }
+                )
+            })
+    }
+
     /// Construct a `SpanKey` for `span` in the current module context.
     ///
     /// The checker records types with `SpanKey::in_module(span, current_module_idx)`
@@ -15416,7 +15439,24 @@ impl LowerCtx {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let lowered_args: Vec<HirExpr> = args
                 .iter()
-                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .map(|arg| {
+                    // A channel handle (`Sender<T>`/`Receiver<T>`) crossing an
+                    // actor message boundary transfers ownership to the
+                    // receiving handler — the mailbox copies the handle
+                    // pointer, not the channel. Lower such args with
+                    // `IntentKind::Consume` so the move-checker marks the
+                    // caller binding consumed: a later use (`rx.close()`, a
+                    // second send) would race the new owner and double-close
+                    // the underlying channel. Every other arg keeps `Read` —
+                    // the existing boundary copy/clone semantics.
+                    let spanned = arg.expr();
+                    let intent = if self.checked_span_is_channel_handle(&spanned.1) {
+                        IntentKind::Consume
+                    } else {
+                        IntentKind::Read
+                    };
+                    self.lower_expr(spanned, intent)
+                })
                 .collect();
             return match dispatch {
                 ActorMethodKind::Fire(method_id) => (

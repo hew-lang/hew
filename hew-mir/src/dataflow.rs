@@ -174,6 +174,27 @@ fn min_site(a: SiteId, b: SiteId) -> SiteId {
     }
 }
 
+/// True for channel handle types (`Sender<T>` / `Receiver<T>`).
+///
+/// `#[opaque]`-only handles classify as `BitCopy` on the REPRESENTATION
+/// axis (pointer-width, memcpy'd, no implicit drop), which normally
+/// suppresses the consume transition below. Channel handles are still
+/// single-owner on the OWNERSHIP axis: `close()` releases the underlying
+/// resource and an actor-message transfer hands the pointer to the
+/// receiving handler. A use after either consume races the new owner /
+/// double-closes the channel, so explicit `Consume`-intent uses of these
+/// types must transition to `Consumed` despite the `BitCopy` representation.
+/// Read-intent uses (`send`/`recv`/`clone`, plain rebinds) are untouched.
+fn is_channel_handle_ty(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver),
+            ..
+        }
+    )
+}
+
 /// Forward-scan transfer function over one block's statements.
 /// Emits `InitialisedBeforeUse` / `UseAfterConsume` checks as it
 /// goes; returns the exit state for this block's terminator.
@@ -238,7 +259,8 @@ fn transfer_block(
                 // and the use was already flagged. For any other prior state a
                 // genuine `Consume` use transitions to `Consumed` as usual.
                 if *intent == IntentKind::Consume
-                    && ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+                    && (ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+                        || is_channel_handle_ty(ty))
                     && !matches!(
                         state.get(binding),
                         Some(BindingState::AliasedIntoAggregate(_))

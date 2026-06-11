@@ -5294,3 +5294,35 @@ fn machine_channel_element_currently_fails_closed() {
         output.errors
     );
 }
+
+/// Cross-node guard for the local channel-handle transfer surface: a
+/// `RemotePid<T>` exposes no receive-fn dispatch, so a channel handle can
+/// never ride an actor message across a node boundary through this
+/// surface. If `RemotePid` ever grows handler dispatch, its payloads must
+/// route through the Serializable enforcement (channel handles are not
+/// Serializable) — this pin fails first.
+#[test]
+fn remote_receive_fn_dispatch_with_channel_handle_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        actor Observer {
+            receive fn watch(rx: channel.Receiver<string>) {
+                rx.close();
+            }
+        }
+
+        fn forward(o: RemotePid<Observer>, rx: channel.Receiver<string>) {
+            o.watch(rx);
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| e
+            .message
+            .contains("no method `watch` on `RemotePid<Observer>`")),
+        "remote receive-fn dispatch must stay refused; got: {:#?}",
+        output.errors
+    );
+}

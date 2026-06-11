@@ -4040,6 +4040,35 @@ fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
+/// True when `ty` is — or transitively carries through generic args, tuples,
+/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+/// Dispatched on the typed builtin discriminant with a short-name fallback
+/// (import-use sites carry module-qualified spellings like
+/// `channel.Receiver`). Record/enum FIELD recursion is deliberately absent:
+/// an aggregate hiding a handle still reaches the serializer walk and fails
+/// closed there at compile time — never a miscompile.
+fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            matches!(
+                builtin,
+                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
+            ) || matches!(short_name(name), "Sender" | "Receiver")
+                || args.iter().any(resolved_ty_contains_channel_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_channel_handle(inner)
+        }
+        _ => false,
+    }
+}
+
 /// Recursively replace every `Named { name, .. }` in `ty` with its
 /// short (unqualified) name, stripping any leading `"module."` prefix.
 ///
@@ -39497,6 +39526,20 @@ fn emit_xnode_codec_module_init<'ctx>(
             let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
+            // Channel handles (`Sender<T>`/`Receiver<T>`) are process-local
+            // runtime resources: the local mailbox transfers the retained
+            // handle pointer (ownership moves; the checker consumes the
+            // caller binding), and the checker's Serializable enforcement
+            // already refuses them at every RemotePid boundary with a named
+            // diagnostic. Emitting a codec here would fail the WHOLE compile
+            // for a purely local program. Skip the msg_type instead — the
+            // cross-node receive direction stays on the runtime's no-codec
+            // fail-closed drop path, exactly like the packed-args skip above.
+            if resolved_ty_contains_channel_handle(msg_ty)
+                || resolved_ty_contains_channel_handle(&h.return_ty)
+            {
+                continue;
+            }
             if entries.iter().any(|(mt, _, _)| *mt == h.msg_type) {
                 continue;
             }

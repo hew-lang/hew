@@ -3992,7 +3992,10 @@ mod supervisor_escalation_tests {
             let first_actor_id = (*first_actor).id;
             hew_actor_trap(first_actor, 1);
 
-            let count = hew_supervisor_wait_restart(child, 1, 10_000);
+            // 30s: this wait twice missed a 10s budget on loaded hosted
+            // Windows runners (0.21s isolated — the bound is contention
+            // headroom, not expected duration).
+            let count = hew_supervisor_wait_restart(child, 1, 30_000);
             assert!(
                 count >= 1,
                 "child supervisor should restart nested actor once"
@@ -4012,7 +4015,8 @@ mod supervisor_escalation_tests {
 
             hew_actor_trap(restarted_actor, 1);
 
-            let count = hew_supervisor_wait_restart(parent, 1, 10_000);
+            // 30s: same contention headroom as the child wait above.
+            let count = hew_supervisor_wait_restart(parent, 1, 30_000);
             assert!(
                 count >= 1,
                 "parent should observe child supervisor escalation"

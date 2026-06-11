@@ -123,6 +123,15 @@ filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
 test-group = "process-timing"
 retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
 
+[[profile.ci.overrides]]
+# child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
+# rebuild across escalation; 0.21s isolated, but at the tail of a fully loaded
+# 16-core run it can exceed its 10s in-test budget (contention-flake, 50x
+# margin — classified 2026-06-10). Route it into the process-timing group so
+# the scheduler has headroom; no retry, the in-test assertions stay strict.
+filter = "test(child_supervisor_recovery_recreates_nested_subtree)"
+test-group = "process-timing"
+
 [profile.ci.junit]
 path = "junit.xml"
 

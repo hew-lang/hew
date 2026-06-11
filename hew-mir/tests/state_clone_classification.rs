@@ -655,3 +655,60 @@ fn vec_of_non_opaque_record_actor_state_classifies_clean() {
         "Vec<Point> actor state must classify (no over-fire)",
     );
 }
+
+// ─── Machine state fields (transition-watch lane, stage-0 pin) ────────────
+
+/// Source fixture: a locally declared machine held as an actor state field.
+const MACHINE_FIELD_SOURCE: &str = "
+    machine Light {
+        events {
+            Flip;
+        }
+        state Off;
+        state On;
+        on Flip: Off => On { On }
+        on Flip: On => Off { Off }
+    }
+
+    actor Holder {
+        var light: Light = Light::Off;
+        receive fn flip() {
+            light.step(Flip);
+        }
+    }
+
+    fn main() {
+        let h = spawn Holder;
+        h.flip();
+    }
+";
+
+/// Stage-0 pin: a machine-typed actor state field currently fails closed
+/// with `ActorStateCloneClassificationFailed` — the classifier consults
+/// `record_layouts`/`enum_layouts` only, and machines live in the separate
+/// `machine_layouts` table. The machine-as-enum classification projection
+/// flips this pin to a clean classification (`BitCopy` for payload-free
+/// machines like `Light`).
+#[test]
+fn machine_actor_state_field_currently_fails_classification() {
+    let pipeline = lower_source(MACHINE_FIELD_SOURCE);
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_none() && holder.state_drop_fn_symbol.is_none(),
+        "Stage-0 pin: machine state field should leave clone/drop symbols \
+         None today (fail closed); if this fails the machine-projection fix \
+         landed — replace this pin with the passing assertion. Got \
+         clone={:?} drop={:?}",
+        holder.state_clone_fn_symbol,
+        holder.state_drop_fn_symbol,
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, field_name, .. }
+                if actor == "Holder" && field_name == "light"
+        )),
+        "expected ActorStateCloneClassificationFailed on Holder.light; got: {:#?}",
+        pipeline.diagnostics
+    );
+}

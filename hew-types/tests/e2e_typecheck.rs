@@ -5247,3 +5247,50 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
         sign_output.errors
     );
 }
+
+// ===========================================================================
+// Machine channel elements (transition-watch lane, stage-0 pin)
+// ===========================================================================
+
+/// Stage-0 pin: a machine value as a channel element is refused with the
+/// named no-thunk-path diagnostic — `vec_owned_element_admissible` admits
+/// `Record | Struct | Enum` type defs only, and machines are a separate
+/// `TypeDefKind`. The machine-as-enum admission flips this pin to a clean
+/// typecheck (machines share the enum tagged-union substrate).
+#[test]
+fn machine_channel_element_currently_fails_closed() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        machine Light {
+            events {
+                Flip;
+            }
+            state Off;
+            state On;
+            on Flip: Off => On { On }
+            on Flip: On => Off { Off }
+        }
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = channel.new(2);
+            tx.send(Light::Off);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("is not supported")
+                && e.message.contains("no clone/drop thunk path")),
+        "Stage-0 pin: machine channel element should be refused with the \
+         no-thunk-path diagnostic today; if this fails the machine admission \
+         landed — replace this pin with the passing assertion. Got: {:#?}",
+        output.errors
+    );
+}

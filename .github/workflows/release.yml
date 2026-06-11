@@ -714,12 +714,25 @@ jobs:
           echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore LLVM cache (FreeBSD)
-        id: cache-llvm-freebsd
-        uses: actions/cache/restore@v4
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v2
+      - name: Download FreeBSD LLVM toolchain
+        # Pre-built on FreeBSD 15.0 amd64 and published as a toolchain
+        # release asset (same pattern as the Windows toolchain): the
+        # in-VM source build took ~80 minutes and its job-end cache save
+        # never survived a failed run, so every attempt recompiled LLVM.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="toolchain/llvm-22.1.0-freebsd15-amd64-v1"
+          asset="hew-llvm-22.1.0-freebsd15-amd64-v1.tar.zst"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$asset" --pattern "$asset.sha256" --dir .
+          expected="$(awk '{print $1}' "$asset.sha256")"
+          actual="$(sha256sum "$asset" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::SHA-256 mismatch for $asset: expected $expected, got $actual"
+            exit 1
+          fi
+          mv "$asset" llvm-freebsd-install.tar.zst
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@v1
@@ -733,47 +746,14 @@ jobs:
             set -eux
 
             # ── LLVM ───────────────────────────────────────────────────────
+            # Pre-built toolchain downloaded and checksum-verified on the
+            # host; fail closed if it did not sync into the VM.
             LLVM_PREFIX=/usr/local/llvm22-src
-            if [ -f llvm-freebsd-install.tar.zst ]; then
-              echo "==> Restoring LLVM from cache"
-              zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
-              tar xf llvm-freebsd-install.tar -C /
-              rm -f llvm-freebsd-install.tar
-            else
-              echo "==> Building LLVM 22 from source (this will take ~40 min)"
-              git clone --depth 1 --branch llvmorg-22.1.0 \
-                --filter=blob:none --sparse \
-                https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              (cd /tmp/llvm-src && git sparse-checkout set llvm cmake third-party)
-
-              cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_TARGETS_TO_BUILD="X86" \
-                -DLLVM_BUILD_TOOLS=ON \
-                -DLLVM_BUILD_UTILS=ON \
-                -DLLVM_INSTALL_UTILS=ON \
-                -DLLVM_INCLUDE_TESTS=OFF \
-                -DLLVM_INCLUDE_BENCHMARKS=OFF \
-                -DLLVM_INCLUDE_EXAMPLES=OFF \
-                -DLLVM_INCLUDE_DOCS=OFF \
-                -DLLVM_ENABLE_BINDINGS=OFF \
-                -DLLVM_ENABLE_ZLIB=ON \
-                -DLLVM_ENABLE_ZSTD=OFF \
-                -DLLVM_BUILD_LLVM_DYLIB=OFF \
-                -DBUILD_SHARED_LIBS=OFF
-
-              cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
-              cmake --install /tmp/llvm-build
-
-              # Create archive for caching
-              tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
-              zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
-              rm -f llvm-freebsd-install.tar
-
-              # Clean up build dirs
-              rm -rf /tmp/llvm-src /tmp/llvm-build
-            fi
+            test -f llvm-freebsd-install.tar.zst
+            zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
+            tar xf llvm-freebsd-install.tar -C /
+            rm -f llvm-freebsd-install.tar
+            "${LLVM_PREFIX}/bin/llvm-config" --version
 
             # ── Rust builds (release) ──────────────────────────────────────
             # llvm-sys-221 discovers LLVM via this variable; the source-built
@@ -837,13 +817,6 @@ jobs:
             output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"
-
-      - name: Save LLVM cache (FreeBSD)
-        if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v2
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

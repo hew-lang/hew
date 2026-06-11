@@ -683,32 +683,92 @@ const MACHINE_FIELD_SOURCE: &str = "
     }
 ";
 
-/// Stage-0 pin: a machine-typed actor state field currently fails closed
-/// with `ActorStateCloneClassificationFailed` — the classifier consults
-/// `record_layouts`/`enum_layouts` only, and machines live in the separate
-/// `machine_layouts` table. The machine-as-enum classification projection
-/// flips this pin to a clean classification (`BitCopy` for payload-free
-/// machines like `Light`).
+/// A machine-typed actor state field classifies through the enum
+/// clone/drop authority (machines are enums at the value-classification
+/// layer — the machine layouts project into enum-layout views). Was the
+/// stage-0 fail-closed pin
+/// (`machine_actor_state_field_currently_fails_classification`) before the
+/// projection landed.
 #[test]
-fn machine_actor_state_field_currently_fails_classification() {
+fn machine_actor_state_field_classifies_as_enum() {
     let pipeline = lower_source(MACHINE_FIELD_SOURCE);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine state field must classify clean; got: {:#?}",
+        pipeline.diagnostics
+    );
     let holder = find_actor(&pipeline, "Holder");
     assert!(
-        holder.state_clone_fn_symbol.is_none() && holder.state_drop_fn_symbol.is_none(),
-        "Stage-0 pin: machine state field should leave clone/drop symbols \
-         None today (fail closed); if this fails the machine-projection fix \
-         landed — replace this pin with the passing assertion. Got \
+        holder.state_clone_fn_symbol.is_some() && holder.state_drop_fn_symbol.is_some(),
+        "machine state field must earn the paired clone/drop symbols; got \
          clone={:?} drop={:?}",
         holder.state_clone_fn_symbol,
         holder.state_drop_fn_symbol,
     );
+    let kinds = holder
+        .state_field_clone_kinds
+        .as_ref()
+        .expect("classified actor must carry per-field kinds");
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, field_name, .. }
-                if actor == "Holder" && field_name == "light"
-        )),
-        "expected ActorStateCloneClassificationFailed on Holder.light; got: {:#?}",
+        matches!(
+            kinds.as_slice(),
+            [StateFieldCloneKind::Enum { name }] if name == "Light"
+        ),
+        "machine field must classify as Enum {{ name: \"Light\" }}; got {kinds:?}",
+    );
+}
+
+/// A machine with a heap-payload state (`Failed {{ reason: string }}`)
+/// rides the same enum classification — the clone/drop thunks walk the
+/// string payload exactly as an enum variant's.
+#[test]
+fn heap_payload_machine_state_field_classifies_as_enum() {
+    let pipeline = lower_source(
+        "
+        machine Conn {
+            events {
+                Connect;
+                Fail { reason: string; }
+            }
+            state Idle;
+            state Failed { reason: string; }
+            on Connect: _ => _ { state }
+            on Fail: Idle => Failed { Conn::Failed { reason: event.reason } }
+            on Fail: _ => _ { state }
+        }
+
+        actor Holder {
+            var c: Conn = Conn::Idle;
+            receive fn poke() {
+                c.step(ConnEvent::Fail { reason: \"boom\" });
+            }
+        }
+
+        fn main() {
+            let h = spawn Holder;
+            h.poke();
+        }
+    ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "heap-payload machine state field must classify clean; got: {:#?}",
         pipeline.diagnostics
+    );
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_some() && holder.state_drop_fn_symbol.is_some(),
+        "heap-payload machine field must earn the paired clone/drop symbols",
+    );
+    let kinds = holder
+        .state_field_clone_kinds
+        .as_ref()
+        .expect("classified actor must carry per-field kinds");
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [StateFieldCloneKind::Enum { name }] if name == "Conn"
+        ),
+        "heap-payload machine field must classify as Enum {{ name: \"Conn\" }}; got {kinds:?}",
     );
 }

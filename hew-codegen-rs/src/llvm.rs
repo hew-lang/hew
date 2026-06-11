@@ -13845,12 +13845,20 @@ fn lower_instruction(
             // 3. GEP into the per-machine `__hew_state_name_table` global
             //    using `[i32 0, i64 tag]`.
             // 4. Load the pointer entry and store it into `dest`.
-            let layout = fn_ctx.machine_layouts.get(machine_name).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::MachineStateName references machine `{machine_name}` which is \
+            // The MIR carries the use-site spelling, which is
+            // module-qualified for an imported machine (`toggle.Toggle`);
+            // registration uses the bare decl name. Mirror the
+            // short-name fallback the Place::MachineTag lookup applies.
+            let layout = fn_ctx
+                .machine_layouts
+                .get(machine_name)
+                .or_else(|| fn_ctx.machine_layouts.get(short_name(machine_name)))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::MachineStateName references machine `{machine_name}` which is \
                      not in the layout map — register_machine_layouts must populate it"
-                ))
-            })?;
+                    ))
+                })?;
             let table_global = layout.state_name_table.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Instr::MachineStateName: machine `{machine_name}` has no state-name \
@@ -37074,13 +37082,26 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(xnode_rec_seed);
         }
     }
+    // Machines are enums at the value-classification layer: the synthesis
+    // (and its reachability drain) resolves `StateFieldCloneKind::Enum`
+    // names against this list, so machine-typed actor state fields need
+    // their enum-layout projections present. `machine_layout_map` already
+    // registers every machine's tagged-union layout under the same name,
+    // so the emitted `__hew_enum_{clone,drop}_inplace_<Machine>` bodies
+    // walk the real machine layout.
+    let synthesis_enum_layouts: Vec<hew_mir::EnumLayout> = pipeline
+        .enum_layouts
+        .iter()
+        .cloned()
+        .chain(hew_mir::machine_enum_views(&pipeline.machine_layouts))
+        .collect();
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
         &pipeline.actor_layouts,
         &pipeline.record_layouts,
         &record_layouts,
-        &pipeline.enum_layouts,
+        &synthesis_enum_layouts,
         &pipeline.opaque_handle_names,
         &machine_layouts,
         Some(&target_data),

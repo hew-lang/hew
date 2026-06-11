@@ -345,3 +345,122 @@ fn cross_actor_record_transition_watch_runs_clean() {
         "Created -> Initialising\nInitialising -> Faulted\nobserver: child faulted\nwatch closed\n",
     );
 }
+
+/// A heap-payload machine held in actor state: step into the
+/// string-payload `Failed` state and back out. The store-back rides the
+/// state-field overwrite-release path, so the old state's payload is
+/// released before the new value lands — a double release would crash
+/// under the scribbled allocator.
+#[test]
+fn heap_payload_machine_actor_field_steps_clean() {
+    run_inline_scribbled(
+        "heap_machine_field",
+        "machine Conn {\n\
+         \x20   events {\n\
+         \x20       Connect;\n\
+         \x20       Fail { reason: string; }\n\
+         \x20       Reset;\n\
+         \x20   }\n\
+         \n\
+         \x20   state Idle;\n\
+         \x20   state Open;\n\
+         \x20   state Failed { reason: string; }\n\
+         \n\
+         \x20   on Connect: Idle => Open {\n\
+         \x20       Open\n\
+         \x20   }\n\
+         \x20   on Fail: Open => Failed {\n\
+         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20   }\n\
+         \x20   on Reset: Failed => Idle {\n\
+         \x20       Idle\n\
+         \x20   }\n\
+         \x20   on Connect: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         \x20   on Fail: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         \x20   on Reset: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         actor Holder {\n\
+         \x20   var c: Conn = Conn::Idle;\n\
+         \n\
+         \x20   receive fn drive() {\n\
+         \x20       c.step(Connect);\n\
+         \x20       println(c.state_name());\n\
+         \x20       c.step(ConnEvent::Fail { reason: \"boom\" });\n\
+         \x20       println(c.state_name());\n\
+         \x20       c.step(Reset);\n\
+         \x20       println(c.state_name());\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let h = spawn Holder;\n\
+         \x20   h.drive();\n\
+         \x20   sleep_ms(150);\n\
+         }\n",
+        "Open\nFailed\nIdle\n",
+    );
+}
+
+/// Machine-state actors as SUPERVISOR children stay fail-closed: the
+/// child-init slice admits only integer/bool/float literal field
+/// defaults, and a machine field's default is a state constructor. The
+/// restart-clone surface for machine state opens when that slice widens —
+/// this pin fails first.
+#[test]
+fn supervisor_child_with_machine_state_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("machine_child.hew");
+    std::fs::write(
+        &source,
+        "machine Light {\n\
+         \x20   events {\n\
+         \x20       Flip;\n\
+         \x20   }\n\
+         \x20   state Off;\n\
+         \x20   state On;\n\
+         \x20   on Flip: Off => On { On }\n\
+         \x20   on Flip: On => Off { Off }\n\
+         }\n\
+         \n\
+         actor Worker {\n\
+         \x20   var l: Light = Light::Off;\n\
+         \x20   receive fn ping() {}\n\
+         }\n\
+         \n\
+         supervisor Pool {\n\
+         \x20   strategy: one_for_one;\n\
+         \x20   intensity: 3 within 60s;\n\
+         \n\
+         \x20   child w: Worker();\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let sup = spawn Pool;\n\
+         \x20   sleep_ms(20);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+
+    assert!(
+        !output.status.success(),
+        "machine-state supervisor child must fail closed today; it compiled:\n{}",
+        support::describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("E_NOT_YET_IMPLEMENTED")
+            && stderr.contains("only integer, bool, and float literals"),
+        "expected the named child-init refusal; got:\n{stderr}",
+    );
+}

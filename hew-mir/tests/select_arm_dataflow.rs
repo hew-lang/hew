@@ -7,10 +7,9 @@
 //! arm binding whose uses span Call-terminated blocks inside the arm
 //! body trips a false `InitialisedBeforeUse`.
 //!
-//! Stage-0 pin: this file currently asserts the FALSE POSITIVE fires
-//! (the gap fails closed — compile refusal, never a miscompile). The
-//! CFG fix flips `select_arm_aggregate_binding_cross_block_use` to
-//! assert a clean check set.
+//! With the arm-body edges wired into `build_preds`/`successors`, the
+//! originating block's exit state reaches every arm body and propagates
+//! across the blocks inside it, so aggregate arm bindings check clean.
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, MirCheck, MirDiagnosticKind};
@@ -62,39 +61,32 @@ fn main() {
 }
 "#;
 
-/// Stage-0 pin of the current behaviour: the cross-block use of the
-/// aggregate arm binding `r` fires a false `InitialisedBeforeUse`
-/// because `SelectArm::body_block` is not a CFG successor of the
-/// originating block, so arm-body state never propagates.
-///
-/// The select-CFG fix DELETES this test in favour of
-/// `select_arm_aggregate_binding_cross_block_use_passes`.
+/// An aggregate (record) arm binding whose field reads span blocks inside
+/// the arm body must check clean: the binding is written by the dispatch
+/// before the body runs, and arm-body state propagates block to block.
+/// Was the stage-0 false-positive pin
+/// (`select_arm_aggregate_binding_cross_block_use_currently_flags_init_check`)
+/// before the arm-body CFG edges landed.
 #[test]
-fn select_arm_aggregate_binding_cross_block_use_currently_flags_init_check() {
+fn select_arm_aggregate_binding_initialised_passes() {
     let pipeline = lower_source(ASK_RECORD_CROSS_BLOCK);
-    let init_check = pipeline
+    let init_checks: Vec<_> = pipeline
         .checked_mir
         .iter()
         .flat_map(|f| f.checks.iter())
-        .find(|check| matches!(check, MirCheck::InitialisedBeforeUse { name, .. } if name == "r"));
+        .filter(|check| matches!(check, MirCheck::InitialisedBeforeUse { .. }))
+        .collect();
     assert!(
-        init_check.is_some(),
-        "Stage-0 pin: the select-arm dataflow gap should flag `r` today; \
-         if this fails the CFG fix landed — replace this pin with the \
-         passing assertion. Checks: {:?}",
-        pipeline
-            .checked_mir
-            .iter()
-            .flat_map(|f| f.checks.iter())
-            .collect::<Vec<_>>()
+        init_checks.is_empty(),
+        "cross-block use of a select arm binding must not flag \
+         InitialisedBeforeUse: {init_checks:?}"
     );
     assert!(
-        pipeline.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::InitialisedBeforeUse { name, .. } if name == "r"
-        )),
-        "the false positive must surface on the CLI rejection channel \
-         (fail closed, never miscompile): {:?}",
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::InitialisedBeforeUse { .. })),
+        "no init-check diagnostic may reach the CLI rejection channel: {:?}",
         pipeline.diagnostics
     );
 }

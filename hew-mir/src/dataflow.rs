@@ -389,8 +389,22 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. }
             | Terminator::Join { next, .. } => emit_edge(*next),
+            // The runtime dispatch jumps to exactly one winning arm's
+            // `body_block`; each body reaches `next` (the join) through its
+            // own `Goto`. Without the body edges the arm bodies are
+            // unreachable, their exit states are discarded by the
+            // reachable-only meet, and any aggregate arm binding whose uses
+            // span blocks inside a body trips a false `InitialisedBeforeUse`.
+            // The direct `next` edge is kept as the conservative no-arm path
+            // (`Join` has no body blocks — its branches converge in the
+            // terminator itself).
+            Terminator::Select { arms, next } => {
+                for arm in arms {
+                    emit_edge(arm.body_block);
+                }
+                emit_edge(*next);
+            }
             // Suspend's default edge exits the function (returns to the
             // executor); resume + cleanup are the in-CFG successor edges.
             Terminator::Suspend {
@@ -444,8 +458,16 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         | Terminator::Send { next, .. }
         | Terminator::Ask { next, .. }
         | Terminator::RemoteAsk { next, .. }
-        | Terminator::Select { next, .. }
         | Terminator::Join { next, .. } => vec![*next],
+        // Arm body blocks are real runtime successors (the dispatch jumps to
+        // the winning arm); `next` is kept as the conservative no-arm path.
+        // Must mirror `build_preds` exactly or the worklist and the meet
+        // disagree about the CFG.
+        Terminator::Select { arms, next } => {
+            let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+            succs.push(*next);
+            succs
+        }
         // Suspend's default edge exits the function; resume + cleanup are the
         // in-CFG successors.
         Terminator::Suspend {

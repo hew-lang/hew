@@ -5398,9 +5398,9 @@ struct Builder {
     /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
     /// Used by `lower_spawn_actor` to route `spawn Sup` to the supervisor
     /// bootstrap call and by `push_unknown_type_diagnostics` to recognise
-    /// supervisor names inside `LocalPid<Sup>` type args as known. Empty for
-    /// functions whose call context cannot reference supervisor types (actor
-    /// handlers, closure shims).
+    /// supervisor names inside `LocalPid<Sup>` type args as known. Child
+    /// builders (closure shims, lambda-actor bodies, task-entry adapters)
+    /// inherit it via `child_builder_tables`.
     supervisor_layout_map: HashMap<String, crate::model::SupervisorLayout>,
     /// Set of recognised tagged-union type names — every machine type plus
     /// the synthesised `<Machine>Event` companion enum for each. Used by
@@ -14969,21 +14969,9 @@ impl Builder {
             lambda_actor_user_param_locals: Vec::new(),
         };
         let builder = Builder {
-            type_classes: self.type_classes.clone(),
-            record_field_orders: self.record_field_orders.clone(),
-            actor_layouts: self.actor_layouts.clone(),
-            supervisor_layout_map: self.supervisor_layout_map.clone(),
-            machine_layout_names: self.machine_layout_names.clone(),
-            module_fn_names: self.module_fn_names.clone(),
-            module_generic_fn_names: self.module_generic_fn_names.clone(),
-            subst: self.subst.clone(),
-            call_site_type_args: self.call_site_type_args.clone(),
-            supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: adapter_symbol.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::TaskEntry,
-            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
-            ..Builder::default()
+            ..self.child_builder_tables()
         };
         let mut dataflow_result = dataflow::analyze(&raw.blocks, &builder.type_classes, &[]);
         dataflow_result
@@ -18730,6 +18718,38 @@ impl Builder {
         Some((shim_name, env_ty, env_place, suspends))
     }
 
+    /// The module-level lookup tables every child `Builder` (closure shim,
+    /// lambda-actor body, task-entry adapter) inherits from its parent, plus
+    /// `Builder::default()` for everything per-function. A nested body must
+    /// resolve the same module facts the parent resolves — in particular
+    /// `actor_layouts` drives `actor_method_info` (sends to a captured pid)
+    /// and the `UnknownType` silencing in the codegen-readiness walk, so a
+    /// site that misses it diagnoses `actor call on unknown actor` for a
+    /// perfectly well-formed send. Construction sites override only the
+    /// per-function identity fields (`current_function_symbol`,
+    /// `current_function_call_conv`, body flags) via struct-update syntax;
+    /// any future shared table belongs HERE so it cannot silently miss one
+    /// of the construction sites.
+    fn child_builder_tables(&self) -> Builder {
+        Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            actor_layouts: self.actor_layouts.clone(),
+            supervisor_layout_map: self.supervisor_layout_map.clone(),
+            enum_layouts: self.enum_layouts.clone(),
+            opaque_handle_names: self.opaque_handle_names.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "closure shim construction keeps raw/checked/elaborated MIR snapshots aligned"
@@ -18744,25 +18764,15 @@ impl Builder {
         captures: &[hew_hir::HirClosureCapture],
     ) -> LoweredFunction {
         let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
+        // `child_builder_tables` carries the full shared-table list — notably
+        // `actor_layouts`, so a closure body that sends to a captured pid
+        // resolves `actor_method_info` exactly as the parent would, and
+        // `supervisor_child_slots`, so the FieldAccess intercept arm fires for
+        // a closure body that reads a child slot off a captured supervisor PID.
         let mut builder = Builder {
-            type_classes: self.type_classes.clone(),
-            record_field_orders: self.record_field_orders.clone(),
-            machine_layout_names: self.machine_layout_names.clone(),
-            module_fn_names: self.module_fn_names.clone(),
-            module_generic_fn_names: self.module_generic_fn_names.clone(),
-            subst: self.subst.clone(),
-            call_site_type_args: self.call_site_type_args.clone(),
-            // A closure may capture a supervisor PID and access a child slot
-            // field on it — the HIR checker registers those accesses in
-            // `supervisor_child_slots` by site regardless of nesting context.
-            // Propagate the parent module's map so the FieldAccess intercept arm
-            // fires correctly for any closure body that contains such an access.
-            supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
-            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
-            ..Builder::default()
+            ..self.child_builder_tables()
         };
 
         let env_place = builder.alloc_local(env_ptr_ty.clone());
@@ -19308,20 +19318,13 @@ impl Builder {
         };
 
         // ── Build child Builder for the body ──
+        // Shares the parent's module tables (`child_builder_tables`) so a
+        // lambda body that sends to a captured pid resolves the target
+        // actor's `actor_method_info` exactly as the parent would.
         let mut body_builder = Builder {
-            type_classes: self.type_classes.clone(),
-            record_field_orders: self.record_field_orders.clone(),
-            machine_layout_names: self.machine_layout_names.clone(),
-            module_fn_names: self.module_fn_names.clone(),
-            module_generic_fn_names: self.module_generic_fn_names.clone(),
-            subst: self.subst.clone(),
-            call_site_type_args: self.call_site_type_args.clone(),
-            supervisor_child_slots: self.supervisor_child_slots.clone(),
-            actor_send_aliasing: self.actor_send_aliasing.clone(),
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::LambdaActorBody(shape),
-            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
-            ..Builder::default()
+            ..self.child_builder_tables()
         };
 
         // Locals 0..=4: the five runtime ABI parameter slots. Their types

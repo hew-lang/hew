@@ -18364,25 +18364,20 @@ impl LowerCtx {
     }
 
     /// FC-P1-A1 helper: Validate task spawn call shape.
-    /// Checks: (1) callee is direct fn or valid closure, (2) args list is empty,
-    /// (3) for closures: params are empty, return is unit, captures are Send.
+    /// Checks: (1) callee is direct fn or valid closure, (2) for closures:
+    /// args/params are empty, return is unit, captures are Send.
+    ///
+    /// Direct-fn callees may carry arguments: MIR lowers them through a
+    /// fork-entry shim whose environment record transfers the lowered args
+    /// into the child task. The per-arg type restriction (`BitCopy` scalars +
+    /// `string` in this slice) is enforced fail-closed at the MIR spawn site,
+    /// not here.
     fn validate_task_spawn_call(
         &mut self,
         function: &Spanned<Expr>,
         args: &[CallArg],
         span: &Span,
     ) {
-        // Check args list is empty (required for all spawned calls)
-        if !args.is_empty() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::TaskSpawnSignatureUnsupported {
-                    site: self.ids.site(),
-                },
-                span.clone(),
-                "spawned call must have zero arguments".to_string(),
-            ));
-        }
-
         match &function.0 {
             Expr::Identifier(name) => {
                 // FC-P1-A1 (revision pass 2, Finding 2): parser emits
@@ -18405,6 +18400,18 @@ impl LowerCtx {
             Expr::Lambda {
                 params, body: _, ..
             } => {
+                // Spawned closure literals stay nullary: the arg-bearing lift
+                // covers direct-fn callees only (captures already carry the
+                // closure's environment; call-site args have no slot).
+                if !args.is_empty() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
+                            site: self.ids.site(),
+                        },
+                        span.clone(),
+                        "spawned closure call must have zero arguments".to_string(),
+                    ));
+                }
                 // FC-P1-A1 Blocker 3: Validate closure signature
                 // (1) Zero params
                 if !params.is_empty() {
@@ -20952,16 +20959,10 @@ fn check_fork_child_shape(
             // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
             // VALID at spawn time — see `lower_spawned_call` comment. The
             // await-site gate (MIR :7871) handles non-unit results.
-            // Check args are empty
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned function must have zero arguments".to_string(),
-                ));
-            }
+            // Args are valid on direct-fn fork children: MIR transfers them
+            // through the fork-entry shim env; the per-arg type restriction
+            // is enforced fail-closed at the MIR spawn site.
+            let _ = args;
         }
         Expr::Lambda {
             params, body: _, ..
@@ -21086,16 +21087,10 @@ fn check_fork_block_shape(
             }
             // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
             // VALID at spawn time — see `lower_spawned_call` comment.
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::ForkBlockBodyUnsupported {
-                        site: ctx.ids.site(),
-                        reason: "function has arguments".to_string(),
-                    },
-                    span.clone(),
-                    "fork block function must have zero arguments".to_string(),
-                ));
-            }
+            // Args are valid on the fork-block callee: MIR transfers them
+            // through the fork-entry shim env; the per-arg type restriction
+            // is enforced fail-closed at the MIR spawn site.
+            let _ = args;
         } else {
             ctx.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ForkBlockBodyUnsupported {

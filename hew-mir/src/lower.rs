@@ -14992,6 +14992,16 @@ impl Builder {
                 site,
             );
         }
+        if !args.is_empty() {
+            return self.lower_spawned_args_call_task(
+                callee,
+                args,
+                task_ty,
+                inner,
+                scope_place,
+                site,
+            );
+        }
         let user_callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
         let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol);
@@ -15004,6 +15014,338 @@ impl Builder {
             callee_symbol,
         });
         Some(task_place)
+    }
+
+    /// Lower a spawned call with arguments: `fork t = worker(a, b);` or the
+    /// fork-block / implicit-spawn forms carrying args. The args are lowered
+    /// in the parent (consuming owned bindings exactly as a direct call
+    /// would), packed into a fork-env record, and the spawn dispatches via
+    /// `SpawnTaskClosure` to a synthesized fork-entry shim that loads the
+    /// env fields back out and calls the target.
+    ///
+    /// Ownership contract (drop-allowset rules, verified against the emitted
+    /// drop plans): the parent emits NO drop for moved-in args — the consume
+    /// facts from arg lowering remove them from the parent's plan; the env
+    /// rc-box frees bytes only (codegen passes a null drop fn); the shim
+    /// emits no drops for the env-loaded temps. This is byte-for-byte the
+    /// same plan shape as the direct-call baseline (`shout(greeting)`):
+    /// under the current M-COW move-only spine the by-value string param is
+    /// read `CowShare` by the callee and released by no one, so the fork form
+    /// leaks exactly where the direct call already leaks — never a
+    /// double-free. WHEN-OBSOLETE: M-COW retain-on-share; the env transfer
+    /// then needs a real retain/release pair in lockstep with call args.
+    ///
+    /// First slice restricts arg types to `BitCopy` scalars + `string`;
+    /// anything else refuses with a diagnostic (never a miscompile). The
+    /// callee must return unit — value-bearing forks are gated at the
+    /// await site and remain fail-closed until result propagation lands.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single fail-closed boundary sequence — generic/callee/return/arg-class \
+                  gates, then env pack + shim + spawn; splitting would scatter the refusal \
+                  conditions away from the spawn they guard"
+    )]
+    fn lower_spawned_args_call_task(
+        &mut self,
+        callee: &HirExpr,
+        args: &[HirExpr],
+        task_ty: &ResolvedTy,
+        inner: &ResolvedTy,
+        scope_place: Place,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Generic callees: same fail-closed posture as the no-arg path.
+        if self
+            .call_site_type_args
+            .get(&site)
+            .is_some_and(|type_args| !type_args.is_empty())
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "spawned call".to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+            let _ = self.lower_value(callee);
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "spawned call".to_string(),
+                    site,
+                },
+                note: "arg-bearing task spawn requires a direct module function callee".to_string(),
+            });
+            return None;
+        };
+        if self.module_generic_fn_names.contains(name) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "spawned call".to_string(),
+                    site,
+                },
+                note: "generic free-function task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        if !self.module_fn_names.contains(name) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "spawned call".to_string(),
+                    site,
+                },
+                note: format!(
+                    "arg-bearing task spawn callee `{name}` is not a registered module function"
+                ),
+            });
+            return None;
+        }
+        if !matches!(inner, ResolvedTy::Unit) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "spawned call".to_string(),
+                    site,
+                },
+                note: "arg-bearing task spawn currently requires a unit-returning callee; \
+                       value/result task propagation remains fail-closed"
+                    .to_string(),
+            });
+            return None;
+        }
+        // Per-arg type restriction (this slice): BitCopy scalars + string.
+        // Anything with non-trivial drop glue or interior ownership refuses
+        // here — transferring it through the byte-copied env without a
+        // retain/drop story would miscompile, and we fail closed instead.
+        let mut arg_tys = Vec::with_capacity(args.len());
+        for arg in args {
+            let arg_ty = self.subst_ty(&arg.ty);
+            let class = ValueClass::of_ty(&arg_ty, &self.type_classes);
+            let allowed = class == ValueClass::BitCopy || matches!(arg_ty, ResolvedTy::String);
+            if !allowed {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "spawned call argument".to_string(),
+                        site,
+                    },
+                    note: format!(
+                        "task spawn argument of type `{}` is not yet supported; \
+                         this slice transfers BitCopy scalars and `string` only — \
+                         richer owned types need an env retain/drop plan first",
+                        arg_ty.user_facing()
+                    ),
+                });
+                return None;
+            }
+            arg_tys.push(arg_ty);
+        }
+        // Lower args left-to-right. Owned bindings (e.g. a string) record
+        // their consume fact here, which removes them from the parent's
+        // drop plan — ownership rides the env bytes into the child.
+        let mut arg_places = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_places.push(self.lower_value(arg)?);
+        }
+
+        // Pack the lowered args into a fork-env record (RecordInit memcpys
+        // the fields; the layout registers alongside closure env records).
+        let fork_id = self.next_closure_id;
+        self.next_closure_id = self
+            .next_closure_id
+            .checked_add(1)
+            .expect("closure id overflow");
+        let owner = Self::sanitize_symbol_component(&self.current_function_symbol);
+        let env_name = format!("__hew_fork_env_{owner}_{fork_id}");
+        let shim_name = format!("__hew_fork_entry_{owner}_{fork_id}");
+        let env_ty = ResolvedTy::Named {
+            name: env_name.clone(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        };
+        self.closure_record_layouts
+            .push(crate::model::RecordLayout {
+                name: env_name,
+                field_tys: arg_tys.clone(),
+            });
+        let field_pairs: Vec<(FieldOffset, Place)> = arg_places
+            .iter()
+            .enumerate()
+            .map(|(idx, place)| {
+                (
+                    FieldOffset(u32::try_from(idx).expect("fork arg count exceeds u32::MAX")),
+                    *place,
+                )
+            })
+            .collect();
+        let env_place = self.alloc_local(env_ty.clone());
+        self.instructions.push(Instr::RecordInit {
+            ty: env_ty.clone(),
+            fields: field_pairs,
+            dest: env_place,
+        });
+
+        let lowered = self.synthesize_fork_entry_shim(name, &shim_name, &arg_tys, &env_ty);
+        self.generated_functions.push(lowered);
+
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.instructions.push(Instr::SpawnTaskClosure {
+            task: task_place,
+            fn_symbol: shim_name,
+            env: env_place,
+            env_ty,
+        });
+        Some(task_place)
+    }
+
+    /// Synthesize the fork-entry shim for an arg-bearing task spawn: a
+    /// `ClosureInvoke`-ABI function `(ctx, env_ptr)` that loads each arg
+    /// back out of the env record and calls the target function with them.
+    ///
+    /// The env field loads forward the arg bits to the callee with the same
+    /// ownership posture as a direct call: the shim emits no drops for the
+    /// loaded temps, and the callee treats owned params exactly as it would
+    /// for a direct call (verified by drop-plan parity with the no-fork
+    /// baseline).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "shim construction keeps raw/checked/elaborated MIR snapshots aligned, \
+                  mirroring lower_closure_shim / lower_named_fn_invoke_shim"
+    )]
+    fn synthesize_fork_entry_shim(
+        &self,
+        callee_symbol: &str,
+        shim_name: &str,
+        arg_tys: &[ResolvedTy],
+        env_ty: &ResolvedTy,
+    ) -> LoweredFunction {
+        let env_ptr_ty = Self::closure_env_pointer_ty(env_ty);
+        let mut builder = Builder {
+            type_classes: self.type_classes.clone(),
+            record_field_orders: self.record_field_orders.clone(),
+            actor_layouts: self.actor_layouts.clone(),
+            supervisor_layout_map: self.supervisor_layout_map.clone(),
+            machine_layout_names: self.machine_layout_names.clone(),
+            module_fn_names: self.module_fn_names.clone(),
+            module_generic_fn_names: self.module_generic_fn_names.clone(),
+            subst: self.subst.clone(),
+            call_site_type_args: self.call_site_type_args.clone(),
+            supervisor_child_slots: self.supervisor_child_slots.clone(),
+            actor_send_aliasing: self.actor_send_aliasing.clone(),
+            current_function_symbol: shim_name.to_string(),
+            current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            ..Builder::default()
+        };
+
+        // locals[0] = env_ptr (ClosureInvoke ABI). Each arg is loaded out of
+        // the env record into a fresh temp and forwarded to the callee.
+        let env_place = builder.alloc_local(env_ptr_ty.clone());
+        let mut arg_places = Vec::with_capacity(arg_tys.len());
+        for (idx, ty) in arg_tys.iter().enumerate() {
+            let dest = builder.alloc_local(ty.clone());
+            builder.instructions.push(Instr::ClosureEnvFieldLoad {
+                env: env_place,
+                env_ty: env_ty.clone(),
+                field_offset: FieldOffset(
+                    u32::try_from(idx).expect("fork arg count exceeds u32::MAX"),
+                ),
+                dest,
+            });
+            arg_places.push(dest);
+        }
+
+        let ret_block_id = builder.alloc_block();
+        builder.finish_current_block(Terminator::Call {
+            callee: callee_symbol.to_string(),
+            builtin: None,
+            args: arg_places,
+            dest: None,
+            next: ret_block_id,
+        });
+        builder.start_block(ret_block_id);
+        let blocks = builder.finalize_blocks(Terminator::Return);
+
+        let thir_statements: Vec<MirStatement> = blocks
+            .iter()
+            .flat_map(|b| b.statements.iter().cloned())
+            .collect();
+        let thir = ThirFunction {
+            name: shim_name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: thir_statements,
+        };
+        let raw = RawMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: crate::model::FunctionCallConv::ClosureInvoke,
+            params: vec![env_ptr_ty],
+            locals: builder.locals.clone(),
+            blocks: blocks.clone(),
+            decisions: builder.decisions.clone(),
+            intrinsic_id: None,
+            await_deadline_ns: builder.await_deadline_ns.clone(),
+            lambda_actor_user_param_locals: Vec::new(),
+        };
+        // Synthetic HirFn for dataflow checking — no HIR params (the shim
+        // locals are positional, not HIR bindings).
+        let synthetic_func = HirFn {
+            id: hew_hir::ItemId(0),
+            node: hew_hir::HirNodeId(0),
+            name: shim_name.to_string(),
+            type_params: Vec::new(),
+            is_generator: false,
+            intrinsic_id: None,
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            body: hew_hir::HirBlock {
+                node: hew_hir::HirNodeId(0),
+                scope: hew_hir::ScopeId(0),
+                statements: Vec::new(),
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: 0..0,
+            },
+            span: 0..0,
+        };
+        let dataflow_result = check_function(&builder, &raw.blocks, &synthetic_func);
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
+            .checks
+            .iter()
+            .filter_map(check_to_diagnostic)
+            .collect();
+        diagnostics.append(&mut builder.diagnostics);
+        collect_unknown_type_diagnostics(&synthetic_func, &builder, &mut diagnostics);
+        let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
+        let checked = CheckedMirFunction {
+            name: shim_name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            blocks: raw.blocks.clone(),
+            decisions: builder.decisions.clone(),
+            checks: dataflow_result.checks.clone(),
+            cooperate_sites,
+        };
+        let elaborated = elaborate(&checked, &builder, &thir.statements, &dataflow_result);
+
+        LoweredFunction {
+            thir,
+            raw,
+            checked,
+            elaborated,
+            diagnostics,
+            generated: builder.generated_functions,
+            record_layouts: builder.closure_record_layouts,
+            gen_state_layouts: builder.gen_state_layouts,
+        }
     }
 
     fn lower_spawned_closure_task(

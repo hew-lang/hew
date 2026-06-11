@@ -198,17 +198,12 @@ if "${HEW}" compile --target wasm32-unknown-unknown \
 fi
 grep -q 'Blocking channel receive operations are not supported on WASM32' "${reject_output}"
 
-# Reject: `fork child = worker(42)` inside a machine state entry block must
-# be rejected before codegen. Current end-to-end compilation stops at the
-# HIR zero-argument spawn gate for `fork name = call(...)`; lower-level HIR
-# tests continue to pin the Item::Machine task-gate walker directly.
-if "${HEW}" compile \
-    "${ROOT}/tests/vertical-slice/reject/machine_task_gate_fork_args.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected machine_task_gate_fork_args fixture to fail" >&2
-  exit 1
-fi
-grep -qF 'spawned call must have zero arguments' "${reject_output}"
+# Accept: `fork child = worker(42)` inside a machine state entry block
+# compiles end to end — machine entry blocks are spawn-capable contexts and
+# arg-bearing named forks ride the fork-entry shim env. Compile-only (main
+# never instantiates the machine); lower-level HIR tests continue to pin the
+# Item::Machine task-gate walker directly.
+compile_accept "machine_fork_args_spawn"
 
 # Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
 # records and `impl Iterator` blocks compile cleanly through the parser and
@@ -893,6 +888,10 @@ grep -qF 'only valid inside a `scope { }` body' "${reject_output}"
 # scope body; `await name` joins the child before the scope exits. The
 # ask-shaped reply orders both println lines and the process exit.
 run_accept_expect_stdout "fork_named_await_unit"
+
+# Accept (arg-bearing fork): scalar args on a named fork and a moved-in heap
+# string on a fork block both transfer through the fork-entry shim env.
+run_accept_expect_stdout "fork_args_spawn"
 
 # Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
 # Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was

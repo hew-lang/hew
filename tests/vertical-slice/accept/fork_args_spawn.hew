@@ -1,0 +1,44 @@
+// Accept fixture: arg-bearing fork callees ride the fork-entry shim env.
+// Covers both spawn shapes in one ordered program:
+//   1. named fork with BitCopy scalar args (`fork t = add_print(20, 22)`),
+//      joined explicitly with `await t`;
+//   2. fork-block with a moved-in heap `string` arg
+//      (`fork { shout(greeting); }`), joined implicitly at the scope brace.
+// The ask-shaped go() reply orders all output before process exit. The
+// string is a runtime concat (heap-backed), so a freed-read in the child
+// would corrupt the output; the companion run_e2e test re-runs this fixture
+// under MallocScribble for freed-read determinism.
+//
+// Harness verb: compile + run (exit 0)
+// Expected stdout: see fork_args_spawn.expected
+fn add_print(a: i64, b: i64) {
+    println(f"{a + b}");
+}
+
+fn shout(msg: string) {
+    println(f"{msg}!");
+}
+
+actor Driver {
+    receive fn go() -> i64 {
+        scope {
+            fork t = add_print(20, 22);
+            await t;
+        }
+        let greeting = "hello" + " world";
+        scope {
+            fork { shout(greeting); }
+        }
+        7
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    match await d.go() {
+        // The handler replies 7 after both scopes join; exit 0 on the
+        // expected reply, non-zero otherwise.
+        Ok(v) => v - 7,
+        Err(_e) => 1,
+    }
+}

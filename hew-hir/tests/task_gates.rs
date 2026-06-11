@@ -42,34 +42,33 @@ fn fork_child_direct_fn_unit_accepted() {
 }
 
 #[test]
-fn fork_child_with_args_rejected() {
-    // Invalid: spawned function has arguments
+fn fork_child_with_args_accepted() {
+    // Valid since the arg-bearing fork lift: a direct module-fn fork child
+    // with arguments passes the HIR gates — the args ride the fork-entry
+    // shim env at MIR, where the per-arg type restriction (BitCopy scalars
+    // + string) is enforced fail-closed.
     let source = r"
         fn worker(x: int) {}
         fn main() {
             scope {
                 fork child = worker(42);
+                await child;
             }
         }
     ";
     let output = lower(source);
 
-    let has_signature_unsupported = output.diagnostics.iter().any(|d| {
+    let has_gate_diagnostic = output.diagnostics.iter().any(|d| {
         matches!(
             d.kind,
             HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
+                | HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
         )
     });
     assert!(
-        has_signature_unsupported,
-        "Fork child with args must emit TaskSpawnSignatureUnsupported; got: {:#?}",
+        !has_gate_diagnostic,
+        "Arg-bearing direct-fn fork child must pass the HIR gates; got: {:#?}",
         output.diagnostics
-    );
-
-    let result = output.into_result();
-    assert!(
-        result.is_err(),
-        "into_result() must return Err for invalid fork child signature"
     );
 }
 

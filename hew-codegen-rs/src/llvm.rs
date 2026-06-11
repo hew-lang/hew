@@ -9331,7 +9331,18 @@ fn collect_vec_owned_element_seeds(
     ) {
         match ty {
             ResolvedTy::Named { name, args, .. } => {
-                if name == "Vec" {
+                // Queue carriers (`Sender<T>`/`Receiver<T>`/`Stream<T>`)
+                // share the owned-element layout witness with `Vec<T>`
+                // (`channel_elem_layout_witness_ptr` →
+                // `owned_elem_layout_descriptor_ptr` references the same
+                // `__hew_{record,enum}_{clone,drop}_inplace_*` thunks), so
+                // their element types must be seeded identically or the
+                // witness's thunk pointers dangle at llvm-verify for any
+                // heap-payload enum element reachable only through a
+                // channel (string-bearing records were masked by the
+                // Lane-A direct-string record seed). Carrier names may be
+                // module-qualified (`channel.Receiver`) — compare short.
+                if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
                     }

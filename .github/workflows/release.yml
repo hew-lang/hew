@@ -566,12 +566,18 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg lsb-release \
             ninja-build pkg-config wget xz-utils \
-            libssl-dev zlib1g-dev libzstd-dev
+            libssl-dev zlib1g-dev libzstd-dev libffi-dev libxml2-dev
 
       - name: Checkout code
         uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Trust the workspace checkout
+        # The container user differs from the checkout owner; without this
+        # the hew-cli build script cannot read git metadata and the shipped
+        # binary reports `unknown` for its commit hash.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
         # Official upstream tarball via the pinned setup-llvm action — the
@@ -770,6 +776,9 @@ jobs:
             fi
 
             # ── Rust builds (release) ──────────────────────────────────────
+            # llvm-sys-221 discovers LLVM via this variable; the source-built
+            # prefix is not on PATH inside the VM.
+            export LLVM_SYS_221_PREFIX="${LLVM_PREFIX}"
             cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 

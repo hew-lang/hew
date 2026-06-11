@@ -167,6 +167,13 @@ jobs:
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
 
+      - name: Trim release build intermediates
+        # The release-profile deps/build/incremental trees are dead weight
+        # once the release binaries are verified and smoke-tested above; the
+        # debug test build below needs the disk far more than a re-link
+        # cache. Keeps the binaries and libhew.a.
+        run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
+
       - name: Install WASI prerequisites
         run: |
           curl https://wasmtime.dev/install.sh -sSf | bash
@@ -226,9 +233,13 @@ jobs:
       - name: Free runner disk
         # arm64 hosted runners ship with less free disk than x86_64; the LLVM
         # toolchain (~6 GB extracted) plus a full debug workspace build hit
-        # ENOSPC. Drop large preinstalled toolchains this job never uses.
+        # ENOSPC (the runner process itself died mid-test-step). Drop every
+        # large preinstalled toolchain this job never uses, including the
+        # hosted toolcache and docker images.
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
       - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
@@ -280,6 +291,13 @@ jobs:
           OUTPUT=$(./_smoke_bin)
           rm -f _smoke.hew _smoke_bin
           echo "$OUTPUT" | grep -q "smoke-ok" && echo "✅ Smoke test passed"
+
+      - name: Trim release build intermediates
+        # The release-profile deps/build/incremental trees are dead weight
+        # once the release binaries are verified and smoke-tested above; the
+        # debug test build below needs the disk far more than a re-link
+        # cache. Keeps the binaries and libhew.a.
+        run: rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
 
       - name: Install WASI prerequisites
         run: |

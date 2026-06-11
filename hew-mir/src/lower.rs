@@ -19183,6 +19183,11 @@ impl Builder {
         //     self reference preserves stop-on-last-external-handle-drop.
         //   - Strong BitCopy scalar: the field store copies the value;
         //     the caller's binding stays live and untouched.
+        //   - Strong pid (`LocalPid`/`ActorRef`): a BitCopy alias of an
+        //     opaque identity reference with no drop glue. The field store
+        //     copies the handle word; the caller's binding stays live and
+        //     the env field gets no retain and no release — the actor's
+        //     lifetime is runtime-owned.
         //   - Strong `string`: the field store copies the HANDLE bytes
         //     (an alias); codegen replaces the heap-env field with an
         //     independent `hew_string_clone` at box time, so the env owns
@@ -19233,6 +19238,17 @@ impl Builder {
                     (hew_hir::HirCaptureKind::Strong, ResolvedTy::String) => {
                         crate::model::LambdaEnvFieldDrop::String
                     }
+                    // BitCopy scalars and pids share the no-drop class. A pid
+                    // is an opaque identity reference with no drop glue (its
+                    // drop is a codegen no-op — see the double-free origin
+                    // analysis on `validate_lambda_captures`): capturing one
+                    // is a BitCopy alias, ownership-identical to passing it
+                    // to a fn by value. The actor's lifetime is runtime-owned,
+                    // so the env field needs no retain and no release; a send
+                    // after the target stops is the same pre-existing hazard
+                    // class as any post-stop pid use — `hew_actor_send`'s
+                    // liveness contract treats a dead target as a normal
+                    // non-fault outcome.
                     (
                         hew_hir::HirCaptureKind::Strong,
                         ResolvedTy::I64
@@ -19246,7 +19262,11 @@ impl Builder {
                         | ResolvedTy::F64
                         | ResolvedTy::F32
                         | ResolvedTy::Bool
-                        | ResolvedTy::Char,
+                        | ResolvedTy::Char
+                        | ResolvedTy::Named {
+                            builtin: Some(BuiltinType::LocalPid | BuiltinType::ActorRef),
+                            ..
+                        },
                     ) => crate::model::LambdaEnvFieldDrop::None,
                     (hew_hir::HirCaptureKind::Strong, other) => {
                         self.diagnostics.push(MirDiagnostic {
@@ -19258,10 +19278,11 @@ impl Builder {
                             note: format!(
                                 "lambda-actor capture `{}` has type `{}`, which the \
                                  capture env cannot carry yet: only BitCopy scalars, \
-                                 `string`, and the weak self-handle have an ownership \
-                                 protocol across the actor boundary. A shallow byte \
-                                 copy of an owned aggregate would alias its heap and \
-                                 double-free at shutdown — fail closed instead.",
+                                 `string`, actor pids, and the weak self-handle have \
+                                 an ownership protocol across the actor boundary. A \
+                                 shallow byte copy of an owned aggregate would alias \
+                                 its heap and double-free at shutdown — fail closed \
+                                 instead.",
                                 capture.name,
                                 other.user_facing()
                             ),

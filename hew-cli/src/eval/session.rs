@@ -203,7 +203,10 @@ impl Session {
                 let input_start = source.len();
                 source.push_str(trimmed);
                 let input_end = source.len();
-                if !trimmed.ends_with(';') {
+                // Block-shaped statements (`if`/`while`/`for` ending in `}`)
+                // need no terminator; a synthetic one triggers the parser's
+                // "unnecessary semicolon" warning on code the user never wrote.
+                if !trimmed.ends_with(';') && !trimmed.ends_with('}') {
                     source.push(';');
                 }
                 source.push_str("\n}\n");
@@ -238,7 +241,14 @@ impl Session {
                     let input_start = source.len();
                     source.push_str(trimmed);
                     let input_end = source.len();
-                    source.push_str(";\n}\n");
+                    // Same as the statement wrapper: no synthetic `;` after a
+                    // block-shaped expression (`if`/`match` ending in `}`) —
+                    // it would draw an "unnecessary semicolon" warning.
+                    if trimmed.ends_with('}') {
+                        source.push_str("\n}\n");
+                    } else {
+                        source.push_str(";\n}\n");
+                    }
                     diagnostic_view = Some(SyntheticDiagnosticView {
                         source: trimmed.to_string(),
                         input_span: input_start..input_end,
@@ -355,7 +365,13 @@ fn persistent_bindings(input: &str) -> Vec<SessionBinding> {
 
     let source = format!("{MAIN_PREFIX}{input}\n}}\n");
     let parse_result = hew_parser::parse(&source);
-    if !parse_result.errors.is_empty() || parse_result.program.items.len() != 1 {
+    // Warning-severity parse diagnostics (e.g. "unnecessary semicolon") do
+    // not invalidate the statement; only hard errors do.
+    let has_fatal_errors = parse_result
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error);
+    if has_fatal_errors || parse_result.program.items.len() != 1 {
         debug_assert!(
             false,
             "statement persistence expected parseable statement input: {input:?}"

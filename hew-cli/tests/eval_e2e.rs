@@ -420,6 +420,118 @@ fn eval_file_in_repl_context_succeeds() {
 }
 
 #[test]
+fn eval_file_top_level_if_sees_earlier_session_binding() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("control_flow_binding.hew");
+    std::fs::write(
+        &path,
+        "let s = \"heap usage\";\nif s.contains(\"heap\") {\n    println(\"yes\");\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "yes\n");
+    // The session wrapper must not manufacture a semicolon the user never
+    // wrote (it previously drew an "unnecessary semicolon" warning that was
+    // then mistaken for a fatal parse failure).
+    assert!(
+        !stderr.contains("unnecessary semicolon"),
+        "spurious wrapper warning: {stderr}"
+    );
+}
+
+#[test]
+fn eval_file_top_level_while_sees_earlier_session_binding() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("while_binding.hew");
+    std::fs::write(
+        &path,
+        "var n = 2;\nwhile n > 0 {\n    println(\"tick\");\n    n = n - 1;\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "tick\ntick\n");
+}
+
+#[test]
+fn eval_file_function_wrapped_control_flow_still_works() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("fn_wrapped_while.hew");
+    std::fs::write(
+        &path,
+        "fn wait() {\n    var n = 2;\n    while n > 0 {\n        n = n - 1;\n    }\n}\n\nwait();\nprintln(\"done\")\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "done\n");
+}
+
+#[test]
+fn eval_file_bad_control_flow_chunk_fails_with_diagnostic() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join("bad_control_flow.hew");
+    std::fs::write(
+        &path,
+        "let s = 1;\nif s.contains(\"heap\") {\n    println(\"yes\");\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("eval")
+        .arg("-f")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "expected failure, got success");
+    // A non-zero exit must never be silent: an error-severity diagnostic has
+    // to accompany it, not just warnings.
+    assert!(
+        stderr.contains("error"),
+        "exit was non-zero but stderr carries no error diagnostic: {stderr}"
+    );
+}
+
+#[test]
 fn eval_file_resolves_sibling_imports_relative_to_file_path() {
     require_codegen();
 

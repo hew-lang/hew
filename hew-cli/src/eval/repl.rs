@@ -210,6 +210,18 @@ fn generator_description(ty: &hew_types::Ty) -> Option<String> {
     ))
 }
 
+/// Whether any parse diagnostic is a hard error.
+///
+/// The parser reports warnings (e.g. "unnecessary semicolon") in the same
+/// list as errors; only error-severity diagnostics may abort evaluation.
+/// Treating a warning as fatal exits 1 with nothing but warning text on
+/// stderr — the silent-failure defect this guards against.
+fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
+    errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+}
+
 fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
     program
         .items
@@ -567,23 +579,24 @@ impl ReplSession {
         };
 
         // Build the synthetic program.
-        let checked_program = match self.prepare_program(trimmed, kind, auto_print_expressions) {
-            Ok(program) => program,
-            Err(EvalCheckFailure::Parse { errors, .. }) => {
-                return EvalResult {
-                    output: String::new(),
-                    had_errors: true,
-                    errors: errors.into_iter().map(|error| error.message).collect(),
-                };
-            }
-            Err(EvalCheckFailure::Type { errors, .. }) => {
-                return EvalResult {
-                    output: String::new(),
-                    had_errors: true,
-                    errors: errors.into_iter().map(|error| error.message).collect(),
-                };
-            }
-        };
+        let checked_program =
+            match self.prepare_program(trimmed, "<repl>", kind, auto_print_expressions) {
+                Ok(program) => program,
+                Err(EvalCheckFailure::Parse { errors, .. }) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: errors.into_iter().map(|error| error.message).collect(),
+                    };
+                }
+                Err(EvalCheckFailure::Type { errors, .. }) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: errors.into_iter().map(|error| error.message).collect(),
+                    };
+                }
+            };
 
         // Compile and execute in-process. Import resolution and typecheck are
         // re-run inside the v0.5 HIR/MIR/codegen-rs path with correct stage
@@ -657,37 +670,38 @@ impl ReplSession {
             true
         };
 
-        let checked_program = match self.prepare_program(trimmed, kind, auto_print_expressions) {
-            Ok(program) => program,
-            Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view,
-                errors,
-            }) => {
-                render_eval_parse_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                );
-                return Err(CliEvalError::DiagnosticsRendered);
-            }
-            Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view,
-                errors,
-                module_source_map,
-            }) => {
-                render_eval_type_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                    &module_source_map,
-                );
-                return Err(CliEvalError::DiagnosticsRendered);
-            }
-        };
+        let checked_program =
+            match self.prepare_program(trimmed, input_name, kind, auto_print_expressions) {
+                Ok(program) => program,
+                Err(EvalCheckFailure::Parse {
+                    source,
+                    diagnostic_view,
+                    errors,
+                }) => {
+                    render_eval_parse_diagnostics(
+                        &source,
+                        input_name,
+                        diagnostic_view.as_ref(),
+                        &errors,
+                    );
+                    return Err(CliEvalError::DiagnosticsRendered);
+                }
+                Err(EvalCheckFailure::Type {
+                    source,
+                    diagnostic_view,
+                    errors,
+                    module_source_map,
+                }) => {
+                    render_eval_type_diagnostics(
+                        &source,
+                        input_name,
+                        diagnostic_view.as_ref(),
+                        &errors,
+                        &module_source_map,
+                    );
+                    return Err(CliEvalError::DiagnosticsRendered);
+                }
+            };
 
         match run_eval_compiled(
             checked_program.program,
@@ -756,7 +770,11 @@ impl ReplSession {
                 synthetic_program.diagnostic_view.as_ref(),
                 &parse_result.errors,
             );
-            return Err(CliEvalError::DiagnosticsRendered);
+            // Warning-only parse results (e.g. an unnecessary semicolon) are
+            // rendered above but must not abort evaluation.
+            if parse_errors_are_fatal(&parse_result.errors) {
+                return Err(CliEvalError::DiagnosticsRendered);
+            }
         }
 
         if matches!(kind, InputKind::Expression | InputKind::Statement)
@@ -839,7 +857,9 @@ impl ReplSession {
         let synthetic_program = self.session.build_type_query_program(expr);
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
         let parse_result = hew_parser::parse(&synthetic_program.source);
-        if !parse_result.errors.is_empty() {
+        // Warning-only parse results must not fail the type probe; the
+        // expression's actual evaluation surfaces any warnings.
+        if parse_errors_are_fatal(&parse_result.errors) {
             return Err(TypeQueryFailure::Check(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
                 diagnostic_view,
@@ -1076,6 +1096,7 @@ impl ReplSession {
     fn prepare_program(
         &self,
         input: &str,
+        input_name: &str,
         kind: InputKind,
         auto_print_expressions: bool,
     ) -> Result<CheckedProgram, EvalCheckFailure> {
@@ -1087,12 +1108,21 @@ impl ReplSession {
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
         let parse_result = hew_parser::parse(&synthetic_program.source);
-        if !parse_result.errors.is_empty() {
+        if parse_errors_are_fatal(&parse_result.errors) {
             return Err(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
                 diagnostic_view,
                 errors: parse_result.errors,
             });
+        }
+        if !parse_result.errors.is_empty() {
+            // Warning-only parse results are surfaced but do not abort.
+            render_eval_parse_diagnostics(
+                &synthetic_program.source,
+                input_name,
+                diagnostic_view.as_ref(),
+                &parse_result.errors,
+            );
         }
 
         let tco = typecheck_program(&parse_result.program, self.is_wasm_target());

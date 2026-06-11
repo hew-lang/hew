@@ -125,6 +125,106 @@ fn make() {
     );
 }
 
+/// Run the full source → typecheck → HIR → MIR pipeline with the REAL
+/// checker (mirrors `actor_send_ask::lower_checked`). The bare-checker
+/// `pipeline` helper above cannot type actor spawns or method sends, which
+/// the pid-capture shape needs.
+fn lower_checked(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    lower_hir_module(&hir.module)
+}
+
+#[test]
+fn lambda_pid_capture_is_admitted_as_strong_no_drop() {
+    // A lambda actor capturing a declared-actor pid: the pid is a BitCopy
+    // alias with no drop glue, so the capture env admits it (no
+    // CannotMaterializeClosureCapture) and records exactly one Strong
+    // capture. Regression: the drop-class match previously had no pid arm
+    // and the capture fell to the fail-closed reject.
+    let source = r"
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    let forward = actor |by: i64| { counter.increment(by); };
+    forward(1);
+}
+";
+    let p = lower_checked(source);
+    let rejects: Vec<_> = p
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
+            )
+        })
+        .collect();
+    assert!(
+        rejects.is_empty(),
+        "pid capture must be admitted (BitCopy alias, no drop glue); got {rejects:?}"
+    );
+    let func = find_fn(&p, "main");
+    let strong_names: Vec<&str> = func
+        .lambda_captures
+        .iter()
+        .filter(|c| c.capture_kind == CaptureKind::Strong)
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        strong_names,
+        vec!["counter"],
+        "pid capture must be recorded as exactly one Strong capture; got {:?}",
+        func.lambda_captures
+    );
+}
+
+#[test]
+fn lambda_vec_capture_still_fails_closed() {
+    // The pid admission must not widen the capture surface: an owned
+    // aggregate (Vec) capture still refuses with
+    // CannotMaterializeClosureCapture — a shallow byte copy would alias
+    // its heap and double-free at shutdown.
+    let source = r"
+fn main() {
+    let xs: Vec<i64> = Vec::new();
+    let f = actor |n: i64| -> i64 { xs[0] + n };
+}
+";
+    let p = pipeline(source);
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            d.kind,
+            hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
+        )),
+        "Vec capture must stay fail-closed; diagnostics: {:?}",
+        p.diagnostics
+    );
+}
+
 #[test]
 fn non_recursive_actor_lambda_records_zero_weak_captures() {
     // A lambda whose body does not reference its own let-name has no

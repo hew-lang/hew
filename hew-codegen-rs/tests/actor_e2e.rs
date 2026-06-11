@@ -18,6 +18,130 @@ fn actor_on_stop_compile_and_exit_code() {
     compile_and_run_actor_fixture("actor_on_stop", 42);
 }
 
+#[test]
+fn closure_pid_send_compile_and_exit_code() {
+    // fn-closure capturing an actor pid and sending through it — the
+    // closure-shim builder must carry the module's actor layout tables so
+    // the body's send resolves `actor_method_info`. Runs under
+    // MallocScribble so a freed-read on the aliased handle is
+    // deterministic, not flaky.
+    compile_and_run_actor_fixture("actor_closure_pid_send", 42);
+}
+
+/// Drop-plan oracle (the truth standard): capturing a pid into a closure
+/// must add ZERO drops to the parent's emitted drop plan. The pid has no
+/// drop glue, so the closure fixture's `main` plan must be
+/// signature-identical (drop count + every `drop_fn`/`kind` line) to the
+/// no-closure baseline `actor_counter`, whose body is the same program
+/// without the closure.
+#[test]
+fn closure_pid_capture_adds_no_drops_to_parent_plan() {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+
+    let closure_dump = dump_elab_mir(&repo, "tests/vertical-slice/accept/closure_pid_send.hew");
+    let baseline_dump = dump_elab_mir(&repo, "tests/vertical-slice/accept/actor_counter.hew");
+
+    let closure_sig = main_drop_signature(&closure_dump);
+    let baseline_sig = main_drop_signature(&baseline_dump);
+    assert_eq!(
+        closure_sig, baseline_sig,
+        "closure pid capture changed the parent's drop plan; the capture is \
+         a BitCopy alias and must add zero drops"
+    );
+    // Every drop in the plan is the pid's no-op resource drop — the plan
+    // never grows a real release for an aliased handle.
+    assert!(
+        closure_sig.iter().all(|line| line.contains("drop_fn: None")
+            || line.contains("kind: Resource")
+            || line.starts_with("ElabDrop")),
+        "unexpected drop signature lines: {closure_sig:?}"
+    );
+}
+
+/// Codegen oracle for the lambda env: the synthesized state dropper for a
+/// pid-capturing lambda actor frees the env bytes ONLY — no per-field
+/// release call for the pid field (LambdaEnvFieldDrop::None).
+#[test]
+fn lambda_pid_capture_env_drop_frees_bytes_only() {
+    let repo = repo_root();
+    ensure_codegen_artifacts(&repo);
+
+    let emit_dir = tempfile::Builder::new()
+        .prefix("hew-lambda-pid-env-drop-")
+        .tempdir()
+        .expect("create emit dir");
+    let compile = Command::new(hew_bin(&repo))
+        .current_dir(&repo)
+        .args([
+            "compile",
+            "--emit-dir",
+            emit_dir.path().to_str().expect("emit dir UTF-8"),
+            "tests/vertical-slice/accept/lambda_capture_pid_forward.hew",
+        ])
+        .output()
+        .expect("run built hew compile");
+    assert!(
+        compile.status.success(),
+        "hew compile failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr)
+    );
+
+    let ll = std::fs::read_to_string(emit_dir.path().join("lambda_capture_pid_forward.ll"))
+        .expect("read emitted LLVM IR");
+    let body_start = ll
+        .find("define internal void @__hew_lambda_env_drop_main_0")
+        .expect("synthesized lambda env drop fn present in IR");
+    let body = &ll[body_start..];
+    let body_end = body.find("\n}").expect("env drop fn body terminated");
+    let body = &body[..body_end];
+    let calls: Vec<&str> = body.lines().filter(|line| line.contains("call ")).collect();
+    assert!(
+        calls.len() == 1 && calls[0].contains("@free("),
+        "pid-capturing lambda env drop must free bytes only (no per-field \
+         release for the no-drop pid field); got calls: {calls:?}\nbody:\n{body}"
+    );
+}
+
+/// Run `hew compile --dump-mir elab` on a repo-relative source and return
+/// the dump text.
+fn dump_elab_mir(repo: &Path, rel_source: &str) -> String {
+    let output = Command::new(hew_bin(repo))
+        .current_dir(repo)
+        .args(["compile", "--dump-mir", "elab", rel_source])
+        .output()
+        .expect("run built hew compile --dump-mir elab");
+    assert!(
+        output.status.success(),
+        "hew compile --dump-mir elab {rel_source} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Extract `main`'s drop signature from an elaborated-MIR dump: one entry
+/// per `ElabDrop` line plus every `drop_fn:`/`kind:` fact inside main's
+/// function chunk. Local indices are deliberately excluded so the
+/// signature compares across programs whose local numbering differs.
+fn main_drop_signature(dump: &str) -> Vec<String> {
+    let main_chunk = dump
+        .split("ElaboratedMirFunction {")
+        .find(|chunk| chunk.trim_start().starts_with("name: \"main\""))
+        .expect("dump contains an ElaboratedMirFunction named main");
+    main_chunk
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("ElabDrop")
+                || line.starts_with("drop_fn:")
+                || (line.starts_with("kind:") && line.contains("Resource"))
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -92,6 +216,10 @@ fn ensure_codegen_artifacts(repo: &Path) {
 /// instead of a leaked process.
 fn run_bounded(binary: &Path, secs: u64) -> std::process::ExitStatus {
     let mut command = Command::new(binary);
+    // Scribble freed allocations (macOS libmalloc; inert elsewhere) so a
+    // read-after-free in actor teardown is a deterministic crash here, not
+    // a flaky pass on stale-but-intact heap bytes.
+    command.env("MallocScribble", "1");
     hew_testutil::run_command_bounded(
         &mut command,
         format!("actor fixture {}", binary.display()),

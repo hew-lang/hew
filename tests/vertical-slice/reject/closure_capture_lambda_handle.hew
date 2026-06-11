@@ -1,0 +1,15 @@
+// Reject pin: a fn-closure capturing a LAMBDA-ACTOR handle (a Duplex
+// underneath, not a no-drop pid) and calling it must refuse, not silently
+// misroute. The duplex send symbol routes by Place variant; an env-loaded
+// lambda handle has no materialization protocol through a closure env yet,
+// so the checker fails closed at the capture boundary. If this ever starts
+// compiling, the routing must be proven (hew_lambda_actor_send, not
+// hew_duplex_send) before the pin is relaxed.
+fn main() {
+    let base = 100;
+    let log = actor |n: i64| { println(f"sum={base + n}"); };
+    let relay = |n: i64| { log(n); };
+    relay(1);
+    sleep_ms(100);
+    println("done");
+}

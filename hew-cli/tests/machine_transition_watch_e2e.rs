@@ -67,6 +67,19 @@ fn transition_watch_baseline_prints_transition() {
     run_machine_example("transition_watch_baseline", "Created -> Initialising\n");
 }
 
+/// The full cross-actor watch: the owner drives a Lifecycle machine in
+/// actor state, publishes transitions (attach snapshot first), the
+/// observer receives the channel end through an actor message and selects
+/// with the `after` safety net, reacting to the Running edge and tearing
+/// down on the close-driven `None` arm.
+#[test]
+fn select_on_transition_example_runs_clean() {
+    run_machine_example(
+        "select_on_transition",
+        "Created -> Created\nCreated -> Initialising\nInitialising -> Running\nobserver: child is up\nwatch closed\n",
+    );
+}
+
 /// Write `source` to a tempdir, `hew run` it under the poisoned-allocator
 /// pair (`MallocScribble`/`MallocPreScribble`), and assert exit 0 with
 /// exactly `expected_stdout`. A producer-side double release of an arm
@@ -462,5 +475,93 @@ fn supervisor_child_with_machine_state_fails_closed() {
         stderr.contains("E_NOT_YET_IMPLEMENTED")
             && stderr.contains("only integer, bool, and float literals"),
         "expected the named child-init refusal; got:\n{stderr}",
+    );
+}
+
+/// The snapshot watch with full pattern fidelity: machine values travel as
+/// channel elements through the sealed select arm and the received
+/// snapshot pattern-matches on state variants, including the heap-payload
+/// `Failed { reason }` extraction. Multi-iteration: two snapshots, then
+/// the close-driven `None` teardown. Pins the deferred (post-machine)
+/// enum-registration pass — before it, `Option<Conn>`'s payload was sized
+/// against the still-opaque machine struct, the recv decode wrote past the
+/// alloca, and the second iteration lost its wake.
+#[test]
+fn machine_snapshot_select_watch_matches_state_variants() {
+    run_inline_scribbled(
+        "machine_snapshot_select",
+        "\
+         // Snapshot watch: machine values as channel elements through the sealed\n\
+         // select arm, state-variant pattern matching on the received snapshot.\n\
+         import std::channel::channel;\n\
+         \n\
+         machine Conn {\n\
+         \x20   events {\n\
+         \x20       Connect;\n\
+         \x20       Fail { reason: string; }\n\
+         \x20   }\n\
+         \n\
+         \x20   state Idle;\n\
+         \x20   state Open;\n\
+         \x20   state Failed { reason: string; }\n\
+         \n\
+         \x20   on Connect: Idle => Open {\n\
+         \x20       Open\n\
+         \x20   }\n\
+         \x20   on Fail: Open => Failed {\n\
+         \x20       Conn::Failed { reason: event.reason }\n\
+         \x20   }\n\
+         \x20   on Connect: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         \x20   on Fail: _ => _ {\n\
+         \x20       state\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         actor Owner {\n\
+         \x20   receive fn run() {\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       c.step(Connect);\n\
+         \x20       tx.send(c);\n\
+         \x20       c.step(ConnEvent::Fail { reason: \"peer reset\" });\n\
+         \x20       tx.send(c);\n\
+         \x20       tx.close();\n\
+         \x20       var waiting = true;\n\
+         \x20       while waiting {\n\
+         \x20           select {\n\
+         \x20               snap from rx.recv() => {\n\
+         \x20                   match snap {\n\
+         \x20                       Some(s) => {\n\
+         \x20                           match s {\n\
+         \x20                               Conn::Failed { reason } => println(f\"failed: {reason}\"),\n\
+         \x20                               Conn::Open => println(\"open\"),\n\
+         \x20                               Conn::Idle => println(\"idle\"),\n\
+         \x20                           }\n\
+         \x20                       },\n\
+         \x20                       None => {\n\
+         \x20                           println(\"watch closed\");\n\
+         \x20                           waiting = false;\n\
+         \x20                       },\n\
+         \x20                   }\n\
+         \x20               },\n\
+         \x20               after 2s => {\n\
+         \x20                   println(\"timeout\");\n\
+         \x20                   waiting = false;\n\
+         \x20               },\n\
+         \x20           };\n\
+         \x20       }\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let o = spawn Owner;\n\
+         \x20   o.run();\n\
+         \x20   sleep_ms(300);\n\
+         }\n\
+         ",
+        "open\nfailed: peer reset\nwatch closed\n",
     );
 }

@@ -3649,9 +3649,21 @@ impl Checker {
     /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
     /// owned enum.
     pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
-        if let Ty::Named { name, builtin, .. } = elem_ty {
+        if let Ty::Named {
+            name,
+            builtin,
+            args,
+        } = elem_ty
+        {
             if builtin.is_none() {
                 if let Some(type_def) = self.type_defs.get(name) {
+                    if matches!(type_def.kind, TypeDefKind::Machine) && !args.is_empty() {
+                        return "a generic machine instantiation has no \
+                                per-instantiation layout (machines canonicalize to one \
+                                bare-named declaration layout); only monomorphic \
+                                machine values can ride the owned-element queue witness"
+                            .to_string();
+                    }
                     let is_record_or_enum = matches!(
                         type_def.kind,
                         TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
@@ -3754,7 +3766,11 @@ impl Checker {
                         &mut HashSet::new(),
                     )
             }
-            Ty::Named { name, builtin, .. } => {
+            Ty::Named {
+                name,
+                builtin,
+                args,
+            } => {
                 // Builtin nominals (Vec/HashMap/Rc/...) are not user records/enums.
                 if builtin.is_some() {
                     return false;
@@ -3763,10 +3779,28 @@ impl Checker {
                     return false;
                 };
                 // Only record/struct/enum value types have synthesizable
-                // inplace thunks.
+                // inplace thunks. MONOMORPHIC machines are enums at the
+                // value-classification layer (same tagged-union substrate,
+                // same `__hew_enum_{clone,drop}_inplace_*` thunk family —
+                // the codegen witness resolves them through the machine
+                // layout registry), so they ride the enum admission: same
+                // RcFree requirement, same container-bearing refusal below
+                // (machine state variants register in `type_defs.variants`,
+                // so the transitive container walk covers them). Generic
+                // machine INSTANTIATIONS stay refused: the machine substrate
+                // canonicalizes them to one bare-named decl layout, so the
+                // `Option<T>` binding a recv produces has no per-instantiation
+                // enum layout to land in — fail closed here, at the admission
+                // authority, rather than as a late emitter refusal.
+                if matches!(type_def.kind, TypeDefKind::Machine) && !args.is_empty() {
+                    return false;
+                }
                 if !matches!(
                     type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
+                    TypeDefKind::Record
+                        | TypeDefKind::Struct
+                        | TypeDefKind::Enum
+                        | TypeDefKind::Machine
                 ) {
                     return false;
                 }

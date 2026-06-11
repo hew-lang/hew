@@ -5252,13 +5252,13 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 // Machine channel elements (transition-watch lane, stage-0 pin)
 // ===========================================================================
 
-/// Stage-0 pin: a machine value as a channel element is refused with the
-/// named no-thunk-path diagnostic — `vec_owned_element_admissible` admits
-/// `Record | Struct | Enum` type defs only, and machines are a separate
-/// `TypeDefKind`. The machine-as-enum admission flips this pin to a clean
-/// typecheck (machines share the enum tagged-union substrate).
+/// A monomorphic machine value as a channel element typechecks clean —
+/// machines are enums at the value-classification layer and ride the
+/// owned-element queue witness. Was the stage-0 fail-closed pin
+/// (`machine_channel_element_currently_fails_closed`) before the machine
+/// admission landed.
 #[test]
-fn machine_channel_element_currently_fails_closed() {
+fn monomorphic_machine_channel_element_admitted() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
@@ -5283,14 +5283,78 @@ fn machine_channel_element_currently_fails_closed() {
         ",
     );
     assert!(
+        output.errors.is_empty(),
+        "monomorphic machine channel element must be admitted; got: {:#?}",
+        output.errors
+    );
+}
+
+/// A GENERIC machine instantiation as a channel element stays refused:
+/// the machine substrate canonicalizes instantiations to one bare-named
+/// decl layout, so the recv binding's `Option<T>` has no
+/// per-instantiation layout to land in. The imported spelling resolves
+/// through the generic no-thunk-path clause (the tailored bare-canon
+/// clause fires for locally declared generic machines, whose type defs
+/// resolve by bare name).
+#[test]
+fn generic_machine_instantiation_channel_element_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::concurrency::lifecycle;
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
         output
             .errors
             .iter()
-            .any(|e| e.message.contains("is not supported")
-                && e.message.contains("no clone/drop thunk path")),
-        "Stage-0 pin: machine channel element should be refused with the \
-         no-thunk-path diagnostic today; if this fails the machine admission \
-         landed — replace this pin with the passing assertion. Got: {:#?}",
+            .any(|e| e.message.contains("Lifecycle<i64>") && e.message.contains("is not supported")),
+        "generic machine instantiation element must be refused; got: {:#?}",
+        output.errors
+    );
+}
+
+/// A machine whose state payload carries a container (`Vec<i64>`) stays
+/// refused exactly as a container-bearing enum would — the machine
+/// admission rides the same transitive container walk.
+#[test]
+fn container_bearing_machine_channel_element_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        machine Buffered {
+            events {
+                Load { items: Vec<i64>; }
+            }
+            state Empty;
+            state Loaded { items: Vec<i64>; }
+            on Load: Empty => Loaded { Buffered::Loaded { items: event.items } }
+            on Load: _ => _ { state }
+        }
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = channel.new(2);
+            tx.send(Buffered::Empty);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("is not supported")),
+        "container-bearing machine element must stay refused; got: {:#?}",
         output.errors
     );
 }

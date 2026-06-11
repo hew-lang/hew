@@ -281,7 +281,7 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
     let path = dir.path().join("observe_attribution_eval.hew");
     std::fs::write(
         &path,
-        r"import std::observe;
+        r#"import std::observe;
 
 actor Counter {
     var count: i64;
@@ -295,13 +295,34 @@ actor Counter {
     }
 }
 
+// The awaited reply posts BEFORE the worker records the turn's
+// attribution, so the attributed series may lag the ask by a beat on a
+// loaded host. Poll the eventual invariant with a bounded deadline
+// (2s) instead of asserting a racy instantaneous read. (A function
+// body, not top-level statements: the eval session splits top-level
+// control flow away from its bindings.)
+fn wait_for_attribution() -> i64 {
+    var tries = 0;
+    while tries < 200 {
+        let snapshot = observe.series();
+        if snapshot.contains("actors.attributed_turns_by_handler_total") {
+            tries = 200;
+        } else {
+            sleep_ms(10);
+            tries = tries + 1;
+        }
+    }
+    0
+}
+
 let counter = spawn Counter(count: 0);
 counter.increment(1);
 counter.increment(2);
 let _total = await counter.total();
+let _waited = wait_for_attribution();
 println(observe.series());
 observe.scrape()
-",
+"#,
     )
     .unwrap();
 

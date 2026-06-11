@@ -164,7 +164,7 @@
     "expected_path": "types/wire_types.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "unsupported_native_only",
+      "sandbox": "runnable",
       "wasi": "runnable"
     }
   },

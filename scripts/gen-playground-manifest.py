@@ -98,10 +98,12 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # than for-in Vec; sandbox bytecode emission verified via parity test.
     "types/collections": "runnable",
     # types/record_types: plain record types with enum dispatch (formerly
-    # misnamed wire_types); all constructs are sandbox-admitted. The real
-    # types/wire_types (#[wire] struct) is profile-rejected and takes the
-    # unsupported_native_only default.
+    # misnamed wire_types); all constructs are sandbox-admitted.
     "types/record_types": "runnable",
+    # types/wire_types: #[wire] struct declarations emit sandbox bytecode
+    # (the playground consistency test proves it both ways); the example's
+    # body is declaration + prints, all sandbox-admitted.
+    "types/wire_types": "runnable",
     # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
     # to plain record types with conditional dispatch.
     "types/structural_bounds": "runnable",

@@ -2633,6 +2633,117 @@ fn typecheck_binary_op_type_mismatch() {
     );
 }
 
+/// Structural record equality has no MIR/codegen lowering yet; the checker
+/// must refuse `==` on record values with a spanned diagnostic instead of
+/// leaking an unspanned `IntCmp` rejection from codegen-front.
+#[test]
+fn record_equality_comparison_reports_not_yet_implemented() {
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
+    let output = check_source(source);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::InvalidOperation)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected InvalidOperation for record `==`: {:#?}",
+                output.errors
+            )
+        });
+    assert!(
+        err.message
+            .contains("`==` on record type `Pt` is not yet implemented"),
+        "diagnostic must name the operator and type: {}",
+        err.message
+    );
+    // The span must cover the whole comparison (both operands), not just
+    // one operand. The parser's operand spans may extend a byte past the
+    // identifier, so pin "starts at `a`, reaches past `b`" rather than the
+    // exact end offset.
+    let cmp_start = source.find("a == b").unwrap();
+    assert_eq!(
+        err.span.start, cmp_start,
+        "diagnostic must start at the left operand"
+    );
+    assert!(
+        err.span.end >= cmp_start + "a == b".len(),
+        "diagnostic must reach the right operand: {:?}",
+        err.span
+    );
+    assert!(
+        err.suggestions
+            .iter()
+            .any(|s| s.contains("compare individual fields")),
+        "diagnostic must suggest field-wise comparison: {:?}",
+        err.suggestions
+    );
+}
+
+/// `!=` and the ordering operators leak through the same codegen-front
+/// `IntCmp` path as `==`; all six comparison operators are gated.
+#[test]
+fn record_inequality_and_ordering_comparisons_rejected() {
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("`!=` on record type `Pt` is not yet implemented")),
+        "expected refusal for record `!=`: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("`<` is not supported for record type `Pt`")),
+        "expected refusal for record `<`: {:#?}",
+        output.errors
+    );
+}
+
+/// The gate keys off `TypeDefKind::Struct`/`Record`; enum comparisons must
+/// not trip it (enum `==` keeps its current checker behaviour).
+#[test]
+fn enum_equality_not_gated_by_record_comparison_refusal() {
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    a == b\n}";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "enum `==` must not trip the record-comparison gate: {:#?}",
+        output.errors
+    );
+}
+
+/// When the operand types disagree, the plain mismatch diagnostic wins;
+/// the record gate must not double-report.
+#[test]
+fn record_comparison_type_mismatch_reports_mismatch_not_refusal() {
+    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a type mismatch error: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("not yet implemented")),
+        "record gate must not fire on mismatched operands: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 fn int_literal_locals_unify_to_concrete_integer_binary_width() {
     let source = r"

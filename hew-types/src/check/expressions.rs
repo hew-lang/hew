@@ -2979,7 +2979,20 @@ impl Checker {
                         );
                     }
                 } else {
+                    let errors_before = self.errors.len();
                     self.expect_type(&left_ty, &right_ty, &right.1);
+                    // Only run the record-comparison gate when the operand
+                    // types agree — a mismatch already produced the more
+                    // precise error above.
+                    if self.errors.len() == errors_before {
+                        self.reject_record_comparison(
+                            op,
+                            &left_resolved,
+                            &right_resolved,
+                            &left.1,
+                            &right.1,
+                        );
+                    }
                 }
                 Ty::Bool
             }
@@ -3079,6 +3092,67 @@ impl Checker {
                 }
             }
         }
+    }
+
+    /// Fail-closed gate for `==`/`!=`/ordering comparisons on record-like
+    /// named value types (`type` structs and `record` declarations).
+    ///
+    /// WHY: structural record equality is spec'd as a v0.5+ feature but has
+    /// no HIR/MIR/codegen lowering — without this gate the comparison
+    /// reaches codegen as `IntCmp` on a record operand and dies with an
+    /// unspanned codegen-front rejection (`E_NOT_YET_IMPLEMENTED:
+    /// fail-closed: IntCmp lhs is not an integer`), leaking from the wrong
+    /// layer. LESSONS `boundary-fail-closed`.
+    /// WHEN: obsolete once structural record equality lands.
+    /// WHAT: the real solution lowers `==`/`!=` on records to field-wise
+    /// comparison (mirroring the layout hash/eq-thunk path); ordering would
+    /// additionally need a spec'd ordering semantics for records.
+    fn reject_record_comparison(
+        &mut self,
+        op: BinaryOp,
+        left_resolved: &Ty,
+        right_resolved: &Ty,
+        left_span: &Span,
+        right_span: &Span,
+    ) {
+        let record_name = [left_resolved, right_resolved].into_iter().find_map(|ty| {
+            let Ty::Named { name, .. } = ty else {
+                return None;
+            };
+            let type_def = self.type_defs.get(name)?;
+            matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
+                .then(|| ty.user_facing())
+        });
+        let Some(type_name) = record_name else {
+            return;
+        };
+        // Span the whole comparison, not just one operand.
+        let span = Span {
+            start: left_span.start,
+            end: right_span.end,
+        };
+        let (message, suggestion) = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            (
+                format!(
+                    "`{op}` on record type `{type_name}` is not yet implemented; \
+                     structural record equality is a planned feature"
+                ),
+                "compare individual fields until structural record equality lands \
+                 (e.g. `a.x == b.x && a.y == b.y`)"
+                    .to_string(),
+            )
+        } else {
+            (
+                format!("`{op}` is not supported for record type `{type_name}`"),
+                format!("compare an individual field instead (e.g. `a.x {op} b.x`)"),
+            )
+        };
+        self.report_error_with_suggestions(
+            TypeErrorKind::InvalidOperation,
+            &span,
+            message,
+            vec![suggestion],
+        );
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration`.

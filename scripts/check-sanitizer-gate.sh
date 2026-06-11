@@ -37,6 +37,16 @@ if [[ ! "$release_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 release_commit="$(printf '%s' "$release_commit" | tr '[:upper:]' '[:lower:]')"
 
+# A waiver row may pin either the release commit itself or its first parent.
+# WHY: a commit cannot contain its own SHA (self-citation is cryptographically
+# impossible), so the waiver/version commit that sits at the release tip cites
+# the known SHA of its parent instead. Both forms pin THIS release lineage;
+# stale rows from earlier releases still fail the match.
+release_parent=""
+if release_parent_raw="$(git rev-parse "${release_commit}^" 2>/dev/null)"; then
+    release_parent="$(printf '%s' "$release_parent_raw" | tr '[:upper:]' '[:lower:]')"
+fi
+
 if [[ ! -f "$asan_result_file" ]]; then
     die "ASan result file is absent: ${asan_result_file}"
 fi
@@ -136,7 +146,7 @@ validate_row() {
         die "waiver row ${row_number} expires must be YYYY-MM-DD"
     fi
 
-    if [[ "$current_commit" != "$release_commit" ]]; then
+    if [[ "$current_commit" != "$release_commit" && "$current_commit" != "$release_parent" ]]; then
         return 0
     fi
 

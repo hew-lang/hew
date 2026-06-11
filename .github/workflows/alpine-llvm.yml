@@ -68,7 +68,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-${{ steps.platform.outputs.slug }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22.1.0-v2-${{ steps.platform.outputs.slug }}
           build-args: |
             LLVM_VERSION=${{ inputs.llvm_version || '22.1.0' }}
           cache-from: type=gha,scope=llvm-alpine-${{ steps.platform.outputs.slug }}
@@ -92,6 +92,6 @@ jobs:
       - name: Create multi-arch manifest
         run: |
           docker buildx imagetools create \
-            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-linux-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-linux-arm64
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22.1.0-v2 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22.1.0-v2-linux-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22.1.0-v2-linux-arm64

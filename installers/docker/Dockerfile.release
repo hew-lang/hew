@@ -17,7 +17,7 @@ ARG VERSION=0.0.0
 # Built by alpine-llvm.yml and pushed to GHCR. Contains /opt/llvm-22 with the
 # static LLVM libraries, configs, and tools required by llvm-sys.
 # Alpine 3.21 does not ship the pinned LLVM 22 toolchain, so we use this image.
-FROM ghcr.io/hew-lang/llvm-alpine:22 AS llvm
+FROM ghcr.io/hew-lang/llvm-alpine:22.1.0-v2 AS llvm
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 1: Rust binaries + all std staticlibs (musl-static)
@@ -38,6 +38,7 @@ RUN apk add --no-cache \
     zlib-dev zlib-static zstd-dev zstd-static
 
 ENV LLVM_PREFIX=/opt/llvm-22
+ENV LLVM_SYS_221_PREFIX=/opt/llvm-22
 ENV PATH=/opt/llvm-22/bin:$PATH
 ENV CC=clang
 ENV CXX=clang++

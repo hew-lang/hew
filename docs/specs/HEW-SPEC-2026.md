@@ -2680,6 +2680,15 @@ Task<T>
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
+> **Partially implemented in edition 2026 / v0.5.0.** The shipped surface is
+> `scope { fork { call(); } }` in suspendable contexts (actor handlers,
+> closures, task entries), where the forked call takes no arguments and the
+> scope joins all children at its closing brace. The name-bound form
+> `fork name = call(...)` described below, argument-bearing forks, awaiting a
+> child's value, sibling cancellation on child failure, and the `?`
+> propagation sugar are specified here but not yet accepted — each refuses
+> with a named diagnostic rather than miscompiling.
+
 A `scope` block creates a structured concurrency boundary. All child tasks
 forked within the block must complete before the block returns.
 
@@ -2718,9 +2727,11 @@ scope {
 
 `fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
 `scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb (`fork { ... }` as a block form
-is not accepted and the parser emits a clear diagnostic). Outside a
-scope-block, a child-form `fork` is a `ForkOutsideScopeBlock` error.
+`fork` is exclusively the child-start verb. In v0.5.0 the accepted child
+form is the block form `fork { call(); }` with a zero-argument callee; the
+name-bound form parses but is rejected pending its type-checking slice.
+Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
+error.
 
 ### 4.3 Spawning Child Tasks
 

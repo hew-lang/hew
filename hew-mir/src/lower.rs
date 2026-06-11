@@ -17193,9 +17193,9 @@ impl Builder {
             // NEW-6b: record an `await … | after d` deadline for THIS block (the
             // one finished with `SuspendingAsk`). Only a suspendable caller carries
             // the deadline — a blocking `Terminator::Ask` (foreign/main thread) has
-            // no parkable continuation to time out, so a deadline there fails closed
-            // in HIR (it only attaches to the suspending path). Literal-only ns
-            // (constant side-table, no Place threaded into the IR).
+            // no parkable continuation to time out, so a deadline there fails
+            // closed below. Literal-only ns (constant side-table, no Place
+            // threaded into the IR).
             if let Some(ns) = deadline_ns {
                 self.await_deadline_ns.insert(self.current_block_id, ns);
             }
@@ -17210,6 +17210,26 @@ impl Builder {
                 cleanup: next,
             });
         } else {
+            // A blocking caller (`main`, a free function) has no parkable
+            // continuation to time out: the deadline cannot be armed on the
+            // condvar path, and silently dropping it would turn `| after d`
+            // into an unbounded wait. Refuse instead of miscompiling.
+            if deadline_ns.is_some() {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "`await {method_id}(...) | after d` from a blocking caller \
+                             (`main` or a free function)"
+                        ),
+                        site,
+                    },
+                    note: "the deadline timer arms against a suspended continuation; \
+                           only actor handlers, closures, and task entries suspend — \
+                           move the deadline ask into an actor handler"
+                        .to_string(),
+                });
+                return None;
+            }
             self.finish_current_block(Terminator::Ask {
                 actor,
                 msg_type: info.msg_type,

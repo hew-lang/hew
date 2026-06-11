@@ -1994,6 +1994,17 @@ if "${HEW}" compile \
 fi
 grep -q 'non-suspendable context' "${reject_output}"
 
+# Reject (NEW-6b — blocking caller): `await <actor>.<ask>() | after d` in `main`.
+# Before the wall the deadline was silently dropped and the ask blocked
+# until the reply.
+if "${HEW}" compile \
+    "${ROOT}/tests/vertical-slice/reject/await_ask_deadline_non_suspendable.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected await_ask_deadline_non_suspendable fixture to fail" >&2
+  exit 1
+fi
+grep -q 'blocking caller' "${reject_output}"
+
 # Reject (NEW-7 — non-suspendable): `await stream.recv() | after d` in a plain function.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/await_stream_recv_deadline_non_suspendable.hew" \

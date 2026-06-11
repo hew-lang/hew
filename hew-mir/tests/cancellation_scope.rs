@@ -123,7 +123,8 @@ const FORK_ARGS_DRIVER: &str = r#"
         receive fn drive() {
             let greeting = "hello" + " world";
             scope {
-                fork { shout(greeting); }
+                fork ts = shout(greeting);
+                await ts;
             };
         }
     }
@@ -217,7 +218,8 @@ fn fork_vec_arg_fails_closed() {
             receive fn drive() {
                 let v: Vec<i64> = Vec::new();
                 scope {
-                    fork { consume_vec(v); }
+                    fork t = consume_vec(v);
+                    await t;
                 };
             }
         }

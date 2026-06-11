@@ -914,15 +914,26 @@ grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'spawned call' "${reject_output}"
 grep -qF 'no-argument functions returning unit' "${reject_output}"
 
-# Reject: fork-spawned callee takes arguments.
-# Pins the HIR no-argument task-spawn boundary.
-# Moves to accept/ when S5 lands argument-bearing fork callees.
+# Reject: implicit-spawn callee takes arguments (non-named form stays nullary).
+# Pins the HIR no-argument gate for non-named spawns in validate_task_spawn_call.
+# Only `fork name = f(args)` (named form) accepts arguments; implicit scope-
+# statement spawns and fork-block bodies must be nullary.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_with_args.hew" >"${reject_output}" 2>&1; then
   echo "expected fork-with-args fixture to fail" >&2
   exit 1
 fi
 grep -q 'E_HIR' "${reject_output}"
 grep -qF 'spawned call must have zero arguments' "${reject_output}"
+
+# Reject: fork-block body with a type-mismatched argument (R1 pin).
+# Pins the HIR fail-closed wall: fork { f(wrongtype); } must produce a
+# source-spanned E_HIR diagnostic, never E_CODEGEN_FRONT.
+if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_block_arg_type_mismatch.hew" >"${reject_output}" 2>&1; then
+  echo "expected fork-block-arg-type-mismatch fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_HIR' "${reject_output}"
+grep -qF 'fork block callee must have zero arguments' "${reject_output}"
 
 # Reject: `fork { ... }` block with multiple statements.
 # Pins the HIR fail-closed fork-block body boundary.

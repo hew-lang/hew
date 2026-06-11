@@ -4277,8 +4277,8 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
 }
 
 /// Arg-bearing fork callees under the poisoned allocator: the fixture moves
-/// a heap `string` into a fork-entry shim env (`fork { shout(greeting); }`)
-/// and joins at the scope brace. `MallocScribble`/`MallocPreScribble`
+/// a heap `string` into a fork-entry shim env via the named form
+/// (`fork ts = shout(greeting); await ts;`). `MallocScribble`/`MallocPreScribble`
 /// poison freed and fresh allocations, so a child reading the env after a
 /// premature parent-side free deterministically corrupts the output (or
 /// aborts) instead of passing by luck. The structural single-owner proof

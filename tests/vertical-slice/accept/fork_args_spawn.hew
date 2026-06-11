@@ -1,13 +1,17 @@
 // Accept fixture: arg-bearing fork callees ride the fork-entry shim env.
-// Covers both spawn shapes in one ordered program:
+// Covers both scalar and heap-string arg shapes via the named fork form:
 //   1. named fork with BitCopy scalar args (`fork t = add_print(20, 22)`),
 //      joined explicitly with `await t`;
-//   2. fork-block with a moved-in heap `string` arg
-//      (`fork { shout(greeting); }`), joined implicitly at the scope brace.
+//   2. named fork with a moved-in heap `string` arg
+//      (`fork ts = shout(greeting); await ts;`), joined explicitly.
 // The ask-shaped go() reply orders all output before process exit. The
 // string is a runtime concat (heap-backed), so a freed-read in the child
 // would corrupt the output; the companion run_e2e test re-runs this fixture
 // under MallocScribble for freed-read determinism.
+//
+// Argument-bearing spawns use the named form exclusively: the block form
+// (`fork { f(…); }`) is nullary because the checker does not visit block
+// bodies, so args there would bypass type-checking.
 //
 // Harness verb: compile + run (exit 0)
 // Expected stdout: see fork_args_spawn.expected
@@ -27,7 +31,8 @@ actor Driver {
         }
         let greeting = "hello" + " world";
         scope {
-            fork { shout(greeting); }
+            fork ts = shout(greeting);
+            await ts;
         }
         7
     }

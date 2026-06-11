@@ -229,7 +229,11 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(err.contains("invalid UTF-8"), "unexpected error: {err}");
-        assert_eq!(hew_registry_count(), 0);
+        // No absolute hew_registry_count() assertion here: the registry is
+        // process-global and sibling tests register names concurrently under
+        // plain `cargo test` (the sanitizer lanes), so an absolute count
+        // couples this test to the whole suite's schedule. The -1 returns,
+        // null lookup, and error text above fully pin the rejection.
     }
 }
 

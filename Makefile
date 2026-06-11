@@ -742,8 +742,8 @@ asan:
 	ASAN_OPTIONS="detect_leaks=1" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="suppressions=$(CURDIR)/hew-runtime/lsan.supp" \
-	HEW_SWIM_TEST_TIME_SCALE=3 \
-	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib
+	HEW_SWIM_TEST_TIME_SCALE=10 \
+	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #

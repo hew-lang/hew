@@ -3,7 +3,7 @@
 # Windows toolchain: builds LLVM 22.1.0 from source on a windows-2022
 # runner using MSVC + Ninja, installs to C:\llvm-22, packages as a Hew-owned
 # toolchain archive (.tar.gz), generates a SHA-256 checksum, and publishes to
-# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v2).
+# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v3).
 # release.yml downloads and verifies that asset instead of building LLVM at
 # release time.
 # The publish step is idempotent — it skips if the versioned asset already
@@ -44,8 +44,8 @@ env:
   # Versioned toolchain release tag and asset name for the Hew-owned Windows
   # LLVM package. Bump the v-suffix (v2, v3, …) when the packaging or layout
   # changes without a LLVM version bump. Must match release.yml exactly.
-  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v2"
-  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
+  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v3"
+  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -273,7 +273,7 @@ jobs:
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
             -DLLVM_ENABLE_PROJECTS="clang;lld" `
-            -DLLVM_TARGETS_TO_BUILD="X86" `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;WebAssembly" `
             -DLLVM_BUILD_TOOLS=ON `
             -DLLVM_BUILD_UTILS=ON `
             -DLLVM_INSTALL_UTILS=ON `

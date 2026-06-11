@@ -50,12 +50,37 @@ default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parit
 slow-timeout = { period = "100s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
+# Codegen exec/e2e integration binaries spawn full compile+link+run child
+# processes; on 4-core hosted runners an unthrottled exec test starves under
+# workspace-wide parallelism and hits the 300s slow-timeout (coro_emission_exec
+# on macos-14). Same medicine as eval_e2e: cap concurrency, change no coverage.
+filter = "binary(~exec)"
+test-group = "subprocess-intensive"
+# Hosted 4-core runners run throttled exec tests past the default 300s kill
+# window even when healthy (each spawns compile+link+run children sharing 4
+# cores with up to 7 siblings). Wider terminate budget on ci only; the tests'
+# internal timeouts still bound genuine hangs.
+slow-timeout = { period = "120s", terminate-after = 4 }
+# One retry absorbs hosted-runner subprocess-spawn flakes (a child `hew run`
+# failing to launch in ~0.02s); the compile-run assertions stay strict, so a
+# real regression fails both attempts.
+retries = 1
+
+[[profile.ci.overrides]]
 # eval_e2e tests spawn the full hew compiler binary (AOT compile + codegen +
 # link + subprocess execute).  Route them into the subprocess-intensive group
 # so at most 8 run concurrently, preventing compiler-process oversubscription
 # that inflates compile times and causes the eval hang-guard to fire spuriously.
 filter = "binary(eval_e2e)"
 test-group = "subprocess-intensive"
+
+[[profile.ci.overrides]]
+# eval_std_observe_scrape drives a compiled program that binds an ephemeral
+# observe/pprof port and scrapes it; under hosted-runner load the bind/scrape
+# handshake can miss its window (one cold failure on an otherwise green job).
+# One retry absorbs the port-timing jitter; the assertions stay strict.
+filter = "test(eval_std_observe_scrape)"
+retries = 1
 
 [[profile.ci.overrides]]
 # connection_drop_wakes_pending_remote_ask is a known timing-sensitive test
@@ -122,6 +147,25 @@ retries = 1
 filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
 test-group = "process-timing"
 retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
+
+[[profile.ci.overrides]]
+# The two-process remote-ask pair spawns a second OS process and round-trips
+# an ask over loopback TCP; on shared hosted runners the connect/ask window
+# intermittently misses ("echo ask returned null", helper exit 101) while the
+# same tests pass deterministically on dedicated hardware (local macOS runs
+# and native arm64 container runs). Hosted arm Linux already proved this
+# family is runner-environment, not code.
+# SHIM: retry absorbs hosted-runner loopback jitter.
+# WHEN obsolete: when the remote-ask client helper gains a bounded
+#   connect-with-deadline (retry/backoff) instead of a one-shot connect.
+# WHAT the real solution looks like: the helper retries the initial node
+#   connect with backoff up to a wall deadline, making a slow accept
+#   indistinguishable from a fast one.
+# Correctness invariant: a real remote-ask regression (null reply from a live
+#   node) fails on both attempts; the retry only absorbs setup-window misses.
+filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper)"
+retries = 1
+test-group = "process-timing"
 
 [[profile.ci.overrides]]
 # child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor

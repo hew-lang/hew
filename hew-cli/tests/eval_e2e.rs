@@ -1062,7 +1062,11 @@ fn eval_repl_load_non_root_type_errors_render_imported_filename() {
     );
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    let dep_header = format!("{}:1:", dep_path.display());
+    // The import resolver canonicalizes the dep path, so the rendered
+    // filename uses the canonical form — on Windows runners that expands
+    // 8.3 short names (RUNNER~1) the raw tempdir path would never match.
+    let dep_canonical = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
+    let dep_header = format!("{}:1:", dep_canonical.display());
     assert!(stderr.contains(&dep_header), "stderr: {stderr}");
     assert!(
         stderr.contains("pub fn mistyped() -> i64 { true }"),

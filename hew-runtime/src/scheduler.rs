@@ -790,7 +790,7 @@ fn worker_loop(id: usize, local: &WorkDeque) {
     )]
     crate::signal::init_worker_recovery(id as u32);
 
-    while !sched.shutdown.load(Ordering::Acquire) {
+    loop {
         // Test-only drain handshake. In production SCHEDULER is never swapped
         // during a worker's lifetime, so this entire block is compiled away
         // with zero hot-path overhead.
@@ -825,6 +825,19 @@ fn worker_loop(id: usize, local: &WorkDeque) {
                 None
             }
         };
+        // The shutdown read sits AFTER the test-only drain guard above so that
+        // EVERY scheduler-field access — including this loop-exit check — is
+        // inside the guarded region. With the old `while` form the condition
+        // read happened between iterations, after the previous guard had
+        // decremented the drain counter, leaving a window where
+        // NoWorkerSchedulerForTest::Drop could observe count==0 and free the
+        // transient while this thread was about to read `shutdown` (ASan
+        // heap-use-after-free, release-gate Sanitizers job). In production the
+        // reordering is semantics-neutral: shutdown is still checked at the
+        // top of every iteration before any work is taken.
+        if sched.shutdown.load(Ordering::Acquire) {
+            break;
+        }
         // 1. Pop from local deque (LIFO — cache-friendly).
         if let Some(ptr) = local.pop() {
             activate_actor(ptr.cast::<HewActor>());

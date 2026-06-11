@@ -42,6 +42,7 @@ permissions:
 
 env:
   LLVM_VERSION: "22"
+  LLVM_FULL_VERSION: "22.1.5"
   # Resolve tag from push event or manual dispatch input
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -72,7 +73,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -93,6 +94,19 @@ jobs:
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+          # The brew llvm bottle links libz3.dylib into its static libraries'
+          # dependency set; hew never calls z3 (clang static-analyzer only).
+          # dead_strip_dylibs drops load commands with no referenced symbols,
+          # keeping the shipped binaries on system dylibs only (the
+          # verify-macos-binary.sh gate enforces this).
+          echo "RUSTFLAGS=-C link-arg=-Wl,-dead_strip_dylibs" >> "$GITHUB_ENV"
+
+      - name: Use prebuilt aws-lc assembly (Windows)
+        if: startsWith(matrix.target, 'windows')
+        # aws-lc-sys wants NASM on windows-msvc; the documented CI escape uses
+        # the crate's pregenerated assembly objects — no toolchain dependency.
+        shell: bash
+        run: echo "AWS_LC_SYS_PREBUILT_NASM=1" >> "$GITHUB_ENV"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -109,8 +123,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v2"
-          $asset        = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v3"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
 
           # Fail fast if the toolchain release is not published yet.
           # Run prebuild-llvm.yml to publish it before retrying the release.
@@ -147,7 +161,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
           gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
@@ -159,7 +173,7 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v2.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
           # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"
@@ -233,7 +247,6 @@ jobs:
       # ── Rust builds ─────────────────────────────────────────────────────
 
       - name: Build hew, adze, and hew-lsp
-        env:
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -555,29 +568,20 @@ jobs:
             ninja-build pkg-config wget xz-utils \
             libssl-dev zlib1g-dev libzstd-dev
 
-          mkdir -p /etc/apt/keyrings
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${{ env.LLVM_VERSION }} main" \
-            > /etc/apt/sources.list.d/llvm.list
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            clang-${{ env.LLVM_VERSION }} \
-            lld-${{ env.LLVM_VERSION }}
-
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Configure LLVM toolchain
-        run: |
-          {
-            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
-            echo "CC=clang-${{ env.LLVM_VERSION }}"
-            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
-          } >> "$GITHUB_ENV"
+      - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
+        # Official upstream tarball via the pinned setup-llvm action — the
+        # same toolchain the release gate proved. The apt.llvm.org packages
+        # do not ship libPolly.a, which llvm-sys links statically. The
+        # official binaries run on the ubuntu:22.04 (glibc 2.35) build
+        # container, preserving the 22.04+ artifact baseline.
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -598,7 +602,6 @@ jobs:
             release-${{ matrix.target }}-jammy-cargo-
 
       - name: Build hew, adze, and hew-lsp
-        env:
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -694,7 +697,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -844,7 +847,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
     needs: build-linux
-    if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
+    # rpm Version and Arch pkgver forbid hyphens, so a -rcN tag cannot build
+    # distro packages; release candidates validate via the tarballs instead
+    # and packages ship with the final tag.
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.ref_name, '-rc') }}
     strategy:
       fail-fast: false
       matrix:
@@ -860,7 +866,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -938,7 +944,7 @@ jobs:
     if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -976,7 +982,7 @@ jobs:
     # package, and clean-room validation jobs. FreeBSD remains a documented
     # tier-2 optional artifact, and Alpine/musl assets are deferred until the
     # llvm-alpine:22 toolchain is repaired.
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.linux-packages.result == 'success' && needs.docker-clean-room-test.result == 'success' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && (needs.linux-packages.result == 'success' || needs.linux-packages.result == 'skipped') && needs.docker-clean-room-test.result == 'success' }}
     permissions:
       contents: write   # create/update the GitHub Release and upload release assets
     steps:
@@ -1019,6 +1025,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           generate_release_notes: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           files: |
             artifacts/hew-v*-*.tar.gz
             artifacts/hew-v*-*.zip
@@ -1041,7 +1048,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 

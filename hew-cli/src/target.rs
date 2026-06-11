@@ -208,6 +208,9 @@ impl TargetSpec {
                     "-lbcrypt",
                     "-lntdll",
                     "-ladvapi32",
+                    // rustls-platform-verifier in the embedded runtime walks
+                    // the Windows certificate store (CertOpenStore et al.).
+                    "-lcrypt32",
                 ],
                 needs_darwin_sdk: false,
                 // Clang defaults to the static CRT (libcmt) but the Rust-compiled
@@ -923,6 +926,7 @@ mod tests {
         assert!(libs.contains(&"-lbcrypt"));
         assert!(libs.contains(&"-lntdll"));
         assert!(libs.contains(&"-ladvapi32"));
+        assert!(libs.contains(&"-lcrypt32"));
     }
 
     #[test]

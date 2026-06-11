@@ -32,7 +32,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       playground: ${{ steps.filter.outputs.playground }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -202,7 +202,7 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install build tools
@@ -337,7 +337,7 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy coverage work while satisfying the required check."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: env.RUN_CODE_PATH == 'true'
 
       - uses: dtolnay/rust-toolchain@stable
@@ -421,7 +421,7 @@ jobs:
         run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
         shell: pwsh
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -487,7 +487,7 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: env.RUN_CODE_PATH == 'true'
 
       - uses: dtolnay/rust-toolchain@stable

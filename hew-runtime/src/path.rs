@@ -393,9 +393,11 @@ mod tests {
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was returned by hew_path_absolute.
         unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+                                                   // Absoluteness is platform-shaped: POSIX roots at '/', Windows at a
+                                                   // drive prefix. Assert via the platform's own notion, not a literal.
         assert!(
-            s.starts_with('/'),
-            "absolute path must start with /; got {s}"
+            std::path::Path::new(&s).is_absolute(),
+            "absolute path must be platform-absolute; got {s}"
         );
     }
 
@@ -408,6 +410,7 @@ mod tests {
 
     // ── hew_glob_* ──────────────────────────────────────────────────────
 
+    #[cfg(target_family = "unix")]
     #[test]
     fn glob_returns_non_null_for_matching_pattern() {
         let dir = test_dir("glob_match");
@@ -427,6 +430,31 @@ mod tests {
         // SAFETY: p0 is a valid NUL-terminated C string from str_to_malloc.
         unsafe { crate::cabi::free_cstring(p0) }; // CSTRING-FREE: str-open
                                                   // SAFETY: res is a live HewGlobResult.
+        unsafe { hew_glob_free(res) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Pins the non-unix SHIM in glob_expand: matching files exist, but the
+    // unimplemented platform returns an empty result AND records the gap in
+    // last_error (fail-closed: diagnosable, never a fabricated "no matches").
+    #[cfg(not(target_family = "unix"))]
+    #[test]
+    fn glob_unsupported_platform_returns_empty_and_records_error() {
+        let dir = test_dir("glob_match");
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+        let pattern = format!("{}/*.txt", dir.to_str().unwrap());
+        let cp = CString::new(pattern).unwrap();
+        // SAFETY: cp is a valid NUL-terminated C string.
+        let res = unsafe { hew_glob(cp.as_ptr()) };
+        assert!(!res.is_null());
+        // SAFETY: res is a live HewGlobResult.
+        assert_eq!(unsafe { hew_glob_count(res) }, 0);
+        let err = crate::hew_last_error();
+        assert!(!err.is_null());
+        // SAFETY: hew_last_error returns a valid NUL-terminated C string.
+        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
+        assert!(msg.contains("glob expansion is not implemented"));
+        // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
         let _ = std::fs::remove_dir_all(&dir);
     }

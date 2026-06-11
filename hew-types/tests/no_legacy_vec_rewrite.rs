@@ -16,7 +16,11 @@ use std::path::PathBuf;
 fn methods_source() -> String {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("src/check/methods.rs");
-    fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+    let source =
+        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    // The end-of-body scan keys on bare-LF line endings; a CRLF checkout
+    // (Windows autocrlf) would otherwise never match the closing brace.
+    source.replace("\r\n", "\n")
 }
 
 fn extract_check_vec_method_body(source: &str) -> &str {

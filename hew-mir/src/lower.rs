@@ -16917,9 +16917,23 @@ impl Builder {
                     // from a runtime symbol name.
                     let recv_place = self.lower_value(receiver)?;
                     let receiver_ty = self.subst_ty(&receiver.ty);
+                    // Dispatch on the typed builtin discriminator (with the
+                    // short-name fallback): the name string is `"Receiver"`
+                    // for a locally constructed handle but module-qualified
+                    // (`"channel.Receiver"`) for an annotated parameter, and
+                    // the bare-name compare silently fell through to the Unit
+                    // witness. Mirrors `select_arm_binding_ty` in
+                    // `hew-hir/src/lower.rs`.
                     let elem = match receiver_ty {
-                        ResolvedTy::Named { name, mut args, .. }
-                            if name == "Receiver" && args.len() == 1 =>
+                        ResolvedTy::Named {
+                            name,
+                            mut args,
+                            builtin,
+                            ..
+                        } if args.len() == 1
+                            && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
+                                || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
+                                    == "Receiver") =>
                         {
                             args.remove(0)
                         }

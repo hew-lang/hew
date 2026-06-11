@@ -11733,10 +11733,23 @@ impl LowerCtx {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
                 // The element type comes from the checker-resolved
-                // `Receiver<T>` handle type.
+                // `Receiver<T>` handle type. Dispatch on the typed builtin
+                // discriminator (with the short-name fallback) — the name
+                // string is `"Receiver"` for a locally constructed handle but
+                // module-qualified (`"channel.Receiver"`) for an annotated
+                // parameter, and the bare-name compare silently produced
+                // `Option<Unit>` for the latter (surfacing later as a D10
+                // emitter refusal).
                 let elem = match &receiver.ty {
-                    ResolvedTy::Named { name, args, .. }
-                        if name == "Receiver" && args.len() == 1 =>
+                    ResolvedTy::Named {
+                        name,
+                        args,
+                        builtin,
+                        ..
+                    } if args.len() == 1
+                        && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
+                            || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
+                                == "Receiver") =>
                     {
                         args[0].clone()
                     }

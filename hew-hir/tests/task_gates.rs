@@ -366,6 +366,35 @@ fn await_unit_task_accepted() {
 }
 
 #[test]
+fn value_await_in_let_rejected_fail_closed() {
+    // HEW-SPEC-2026 §4.3 value resolution (`let v = await x;` for a
+    // Task<i64> fork binding) is not wired yet: task results have no
+    // result-propagation substrate (wrapper discards the callee return).
+    // The let-value await must refuse with a clear AwaitOutOfPosition
+    // diagnostic — never bind a fabricated value.
+    let source = r"
+        fn compute() -> i64 { 42 }
+        fn main() {
+            scope {
+                fork x = compute();
+                let v = await x;
+                let _ = v;
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_let_value_reject = output.diagnostics.iter().any(|d| {
+        matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition) && d.note.contains("let-value")
+    });
+    assert!(
+        has_let_value_reject,
+        "value await in let position must fail closed; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn await_expression_parses() {
     // Ensure await expressions are parsed correctly
     let source = r"

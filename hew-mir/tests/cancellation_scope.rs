@@ -274,6 +274,42 @@ fn fork_nonunit_arg_bearing_callee_fails_closed() {
 }
 
 #[test]
+fn fork_value_task_statement_await_fails_closed() {
+    // Value resolution (`await x` for Task<i64>) has no result-propagation
+    // substrate yet — the task wrapper discards the callee return. The MIR
+    // await site must refuse (NotYetImplemented) rather than silently
+    // joining and dropping the value on the floor as if it were unit.
+    let source = r"
+        fn compute() -> i64 {
+            42
+        }
+
+        actor _Driver {
+            receive fn drive() {
+                scope {
+                    fork x = compute();
+                    await x;
+                };
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn _Driver;
+            d.drive();
+            0
+        }
+    ";
+    let mir = lower_clean_to_mir(source);
+    assert!(
+        mir.diagnostics.iter().any(|d| d
+            .note
+            .contains("await lowering currently supports unit tasks only")),
+        "value-task await must fail closed at the MIR await site; diagnostics: {:#?}",
+        mir.diagnostics
+    );
+}
+
+#[test]
 fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
     let source = r"
         fn long_op() {

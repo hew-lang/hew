@@ -500,3 +500,66 @@ fn main() {
          got stdout: {stdout}"
     );
 }
+
+/// `supervisor_stop` on a supervisor with an arg-initialized stateful child
+/// must tear down cleanly. Regression pin for the state-drop double free:
+/// the synthesized `__hew_state_drop_<Actor>` callback freed the state
+/// wrapper itself, but every runtime consumer (`free_actor_resources_with_options`,
+/// `InternalChildSpec::drop`) frees the wrapper AFTER invoking the callback —
+/// the stop path crashed with SIGTRAP (`pointer being freed was not
+/// allocated`) after printing correct output.
+///
+/// Green condition: exit 0 AND the post-stop marker reaches stdout. The
+/// poisoned-allocator triple makes a survived double free deterministic on
+/// macOS instead of silent; the env vars are inert elsewhere.
+#[test]
+fn supervisor_stop_with_stateful_child_exits_cleanly() {
+    require_codegen();
+
+    let source = r#"actor Counter {
+    var count: i64 = 0;
+    receive fn increment() {
+        count = count + 1;
+        println(f"Count: {count}");
+    }
+}
+supervisor CounterGroup {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child c1: Counter(count: 0) restart: permanent;
+    child c2: Counter(count: 0) restart: permanent;
+}
+fn main() {
+    let sup = spawn CounterGroup;
+    sup.c1.increment();
+    sup.c2.increment();
+    sleep_ms(50);
+    supervisor_stop(sup);
+    println("Stopped");
+}
+"#;
+
+    let (_dir, path) = write_fixture(source);
+
+    let output = Command::new(hew_binary())
+        .args(["run", path.to_str().unwrap()])
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("hew binary must run");
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        output.status.success(),
+        "supervisor_stop with stateful children must exit 0 (state-drop \
+         double-free regression); stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Stopped"),
+        "post-stop marker must reach stdout (process must survive teardown); \
+         got stdout: {stdout}"
+    );
+}

@@ -145,7 +145,8 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
 // ─── Tests ──────────────────────────────────────────────────────────────
 
 /// Counter actor: single `i64` field — entirely BitCopy. Clone body is
-/// just wholesale memcpy + return; drop body is just free.
+/// just wholesale memcpy + return; drop body is a no-op (fields-only
+/// contract — the runtime frees the wrapper).
 #[test]
 fn state_clone_counter_bitcopy_only_emits_wholesale_memcpy() {
     let counter = classified_actor(
@@ -179,9 +180,21 @@ fn state_clone_counter_bitcopy_only_emits_wholesale_memcpy() {
         ir.contains("llvm.memcpy"),
         "expected wholesale memcpy in clone body; IR:\n{ir}"
     );
+    // Fields-only drop contract: the wrapper allocation is freed by the
+    // runtime consumers (actor free / supervisor spec drop) AFTER the
+    // callback returns. A `free` inside the drop body double-frees on
+    // `supervisor_stop` of arg-initialized stateful children.
+    let drop_start = ir
+        .find("define void @__hew_state_drop_Counter(")
+        .expect("drop fn must exist");
+    let drop_end = ir[drop_start..]
+        .find("\n}")
+        .map(|p| drop_start + p)
+        .unwrap_or(ir.len());
+    let drop_body = &ir[drop_start..drop_end];
     assert!(
-        ir.contains("@free("),
-        "expected free call in drop body; IR:\n{ir}"
+        !drop_body.contains("@free("),
+        "drop body must NOT free the wrapper (runtime owns it); drop body:\n{drop_body}"
     );
     // No per-field clone helpers should appear for a BitCopy-only actor.
     // We don't assert absence of `@hew_string_clone` because other parts
@@ -513,8 +526,9 @@ fn state_clone_connection_actor_returns_null_up_front() {
         body.contains("ret ptr null"),
         "Connection actor clone must return null up front; body:\n{body}"
     );
-    // Drop body for Connection actor: Connection field is a no-op at
-    // drop; the only non-no-op work is freeing the wrapper.
+    // Drop body for Connection actor: Connection field is a no-op at drop,
+    // and under the fields-only contract the wrapper is freed by the runtime
+    // consumers — so the whole drop body is a guarded no-op.
     let drop_start = ir
         .find("define void @__hew_state_drop_NetReader(")
         .expect("drop fn must exist");
@@ -524,8 +538,8 @@ fn state_clone_connection_actor_returns_null_up_front() {
         .unwrap_or(ir.len());
     let drop_body = &ir[drop_start..drop_end];
     assert!(
-        drop_body.contains("@free"),
-        "Connection actor drop must still free wrapper; body:\n{drop_body}"
+        !drop_body.contains("@free"),
+        "Connection actor drop must NOT free the wrapper (runtime owns it); body:\n{drop_body}"
     );
 }
 

@@ -8669,10 +8669,16 @@ fn emit_field_drop_step<'ctx>(
 }
 
 /// Emit `__hew_state_drop_<Actor>` body. Reverse-order drops every non-
-/// BitCopy field, then `free(state)`. Null-tolerant entry guard.
-/// Idempotent against double-call (the wrapper free races are guarded
-/// by the runtime's `terminate_called` single-fire bit at
-/// `hew-runtime/src/actor.rs:786-791`).
+/// BitCopy field. Null-tolerant entry guard.
+///
+/// Contract: fields-only. The wrapper allocation is owned and freed by the
+/// runtime at every consumer — `free_actor_resources_with_options`
+/// (actor.rs, native and wasm) and `InternalChildSpec::drop`
+/// (supervisor.rs) each call `libc::free` on the wrapper immediately after
+/// invoking this callback. Emitting `free(state)` here double-frees on
+/// `supervisor_stop` of arg-initialized stateful children. (The lambda-actor
+/// `__hew_lambda_state_drop_*` family has the opposite, wrapper-owning
+/// contract and is synthesized separately.)
 fn emit_actor_state_drop_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -8747,10 +8753,6 @@ fn emit_actor_state_drop_body<'ctx>(
             kind,
         )?;
     }
-    let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
-    builder
-        .build_call(free_fn, &[state.into()], "free_wrapper")
-        .llvm_ctx("drop free wrapper")?;
     builder
         .build_unconditional_branch(done_bb)
         .llvm_ctx("drop done branch")?;

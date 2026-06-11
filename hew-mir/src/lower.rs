@@ -8266,10 +8266,10 @@ impl Builder {
                 self.lower_scope_deadline(duration, body, expr.site)
             }
             HirExprKind::AwaitTask {
+                binding_name,
                 binding_id,
                 output_ty,
-                ..
-            } => self.lower_await_task(*binding_id, output_ty, expr.site),
+            } => self.lower_await_task(binding_name, *binding_id, output_ty, expr.site),
             HirExprKind::Select(select) => self.lower_select(select, &expr.ty, expr.site),
             HirExprKind::Join(join) => self.lower_join(join, &expr.ty, expr.site),
             HirExprKind::SpawnLambdaActor { .. } => {
@@ -15167,6 +15167,7 @@ impl Builder {
 
     fn lower_await_task(
         &mut self,
+        binding_name: &str,
         binding_id: BindingId,
         output_ty: &ResolvedTy,
         site: hew_hir::SiteId,
@@ -15194,6 +15195,18 @@ impl Builder {
             });
             return None;
         };
+        // `await t` consumes the linear task handle. Record the consume fact
+        // so the dataflow MustConsume exit check sees the handle as used and
+        // a second `await t` reports UseAfterConsume. Mirrors the
+        // `BindingRef { intent: Consume }` path in `lower_value`.
+        self.statements.push(MirStatement::Use {
+            binding: binding_id,
+            name: binding_name.to_string(),
+            site,
+            ty: ResolvedTy::Task(Box::new(output_ty.clone())),
+            intent: IntentKind::Consume,
+        });
+        self.mark_binding_moved(binding_id);
         self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
         self.instructions.push(Instr::UnitLit { dest: unit_place });

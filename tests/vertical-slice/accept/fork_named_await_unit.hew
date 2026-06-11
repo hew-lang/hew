@@ -1,0 +1,32 @@
+// Accept fixture (TI-2 end to end): `fork name = call();` binds a Task<()>
+// handle inside a scope{} body and `await name` joins it. The ask-shaped
+// `go()` reply synchronizes main with the handler so the two println lines
+// are fully ordered: `await t` happens-before "scope done", and the ask
+// reply happens-before process exit.
+//
+// Harness verb: compile + run (exit 0)
+// Expected stdout: see fork_named_await_unit.expected
+fn ping() {
+    println("ping ran");
+}
+
+actor Driver {
+    receive fn go() -> i64 {
+        scope {
+            fork t = ping();
+            await t;
+        }
+        println("scope done");
+        7
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    match await d.go() {
+        // The handler replies 7 after the scope joins; exit 0 on the
+        // expected reply, non-zero otherwise.
+        Ok(v) => v - 7,
+        Err(_e) => 1,
+    }
+}

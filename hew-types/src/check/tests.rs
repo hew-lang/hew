@@ -19353,9 +19353,9 @@ mod task_type_surface_rules {
 
     #[test]
     fn scope_fork_binding_infers_task_and_await_consumes_it() {
-        // `scope { fork task = compute(); await task; }` is the new structured
+        // `scope { fork task = compute(); await task; }` is the structured
         // surface for spawning a child task and joining it; it must type-check
-        // without emitting TaskNotNameable.
+        // with no errors at all (the binding types as Task<i64>, await unwraps).
         let output = check_source(
             r"
             fn compute() -> i64 { 42 }
@@ -19368,11 +19368,195 @@ mod task_type_surface_rules {
             ",
         );
         assert!(
-            !output
+            output.errors.is_empty(),
+            "clean scope {{ fork x = call(); await x; }} must check without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_await_yields_callee_return_type() {
+        // `await x` on a fork binding produces the callee's return type:
+        // annotating the await result with the matching type must check clean.
+        let output = check_source(
+            r"
+            fn compute() -> i64 { 42 }
+            fn main() {
+                scope {
+                    fork x = compute();
+                    let v: i64 = await x;
+                    let _ = v;
+                }
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "await of Task<i64> binding must type as i64; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_await_result_type_mismatch_rejected() {
+        // The dual of the accept: annotating the await result with the wrong
+        // type must produce a mismatch — proving the binding really carries
+        // Task<i64>, not Error/Unit.
+        let output = check_source(
+            r"
+            fn compute() -> i64 { 42 }
+            fn main() {
+                scope {
+                    fork x = compute();
+                    let _v: string = await x;
+                }
+            }
+            ",
+        );
+        assert!(
+            !output.errors.is_empty(),
+            "await of Task<i64> bound as string must be a type error"
+        );
+    }
+
+    #[test]
+    fn fork_non_call_rhs_rejected() {
+        // Parity with HIR's ForkChildNotACall gate, raised at check time.
+        let output = check_source(
+            r"
+            fn main() {
+                scope {
+                    fork t = 42;
+                }
+            }
+            ",
+        );
+        assert!(
+            output
                 .errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
-            "clean scope {{ fork x = call(); await x; }} must not emit TaskNotNameable; got: {:#?}",
+                .any(|e| e.message.contains("requires a call expression")),
+            "fork with non-call RHS must be rejected at check time; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_outside_scope_rejected() {
+        let output = check_source(
+            r"
+            fn ping() {}
+            fn main() {
+                fork t = ping();
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("only valid inside a `scope { }` body")),
+            "fork outside scope must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_inside_lambda_in_scope_rejected() {
+        // A lambda body does not inherit the lexical task scope: the closure
+        // may run after the scope has joined, so fork inside it is rejected.
+        let output = check_source(
+            r"
+            fn ping() {}
+            fn main() {
+                scope {
+                    let f = || { fork t = ping(); };
+                    f();
+                }
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("only valid inside a `scope { }` body")),
+            "fork inside a lambda body must be rejected; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_binding_not_visible_after_scope_block() {
+        // The Task binding scopes to the `scope { }` block, exactly like a
+        // `let` declared inside it.
+        let output = check_source(
+            r"
+            fn ping() {}
+            fn main() {
+                scope {
+                    fork t = ping();
+                    await t;
+                }
+                await t;
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
+            "fork binding must not escape the scope block; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_binding_shadows_outer_let_and_outer_survives() {
+        // Inside the scope block the fork binding shadows the outer `t`
+        // (mirroring `let` shadowing); after the block the outer i64 binding
+        // is intact.
+        let output = check_source(
+            r"
+            fn ping() {}
+            fn main() {
+                let t = 1;
+                scope {
+                    fork t = ping();
+                    await t;
+                }
+                let _y: i64 = t;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "fork binding shadowing an outer let must check clean; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn nested_scope_fork_in_inner_scope_accepted() {
+        // task_scope_depth is a counter, not a flag: fork inside a nested
+        // scope body is still in a valid spawn context.
+        let output = check_source(
+            r"
+            fn ping() {}
+            fn main() {
+                scope {
+                    scope {
+                        fork t = ping();
+                        await t;
+                    }
+                }
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "fork inside a nested scope must check clean; got: {:#?}",
             output.errors
         );
     }

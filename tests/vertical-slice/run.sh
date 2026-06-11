@@ -200,15 +200,15 @@ grep -q 'Blocking channel receive operations are not supported on WASM32' "${rej
 
 # Reject: `fork child = worker(42)` inside a machine state entry block must
 # be rejected before codegen. Current end-to-end compilation stops at the
-# checker-level parser-only gate for `fork name = expr;`; lower-level HIR tests
-# continue to pin the Item::Machine task-gate walker directly.
+# HIR zero-argument spawn gate for `fork name = call(...)`; lower-level HIR
+# tests continue to pin the Item::Machine task-gate walker directly.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/machine_task_gate_fork_args.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected machine_task_gate_fork_args fixture to fail" >&2
   exit 1
 fi
-grep -qF 'parser-only in this build' "${reject_output}"
+grep -qF 'spawned call must have zero arguments' "${reject_output}"
 
 # Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
 # records and `impl Iterator` blocks compile cleanly through the parser and
@@ -454,10 +454,11 @@ grep -q 'JoinBranchNotActorAsk' "${reject_output}"
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/select_recv_guard.hew" >"${accept_output}" 2>&1
 
 # Reject (SELECT ship-3, HEW-SPEC §4.11.1): the task-await arm
-# `<id> from await <expr>` is NOT one of the three sealed select forms. There is
-# no bindable first-class task handle (Task<T> unnameable; fork parser-only), so
-# the checker select-arm gate rejects it at CHECK time with the actor-ask form
-# diagnostic — never a silent lowering, never a late MIR/codegen error.
+# `<id> from await <expr>` is NOT one of the three sealed select forms
+# (Task<T> remains unnameable in annotations even though `fork name = call()`
+# binds typed handles), so the checker select-arm gate rejects it at CHECK
+# time with the actor-ask form diagnostic — never a silent lowering, never a
+# late MIR/codegen error.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/select_arm_await_task_dropped.hew" >"${reject_output}" 2>&1; then
   echo "expected select_arm_await_task_dropped fixture to fail" >&2
   exit 1
@@ -878,13 +879,20 @@ grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
 grep -qF 'generic free-function task spawning' "${reject_output}"
 
 # Reject: `fork name = expr` outside any scope{} body.
-# The type checker rejects this before HIR lowering — the construct is
-# parser-only in the current build.
+# The type checker rejects this before HIR lowering — `fork` child bindings
+# only have a spawn context inside a `scope { }` body.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/fork_outside_scope.hew" >"${reject_output}" 2>&1; then
   echo "expected fork-outside-scope fixture to fail" >&2
   exit 1
 fi
-grep -qF 'parser-only in this build' "${reject_output}"
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic text, not a command substitution.
+grep -qF 'only valid inside a `scope { }` body' "${reject_output}"
+
+# Accept (TI-2 end to end): `fork name = call();` binds Task<()> inside a
+# scope body; `await name` joins the child before the scope exits. The
+# ask-shaped reply orders both println lines and the process exit.
+run_accept_expect_stdout "fork_named_await_unit"
 
 # Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
 # Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
@@ -1844,16 +1852,16 @@ if "${HEW}" compile \
 fi
 grep -q 'on a non-await expression' "${reject_output}"
 
-# Reject (fail-closed, deferred to v0.6): a deadline on a TASK-await. The named
-# fork surface is parser-only in this build, so the form is doubly fail-closed at
-# compile time.
+# Reject (fail-closed, deferred to v0.6): a deadline on a TASK-await. The
+# `fork t = work()` binding type-checks; the HIR await-deadline gate rejects
+# the `| after d` clause on the task-await at compile time.
 if "${HEW}" compile \
     "${ROOT}/tests/vertical-slice/reject/await_task_deadline_deferred.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected await_task_deadline_deferred fixture to fail" >&2
   exit 1
 fi
-grep -q 'parser-only in this build' "${reject_output}"
+grep -q 'task-await and suspending-closure deadlines are deferred' "${reject_output}"
 
 # Accept (NEW-7 — recv-deadline ok): item arrives before deadline → Ok(Some(v)) → exit 42.
 compile_accept "await_recv_deadline_ok"

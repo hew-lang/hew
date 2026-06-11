@@ -565,3 +565,61 @@ fn machine_snapshot_select_watch_matches_state_variants() {
         "open\nfailed: peer reset\nwatch closed\n",
     );
 }
+
+/// `Vec<machine>` is fail-closed at compile time: machine values are valid
+/// as channel/queue elements but have no Vec-construction thunk path today.
+/// Admitting them into Vec would compile and then panic at runtime (the
+/// owned-element admission widening for channels must not bleed into Vec);
+/// this pin ensures the compile-time refusal and named diagnostic survive.
+/// The machine has a heap-carrying state variant (string payload) so it is
+/// not Copy and reaches the admissibility gate.
+#[test]
+fn vec_machine_element_refuses_at_compile_time() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("vec_machine.hew");
+    std::fs::write(
+        &source,
+        "machine Conn {\n\
+         \x20   events {\n\
+         \x20       Connect;\n\
+         \x20       Fail { reason: string; }\n\
+         \x20   }\n\
+         \x20   state Idle;\n\
+         \x20   state Open;\n\
+         \x20   state Failed { reason: string; }\n\
+         \x20   on Connect: Idle => Open { Open }\n\
+         \x20   on Fail: Open => Failed { Conn::Failed { reason: event.reason } }\n\
+         \x20   on Connect: _ => _ { state }\n\
+         \x20   on Fail: _ => _ { state }\n\
+         }\n\
+         \n\
+         actor Owner {\n\
+         \x20   receive fn run() {\n\
+         \x20       var conns: Vec<Conn> = [];\n\
+         \x20       var c: Conn = Conn::Idle;\n\
+         \x20       conns.push(c);\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let _ = spawn Owner;\n\
+         \x20   sleep_ms(20);\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+
+    assert!(
+        !output.status.success(),
+        "Vec<machine> must be refused at compile time; it compiled:\n{}",
+        support::describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("machine values cannot be `Vec` elements"),
+        "expected the named machine-Vec refusal diagnostic; got:\n{stderr}",
+    );
+}

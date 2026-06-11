@@ -63,6 +63,127 @@ fn transition_watch_baseline_prints_transition() {
     run_machine_example("transition_watch_baseline", "Created -> Initialising\n");
 }
 
+/// Write `source` to a tempdir, `hew run` it under the poisoned-allocator
+/// pair (`MallocScribble`/`MallocPreScribble`), and assert exit 0 with
+/// exactly `expected_stdout`. A producer-side double release of an arm
+/// payload would crash under the scribbled allocator before stdout settles.
+fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let path = dir.path().join(format!("{label}.hew"));
+    std::fs::write(&path, source).unwrap();
+
+    let mut command = Command::new(hew_binary());
+    command
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1");
+    let output = support::run_bounded_command(command, label.to_string());
+
+    assert!(
+        output.status.success(),
+        "{label} should exit 0 under MallocScribble; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        expected_stdout,
+        "{label} produced unexpected stdout",
+    );
+}
+
+/// Record channel element received through the sealed select arm, with the
+/// arm body's field reads spanning Call-terminated blocks (the f-string).
+/// Pins the select-arm init-check CFG fix end to end: before the arm-body
+/// edges landed this refused with a false `InitialisedBeforeUse`.
+#[test]
+fn select_record_element_cross_block_arm_runs_clean() {
+    run_inline_scribbled(
+        "select_record_element",
+        "import std::channel::channel;\n\
+         \n\
+         record Transition {\n\
+         \x20   from_state: string,\n\
+         \x20   to_state: string\n\
+         }\n\
+         \n\
+         actor Combined {\n\
+         \x20   receive fn run() {\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       tx.close();\n\
+         \x20       select {\n\
+         \x20           t from rx.recv() => {\n\
+         \x20               match t {\n\
+         \x20                   Some(tr) => println(f\"{tr.from_state} -> {tr.to_state}\"),\n\
+         \x20                   None => println(\"closed\"),\n\
+         \x20               }\n\
+         \x20           },\n\
+         \x20           after 1s => println(\"timeout\"),\n\
+         \x20       };\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let c = spawn Combined;\n\
+         \x20   c.run();\n\
+         \x20   sleep_ms(200);\n\
+         }\n",
+        "Created -> Initialising\n",
+    );
+}
+
+/// Heap-payload enum channel element through the sealed select arm. Pins
+/// the queue-carrier element thunk seeding: before `Sender`/`Receiver`/
+/// `Stream` elements were seeded like `Vec` elements, the owned-element
+/// witness referenced `__hew_enum_{clone,drop}_inplace_*` thunks with no
+/// body and llvm-verify refused the module.
+#[test]
+fn select_enum_element_thunks_resolve_and_run_clean() {
+    run_inline_scribbled(
+        "select_enum_element",
+        "import std::channel::channel;\n\
+         \n\
+         enum Transition {\n\
+         \x20   Moved { from_state: string, to_state: string };\n\
+         }\n\
+         \n\
+         actor Combined {\n\
+         \x20   receive fn run() {\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       tx.send(Transition::Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
+         \x20       tx.close();\n\
+         \x20       select {\n\
+         \x20           t from rx.recv() => {\n\
+         \x20               match t {\n\
+         \x20                   Some(t2) => {\n\
+         \x20                       match t2 {\n\
+         \x20                           Transition::Moved { from_state, to_state } => println(f\"{from_state} -> {to_state}\"),\n\
+         \x20                       }\n\
+         \x20                   },\n\
+         \x20                   None => println(\"closed\"),\n\
+         \x20               }\n\
+         \x20           },\n\
+         \x20           after 1s => println(\"timeout\"),\n\
+         \x20       };\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let c = spawn Combined;\n\
+         \x20   c.run();\n\
+         \x20   sleep_ms(200);\n\
+         }\n",
+        "Created -> Initialising\n",
+    );
+}
+
 /// A `channel.Receiver<string>` as a receive-fn parameter source. The
 /// cross-actor watch handoff needs this exact shape green.
 fn receiver_param_source() -> &'static str {

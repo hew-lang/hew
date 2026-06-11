@@ -32,16 +32,21 @@ COPY --from=llvm /opt/llvm-22 /opt/llvm-22
 # gcc: crtbeginS.o and friends — clang links feature-test binaries against
 #      the GCC runtime files on Alpine (aws-lc-sys build probes need them)
 # linux-headers: linux/random.h for the aws-lc-sys getrandom feature probe
+# libffi-dev: llvm-config --system-libs includes -lffi; the static-pie link
+#      needs Alpine's libffi.a
 # zlib-static/zstd-static: compression libs for LLVM (static)
 RUN apk add --no-cache \
-    musl-dev clang gcc linux-headers \
+    musl-dev clang gcc linux-headers libffi-dev \
     zlib-dev zlib-static zstd-dev zstd-static
 
 ENV LLVM_PREFIX=/opt/llvm-22
 ENV LLVM_SYS_221_PREFIX=/opt/llvm-22
 ENV PATH=/opt/llvm-22/bin:$PATH
-ENV CC=clang
-ENV CXX=clang++
+# gcc, not clang: clang targeting x86_64-unknown-linux-musl does not search
+# Alpine's gcc runtime dir (crtbeginS.o, libgcc), which breaks the aws-lc-sys
+# feature-probe links; Alpine's own gcc handles musl natively.
+ENV CC=gcc
+ENV CXX=g++
 
 WORKDIR /src
 COPY . .

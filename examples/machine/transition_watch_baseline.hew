@@ -9,6 +9,7 @@
 // split (channel handles travelling through actor messages) builds on
 // the same shape.
 import std::concurrency::lifecycle;
+
 import std::channel::channel;
 
 actor Combined {

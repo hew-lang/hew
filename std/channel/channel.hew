@@ -21,8 +21,10 @@
 //!   rx.recv() => ... }`.
 //!
 //! Supported element types: primitives (`i64`, `f64`, `bool`, `char`, ...),
-//! `string`, `bytes`, and value records/enums/tuples. Container elements
-//! (`Vec<T>`, `HashMap<K, V>`) and handle types are not supported yet.
+//! `string`, `bytes`, value records/enums/tuples, and monomorphic machine
+//! values (state snapshots — generic machine instantiations are refused).
+//! Container elements (`Vec<T>`, `HashMap<K, V>`) and handle types are not
+//! supported yet.
 //!
 //! # Examples
 //!

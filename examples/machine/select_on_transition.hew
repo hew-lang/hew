@@ -1,0 +1,83 @@
+// Selecting on machine transitions across actors.
+//
+// Machines are value types — there is no shared machine instance an
+// observer could subscribe to. The supported observation pattern is the
+// notification channel: the OWNER steps its machine and publishes each
+// observed transition into a `Sender<Transition>`; the OBSERVER receives
+// the channel end through an actor message (local handle transfer) and
+// selects on the receive arm with an `after` safety net. Channel close
+// (`None`) is the cancellation-clean teardown. Replay semantics are
+// transitions-after-subscribe; the owner sends the current state as a
+// self-transition at attach so a watcher joining an already-started
+// machine fires immediately.
+import std::concurrency::lifecycle;
+
+import std::channel::channel;
+
+/// One observed transition. Field names carry the `_state` suffix
+/// because `from` is a hard keyword (the select arm binder).
+record Transition {
+    from_state: string,
+    to_state: string
+}
+
+actor Owner {
+    var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;
+    receive fn drive(tx: channel.Sender<Transition>) {
+
+        // Attach snapshot: a self-transition naming the current state.
+        let current = lc.state_name();
+        tx.send(Transition { from_state: current, to_state: lc.state_name() });
+        let before_init = lc.state_name();
+        lc.step(Initialise);
+        if before_init != lc.state_name() {
+            tx.send(Transition { from_state: before_init, to_state: lc.state_name() });
+        }
+        let before_start = lc.state_name();
+        lc.step(lifecycle.LifecycleEvent::Started { handle: 7 });
+        if before_start != lc.state_name() {
+            tx.send(Transition { from_state: before_start, to_state: lc.state_name() });
+        }
+        tx.close();
+    }
+}
+
+actor Observer {
+    receive fn watch(rx: channel.Receiver<Transition>) {
+        var waiting = true;
+        while waiting {
+            select {
+                t from rx.recv() => {
+                    match t {
+                        Some(tr) => {
+                            println(f"{tr.from_state} -> {tr.to_state}");
+                            match tr.to_state {
+                                "Running" => println("observer: child is up"),
+                                "Faulted" => println("observer: child faulted"),
+                                _ => {},
+                            }
+                        },
+                        None => {
+                            println("watch closed");
+                            waiting = false;
+                        },
+                    }
+                },
+                after 2s => {
+                    println("observer: watch timed out");
+                    waiting = false;
+                },
+            };
+        }
+        rx.close();
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);
+    let obs = spawn Observer;
+    obs.watch(rx);
+    let owner = spawn Owner;
+    owner.drive(tx);
+    sleep_ms(300);
+}

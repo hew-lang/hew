@@ -51,7 +51,7 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         test_name: "record_types",
-        source_rel: "examples/playground/types/wire_types.hew",
+        source_rel: "examples/playground/types/record_types.hew",
         accepted_divergences: &[],
     },
     ParityCase {

@@ -3,12 +3,8 @@
 
 actor Worker {
     let id: i64;
-
     receive fn work(x: i64) -> i64 {
-        print("Worker ");
-        print(id);
-        print(" processing ");
-        println(x);
+        println(f"Worker {id} processing {x}");
         x
     }
 }
@@ -22,16 +18,22 @@ supervisor WorkerPool {
 }
 
 fn main() {
-    let sup = spawn WorkerPool;
-    let w1 = sup.w1;
-    let w2 = sup.w2;
-    let r1 = match await w1.work(10) {
+    let workers = spawn WorkerPool;
+    // Access supervised children by their declared names.
+    let w1 = workers.w1;
+    let w2 = workers.w2;
+    // Expression-position match (sandbox bytecode does not yet admit
+    // statement-position match); -1 marks a failed ask.
+    let a = match await w1.work(10) {
         Ok(v) => v,
-        Err(_e) => 0,
+        Err(_) => -1,
     };
-    let r2 = match await w2.work(20) {
+    let b = match await w2.work(20) {
         Ok(v) => v,
-        Err(_e) => 0,
+        Err(_) => -1,
     };
-    println(f"Results: {r1} + {r2}");
+    println(f"w1 -> {a}");
+    println(f"w2 -> {b}");
 }
+// supervisor_stop is not in the sandbox profile allowlist; the pool
+// winds down with the program here.

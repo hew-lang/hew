@@ -7,14 +7,13 @@ type Point {
 }
 
 fn distance_from_origin(p: Point) -> i64 {
-    let x = p.x;
-    let y = p.y;
-    let x2 = x * x;
-    let y2 = y * y;
-    x2 + y2
+    p.x * p.x + p.y * p.y
 }
 
 fn quadrant(p: Point) -> string {
+    // Nested single-condition ifs: a guarded match (or a && chain) reads
+    // better, but neither is sandbox-profile-admitted yet, and this example
+    // runs in the browser playground.
     let x = p.x;
     let y = p.y;
     if x > 0 {
@@ -33,11 +32,9 @@ fn quadrant(p: Point) -> string {
 }
 
 fn main() {
-    let origin = Point { x: 0, y: 0 };
     let a = Point { x: 3, y: 4 };
-    let b = Point { x: 0 - 2, y: 5 };
+    let b = Point { x: -2, y: 5 };
     println(f"d² from origin: {distance_from_origin(a)}");
     println(f"quadrant of a: {quadrant(a)}");
     println(f"quadrant of b: {quadrant(b)}");
-    let _orig = origin;
 }

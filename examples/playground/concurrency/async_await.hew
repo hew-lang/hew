@@ -4,8 +4,7 @@
 actor FibPrinter {
     receive fn print_fib(n: i64) -> i64 {
         let result = fib(n);
-        print("fib(10) = ");
-        println(result);
+        println(f"fib({n}) = {result}");
         result
     }
 }
@@ -20,5 +19,9 @@ fn fib(n: i64) -> i64 {
 
 fn main() {
     let fibber = spawn FibPrinter;
-    await fibber.print_fib(10);
+    let r = await fibber.print_fib(10);
+    match r {
+        Ok(v) => println(f"awaited fib(10) = {v}"),
+        Err(_) => println("ask failed"),
+    }
 }

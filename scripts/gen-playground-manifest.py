@@ -51,6 +51,7 @@ EXAMPLE_ORDER = {
     "types": (
         "collections",
         "pattern_matching",
+        "record_types",
         "wire_types",
         "structural_bounds",
     ),
@@ -96,9 +97,11 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/collections: rewritten to use indexed for-loop (range-based) rather
     # than for-in Vec; sandbox bytecode emission verified via parity test.
     "types/collections": "runnable",
-    # types/wire_types: rewritten from #[wire] struct/enum (profile-rejected) to
-    # plain record types with enum dispatch; all constructs are sandbox-admitted.
-    "types/wire_types": "runnable",
+    # types/record_types: plain record types with enum dispatch (formerly
+    # misnamed wire_types); all constructs are sandbox-admitted. The real
+    # types/wire_types (#[wire] struct) is profile-rejected and takes the
+    # unsupported_native_only default.
+    "types/record_types": "runnable",
     # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
     # to plain record types with conditional dispatch.
     "types/structural_bounds": "runnable",

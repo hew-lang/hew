@@ -143,15 +143,28 @@
     }
   },
   {
-    "id": "types/wire_types",
+    "id": "types/record_types",
     "category": "types",
     "name": "Record Types",
     "description": "Structured record types, enums, and exhaustive pattern matching",
+    "source_path": "types/record_types.hew",
+    "expected_path": "types/record_types.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "types/wire_types",
+    "category": "types",
+    "name": "Wire Types",
+    "description": "Schema-checked serialization contracts with tagged fields",
     "source_path": "types/wire_types.hew",
     "expected_path": "types/wire_types.expected",
     "capabilities": {
       "browser": "analysis-only",
-      "sandbox": "runnable",
+      "sandbox": "unsupported_native_only",
       "wasi": "runnable"
     }
   },

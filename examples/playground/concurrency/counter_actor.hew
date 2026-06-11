@@ -3,23 +3,23 @@
 
 actor Counter {
     var count: i64;
-
     receive fn increment(n: i64) -> i64 {
         count = count + n;
-        print("Count is now: ");
-        println(count);
+        println(f"Count is now: {count}");
         count
     }
 }
 
 fn main() {
     let c = spawn Counter(count: 0);
+    // Statement-position match is not yet sandbox-admitted, so the first
+    // two replies are awaited bare and the last is an expression match
+    // (-1 marks a failed ask).
     await c.increment(5);
     await c.increment(3);
     let total = match await c.increment(12) {
         Ok(v) => v,
-        Err(_e) => 0,
+        Err(_) => -1,
     };
-    print("Final total: ");
-    println(total);
+    println(f"Final total: {total}");
 }

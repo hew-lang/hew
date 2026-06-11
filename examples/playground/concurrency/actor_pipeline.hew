@@ -4,15 +4,26 @@
 actor Doubler {
     receive fn process(n: i64) -> i64 {
         let result = n * 2;
-        print("Result: ");
-        println(result);
+        println(f"Result: {result}");
         result
     }
 }
 
 fn main() {
     let doubler = spawn Doubler;
-    await doubler.process(5);
-    await doubler.process(21);
-    await doubler.process(100);
+    // Expression-position match (sandbox bytecode does not yet admit
+    // statement-position match); -1 marks a failed ask.
+    let a = match await doubler.process(5) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let b = match await doubler.process(21) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let c = match await doubler.process(100) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    println(f"got {a}, {b}, {c}");
 }

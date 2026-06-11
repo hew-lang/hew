@@ -1,3 +1,4 @@
 Worker 1 processing 10
 Worker 2 processing 20
-Results: 10 + 20
+w1 -> 10
+w2 -> 20

@@ -1,33 +1,18 @@
-//! @name Record Types
-//! @description Structured record types, enums, and exhaustive pattern matching
+//! @name Wire Types
+//! @description Schema-checked serialization contracts with tagged fields
 
-type Point {
-    x: i64;
-    y: i64;
-}
-
-type Circle {
-    centre: Point;
-    radius: i64;
-}
-
-enum Shape {
-    Dot(Point);
-    Ring(Circle);
-}
-
-fn area_description(s: Shape) -> string {
-    match s {
-        Dot(_p) => "a single point",
-        Ring(c) => f"a circle with radius {c.radius}",
-    }
+// Wire types are schema-checked serialization contracts. Each field carries
+// an explicit tag (@1, @2, ...) so the binary encoding stays compatible as
+// the schema evolves. Optional fields may be added or omitted across versions.
+#[wire]
+struct UserMessage {
+    name: string @1,
+    age: i32 @2,
+    nickname: string @3 optional,
 }
 
 fn main() {
-    let origin = Point { x: 0, y: 0 };
-    let dot = Dot(origin);
-    println(area_description(dot));
-    let centre = Point { x: 3, y: 4 };
-    let ring = Ring(Circle { centre: centre, radius: 10 });
-    println(area_description(ring));
+    println("Wire types define serialization schemas.");
+    println("Fields have explicit tags (@1, @2) for");
+    println("backwards-compatible binary encoding.");
 }

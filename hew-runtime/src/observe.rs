@@ -61,28 +61,43 @@ static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>
     PoisonSafe::new(None);
 
 #[cfg(not(target_arch = "wasm32"))]
-static DISPATCH_EPOCH: AtomicU64 = AtomicU64::new(0);
+static NEXT_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+static PUBLISHED_DISPATCH_TICKET: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+static DISPATCH_COMPLETION_WATERMARK: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+static DISPATCH_BARRIER_WAITERS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(target_arch = "wasm32"))]
+static DISPATCH_ACTIVE_TICKETS: [AtomicU64; SHARD_COUNT] =
+    [const { AtomicU64::new(0) }; SHARD_COUNT];
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DISPATCH_BARRIER_MUTEX_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(not(target_arch = "wasm32"))]
 static DISPATCH_BARRIER: DispatchBarrier = DispatchBarrier {
-    state: Mutex::new(DispatchBarrierState {
-        opened_epoch: 0,
-        closed_epoch: 0,
-    }),
+    lock: Mutex::new(()),
     cond: Condvar::new(),
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 struct DispatchBarrier {
-    state: Mutex<DispatchBarrierState>,
+    lock: Mutex<()>,
     cond: Condvar,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Clone, Copy)]
-struct DispatchBarrierState {
-    opened_epoch: u64,
-    closed_epoch: u64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ObserveDispatchTicket(u64);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct DispatchBarrierWaiter;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for DispatchBarrierWaiter {
+    fn drop(&mut self) {
+        DISPATCH_BARRIER_WAITERS.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -187,29 +202,112 @@ pub(crate) fn record_actor_turn(duration_ns: u64) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn observe_dispatch_begin() {
-    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
-    state.opened_epoch = state.opened_epoch.saturating_add(1);
+fn dispatch_barrier_lock() -> std::sync::MutexGuard<'static, ()> {
+    #[cfg(test)]
+    DISPATCH_BARRIER_MUTEX_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+    DISPATCH_BARRIER.lock.lock_or_recover()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn observe_dispatch_close() {
-    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
-    if state.closed_epoch < state.opened_epoch {
-        state.closed_epoch = state.closed_epoch.saturating_add(1);
-        DISPATCH_EPOCH.store(state.closed_epoch, Ordering::Release);
+fn publish_dispatch_begin(ticket: u64) {
+    while PUBLISHED_DISPATCH_TICKET
+        .compare_exchange(
+            ticket.saturating_sub(1),
+            ticket,
+            Ordering::Release,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        std::hint::spin_loop();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn computed_dispatch_watermark() -> u64 {
+    let published_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
+    DISPATCH_ACTIVE_TICKETS
+        .iter()
+        .filter_map(|slot| {
+            let ticket = slot.load(Ordering::Acquire);
+            (ticket != 0 && ticket <= published_ticket).then_some(ticket)
+        })
+        .min()
+        .map_or(published_ticket, |ticket| ticket.saturating_sub(1))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn publish_dispatch_watermark() -> u64 {
+    let watermark = computed_dispatch_watermark();
+    let mut current = DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire);
+    while watermark > current {
+        match DISPATCH_COMPLETION_WATERMARK.compare_exchange(
+            current,
+            watermark,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return watermark,
+            Err(actual) => current = actual,
+        }
+    }
+    current
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
+    let ticket = NEXT_DISPATCH_TICKET
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    DISPATCH_ACTIVE_TICKETS[current_shard()].store(ticket, Ordering::Release);
+    publish_dispatch_begin(ticket);
+    ObserveDispatchTicket(ticket)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
+    let shard = current_shard();
+    if DISPATCH_ACTIVE_TICKETS[shard]
+        .compare_exchange(ticket.0, 0, Ordering::Release, Ordering::Relaxed)
+        .is_ok()
+    {
+        return;
+    }
+
+    for slot in &DISPATCH_ACTIVE_TICKETS {
+        if slot
+            .compare_exchange(ticket.0, 0, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+        {
+            return;
+        }
+    }
+
+    debug_assert!(
+        false,
+        "observe dispatch ticket closed without an active slot"
+    );
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn observe_dispatch_close(ticket: ObserveDispatchTicket) {
+    clear_active_dispatch_ticket(ticket);
+    publish_dispatch_watermark();
+
+    if DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) > 0 {
+        let _guard = dispatch_barrier_lock();
         DISPATCH_BARRIER.cond.notify_all();
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn observe_dispatch_attributed() {
-    observe_dispatch_close();
+pub(crate) fn observe_dispatch_attributed(ticket: ObserveDispatchTicket) {
+    observe_dispatch_close(ticket);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn observe_dispatch_abandon() {
-    observe_dispatch_close();
+pub(crate) fn observe_dispatch_abandon(ticket: ObserveDispatchTicket) {
+    observe_dispatch_close(ticket);
 }
 
 pub(crate) fn record_scheduler_park() {
@@ -298,21 +396,30 @@ pub extern "C" fn hew_observe_barrier() -> i64 {
         return OBSERVE_BARRIER_ERR_WORKER_CONTEXT;
     }
 
+    let target_ticket = PUBLISHED_DISPATCH_TICKET.load(Ordering::Acquire);
+    if DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) >= target_ticket {
+        return OBSERVE_BARRIER_OK;
+    }
+
     let deadline = Instant::now() + OBSERVE_BARRIER_TIMEOUT;
-    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
-    let target_epoch = state.opened_epoch;
-    while state.closed_epoch < target_epoch {
+    let mut guard = dispatch_barrier_lock();
+    DISPATCH_BARRIER_WAITERS.fetch_add(1, Ordering::AcqRel);
+    let _waiter = DispatchBarrierWaiter;
+
+    while DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) < target_ticket {
         let now = Instant::now();
         if now >= deadline {
             crate::set_last_error("observe.barrier: timed out after 30 seconds");
             return OBSERVE_BARRIER_ERR_TIMEOUT;
         }
         let remaining = deadline.saturating_duration_since(now);
-        let (next_state, wait_result) = DISPATCH_BARRIER
+        let (next_guard, wait_result) = DISPATCH_BARRIER
             .cond
-            .wait_timeout_or_recover(state, remaining);
-        state = next_state;
-        if wait_result.timed_out() && state.closed_epoch < target_epoch {
+            .wait_timeout_or_recover(guard, remaining);
+        guard = next_guard;
+        if wait_result.timed_out()
+            && DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) < target_ticket
+        {
             crate::set_last_error("observe.barrier: timed out after 30 seconds");
             return OBSERVE_BARRIER_ERR_TIMEOUT;
         }
@@ -742,10 +849,14 @@ pub(crate) fn reset_all() {
     });
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut state = DISPATCH_BARRIER.state.lock_or_recover();
-        state.opened_epoch = 0;
-        state.closed_epoch = 0;
-        DISPATCH_EPOCH.store(0, Ordering::Release);
+        let _guard = dispatch_barrier_lock();
+        NEXT_DISPATCH_TICKET.store(0, Ordering::Release);
+        PUBLISHED_DISPATCH_TICKET.store(0, Ordering::Release);
+        DISPATCH_COMPLETION_WATERMARK.store(0, Ordering::Release);
+        DISPATCH_BARRIER_WAITERS.store(0, Ordering::Release);
+        for slot in &DISPATCH_ACTIVE_TICKETS {
+            slot.store(0, Ordering::Release);
+        }
         DISPATCH_BARRIER.cond.notify_all();
     }
 }
@@ -828,8 +939,9 @@ mod tests {
     fn observe_barrier_returns_immediately_when_already_attributed() {
         let _guard = crate::runtime_test_guard();
         reset_all();
-        observe_dispatch_begin();
-        observe_dispatch_attributed();
+        set_current_worker_shard(0);
+        let ticket = observe_dispatch_begin();
+        observe_dispatch_attributed(ticket);
 
         let started = Instant::now();
         assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
@@ -844,11 +956,12 @@ mod tests {
     fn observe_barrier_wakes_when_concurrent_dispatch_is_attributed() {
         let _guard = crate::runtime_test_guard();
         reset_all();
-        observe_dispatch_begin();
+        set_current_worker_shard(0);
+        let ticket = observe_dispatch_begin();
 
-        let worker = std::thread::spawn(|| {
+        let worker = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(25));
-            observe_dispatch_attributed();
+            observe_dispatch_attributed(ticket);
         });
 
         let started = Instant::now();
@@ -858,6 +971,65 @@ mod tests {
             "barrier should wake on attribution notify"
         );
         worker.join().unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_holds_for_earlier_ticket_when_later_ticket_closes_first() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        set_current_worker_shard(0);
+        let ticket_a = observe_dispatch_begin();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+        let waiter = std::thread::spawn(move || {
+            done_tx.send(hew_observe_barrier()).unwrap();
+        });
+
+        let wait_started = Instant::now();
+        while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) == 0 {
+            assert!(
+                wait_started.elapsed() < Duration::from_secs(1),
+                "barrier did not start waiting"
+            );
+            std::thread::yield_now();
+        }
+
+        set_current_worker_shard(1);
+        let ticket_b = observe_dispatch_begin();
+        observe_dispatch_attributed(ticket_b);
+
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            done_rx.try_recv().is_err(),
+            "later ticket must not release a barrier targeting an earlier incomplete ticket"
+        );
+
+        set_current_worker_shard(0);
+        observe_dispatch_attributed(ticket_a);
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            OBSERVE_BARRIER_OK
+        );
+        waiter.join().unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_dispatch_close_uses_no_mutex_without_waiters() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        DISPATCH_BARRIER_MUTEX_ACQUISITIONS.store(0, Ordering::Relaxed);
+        set_current_worker_shard(0);
+
+        let ticket = observe_dispatch_begin();
+        observe_dispatch_attributed(ticket);
+
+        assert_eq!(
+            DISPATCH_BARRIER_MUTEX_ACQUISITIONS.load(Ordering::Relaxed),
+            0,
+            "dispatch begin/close should stay on the atomic fast path when no barrier is waiting"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

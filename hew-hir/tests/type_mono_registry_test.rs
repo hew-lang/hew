@@ -22,7 +22,7 @@
 //! - Mangling: shared with the fn-monomorphisation scheme
 //!   (`mangle(origin_name, type_args)`); `Box$$i64`, `Pair$$i64$string`.
 //!
-//! LESSONS: `producer-bridge-before-codegen` (P1),
+//! LESSONS: `end-to-end-before-layer-thickening` (P1),
 //! `checker-authority` (P0).
 
 use hew_hir::{lower_program, lower_program_with_mono_cap, HirDiagnosticKind, ResolutionCtx};

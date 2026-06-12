@@ -18,7 +18,7 @@
 //! 5. Non-generic callees and builtin/runtime-symbol callees never
 //!    appear in the registry (`non_generic_callee_*`).
 //!
-//! LESSONS: `producer-bridge-before-codegen` (P1),
+//! LESSONS: `end-to-end-before-layer-thickening` (P1),
 //! `checker-authority` (P0).
 
 use hew_hir::{

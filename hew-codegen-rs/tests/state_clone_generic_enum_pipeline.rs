@@ -26,7 +26,7 @@
 //! - `boundary-fail-closed` (P0): the classifier is the seam against the
 //!   runtime restart-with-state contract; this proves it does not silently
 //!   degrade a generic-enum field to the no-op path.
-//! - `producer-bridge-before-codegen` (P1): the HIR generic-enum registry
+//! - `end-to-end-before-layer-thickening` (P1): the HIR generic-enum registry
 //!   (`module.enum_layouts`) is the producer; this is the end-to-end contract
 //!   that the MIR consumer reads it BEFORE actor classification.
 

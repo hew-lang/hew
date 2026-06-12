@@ -439,7 +439,7 @@ fn every_return_exit_carries_drop_plan_for_owned_handles() {
 /// `close` method (codegen E4 will route the dispatch to
 /// `hew_duplex_close`).
 ///
-/// LESSONS: `producer-bridge-before-codegen` — the producer carries
+/// LESSONS: `end-to-end-before-layer-thickening` — the producer carries
 /// the discriminator the next layer (E4 codegen) needs.
 #[test]
 fn duplex_drop_fn_resolves_via_registry() {

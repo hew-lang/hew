@@ -14,7 +14,7 @@
 //!    `CodegenError::FailClosed` — boundary-fail-closed (P0).
 //!
 //! LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0),
-//! boundary-fail-closed (P0), producer-bridge-before-codegen (P1).
+//! boundary-fail-closed (P0), end-to-end-before-layer-thickening (P1).
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{

@@ -45,7 +45,7 @@ pub struct HirModule {
     /// program). Downstream MIR (G-1.b) and LLVM (G-1.c) iterate this
     /// list to emit one specialised function per entry.
     ///
-    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub monomorphisations: Vec<MonomorphizedFn>,
     /// Per-call-site type arguments observed at generic function calls.
@@ -80,7 +80,7 @@ pub struct HirModule {
     /// this list — they remain compiler-injected for v0.5 by the generics
     /// scoping decision.
     ///
-    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub record_layouts: Vec<RecordLayout>,
     /// Distinct generic-enum instantiations observed at enum-ctor sites
@@ -96,7 +96,7 @@ pub struct HirModule {
     /// consumed by MIR layout-gather and codegen to emit one `EnumLayout`
     /// per instantiation under the mangled name.
     ///
-    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub enum_layouts: Vec<EnumLayout>,
     /// Distinct machine-type instantiations discovered by the dedicated
@@ -121,7 +121,7 @@ pub struct HirModule {
     /// `const_args` is empty on every entry until W3.039 Stage 3
     /// populates the slot with constexpr-evaluated values.
     ///
-    /// LESSONS: `producer-bridge-before-codegen` (P1),
+    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub machine_instantiations: Vec<MachineMonoEntry>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
@@ -135,7 +135,7 @@ pub struct HirModule {
     /// `hew_supervisor_child_get` (Static) or `hew_supervisor_pool_route`
     /// (Pool) ABI call.
     ///
-    /// LESSONS: `checker-authority` (P0), `producer-bridge-before-codegen` (P1).
+    /// LESSONS: `checker-authority` (P0), `end-to-end-before-layer-thickening` (P1).
     pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
     /// Module-level regex literal table. Each distinct compiled pattern
     /// observed in match arms (keyed by normalized pattern string — no flags

@@ -506,8 +506,15 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
+        #
+        # Skip the leak-slope oracles on the 3-core macos-14 runner: they run
+        # long RSS-slope loops that exceed the ci profile's 300s slow-timeout
+        # under contention, and slope measurement is timing-sensitive (a noisy
+        # cloud runner gives unreliable readings). The Linux job runs the full
+        # oracle set on its faster runner, so leak coverage is not lost.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          -E 'not binary(~oracle)'

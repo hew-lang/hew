@@ -151,7 +151,7 @@ pub fn link_executable(
     // do not pass clang-only flags such as `-target`.
     let compiler = select_native_compiler(target)?;
 
-    // ── Coverage instrumentation (opt-in via HEW_COVERAGE) ─────────────
+    // ── Coverage instrumentation (opt-in via HEW_COVERAGE=1) ──────────
     // When the program is built against an `instrument-coverage` libhew.a (see
     // `make coverage-combined`), the runtime object code carries LLVM counter
     // and coverage-map sections but references the profiler runtime as an
@@ -169,8 +169,10 @@ pub fn link_executable(
     // mode yet. WHEN obsolete: when `hew build --coverage` (or equivalent) is a
     // real CLI surface. WHAT real looks like: a typed build option that also
     // drives the libhew instrumentation, not an out-of-band env contract.
-    let coverage_instrument =
-        coverage_instrument_enabled(compiler.program, std::env::var_os("HEW_COVERAGE").is_some());
+    let coverage_instrument = coverage_instrument_enabled(
+        compiler.program,
+        std::env::var_os("HEW_COVERAGE").as_deref() == Some(std::ffi::OsStr::new("1")),
+    );
 
     let mut cmd = std::process::Command::new(compiler.program);
 
@@ -390,12 +392,15 @@ fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String>
 }
 
 /// Decide whether to link the LLVM profiler runtime into the final binary for
-/// coverage capture. Gated on BOTH the `HEW_COVERAGE` env flag being present AND
-/// the selected driver being clang — `-fprofile-instr-generate` is a clang
-/// spelling, and GCC `cc` would need `-fprofile-generate`, which the coverage
-/// harness does not target. Returns `false` for any non-clang driver even when
-/// the env flag is set, so a `cc`-only host degrades to an ordinary build rather
-/// than passing a flag the driver rejects.
+/// coverage capture. Gated on BOTH `HEW_COVERAGE` being set to the exact value
+/// `"1"` AND the selected driver being clang — `-fprofile-instr-generate` is a
+/// clang spelling, and GCC `cc` would need `-fprofile-generate`, which the
+/// coverage harness does not target. Returns `false` for any non-clang driver
+/// even when the env flag is set, so a `cc`-only host degrades to an ordinary
+/// build rather than passing a flag the driver rejects.
+///
+/// **Contract**: instrumentation is enabled only when `HEW_COVERAGE=1`; any
+/// other value (`0`, empty string, unset, or any other string) disables it.
 fn coverage_instrument_enabled(compiler_program: &str, hew_coverage_env_set: bool) -> bool {
     hew_coverage_env_set && compiler_program == "clang"
 }
@@ -1418,6 +1423,39 @@ mod tests {
         // `-fprofile-instr-generate` is clang-only; a `cc`-only host must not
         // receive it, so coverage degrades to a normal build.
         assert!(!coverage_instrument_enabled("cc", true));
+    }
+
+    // ── HEW_COVERAGE env-var contract (value must be exactly "1") ────
+    // These tests mutate the process environment; serialise them with ENV_LOCK.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn coverage_env_zero_is_not_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::set_var("HEW_COVERAGE", "0") };
+        let enabled = coverage_instrument_enabled(
+            "clang",
+            std::env::var_os("HEW_COVERAGE").as_deref() == Some(std::ffi::OsStr::new("1")),
+        );
+        // SAFETY: same guard as above.
+        unsafe { std::env::remove_var("HEW_COVERAGE") };
+        assert!(!enabled, "HEW_COVERAGE=0 must not enable instrumentation");
+    }
+
+    #[test]
+    fn coverage_env_empty_is_not_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: single-threaded via ENV_LOCK; no other threads touch this var.
+        unsafe { std::env::set_var("HEW_COVERAGE", "") };
+        let enabled = coverage_instrument_enabled(
+            "clang",
+            std::env::var_os("HEW_COVERAGE").as_deref() == Some(std::ffi::OsStr::new("1")),
+        );
+        // SAFETY: same guard as above.
+        unsafe { std::env::remove_var("HEW_COVERAGE") };
+        assert!(!enabled, "HEW_COVERAGE='' must not enable instrumentation");
     }
 
     #[cfg(not(target_os = "windows"))]

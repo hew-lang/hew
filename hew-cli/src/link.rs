@@ -151,6 +151,27 @@ pub fn link_executable(
     // do not pass clang-only flags such as `-target`.
     let compiler = select_native_compiler(target)?;
 
+    // ── Coverage instrumentation (opt-in via HEW_COVERAGE) ─────────────
+    // When the program is built against an `instrument-coverage` libhew.a (see
+    // `make coverage-combined`), the runtime object code carries LLVM counter
+    // and coverage-map sections but references the profiler runtime as an
+    // *undefined* symbol — rustc bundles that runtime only when *it* links the
+    // final artifact, never into a `staticlib`. Hew links the final binary with
+    // clang, so without this flag the counters are emitted but never written
+    // (no `__llvm_profile_write_file`/atexit hook), and `--gc-sections`/strip
+    // would additionally drop unreferenced coverage sections. Passing clang's
+    // `-fprofile-instr-generate` at link time pulls in `libclang_rt.profile`
+    // (which honours `LLVM_PROFILE_FILE` and writes profraw on exit) and anchors
+    // the coverage sections so dead-strip keeps them. This is a measurement
+    // toggle for the coverage harness only — never set in normal builds.
+    //
+    // WHY a heuristic env flag: the compiler has no first-class coverage build
+    // mode yet. WHEN obsolete: when `hew build --coverage` (or equivalent) is a
+    // real CLI surface. WHAT real looks like: a typed build option that also
+    // drives the libhew instrumentation, not an out-of-band env contract.
+    let coverage_instrument =
+        coverage_instrument_enabled(compiler.program, std::env::var_os("HEW_COVERAGE").is_some());
+
     let mut cmd = std::process::Command::new(compiler.program);
 
     // ── lld selection (host-driven) ────────────────────────────────────
@@ -170,6 +191,13 @@ pub fn link_executable(
     // the default target is already correct.
     if compiler.accepts_target_flag {
         cmd.arg("-target").arg(target.linker_triple());
+    }
+
+    // ── Coverage profiler runtime (opt-in) ────────────────────────────
+    // Make clang auto-link `libclang_rt.profile`; placed before the inputs so
+    // the driver resolves the runtime's undefined references from libhew.a.
+    if coverage_instrument {
+        cmd.arg("-fprofile-instr-generate");
     }
 
     cmd.arg(object_path).arg(&hew_lib);
@@ -197,8 +225,16 @@ pub fn link_executable(
     }
 
     // ── Dead-code elimination (target-driven via NativeLinkPlan) ──────
-    cmd.args(plan.gc_flags);
-    if !debug {
+    // Under coverage instrumentation, skip GC and symbol stripping so the
+    // `__llvm_prf_*`/`__llvm_cov*` sections and their symbol records survive
+    // for `llvm-cov` to read back. (The profiler runtime anchor keeps the
+    // counter sections live even under dead-strip, but skipping strip keeps the
+    // symbol table the report needs and is the safe default for a profiling
+    // build.)
+    if !coverage_instrument {
+        cmd.args(plan.gc_flags);
+    }
+    if !debug && !coverage_instrument {
         cmd.args(plan.strip_flags);
     }
 
@@ -351,6 +387,17 @@ fn find_darwin_sdk() -> Option<String> {
 
 fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String> {
     select_native_compiler_with(target, has_tool)
+}
+
+/// Decide whether to link the LLVM profiler runtime into the final binary for
+/// coverage capture. Gated on BOTH the `HEW_COVERAGE` env flag being present AND
+/// the selected driver being clang — `-fprofile-instr-generate` is a clang
+/// spelling, and GCC `cc` would need `-fprofile-generate`, which the coverage
+/// harness does not target. Returns `false` for any non-clang driver even when
+/// the env flag is set, so a `cc`-only host degrades to an ordinary build rather
+/// than passing a flag the driver rejects.
+fn coverage_instrument_enabled(compiler_program: &str, hew_coverage_env_set: bool) -> bool {
+    hew_coverage_env_set && compiler_program == "clang"
 }
 
 fn select_native_compiler_with<F>(
@@ -1352,6 +1399,25 @@ mod tests {
     #[test]
     fn has_tool_rejects_nonexistent_tool() {
         assert!(!has_tool("definitely_not_a_real_tool_abc123xyz"));
+    }
+
+    // ── coverage_instrument_enabled ───────────────────────────────────
+
+    #[test]
+    fn coverage_enabled_with_clang_and_env() {
+        assert!(coverage_instrument_enabled("clang", true));
+    }
+
+    #[test]
+    fn coverage_disabled_when_env_unset() {
+        assert!(!coverage_instrument_enabled("clang", false));
+    }
+
+    #[test]
+    fn coverage_disabled_for_cc_even_with_env() {
+        // `-fprofile-instr-generate` is clang-only; a `cc`-only host must not
+        // receive it, so coverage degrades to a normal build.
+        assert!(!coverage_instrument_enabled("cc", true));
     }
 
     #[cfg(not(target_os = "windows"))]

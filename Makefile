@@ -62,7 +62,7 @@
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
-.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
+.PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-smoke
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -851,20 +851,30 @@ lint-wasm-todo:
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #
-#   make coverage         — Rust unit/integration tests only (cargo llvm-cov)
-#   make coverage-e2e     — E2E tests exercising the full compile pipeline
-#   make coverage-combined — both merged into a single report
+#   make coverage          — Rust unit/integration tests only (cargo llvm-cov)
+#   make coverage-summary  — Rust-only, terminal summary
+#   make coverage-lcov     — Rust-only, lcov.info for external tooling
+#   make coverage-runtime  — runtime (libhew) FFI coverage exercised by
+#                            compiled-and-run Hew programs (print/assert/vec/
+#                            string/bytes/hashmap/actor/...) — the surface the
+#                            Rust-only report cannot see. See
+#                            scripts/coverage-runtime-e2e.sh.
+#   make coverage-combined — both of the above, printed as TWO reports.
+#   make coverage-branch   — Rust-only WITH branch coverage (needs nightly).
 #
-# Requires: cargo-llvm-cov, llvm-profdata-22, llvm-cov-22
+# Why coverage-combined is two reports, not one merged number: the runtime FFI
+# counters come from compiled Hew program binaries, whose covmap is keyed by
+# function structural hashes that do NOT match the cargo-test binaries. llvm-cov
+# cannot fold e2e profraw into the cargo-llvm-cov report — verified empirically
+# (cross-object reporting yields all-zero + "mismatched data"). The honest
+# product is therefore two coherent reports, not a fabricated union.
+#
+# Requires: cargo-llvm-cov + the rustc llvm-tools-preview component (the harness
+# auto-discovers version-matched llvm-profdata/llvm-cov from the rust sysroot).
 
 COV_DIR          := coverage-out
-COV_PROFRAW_DIR  := $(COV_DIR)/profraw
-COV_E2E_DIR      := $(COV_DIR)/e2e-profraw
-COV_PROFDATA     := $(COV_DIR)/combined.profdata
-LLVM_PROFDATA    ?= llvm-profdata-22
-LLVM_COV         ?= llvm-cov-22
 
-# Rust-only coverage (cargo test)
+# Rust-only coverage (cargo test) — unchanged stable default.
 coverage:
 	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
 	@echo "==> Open $(COV_DIR)/html/index.html"
@@ -877,44 +887,33 @@ coverage-lcov:
 	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info
 	@echo "==> Wrote $(COV_DIR)/lcov.info"
 
-# E2E coverage: instruments hew CLI + runtime, generates report
-coverage-e2e: stdlib
-	@echo "==> Building hew CLI + runtime with coverage instrumentation"
-	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
-	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
-	@echo "==> Merging profraw data"
-	$(LLVM_PROFDATA) merge -sparse $(COV_E2E_DIR)/*.profraw -o $(COV_DIR)/e2e.profdata 2>/dev/null || true
-	@echo "==> E2E coverage summary (Rust frontend):"
-	@if [ -f $(COV_DIR)/e2e.profdata ]; then \
-		$(LLVM_COV) report target/debug/hew \
-		  -instr-profile=$(COV_DIR)/e2e.profdata \
-		  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
-		  -summary-only; \
-	else \
-		echo "No profraw data captured."; \
-	fi
+# Runtime FFI coverage via compiled-and-run Hew programs. Builds an
+# instrument-coverage libhew.a, links example programs with the profiler runtime
+# (HEW_COVERAGE=1, handled in hew-cli/src/link.rs), runs them, and reports the
+# runtime/stdlib surface. Pass HTML=1 for an HTML report.
+coverage-runtime:
+	bash scripts/coverage-runtime-e2e.sh $(if $(HTML),--html,)
 
-# Combined coverage: cargo tests + Rust frontend coverage merged
-coverage-combined: stdlib
-	@echo "==> Phase 1: Running cargo tests with coverage"
+# Combined: the Rust-test report AND the runtime-FFI report. Two reports by
+# construction (see header note above) — neither subsumes the other.
+coverage-combined:
+	@echo "==> Report 1/2: Rust unit/integration test coverage (cargo-llvm-cov)"
 	cargo llvm-cov --workspace --exclude hew-wasm --no-report
-	@echo "==> Phase 2: Building hew CLI with coverage instrumentation"
-	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
-	@mkdir -p $(COV_DIR)/merged
-	@cp target/llvm-cov-target/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
-	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/merged/*.profraw -o $(COV_PROFDATA)
-	@echo "==> Combined coverage summary:"
-	$(LLVM_COV) report target/debug/hew \
-	  -instr-profile=$(COV_PROFDATA) \
-	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
-	  -summary-only
-	@echo "==> Generating HTML report"
-	$(LLVM_COV) show target/debug/hew \
-	  -instr-profile=$(COV_PROFDATA) \
-	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
-	  -format=html -output-dir=$(COV_DIR)/combined-html
-	@echo "==> Open $(COV_DIR)/combined-html/index.html"
-	@rm -rf $(COV_DIR)/merged
+	cargo llvm-cov report --summary-only
+	@echo ""
+	@echo "==> Report 2/2: runtime (libhew) FFI coverage via compiled Hew programs"
+	bash scripts/coverage-runtime-e2e.sh $(if $(HTML),--html,)
+	@echo ""
+	@echo "==> Two reports above: Rust-test crates, then the runtime FFI surface."
+	@echo "    They are separate by construction; see the Makefile coverage header."
+
+# Branch coverage of the Rust-test suite. Branch instrumentation is nightly-only
+# (cargo-llvm-cov --branch refuses on stable), so this target opts into nightly
+# explicitly rather than changing the stable default of `make coverage`.
+coverage-branch:
+	cargo +nightly llvm-cov --branch --workspace --exclude hew-wasm \
+	  --html --output-dir $(COV_DIR)/branch-html
+	@echo "==> Open $(COV_DIR)/branch-html/index.html"
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Validates that every hew-runtime #[no_mangle] export is classified in

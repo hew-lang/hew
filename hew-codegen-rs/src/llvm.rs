@@ -17659,6 +17659,9 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
             | "hew_deflate_decompress_hew"
             | "hew_zlib_compress_hew"
             | "hew_zlib_decompress_hew"
+            // msgpack: `bytes` inputs passed as *const BytesTriple.
+            | "hew_msgpack_to_json_hew"
+            | "hew_msgpack_encode_bytes_hew"
     )
 }
 
@@ -17709,6 +17712,11 @@ fn is_bytes_triple_return_producer(symbol: &str) -> bool {
             | "hew_deflate_decompress_hew"
             | "hew_zlib_compress_hew"
             | "hew_zlib_decompress_hew"
+            // msgpack: `-> bytes` _hew wrappers return BytesTriple by value.
+            | "hew_msgpack_from_json_hew"
+            | "hew_msgpack_encode_int_hew"
+            | "hew_msgpack_encode_string_hew"
+            | "hew_msgpack_encode_bytes_hew"
     )
 }
 

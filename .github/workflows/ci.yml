@@ -88,15 +88,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "lint"
+          components: 'clippy, rustfmt'
+          cache-shared-key: lint
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX or llvm-config on PATH for
@@ -156,14 +151,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "playground-wasm"
+          cache-shared-key: playground-wasm
 
       - name: Install wasm-pack v0.13.1
         run: |
@@ -210,21 +200,11 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          toolchain: stable
-
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-linux"
+          tools: nextest
+          cache-shared-key: build-test-linux
 
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
@@ -345,26 +325,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          toolchain: stable
           components: llvm-tools
-
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          tool: cargo-llvm-cov
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "coverage"
+          tools: nextest,cargo-llvm-cov
+          cache-shared-key: coverage
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
@@ -446,21 +412,11 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          toolchain: stable
-
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-windows"
+          tools: nextest
+          cache-shared-key: build-test-windows
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
@@ -506,16 +462,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          toolchain: stable
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          tool: nextest
+          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          tools: nextest
+          cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
@@ -526,12 +478,6 @@ jobs:
       - name: Set macOS deployment target
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-macos"
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'

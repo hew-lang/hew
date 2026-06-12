@@ -1,0 +1,59 @@
+name: Setup Rust build environment
+description: >
+  Install the stable Rust toolchain, optional cargo tools (via
+  taiki-e/install-action), and Swatinem/rust-cache.  Extracts the
+  repeated three-step sequence that every Rust job in ci.yml and
+  release-gate.yml otherwise duplicates.
+
+inputs:
+  components:
+    description: >
+      Comma-separated toolchain components to pass to dtolnay/rust-toolchain
+      (e.g. 'clippy, rustfmt' for lint; 'llvm-tools' for coverage).
+      Omit or leave empty to install no extra components.
+    required: false
+    default: ''
+  targets:
+    description: >
+      Comma-separated target triples to pass to dtolnay/rust-toolchain
+      (e.g. 'aarch64-apple-darwin, x86_64-apple-darwin' for macOS cross).
+      Omit or leave empty to add no extra targets.
+    required: false
+    default: ''
+  tools:
+    description: >
+      Comma-separated tool names for taiki-e/install-action
+      (e.g. 'nextest', 'nextest,cargo-llvm-cov').
+      The install-action step is SKIPPED entirely when this input is empty.
+    required: false
+    default: ''
+  cache-shared-key:
+    description: >
+      Swatinem/rust-cache shared-key that scopes the cache to the calling
+      job class (e.g. 'lint', 'build-test-linux', 'coverage').
+    required: true
+  cache-prefix-key:
+    description: >
+      Swatinem/rust-cache prefix-key.  Bump to invalidate on toolchain or
+      LLVM version changes.
+    required: false
+    default: 'v1-llvm22'
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      with:
+        toolchain: stable
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
+      if: inputs.tools != ''
+      with:
+        tool: ${{ inputs.tools }}
+
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      with:
+        prefix-key: ${{ inputs.cache-prefix-key }}
+        shared-key: ${{ inputs.cache-shared-key }}

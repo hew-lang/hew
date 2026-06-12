@@ -131,17 +131,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-linux"
+          tools: nextest
+          cache-shared-key: build-test-linux
 
       - name: Build all release crates
         run: |
@@ -256,17 +249,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-linux"
+          tools: nextest
+          cache-shared-key: build-test-linux
 
       - name: Build all release crates
         run: |
@@ -331,13 +317,11 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        with:
-          tool: nextest
+          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          tools: nextest
+          cache-shared-key: build-test-macos
 
       - name: Install LLVM
         run: |
@@ -355,11 +339,6 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-macos"
 
       - name: Build all release crates
         run: |
@@ -421,17 +400,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+      - uses: ./.github/actions/setup-rust-build
         with:
-          toolchain: stable
-      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
-        with:
-          tool: nextest
-
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-        with:
-          prefix-key: "v1-llvm22"
-          shared-key: "build-test-windows"
+          tools: nextest
+          cache-shared-key: build-test-windows
 
       - name: Install LLVM 22
         uses: ./.github/actions/setup-llvm

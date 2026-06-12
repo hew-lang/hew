@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
 use hew_cabi::vec::HewVec;
+use hew_runtime::bytes::BytesTriple;
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
 
@@ -356,18 +357,37 @@ pub unsafe extern "C" fn hew_tls_read(
 ///
 /// # Safety
 ///
-/// `stream`, `data`, and `data_len` must satisfy the same requirements as
-/// [`hew_tls_write`].
+/// `stream` must be a valid pointer returned by [`hew_tls_connect`].
+/// `data` must be a valid non-null pointer to a `BytesTriple` whose active
+/// region `[offset, offset + len)` is readable.
+/// (`is_bytes_by_pointer_consumer` in codegen passes the alloca address of the
+/// Hew `bytes` argument; the previous `(*const u8, usize)` pair ignored
+/// `offset`, which is incorrect for bytes slices with a non-zero offset.)
 #[no_mangle]
 pub unsafe extern "C" fn hew_tls_write_result(
     stream: *mut HewTlsStream,
-    data: *const u8,
-    data_len: usize,
+    data: *const BytesTriple,
 ) -> HewTlsWriteResult {
+    if data.is_null() {
+        return HewTlsWriteResult {
+            written: -1,
+            status: TLS_STATUS_IO_ERROR,
+        };
+    }
+    // SAFETY: caller guarantees `data` points to a valid BytesTriple.
+    let triple = unsafe { &*data };
+    let (data_ptr, data_len) = if triple.len == 0 || triple.ptr.is_null() {
+        (std::ptr::null(), 0usize)
+    } else {
+        // SAFETY: BytesTriple invariant — ptr+offset..ptr+offset+len is valid.
+        (
+            unsafe { triple.ptr.add(triple.offset as usize).cast_const() },
+            triple.len as usize,
+        )
+    };
     let mut status = TLS_STATUS_IO_ERROR;
-    // SAFETY: this bridge forwards the exact caller-provided arguments to
-    // `hew_tls_write` and supplies valid local storage for `out_status`.
-    let written = unsafe { hew_tls_write(stream, data, data_len, &raw mut status) };
+    // SAFETY: data_ptr is valid for data_len bytes (or null when data_len==0).
+    let written = unsafe { hew_tls_write(stream, data_ptr, data_len, &raw mut status) };
     HewTlsWriteResult { written, status }
 }
 
@@ -823,18 +843,24 @@ mod tests {
     fn write_result_null_stream_returns_io_error_status() {
         clear_tls_last_error();
         let data = b"payload";
-        // SAFETY: null stream is the test; data pointer is valid.
-        let result =
-            unsafe { hew_tls_write_result(std::ptr::null_mut(), data.as_ptr(), data.len()) };
+        #[allow(clippy::cast_possible_truncation, reason = "test slice fits in u32")]
+        let triple = BytesTriple {
+            ptr: data.as_ptr().cast_mut(),
+            offset: 0,
+            len: data.len() as u32,
+        };
+        // SAFETY: null stream is the test; triple points to valid stack data.
+        let result = unsafe { hew_tls_write_result(std::ptr::null_mut(), &raw const triple) };
         assert_eq!(result.written, -1);
         assert_eq!(result.status, TLS_STATUS_IO_ERROR);
     }
 
     #[test]
-    fn write_result_null_data_nonzero_len_returns_io_error_status() {
+    fn write_result_null_data_returns_io_error_status() {
         clear_tls_last_error();
-        // SAFETY: null data with non-zero data_len is the tested invalid call.
-        let result = unsafe { hew_tls_write_result(std::ptr::null_mut(), std::ptr::null(), 5) };
+        // SAFETY: null BytesTriple pointer exercises the null-data guard path.
+        let result =
+            unsafe { hew_tls_write_result(std::ptr::null_mut(), std::ptr::null::<BytesTriple>()) };
         assert_eq!(result.written, -1);
         assert_eq!(result.status, TLS_STATUS_IO_ERROR);
     }
@@ -859,9 +885,14 @@ mod tests {
         };
 
         clear_tls_last_error();
-        // SAFETY: same inputs as above via the wrapper.
-        let result =
-            unsafe { hew_tls_write_result(std::ptr::null_mut(), data.as_ptr(), data.len()) };
+        #[allow(clippy::cast_possible_truncation, reason = "test slice fits in u32")]
+        let triple = BytesTriple {
+            ptr: data.as_ptr().cast_mut(),
+            offset: 0,
+            len: data.len() as u32,
+        };
+        // SAFETY: same data as above via the wrapper; null stream exercises error path.
+        let result = unsafe { hew_tls_write_result(std::ptr::null_mut(), &raw const triple) };
 
         assert_eq!(result.written, direct_written);
         assert_eq!(result.status, direct_status);

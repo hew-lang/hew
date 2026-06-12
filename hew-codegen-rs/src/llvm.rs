@@ -2863,6 +2863,62 @@ fn predeclare_extern_decls<'ctx>(
             );
             continue;
         }
+
+        // ── bytes boundary fail-closed gate ──────────────────────────────────
+        //
+        // Every extern whose Hew-side signature involves `bytes` (return OR
+        // param) must be explicitly registered in one of three lists:
+        //   • `is_bytes_triple_return_producer` — returns BytesTriple by value
+        //   • `is_bytes_by_pointer_consumer`    — takes bytes as *const BytesTriple
+        //   • `is_bytes_struct_expansion_consumer` — takes bytes via field expansion
+        //
+        // A symbol in NONE of these lists and with `bytes` in its signature
+        // is an unclassified extern whose codegen ABI is unknown. Rather than
+        // silently miscompile (the msgpack class of latent bug), we fail closed
+        // here so the author is forced to classify the symbol.
+        //
+        // To resolve the error: verify the Rust impl's actual `bytes` ABI and
+        // add the symbol to the matching list above with a brief WHY comment.
+        // LESSONS: `boundary-fail-closed` (P0).
+        let has_bytes_return = matches!(decl.return_ty, ResolvedTy::Bytes);
+        let has_bytes_param = decl
+            .param_tys
+            .iter()
+            .any(|t| matches!(t, ResolvedTy::Bytes));
+
+        if has_bytes_return && !is_bytes_triple_return_producer(&decl.name) {
+            return Err(CodegenError::FailClosed(format!(
+                "extern `{}` declares `-> bytes` but is not in \
+                 `is_bytes_triple_return_producer`. Add it to that list if the \
+                 Rust impl returns `#[repr(C)] BytesTriple` by value, or migrate \
+                 the Rust side to return `BytesTriple`. \
+                 See also `is_bytes_by_pointer_consumer` for `bytes` params. \
+                 (LESSONS: boundary-fail-closed)",
+                decl.name
+            )));
+        }
+
+        // A symbol in `is_bytes_triple_return_producer` is already classified
+        // (it always uses struct-expansion for its `bytes` params too).
+        // Only check remaining unknowns for `bytes` params.
+        if has_bytes_param
+            && !is_bytes_triple_return_producer(&decl.name)
+            && !is_bytes_by_pointer_consumer(&decl.name)
+            && !is_bytes_struct_expansion_consumer(&decl.name)
+        {
+            return Err(CodegenError::FailClosed(format!(
+                "extern `{}` has `bytes` param(s) but is not in \
+                 `is_bytes_by_pointer_consumer` or `is_bytes_struct_expansion_consumer`. \
+                 If the Rust impl takes `*const BytesTriple`, add to the pointer-consumer \
+                 list. If it takes `(ptr: *mut u8, offset: u32, len: u32)` field-expansion, \
+                 add to the struct-expansion list. \
+                 See both lists in llvm.rs near this function. \
+                 (LESSONS: boundary-fail-closed)",
+                decl.name
+            )));
+        }
+        // ── end bytes boundary gate ───────────────────────────────────────────
+
         let bytes_by_pointer = is_bytes_by_pointer_consumer(&decl.name);
         let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
         for ty in &decl.param_tys {
@@ -2890,12 +2946,8 @@ fn predeclare_extern_decls<'ctx>(
         // uses — and reconstruct the `{ptr, i32, i32}` triple at the call's
         // return-store site (a raw 16-byte store; byte layouts match). See the
         // `[2 x i64]`/bytes branch in the `FnSymbol::Real` return handling.
-        // SCOPED to the migrated producers (`is_bytes_triple_return_producer`):
-        // only externs whose Rust impl actually returns `#[repr(C)] BytesTriple`
-        // get the `[2 x i64]` boundary return. Legacy HewVec-returning bytes
-        // externs (crypto/encoding/fs/quic/tls) must NOT — declaring them
-        // `[2 x i64]` would reinterpret a HewVec pointer as a triple and silently
-        // produce garbage instead of failing closed.
+        // All `-> bytes` externs are now in `is_bytes_triple_return_producer`
+        // (the fail-closed gate above prevents unknown `-> bytes` externs).
         // Windows x64 MSVC sret: use _raw (void + out-ptr) stored under original key.
         let bytes_return = is_bytes_triple_return_producer(&decl.name);
         let return_ty = if matches!(decl.return_ty, ResolvedTy::Unit) {
@@ -17644,6 +17696,13 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
             | "hew_bytes_to_string"
             | "hew_bytes_len"
             | "hew_file_write_bytes"
+            // TCP broadcast: `message: bytes` passed as *const BytesTriple.
+            // (Previous *const c_char signature ignored `offset` — only worked
+            // when offset==0. Fixed to take *const BytesTriple.)
+            | "hew_tcp_broadcast_except"
+            // TLS write bridge: `data: bytes` passed as *const BytesTriple.
+            // (Previous (*const u8, usize) pair ignored `offset`; fixed.)
+            | "hew_tls_write_result"
             // Ed25519 sign: all _hew wrappers that accept `bytes` inputs pass
             // them as *const BytesTriple (by-pointer consumer convention).
             | "hew_ed25519_public_key_from_pkcs8_hew"
@@ -17665,24 +17724,48 @@ fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
     )
 }
 
+/// Runtime consumers that take a `bytes` value BY STRUCT EXPANSION — the Rust
+/// side expects `(ptr: *mut u8, offset: u32, len: u32)` as three separate
+/// parameters matching the `#[repr(C)] BytesTriple` field layout.
+///
+/// WHY this is a separate category: these functions take `bytes` as the FIRST
+/// (or only) argument. On AArch64 and SysV x86-64, a `{ptr, i32, i32}` struct
+/// passed by value as the first argument expands into three registers matching
+/// the Rust `(ptr, offset, len)` signature exactly. This is confirmed correct
+/// for the listed symbols; do NOT list a symbol here unless the Rust impl
+/// literally receives `(ptr: *mut u8, offset: u32, len: u32)` (or repeated
+/// triples for multiple `bytes` params).
+///
+/// WHEN OBSOLETE: same as `is_bytes_by_pointer_consumer` — once codegen emits
+/// proper `byval`/coerced-int lowering for struct params this distinction
+/// collapses. The list is an explicit registry so unknown symbols fail closed
+/// rather than silently mismatching.
+fn is_bytes_struct_expansion_consumer(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        // crypto: input `bytes` params expand to (ptr, offset, len).
+        "hew_sha256_hew"
+            | "hew_sha384_hew"
+            | "hew_sha512_hew"
+            | "hew_hmac_sha256_hew"
+            | "hew_constant_time_eq_hew"
+            // encrypt: `key: bytes` and optional `ciphertext: bytes` each expand.
+            | "hew_encrypt_seal_base64_hew"
+            | "hew_encrypt_open_hew"
+            | "hew_encrypt_try_open_hew"
+            | "hew_encrypt_must_open_hew"
+    )
+}
+
 /// Runtime producers whose Rust impl returns a `#[repr(C)] BytesTriple` by value
 /// and that codegen therefore declares with the AAPCS/SysV `[2 x i64]` boundary
 /// return type (reconstructed into the `{ptr,i32,i32}` dest at the call's
 /// return-store).
 ///
-/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": quic / tls bytes
-/// runtime entries still return a legacy `*mut HewVec` (their migration to
-/// BytesTriple is separate, follow-on work). Declaring those with a `[2 x i64]`
-/// return would silently reinterpret a `HewVec` pointer as a triple — turning a
-/// loud fail-closed codegen error into wrong runtime output. Only the symbols
-/// whose Rust impl actually returns `BytesTriple` belong here.
-/// SCOPED ALLOWLIST, not "every `bytes`-returning extern": encoding / tls
-/// bytes runtime entries still return a legacy `*mut HewVec` (their migration
-/// to BytesTriple is separate, follow-on work). Declaring those with a
-/// `[2 x i64]` return would silently reinterpret a `HewVec` pointer as a
-/// triple — turning a loud fail-closed codegen error into wrong runtime
-/// output. Only the symbols whose Rust impl actually returns `BytesTriple`
-/// belong here.
+/// EXHAUSTIVE ALLOWLIST: every `-> bytes` extern in the stdlib has been audited
+/// and all migrate to `BytesTriple`. No legacy `*mut HewVec` `-> bytes` externs
+/// remain. An unknown symbol with `-> bytes` is therefore a build error, not a
+/// silent miscompile. (LESSONS: `boundary-fail-closed`, PR #TBD.)
 fn is_bytes_triple_return_producer(symbol: &str) -> bool {
     matches!(
         symbol,

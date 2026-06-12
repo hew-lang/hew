@@ -1,0 +1,30 @@
+// fn-closure capturing an actor pid and sending through it. The pid is a
+// BitCopy alias (opaque identity reference, no drop glue): capturing it is
+// ownership-identical to passing it to a fn by value, so the closure env
+// carries the handle word with no retain and no release. The closure body's
+// send resolves the target's method table exactly as the parent would —
+// regression for `E_NOT_YET_IMPLEMENTED: actor call on unknown actor` when
+// the closure-shim builder dropped the module's actor layout tables.
+// increment(10) + increment(32) = 42.
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    let bump = |n: i64| { counter.increment(n); };
+    bump(10);
+    bump(32);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

@@ -816,6 +816,26 @@ run_accept_expect_stdout "lambda_self_recursion"
 # shutdown. Validated under MallocScribble/PreScribble/GuardEdges.
 run_accept_expect_stdout "lambda_capture_heap"
 
+# Accept + run: fn-closure capturing an actor pid and sending through it.
+# The pid is a BitCopy alias with no drop glue; the closure-shim builder
+# carries the module's actor layout tables so the body's send resolves
+# `actor_method_info` exactly as the parent would. Exit 42 = 10 + 32.
+run_accept_expect_status "closure_pid_send" 42
+
+# Accept + run: sends to the captured pid nested under `if` and `while`
+# inside the closure body — per-site send resolution, not capture-time
+# pre-resolution. Exit 42 = 39 (if-branch) + 3×1 (loop branch).
+run_accept_expect_status "closure_pid_send_controlflow" 42
+
+# Accept + run: alias soundness — the parent's pid binding stays live and
+# usable after the closure captures it. Exit 42 = 40 (closure) + 2 (parent).
+run_accept_expect_status "closure_pid_alias_parent" 42
+
+# Accept + run: lambda actor capturing a declared-actor pid and forwarding.
+# The pid rides the heap-boxed env as a no-drop field; the state dropper
+# frees env bytes only. Exit 42 = 10 + 32 forwarded.
+run_accept_expect_status "lambda_capture_pid_forward" 42
+
 # Reject: capture env field classes are explicit — an owned aggregate
 # capture (Vec, HashMap, record, owned handle) has no cross-boundary
 # ownership protocol yet and must fail closed rather than shallow-copy
@@ -824,6 +844,17 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/lambda_capture_owned_aggregate.hew" \
   "CannotMaterializeClosureCapture" \
   "lambda_capture_owned_aggregate"
+
+# Reject: a fn-closure capturing a LAMBDA-ACTOR handle (a Duplex, not a
+# no-drop pid) and calling it has no materialization protocol through a
+# closure env — the checker refuses with ClosureCapturesDuplexHandle
+# (deliberate checker-authority wall) rather than an incidental
+# CheckerBoundaryViolation. The fixture pins the authoritative error site
+# (check_call in calls.rs, TypeErrorKind::ClosureCapturesDuplexHandle).
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/closure_capture_lambda_handle.hew" \
+  "E_CLOSURE_CAPTURES_LAMBDA_HANDLE" \
+  "closure_capture_lambda_handle"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg
 # receive handler fails closed with E_REMOTE_PAYLOAD_UNSUPPORTED. The

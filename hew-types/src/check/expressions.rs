@@ -359,6 +359,7 @@ impl Checker {
                 body,
                 None,
                 span,
+                false,
             ),
 
             // Await
@@ -1654,7 +1655,13 @@ impl Checker {
                 // WHEN-OBSOLETE: if a richer bidirectional inference mode is added that
                 // can propagate a "return type hint" without actually checking the body
                 // against it, restore the hint while keeping targeted diagnostics.
-                let lambda_ty = self.check_lambda(*is_move, None, params, None, body, None, span);
+                //
+                // Pass is_actor_body=true so check_call inside the body can permit
+                // recursive self-sends (a Duplex capture called from within its own
+                // actor body). Nested fn-closures inside the body pass is_actor_body=false,
+                // so they correctly see in_lambda_actor_body=false.
+                let lambda_ty =
+                    self.check_lambda(*is_move, None, params, None, body, None, span, true);
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -2072,6 +2079,7 @@ impl Checker {
                     body,
                     Some((expected_params, ret)),
                     span,
+                    false,
                 );
                 self.record_type(span, &result);
                 result
@@ -4735,6 +4743,7 @@ impl Checker {
         body: &Spanned<Expr>,
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
+        is_actor_body: bool,
     ) -> Ty {
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -4747,6 +4756,10 @@ impl Checker {
         // statements inside it have no spawn context.
         let prev_task_scope_depth = self.task_scope_depth;
         self.task_scope_depth = 0;
+        let prev_in_lambda_actor_body = self.in_lambda_actor_body;
+        // Set is_actor_body for the duration of this lambda's body; nested fn-closures
+        // are called with is_actor_body=false, so they get false regardless of the outer flag.
+        self.in_lambda_actor_body = is_actor_body;
 
         // Record the scope depth BEFORE pushing the lambda scope — any variable
         // found below this depth during body checking is a capture.
@@ -4865,6 +4878,7 @@ impl Checker {
         self.current_return_type = prev_return_type;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;
+        self.in_lambda_actor_body = prev_in_lambda_actor_body;
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
 

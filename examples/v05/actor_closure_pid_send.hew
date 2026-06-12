@@ -1,0 +1,26 @@
+// A closure can capture an actor pid and send through it: the pid is an
+// opaque identity reference (a BitCopy alias), so the capture neither
+// retains nor releases the actor — its lifetime stays runtime-owned and
+// the parent binding remains usable alongside the closure.
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    let bump = |n: i64| { counter.increment(n); };
+    bump(10);
+    bump(32);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

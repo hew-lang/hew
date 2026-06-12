@@ -18537,6 +18537,134 @@ mod for_loop_iterable_fail_closed {
         assert_eq!(s_fact.mode_origin, CaptureModeOrigin::ExplicitMove);
     }
 
+    // ── ClosureCapturesDuplexHandle gate tests ───────────────────────────
+    //
+    // Verifies that the deliberate checker wall (`TypeErrorKind::ClosureCapturesDuplexHandle`)
+    // fires for every known source shape that attempts to capture a lambda-actor
+    // Duplex handle in a regular fn-closure. The authoritative site is
+    // `check_call` in `calls.rs`; HIR's `CheckerBoundaryViolation` used to be
+    // the incidental (and unintentional) rejection wall — these tests pin the
+    // deliberate error.
+
+    #[test]
+    fn closure_captures_duplex_handle_direct_call_rejected() {
+        // The canonical shape: `let relay = |n| { log(n); };` where `log` is a
+        // lambda-actor handle. Must emit `ClosureCapturesDuplexHandle`, not
+        // `CheckerBoundaryViolation`.
+        let output = check_source(
+            r"
+            fn main() {
+                let log = actor |n: i64| { println(n); };
+                let relay = |n: i64| { log(n); };
+                relay(1);
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "log")),
+            "direct call-syntax Duplex capture must emit ClosureCapturesDuplexHandle; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn closure_captures_duplex_handle_rebind_rejected() {
+        // Evasion shape: rebind the handle before capturing.
+        let output = check_source(
+            r"
+            fn main() {
+                let log = actor |n: i64| { println(n); };
+                let log2 = log;
+                let relay = |n: i64| { log2(n); };
+                relay(1);
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "log2")),
+            "rebind evasion: ClosureCapturesDuplexHandle must fire on the rebind name; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn closure_captures_duplex_handle_move_closure_rejected() {
+        // Evasion shape: explicit `move` closure.
+        let output = check_source(
+            r"
+            fn main() {
+                let log = actor |n: i64| { println(n); };
+                let relay = move |n: i64| { log(n); };
+                relay(1);
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "log")),
+            "move-closure evasion: ClosureCapturesDuplexHandle must fire; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn closure_captures_duplex_handle_function_param_rejected() {
+        // Evasion shape: Duplex parameter captured in a nested closure.
+        let output = check_source(
+            r"
+            fn use_handle(h: Duplex<i64, ()>) {
+                let relay = |n: i64| { h(n); };
+                relay(1);
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "h")),
+            "function-param Duplex capture: ClosureCapturesDuplexHandle must fire; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn closure_captures_duplex_handle_does_not_affect_pid_captures() {
+        // Regression guard: the new Duplex gate must NOT fire for ActorRef/LocalPid
+        // captures. A closure capturing a declared-actor's pid is accepted (the
+        // main feature of this PR). Only Duplex (lambda-actor handles) is refused.
+        let output = check_source(
+            r"
+            actor Counter {
+                var count: i64;
+                receive fn increment(n: i64) { count = count + n; }
+            }
+            fn main() {
+                let counter = spawn Counter(count: 0);
+                let relay = actor |n: i64| { counter.increment(n); };
+                relay(1);
+            }
+            ",
+        );
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { .. })),
+            "pid (ActorRef) captures must NOT trip ClosureCapturesDuplexHandle; got: {:#?}",
+            output.errors
+        );
+    }
+
     // ── NonSyncMutCaptureCrossesSuspend gate — direct body-scanner tests ─
     //
     // The end-to-end diagnostic depends on three independent conditions:

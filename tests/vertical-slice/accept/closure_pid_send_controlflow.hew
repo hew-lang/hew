@@ -1,0 +1,37 @@
+// Sends to a captured pid nested under `if` and `while` inside the closure
+// body. The send is resolved per-site by `actor_method_info` at lowering
+// time (not pre-resolved at capture time), so control-flow nesting must not
+// change the routing. bump(39) takes the if-branch (one send of 39);
+// bump(3) takes the loop branch (three sends of 1): 39 + 3 = 42.
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    let bump = |n: i64| {
+        if n > 5 {
+            counter.increment(n);
+        } else {
+            var i = 0;
+            while i < n {
+                counter.increment(1);
+                i = i + 1;
+            }
+        }
+    };
+    bump(39);
+    bump(3);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

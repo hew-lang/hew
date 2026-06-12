@@ -1,0 +1,28 @@
+// Alias soundness: the pid captured by the closure is an alias, not a
+// move — the parent's binding stays live and usable after the capture.
+// Both the closure's send (40) and the parent's later direct send (2)
+// must land: 40 + 2 = 42. A capture that consumed the binding would
+// reject the parent's send; a capture that double-managed the handle
+// would double-release at scope exit.
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    let bump = |n: i64| { counter.increment(n); };
+    bump(40);
+    counter.increment(2);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

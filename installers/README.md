@@ -8,6 +8,18 @@ Installation options for [Hew](https://hew.sh) and [Adze](https://hew.sh/adze).
 curl -fsSL https://hew.sh/install | bash
 ```
 
+## Quick Install (FreeBSD)
+
+FreeBSD base includes `fetch(1)` but not `curl` or `bash`. Install bash once, then:
+
+```sh
+pkg install -y bash
+fetch -o - https://hew.sh/install | bash
+```
+
+Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` on the
+[releases page](https://github.com/hew-lang/hew/releases) (x86_64 only today).
+
 ## Quick Install (Windows)
 
 ```powershell
@@ -19,6 +31,7 @@ irm https://hew.sh/install.ps1 | iex
 | Platform                 | Command                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------- |
 | macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew`                                                  |
+| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| bash` (requires `pkg install bash`)        |
 | Arch Linux (AUR)         | `yay -S hew-bin`                                                                 |
 | Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases) |
 | Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                               |

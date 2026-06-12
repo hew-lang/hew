@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Hew installer — https://hew.sh
 # Usage: curl -fsSL https://hew.sh/install | bash
+#        fetch -o - https://hew.sh/install | bash   (FreeBSD — bash from ports/pkg)
 #        irm https://hew.sh/install.ps1 | iex  (Windows PowerShell)
 #        bash install.sh [--version <ver>] [--prefix <dir>] [--help]
 set -euo pipefail
@@ -102,14 +103,35 @@ detect_platform() {
     case "$uname_s" in
     Linux*) OS="linux" ;;
     Darwin*) OS="darwin" ;;
+    FreeBSD*) OS="freebsd" ;;
     *) err "unsupported operating system: $uname_s" ;;
     esac
 
     case "$uname_m" in
     x86_64 | amd64) ARCH="x86_64" ;;
-    aarch64 | arm64) ARCH="aarch64" ;;
+    aarch64 | arm64)
+        if [ "$OS" = "freebsd" ]; then
+            err "FreeBSD prebuilt releases are x86_64 only today; build from source or use a x86_64 host"
+        fi
+        ARCH="aarch64"
+        ;;
     *) err "unsupported architecture: $uname_m" ;;
     esac
+}
+
+# FreeBSD base ships fetch(1) but not curl/wget/bash. The script is bash; point
+# users at pkg once, then the fetch pipe works without curl.
+require_bash() {
+    if [ "$(uname -s)" != "FreeBSD" ]; then
+        return 0
+    fi
+    if has_cmd bash; then
+        return 0
+    fi
+    err "FreeBSD base does not include bash.
+
+  pkg install -y bash
+  fetch -o - https://hew.sh/install | bash"
 }
 
 # ---------------------------------------------------------------------------
@@ -121,10 +143,12 @@ http_get() {
     local url="$1"
     if has_cmd curl; then
         curl -fsSL "$url"
+    elif has_cmd fetch; then
+        fetch -o - "$url"
     elif has_cmd wget; then
         wget -qO- "$url"
     else
-        err "either curl or wget is required"
+        err "curl, fetch, or wget is required"
     fi
 }
 
@@ -132,10 +156,12 @@ http_download() {
     local url="$1" dest="$2"
     if has_cmd curl; then
         curl -fsSL -o "$dest" "$url"
+    elif has_cmd fetch; then
+        fetch -o "$dest" "$url"
     elif has_cmd wget; then
         wget -q -O "$dest" "$url"
     else
-        err "either curl or wget is required"
+        err "curl, fetch, or wget is required"
     fi
 }
 
@@ -164,10 +190,12 @@ compute_sha256() {
     local file="$1"
     if has_cmd sha256sum; then
         sha256sum "$file" | awk '{print $1}'
+    elif has_cmd sha256; then
+        sha256 -q "$file"
     elif has_cmd shasum; then
         shasum -a 256 "$file" | awk '{print $1}'
     else
-        err "sha256sum or shasum is required to verify downloads"
+        err "sha256sum, sha256, or shasum is required to verify downloads"
     fi
 }
 
@@ -200,6 +228,7 @@ step_skip() { printf " %bskipped%b\n" "${DIM}" "${RESET}"; }
 # ---------------------------------------------------------------------------
 main() {
     setup_colours
+    require_bash
     parse_args "$@"
     detect_platform
 

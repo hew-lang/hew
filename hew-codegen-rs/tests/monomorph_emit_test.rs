@@ -12,7 +12,7 @@
 //! correct concrete types.
 //!
 //! LESSONS applied:
-//! - `producer-bridge-before-codegen` (P1): G-1.c consumes G-1.b's `raw_mir`
+//! - `end-to-end-before-layer-thickening` (P1): G-1.c consumes G-1.b's `raw_mir`
 //!   output; this test is the cross-IR contract regression that proves the
 //!   bridge holds end-to-end at the LLVM IR level.
 //! - `checker-authority` (P0): type substitution is done upstream (G-1.a/b);

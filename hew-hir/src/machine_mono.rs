@@ -101,7 +101,7 @@
 //!   have no body and are not generic at HIR level, so no residual
 //!   domain applies.
 //!
-//! LESSONS: `producer-bridge-before-codegen` (P1),
+//! LESSONS: `end-to-end-before-layer-thickening` (P1),
 //! `checker-authority` (P0), `match-fail-closed` (P0).
 
 #![allow(

@@ -4141,7 +4141,7 @@ struct LowerCtx {
     /// `MonomorphisationCallTypeArgsViolation`; a generic callsite with
     /// no entry at all is treated as the trivially-monomorphic case
     /// (e.g. a builtin or runtime-symbol call) and skipped.
-    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     call_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Checker-authoritative ABI-selector facts for erased runtime types.
     /// Currently covers `HashSet` element-type dispatch (`i64`/`u64`/`str`
@@ -4150,7 +4150,7 @@ struct LowerCtx {
     /// Passive pass-through: `HashSet` ABI selection lives in MIR/codegen, not
     /// in HIR lowering.  Future consumer: E4 codegen and slice 4.7 spine
     /// widening when `HashSet` operations enter the Rust pipeline.
-    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     #[expect(
         dead_code,
         reason = "passive pass-through; future consumer is HashSet ABI selection in E4 codegen"
@@ -4162,7 +4162,7 @@ struct LowerCtx {
     /// Passive pass-through: HIR does not yet lower `Stmt::Assign` (it falls
     /// through to `unsupported`).  Future consumer: MIR/codegen compound-
     /// assignment lowering and Machine Lane B actor-field writes.
-    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     #[expect(
         dead_code,
         reason = "passive pass-through; future consumer is Stmt::Assign lowering in MIR/codegen"
@@ -4173,7 +4173,7 @@ struct LowerCtx {
     /// `assign_target_kinds` for every accepted assignment.
     ///
     /// Passive pass-through: same consumer timeline as `assign_target_kinds`.
-    /// (LESSONS: checker-authority P0, producer-bridge-before-codegen P1)
+    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     #[expect(
         dead_code,
         reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
@@ -4185,7 +4185,7 @@ struct LowerCtx {
     /// checker's cycle-detection pass. Consumed by `lower_actor` to populate
     /// `HirActorDecl.cycle_capable`. Future runtime consumer: actor codegen
     /// (refcount-cycle-breaking strategy selection).
-    /// (LESSONS: producer-bridge-before-codegen P1)
+    /// (LESSONS: end-to-end-before-layer-thickening P1)
     cycle_capable_actors: HashSet<String>,
     /// Per-actor protocol descriptors lifted from the checker
     /// (`TypeCheckOutput.actor_protocol_descriptors`). Consumed by
@@ -4245,7 +4245,7 @@ struct LowerCtx {
     /// `RecordLayoutTypeArgsViolation`; a generic init site with no
     /// entry at all is skipped (the checker only records sites whose
     /// args resolved fully concretely).
-    /// (LESSONS: `checker-authority` P0, `producer-bridge-before-codegen` P1)
+    /// (LESSONS: `checker-authority` P0, `end-to-end-before-layer-thickening` P1)
     record_init_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Distinct user-record instantiations observed at `StructInit`
     /// sites, accumulated as expression lowering walks the program.

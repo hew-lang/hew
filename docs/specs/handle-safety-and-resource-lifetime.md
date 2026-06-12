@@ -469,7 +469,7 @@ behind a flag, the following rules apply:
   `checker-codegen-pattern-contract`, `serializer-fail-closed`,
   `assignment-target-authority`, `exhaustive-traversal-and-lowering`,
   `native-wasm-parity`, historical retired-backend local type hints,
-  `static-cpp-object-libcxx-boundary`, `error-count-exit-code`,
+  `error-count-exit-code`,
   `preflight-perf-discipline`, `check-pass-does-not-imply-run-pass`,
   `network-smoke-readiness`.
 - Issues: #1228, #1251, #1252, #1281, #1295, #1314, #1399, #1500.

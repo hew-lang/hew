@@ -24,7 +24,7 @@
 //! G-1.a; true polymorphic-recursion cycle detection lands in G-1.b once
 //! substitution makes inner callsites concrete.
 //!
-//! LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
+//! LESSONS: `end-to-end-before-layer-thickening` (P1), `checker-authority` (P0).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -284,7 +284,7 @@ impl MonoRegistry {
 // Producer side-table: `TypeCheckOutput.record_init_type_args`. Downstream
 // MIR and LLVM consumers iterate this list to emit one layout per entry.
 //
-// LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
+// LESSONS: `end-to-end-before-layer-thickening` (P1), `checker-authority` (P0).
 
 /// Stable identity for one record-layout monomorphisation. Two struct-
 /// init sites that instantiate the same generic record with the same
@@ -503,7 +503,7 @@ pub fn substitute_type_params(
 // type with its concrete type args. Downstream MIR and codegen consumers
 // iterate `HirModule.enum_layouts` to emit one layout per entry.
 //
-// LESSONS: `producer-bridge-before-codegen` (P1), `checker-authority` (P0).
+// LESSONS: `end-to-end-before-layer-thickening` (P1), `checker-authority` (P0).
 
 /// Stable identity for one enum-layout monomorphisation. Two ctor sites that
 /// instantiate the same generic enum with the same concrete type args produce

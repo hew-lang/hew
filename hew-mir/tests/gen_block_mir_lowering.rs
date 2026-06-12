@@ -9,7 +9,7 @@
 //! synthesis) and S4 (LLVM state-machine codegen) consume. A regression here
 //! means the downstream slices are looking at malformed CFG.
 //!
-//! LESSONS row `producer-bridge-before-codegen` (P0): every cross-stage
+//! LESSONS row `end-to-end-before-layer-thickening` (P0): every cross-stage
 //! producer-emit must carry a structural assertion test before the consumer
 //! ships. This file is that gate for the generator MIR lane.
 

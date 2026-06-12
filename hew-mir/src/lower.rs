@@ -1043,7 +1043,7 @@ pub fn lower_hir_module_with_facts(
     // Variant index ordering is HIR-ctor-pre-pass authoritative (declaration
     // order, matching `machine_ctor_registry` assignments). Insertion order
     // is preserved from the HIR registry for codegen determinism.
-    // LESSONS: `producer-bridge-before-codegen` (P1) — both layout
+    // LESSONS: `end-to-end-before-layer-thickening` (P1) — both layout
     // emission (this loop) and value-class resolution (Slice 4) must land
     // in the same cluster; the HIR registry is unconsumed scaffolding without
     // this consumer.
@@ -26449,7 +26449,7 @@ fn resource_drop_fn(
 /// site materialises from the Place variant), not the type-derived
 /// `Duplex::close` / `Stream::close` / etc.
 ///
-/// LESSONS: producer-bridge-before-codegen, lifecycle-symmetry.
+/// LESSONS: end-to-end-before-layer-thickening, lifecycle-symmetry.
 fn place_aware_drop_fn(
     place: Place,
     ty_derived: Option<crate::model::DropFnSpec>,

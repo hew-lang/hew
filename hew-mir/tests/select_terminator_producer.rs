@@ -10,7 +10,7 @@
 //!   * `SelectArm::binding` populated (Some) for value-bearing arms with a
 //!     binding pattern, None for `AfterTimer` arms.
 //!
-//! LESSONS row `producer-bridge-before-codegen` (P0): every cross-stage
+//! LESSONS row `end-to-end-before-layer-thickening` (P0): every cross-stage
 //! producer-emit must carry a structural assertion test before the
 //! consumer ships, so a future regression is caught at the producer
 //! gate. This file is that gate for the select-actor-ask-race lane.

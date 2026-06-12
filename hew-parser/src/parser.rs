@@ -16,6 +16,7 @@ use crate::ast::{
 use hew_lexer::Token;
 use serde::Serialize;
 use std::cell::Cell;
+use std::rc::Rc;
 
 type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
@@ -383,17 +384,15 @@ const MAX_DEPTH: usize = 256;
 
 /// RAII guard that decrements the parser recursion depth on drop.
 ///
-/// Uses a raw pointer to avoid holding a borrow on the `Parser` struct,
-/// which would conflict with the mutable borrows needed by parse methods.
+/// Holds a cloned `Rc` of the depth counter so that `&mut self` reborrows
+/// in parse methods cannot invalidate the reference — eliminating the
+/// use-after-invalidation UB that a raw-pointer approach would introduce.
 #[derive(Debug)]
-struct RecursionGuard(*const Cell<usize>);
+struct RecursionGuard(Rc<Cell<usize>>);
 
 impl Drop for RecursionGuard {
     fn drop(&mut self) {
-        // SAFETY: The pointer targets `Parser::depth`, which lives at least as long
-        // as any `RecursionGuard` created from it (guards are local variables in
-        // parser methods that take `&mut self`).
-        let cell = unsafe { &*self.0 };
+        let cell = &*self.0;
         cell.set(cell.get() - 1);
     }
 }
@@ -440,7 +439,7 @@ pub struct Parser<'src> {
     tokens: Vec<(Token<'src>, Span)>,
     pos: usize,
     errors: Vec<ParseError>,
-    depth: Cell<usize>,
+    depth: Rc<Cell<usize>>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
@@ -552,7 +551,7 @@ impl<'src> Parser<'src> {
             tokens,
             pos: 0,
             errors,
-            depth: Cell::new(0),
+            depth: Rc::new(Cell::new(0)),
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
             scope_expr_depth: 0,
@@ -919,7 +918,7 @@ impl<'src> Parser<'src> {
             self.depth.set(d - 1);
             return None;
         }
-        Some(RecursionGuard(std::ptr::from_ref(&self.depth)))
+        Some(RecursionGuard(Rc::clone(&self.depth)))
     }
 
     /// If the token is a contextual keyword, return its identifier name.

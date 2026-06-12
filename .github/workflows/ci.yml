@@ -381,10 +381,17 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests are covered without an explicit flag.
+        # The wasi-runner e2e tests (eval_wasm_* and the wasi_run_e2e
+        # binary) need wasmtime plus the wasm runtime archive; they run and
+        # gate in the normal "Build & test" job, so they are excluded from the
+        # instrumented run rather than duplicating that wasm setup here (which
+        # would also hit the llvm-cov target-dir path issue). Their Rust-side
+        # coverage is marginal — they drive a wasmtime subprocess.
         run: >
           cargo llvm-cov nextest
           --workspace --exclude hew-wasm
           --profile ci
+          -E 'not test(eval_wasm) and not binary(wasi_run_e2e)'
           --lcov --output-path lcov.info
 
       - name: Generate HTML report

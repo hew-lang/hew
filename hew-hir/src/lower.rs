@@ -9119,7 +9119,23 @@ impl LowerCtx {
                     // whose resume edge binds the value.
                     let is_bindable_await = match &val_expr.0 {
                         Expr::Await(inner) => {
-                            let inner_key = self.mk_key(&inner.1);
+                            // Unwrap a bare block wrapping a single trailing method
+                            // call (`await { method() }`) to recover the method
+                            // call's span for the dispatch-map lookup — the checker
+                            // recorded the entry under the method call's span, not
+                            // the surrounding block's span.
+                            let effective_span = match &inner.0 {
+                                Expr::Block(block)
+                                    if block.stmts.is_empty()
+                                        && block.trailing_expr.as_deref().is_some_and(
+                                            |(e, _)| matches!(e, Expr::MethodCall { .. }),
+                                        ) =>
+                                {
+                                    &block.trailing_expr.as_deref().unwrap().1
+                                }
+                                _ => &inner.1,
+                            };
+                            let inner_key = self.mk_key(effective_span);
                             matches!(
                                 self.actor_method_dispatch.get(&inner_key),
                                 Some(ActorMethodKind::Ask(_, _))
@@ -10794,9 +10810,28 @@ impl LowerCtx {
                     }
                     return self.lower_expr(inner, intent);
                 }
+                // Unwrap a bare block wrapping a single trailing method call
+                // (`await { method() }`) to recover the effective inner expression
+                // and its span for the dispatch-map lookup.  The checker recorded
+                // the `ActorMethodKind::Ask` entry under the method call's span,
+                // not the surrounding block's span.
+                let (effective_inner_expr, effective_inner_span): (&Spanned<Expr>, &Span) =
+                    match &inner.0 {
+                        Expr::Block(block)
+                            if block.stmts.is_empty()
+                                && block
+                                    .trailing_expr
+                                    .as_deref()
+                                    .is_some_and(|(e, _)| matches!(e, Expr::MethodCall { .. })) =>
+                        {
+                            let trailing = block.trailing_expr.as_deref().unwrap();
+                            (trailing, &trailing.1)
+                        }
+                        _ => (inner, &inner.1),
+                    };
                 if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
                     .actor_method_dispatch
-                    .get(&self.mk_key(&inner.1))
+                    .get(&self.mk_key(effective_inner_span))
                     .cloned()
                 {
                     // Lower the inner ask expression (type = raw reply_ty) then
@@ -10836,7 +10871,7 @@ impl LowerCtx {
                     // `ResolvedImplCall` / `RewriteToFunction` /
                     // `RemoteActorAsk` sibling arms.
                     self.try_register_enum_instantiation_ty(&result_ty, &span);
-                    let mut ask_expr = self.lower_expr(inner, intent);
+                    let mut ask_expr = self.lower_expr(effective_inner_expr, intent);
                     ask_expr.ty = result_ty;
                     return ask_expr;
                 }

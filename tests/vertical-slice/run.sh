@@ -682,6 +682,13 @@ run_accept_expect_stdout "lambda_callable_tell"
 # payload free. Stdout pins `Ok(10)` materialisation through the match.
 run_accept_expect_stdout "lambda_callable_ask"
 
+# Accept + run: block-wrapped actor-ask await (`await { actor.method() }`) must
+# type-check as `Result<T, AskError>` and produce the correct reply value. Pre-
+# fix the checker saw `Expr::Block` instead of `Expr::MethodCall` and fell
+# through to the raw return type, producing "cannot match non-enum type" for
+# `Ok`/`Err` arms.
+run_check_run_expect_stdout "actor_ask_block_wrapped_await"
+
 # Accept: lambda-actor binding literally named `log` pins the call-syntax
 # dispatch routing — pre-fix the callee-binding check resolved `log("hi")`
 # to the math `log` floor before the lambda-actor surface was consulted,

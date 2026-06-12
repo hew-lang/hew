@@ -138,13 +138,10 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: release-gate-linux-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: release-gate-linux-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-linux"
 
       - name: Build all release crates
         run: |
@@ -266,13 +263,10 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: release-gate-linux-aarch64-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: release-gate-linux-aarch64-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-linux"
 
       - name: Build all release crates
         run: |
@@ -362,13 +356,10 @@ jobs:
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "${LLD_PREFIX}/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: release-gate-macos-arm64-macos13-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: release-gate-macos-arm64-macos13-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-macos"
 
       - name: Build all release crates
         run: |
@@ -437,14 +428,10 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~\.cargo\registry\
-            ~\.cargo\git\
-            target\
-          key: release-gate-windows-llvmv3-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: release-gate-windows-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-windows"
 
       - name: Install LLVM 22
         uses: ./.github/actions/setup-llvm

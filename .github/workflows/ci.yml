@@ -93,15 +93,10 @@ jobs:
           toolchain: stable
           components: clippy, rustfmt
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
-            lint-${{ runner.os }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "lint"
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX or llvm-config on PATH for
@@ -165,13 +160,10 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: playground-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: playground-wasm-${{ runner.os }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "playground-wasm"
 
       - name: Install wasm-pack v0.13.1
         run: |
@@ -228,15 +220,11 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-linux"
 
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
@@ -372,16 +360,11 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
-            coverage-${{ runner.os }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "coverage"
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
@@ -473,15 +456,11 @@ jobs:
         with:
           tool: nextest
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~\.cargo\registry\
-            ~\.cargo\git\
-            target\
-          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-windows"
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
@@ -548,15 +527,11 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
+          prefix-key: "v1-llvm22"
+          shared-key: "build-test-macos"
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'

@@ -35,9 +35,16 @@ if [[ ! -f "$LIBHEW" ]]; then
     exit 1
 fi
 
-# Portable mtime: macOS uses stat -f %m, Linux uses stat -c %Y.
+# Portable mtime. Order matters: try GNU `stat -c %Y` (Linux) FIRST, then fall
+# back to BSD `stat -f %m` (macOS). A BSD-first probe is NOT safe on Linux —
+# GNU `stat -f` is --file-system mode and SUCCEEDS on a regular file, emitting a
+# multi-line filesystem description that begins `  File: "..."`. That non-zero-
+# exit-free success means the `||` fallback never runs, so `mtime` captured the
+# description and later blew up `(( mtime > ... ))` under `set -u` on the bare
+# token `File` ("File: unbound variable"). GNU's `-c` fails cleanly on BSD, so
+# GNU-first works on both platforms.
 get_mtime() {
-    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 
 lib_mtime=$(get_mtime "$LIBHEW")

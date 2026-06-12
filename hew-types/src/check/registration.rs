@@ -3184,46 +3184,38 @@ impl Checker {
         self.register_rcfree_members_for_type(identity, &type_def);
 
         self.type_defs.insert(identity.to_string(), type_def);
-        self.record_type_def_inference_holes(identity, hole_vars);
         // A new handle-bearing candidate entered `type_defs`; invalidate the
         // cached handle-bearing classification the same way the qualified
         // type-alias path does.
         self.handle_bearing_dirty = true;
 
-        // Collect init() parameter shapes for supervisor wired_to type-compatibility checks.
-        // Stores (param_name, outer_type, first_type_arg) for each init param.
-        // Only `TypeExpr::Named` params are represented; complex types store the outer name only.
+        // Collect resolved init() parameter types for supervisor checks.  The
+        // byte-copy wall is fail-closed: any shape that does not resolve to a
+        // scalar `Ty` is rejected at the parameter type span.
         //
         // Always insert — actors with no init block get an empty vec so that a
         // `wired_to:` reference to such an actor correctly fires
         // "no parameter named X" (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`) rather
         // than silently passing through the "unknown actor" early-return.
-        let params: Vec<(String, String, Option<String>)> = if let Some(init) = &ad.init {
+        let params: Vec<ActorInitParamInfo> = if let Some(init) = &ad.init {
             init.params
                 .iter()
                 .map(|p| {
-                    let (outer, inner) = match &p.ty.0 {
-                        TypeExpr::Named { name, type_args } => (
-                            name.clone(),
-                            type_args.as_ref().and_then(|args| {
-                                args.first().and_then(|(te, _)| {
-                                    if let TypeExpr::Named { name: n, .. } = te {
-                                        Some(n.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }),
-                        ),
-                        _ => (String::new(), None),
-                    };
-                    (p.name.clone(), outer, inner)
+                    let mut init_param_hole_vars = Vec::new();
+                    let ty =
+                        self.resolve_registered_annotation_ty(&p.ty, &mut init_param_hole_vars);
+                    ActorInitParamInfo {
+                        name: p.name.clone(),
+                        ty,
+                        span: p.ty.1.clone(),
+                    }
                 })
                 .collect()
         } else {
             vec![]
         };
         self.actor_init_params.insert(identity.to_string(), params);
+        self.record_type_def_inference_holes(identity, hole_vars);
     }
 
     pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {

@@ -89,6 +89,9 @@ impl Checker {
 
         // ── 7. Children must not declare #[every] periodic handlers ──────────
         self.check_supervisor_periodic_children(sd, span);
+
+        // ── 8. Supervised child init args must be BitCopy (byte-copy wall) ───
+        self.check_supervisor_init_args_bitcopy(sd, span);
     }
 
     /// Reject supervisor children whose actor type declares `#[every(duration)]`
@@ -122,6 +125,81 @@ impl Checker {
                         sd.name, child.name, child.actor_type, handler, handler
                     ),
                 ));
+            }
+        }
+    }
+
+    /// Reject supervised child init args unless the actor init-parameter type is
+    /// provably one of the checker's `BitCopy` scalar primitives: `i8`, `i16`,
+    /// `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `char`.
+    ///
+    /// WHY: the supervisor bootstrap emits a byte-copy state template for each
+    /// child.  Both the initial spawn and every restart byte-copy that template
+    /// into the new actor's state.  Anything except a scalar `BitCopy` primitive
+    /// might carry ownership, handles, aliases, generic layout, or other
+    /// untracked invariants that cannot be safely duplicated by byte-copy.
+    ///
+    /// The longer-term fix is an init-closure restart model (v0.6) where the
+    /// supervisor re-runs user code to construct fresh owned state for each
+    /// restart.  This wall is the stepping stone: it makes the limitation
+    /// explicit at compile time rather than silently emitting unsound code.
+    ///
+    /// WHEN-OBSOLETE: when the supervisor restart path uses an init-closure
+    /// (`state_clone_fn` + per-child restart fn) to produce a fresh, independently-
+    /// owned state for each new actor instance instead of byte-copying the template.
+    ///
+    /// WHAT: introduce a `restart_fn` slot in `HewChildSpec` that the codegen
+    /// populates with an actor-specific closure.  The runtime calls it instead of
+    /// memcpy-ing `init_state` on restart.  Once that path lands, remove this
+    /// check and flip its reject fixtures to accept.
+    fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
+        for child in &sd.children {
+            // Pool children are spawned dynamically — their init args are not
+            // stored in a fixed state template — so they are exempt.
+            if child.is_pool {
+                continue;
+            }
+
+            // Only children with explicit init args have the byte-copy problem.
+            if child.args.is_empty() {
+                continue;
+            }
+
+            // Look up the actor's init parameter list.  Unknown actors are
+            // handled elsewhere; skip here to avoid duplicate diagnostics.
+            let Some(init_params) = self.actor_init_params.get(&child.actor_type).cloned() else {
+                continue;
+            };
+
+            for (arg_name, _arg_expr) in &child.args {
+                // Find the matching init parameter by name.
+                let Some(param) = init_params.iter().find(|param| param.name == *arg_name) else {
+                    // Missing-param errors are reported elsewhere (wired_to check
+                    // or MIR lowering); skip here.
+                    continue;
+                };
+
+                if !ty_is_supervisor_init_bitcopy_scalar(&param.ty) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        param.span.clone(),
+                        format!(
+                            "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
+                             (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
+                             init args are byte-copied into the state template and replayed on \
+                             every restart, so only scalar BitCopy primitives (`i8`, `i16`, \
+                             `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, \
+                             `char`) are admitted. Owned, generic, alias, user-defined, handle, \
+                             and otherwise unrecognized types are rejected until the v0.6 \
+                             init-closure restart model",
+                            sd.name,
+                            child.name,
+                            child.actor_type,
+                            arg_name,
+                            param.ty.user_facing()
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -379,7 +457,7 @@ impl Checker {
             return;
         };
 
-        let Some(param) = params.iter().find(|(name, _, _)| name == param_key) else {
+        let Some(param) = params.iter().find(|param| param.name == param_key) else {
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 span.clone(),
@@ -393,27 +471,13 @@ impl Checker {
             return;
         };
 
-        let (_, outer_type, first_inner_type) = param;
-
         // Expected: outer has the supervisor-local pid role, inner = expected_sibling_type.
         // RemotePid is intentionally rejected here by role: supervisors are local, and a
         // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
-        let type_ok = crate::lookup_builtin_type(outer_type).is_some_and(|builtin| {
-            builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid)
-        }) && first_inner_type
-            .as_deref()
-            .is_some_and(|t| t == expected_sibling_type);
+        let type_ok = supervisor_local_pid_target(&param.ty)
+            .is_some_and(|target_type| target_type == expected_sibling_type);
 
         if !type_ok {
-            let actual_type = if first_inner_type.is_some() {
-                format!(
-                    "{}<{}>",
-                    outer_type,
-                    first_inner_type.as_deref().unwrap_or("?")
-                )
-            } else {
-                outer_type.clone()
-            };
             self.errors.push(TypeError::new(
                 TypeErrorKind::InvalidOperation,
                 span.clone(),
@@ -421,7 +485,8 @@ impl Checker {
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
                      `{expected_sibling_type}`, but `{dependent_actor_type}::init` parameter \
-                     `{param_key}` has type `{actual_type}` (expected `LocalPid<{expected_sibling_type}>`)"
+                     `{param_key}` has type `{}` (expected `LocalPid<{expected_sibling_type}>`)",
+                    param.ty.user_facing()
                 ),
             ));
         }
@@ -1732,6 +1797,47 @@ impl Checker {
                 self.generic_ctx.pop();
             }
         }
+    }
+}
+
+/// Fail-closed scalar allowlist for supervised child init args.
+///
+/// Authority: this enumerates the scalar `Ty` variants from the checker-owned
+/// primitive set in `hew-types/src/ty.rs` (`PRIMITIVE_ALIASES` and
+/// `Ty::from_canonical_primitive_name`): fixed-width ints, floats, `bool`, and
+/// `char`. Other primitive variants in that set (`isize`, `usize`, `string`,
+/// `bytes`, `duration`, unit, never) are deliberately not admitted.
+fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::F32
+            | Ty::F64
+            | Ty::Bool
+            | Ty::Char
+    )
+}
+
+fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
+    match ty {
+        Ty::Named {
+            args,
+            builtin: Some(builtin),
+            ..
+        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid) => {
+            match args.as_slice() {
+                [Ty::Named { name, args, .. }] if args.is_empty() => Some(name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

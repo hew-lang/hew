@@ -4316,3 +4316,58 @@ fn run_fork_args_spawn_scribbled_no_freed_read() {
     let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
+
+/// Byte-copy wall: a supervised child whose actor init-parameter type is not a
+/// scalar `BitCopy` primitive must be rejected at `hew check` with
+/// `E_SUPERVISOR_INIT_ARG_NON_BITCOPY` before reaching codegen.
+///
+/// WHY: the supervisor bootstrap byte-copies the init args into a state
+/// template.  On every spawn and restart, the template is memcpy'd into the
+/// fresh actor.  This wall admits only scalar `BitCopy` primitives and rejects
+/// owned, generic, alias, user-defined, handle, and unrecognized types until
+/// the v0.6 init-closure restart model is in place.
+#[test]
+fn check_supervisor_init_arg_non_bitcopy_rejected() {
+    require_codegen();
+    let combined = check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy.hew");
+    assert!(
+        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
+        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("string"),
+        "diagnostic must name the rejected type; got: {combined}"
+    );
+    assert!(
+        combined.contains("only scalar BitCopy primitives"),
+        "diagnostic must describe scalar-only admission; got: {combined}"
+    );
+}
+
+#[test]
+fn check_supervisor_init_arg_non_bitcopy_evasions_rejected() {
+    require_codegen();
+    let combined =
+        check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy_evasions.hew");
+    assert!(
+        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
+        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
+    );
+    for expected_type in [
+        "Option<string>",
+        "(string, i64)",
+        "Wrapper",
+        "string",
+        "HashMap<string, i64>",
+        "HashSet<i64>",
+    ] {
+        assert!(
+            combined.contains(expected_type),
+            "diagnostic must name rejected type `{expected_type}`; got: {combined}"
+        );
+    }
+    assert!(
+        combined.contains("only scalar BitCopy primitives"),
+        "diagnostic must describe scalar-only admission; got: {combined}"
+    );
+}

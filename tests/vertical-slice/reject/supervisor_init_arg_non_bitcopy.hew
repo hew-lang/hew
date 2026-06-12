@@ -1,0 +1,29 @@
+// Reject fixture: supervised child init arg with a non-scalar type.
+//
+// The supervisor bootstrap byte-copies init args into the state template.
+// Only scalar BitCopy primitives are admitted; owned, alias, user-defined,
+// handle-bearing, generic, and unrecognized types are rejected until the v0.6
+// init-closure restart model.
+//
+// Expected diagnostic: E_SUPERVISOR_INIT_ARG_NON_BITCOPY
+// Planned fix: v0.6 init-closure restart model (supervisor restart_fn).
+
+actor Greeter {
+    let name: string;
+    init(name: string) {
+        name = name;
+    }
+    receive fn greet() {}
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child g: Greeter(name: "hello");
+}
+
+fn main() -> i64 {
+    spawn App;
+    42
+}

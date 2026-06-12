@@ -842,6 +842,45 @@ fn await_in_binary_operand_rejects() {
 
 // ── TI-5 escape-via-return tests ────────────────────────────────────────────
 
+// ── Block-wrapped non-ask await guard / lowering consistency ────────────────
+
+/// Regression (PR #1841): `let b = await { conn.read() };` must emit
+/// `AwaitOutOfPosition` and not slip through the let-value guard.
+///
+/// Before the fix the `is_bindable_await` guard computed one unwrapped
+/// `inner_key` (trailing-call span) and reused it for ALL side-table checks
+/// including `conn_await_reads`.  The checker records `conn_await_reads` under
+/// the method-call span, so the guard found the entry and returned `true` —
+/// allowing the let-value through.  The corresponding lowering arm at
+/// `Expr::Await` then looked up `conn_await_reads` by the BLOCK span (`inner.1`),
+/// found nothing, and fell through to the generic await path, producing an
+/// inconsistent or silently wrong HIR node.
+///
+/// After the fix only the `actor_method_dispatch` lookup uses the unwrapped
+/// effective span; the non-ask tables (`conn_await_reads`, `listener_await_accepts`,
+/// stream/channel recv) use the original `inner.1` span.  A block-wrapped
+/// `conn.read()` in a let-value position therefore fails the guard and the HIR
+/// lowering emits `AwaitOutOfPosition`, consistent with `main`-branch behaviour.
+#[test]
+fn block_wrapped_conn_read_await_in_let_value_rejects_with_await_out_of_position() {
+    // `fn handler(conn: Connection)` — Connection is a recognised built-in
+    // handle type; no import required.  The block-wrapped `await { conn.read() }`
+    // is the minimal non-ask bindable-await shape that the pre-fix guard would
+    // incorrectly accept (the checker records conn_await_reads under the method-
+    // call span, matching the unwrapped key but not the block span the lowering
+    // arm uses).
+    let output = lower("fn handler(conn: Connection) { let b = await { conn.read() }; }");
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
+        "block-wrapped `await {{ conn.read() }}` in let-value must emit \
+         AwaitOutOfPosition (guard/lowering span consistency); got: {:?}",
+        output.diagnostics
+    );
+}
+
 /// TI-5 (reject): returning an inferred `Task<T>` binding from inside a fork
 /// body must emit `TaskCannotEscape`. The type checker rejects user-written
 /// `Task<T>` annotations via `TaskNotNameable`; this closes the inferred-escape path.

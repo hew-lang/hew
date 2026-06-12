@@ -9119,30 +9119,44 @@ impl LowerCtx {
                     // whose resume edge binds the value.
                     let is_bindable_await = match &val_expr.0 {
                         Expr::Await(inner) => {
-                            // Unwrap a bare block wrapping a single trailing method
-                            // call (`await { method() }`) to recover the method
-                            // call's span for the dispatch-map lookup — the checker
-                            // recorded the entry under the method call's span, not
-                            // the surrounding block's span.
-                            let effective_span = match &inner.0 {
-                                Expr::Block(block)
-                                    if block.stmts.is_empty()
-                                        && block.trailing_expr.as_deref().is_some_and(
-                                            |(e, _)| matches!(e, Expr::MethodCall { .. }),
-                                        ) =>
-                                {
-                                    &block.trailing_expr.as_deref().unwrap().1
-                                }
-                                _ => &inner.1,
+                            // For the actor-ask dispatch check: unwrap a bare block
+                            // wrapping a single trailing method call
+                            // (`await { method() }`) to recover the method call's
+                            // span — the checker recorded `ActorMethodKind::Ask`
+                            // under the method call's span, not the surrounding
+                            // block's span.
+                            //
+                            // All other side-table checks (conn_await_reads,
+                            // listener_await_accepts, stream/channel recv) use the
+                            // ORIGINAL `inner.1` span, matching the key the checker
+                            // recorded and the key the corresponding Expr::Await
+                            // lowering arms use. Widening the unwrap to those tables
+                            // would create a guard/lowering span mismatch: the guard
+                            // would pass on the trailing-call key while the lowering
+                            // arm's lookup would find nothing (it uses the block's
+                            // span), leaving the await unbindable.
+                            let ask_key = {
+                                let ask_span = match &inner.0 {
+                                    Expr::Block(block)
+                                        if block.stmts.is_empty()
+                                            && block.trailing_expr.as_deref().is_some_and(
+                                                |(e, _)| matches!(e, Expr::MethodCall { .. }),
+                                            ) =>
+                                    {
+                                        &block.trailing_expr.as_deref().unwrap().1
+                                    }
+                                    _ => &inner.1,
+                                };
+                                self.mk_key(ask_span)
                             };
-                            let inner_key = self.mk_key(effective_span);
+                            let original_key = self.mk_key(&inner.1);
                             matches!(
-                                self.actor_method_dispatch.get(&inner_key),
+                                self.actor_method_dispatch.get(&ask_key),
                                 Some(ActorMethodKind::Ask(_, _))
-                            ) || self.conn_await_reads.contains_key(&inner_key)
-                                || self.listener_await_accepts.contains(&inner_key)
-                                || self.is_stream_recv_await(&inner_key)
-                                || self.is_channel_recv_await(&inner_key)
+                            ) || self.conn_await_reads.contains_key(&original_key)
+                                || self.listener_await_accepts.contains(&original_key)
+                                || self.is_stream_recv_await(&original_key)
+                                || self.is_channel_recv_await(&original_key)
                         }
                         _ => false,
                     };

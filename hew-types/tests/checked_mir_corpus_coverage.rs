@@ -124,6 +124,7 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_instant_duration_since",
     "hew_instant_elapsed",
     "hew_instant_now",
+    "hew_observe_barrier",
     "hew_observe_read_u64",
     "hew_observe_scrape",
     "hew_observe_series",

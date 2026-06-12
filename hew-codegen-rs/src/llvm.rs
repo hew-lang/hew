@@ -801,6 +801,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::ObserveReadU64
         | F::ObserveScrape
         | F::ObserveSeries
+        | F::ObserveBarrier
         | F::OptionIsNone
         | F::OptionIsSome
         | F::OptionUnwrap(_)
@@ -1452,6 +1453,7 @@ fn intern_runtime_decl<'ctx>(
         "hew_observe_read_u64" => i64_ty.fn_type(&[ptr_ty.into()], false),
         "hew_observe_scrape" => ptr_ty.fn_type(&[], false),
         "hew_observe_series" => ptr_ty.fn_type(&[], false),
+        "hew_observe_barrier" => i64_ty.fn_type(&[], false),
         // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
         // is deposited; returns the malloc'd reply pointer (caller frees
@@ -21402,6 +21404,35 @@ fn lower_call_runtime_abi(
                     .builder
                     .build_store(dest_ptr, result_val)
                     .llvm_ctx(store_ctx)?;
+            }
+            let _ = i32_ty;
+        }
+        F::ObserveBarrier => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_observe_barrier): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_observe_barrier_call")
+                .llvm_ctx("hew_observe_barrier call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_observe_barrier returned void".into())
+            })?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .llvm_ctx("hew_observe_barrier store")?;
             }
             let _ = i32_ty;
         }

@@ -7224,56 +7224,52 @@ mod tests {
     /// RAII helper that sets the fast SWIM-timing env vars for a test and
     /// removes them on drop, all under `ENV_LOCK` exclusive access.
     ///
-    /// The base fast-env budgets (40 ms ping/period, 120 ms suspect) are
-    /// multiplied by `HEW_SWIM_TEST_TIME_SCALE` (default 1) so `TSan`'s ~10×
-    /// slowdown does not cause false-DEAD verdicts.  The `make tsan` target
-    /// sets `HEW_SWIM_TEST_TIME_SCALE=10`; plain `cargo test` leaves it unset
-    /// (scale = 1, unchanged behaviour).  Production timing is untouched: the
-    /// `HEW_SWIM_PROTOCOL_PERIOD_MS` / `HEW_SWIM_PING_TIMEOUT_MS` /
-    /// `HEW_SWIM_SUSPECT_TIMEOUT_MS` knobs read by `cluster_config_from_env`
-    /// at node-start time are set here only for the test's duration.
-    struct SwimTimingEnv {
-        /// The resolved time scale (≥ 1).  Exposed so tests can derive their
-        /// own wall-clock waits from the same multiplier.
-        scale: u32,
-    }
+    /// The base fast-env budgets (40 ms protocol period, 120 ms suspect
+    /// timeout) are set as environment variables so `cluster_config_from_env`
+    /// picks them up at node-start time.  These tests run under simulated time
+    /// (enabled before any node starts so the SWIM driver picks up the sim
+    /// clock), so `HEW_SWIM_TEST_TIME_SCALE` is irrelevant for them: the
+    /// driver never reads real wall time during the test.
+    struct SwimTimingEnv;
+
+    /// Protocol period used by the fast-test SWIM clock (ms).
+    const SWIM_TEST_PERIOD_MS: u64 = 40;
+    /// Suspect timeout used by the fast-test SWIM clock (ms).
+    const SWIM_TEST_SUSPECT_TIMEOUT_MS: u64 = 120;
 
     impl SwimTimingEnv {
+        /// Enable simulated time and set fast SWIM timing env vars.
+        ///
+        /// Simtime MUST be enabled before any node starts so that the SWIM
+        /// driver captures the sim clock at spawn time (the choice is made
+        /// once in [`crate::swim_driver::start_swim_driver`]).
         fn fast() -> Self {
-            // WHY: TSan imposes ~10× CPU overhead, stretching real elapsed time
-            // so that 40 ms protocol periods expire before TSan-slowed threads
-            // complete a ping round-trip, producing false DEAD verdicts.
-            // WHEN obsolete: if the driven-SWIM tests are converted to a mock
-            // clock, the scale knob becomes unnecessary.
-            // WHAT the real solution looks like: inject a mock monotonic clock
-            // into the SWIM driver so wall time is irrelevant.
-            let scale: u32 = crate::env::ENV_LOCK.read_access(|()| {
-                std::env::var("HEW_SWIM_TEST_TIME_SCALE")
-                    .ok()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .filter(|v| *v >= 1)
-                    .unwrap_or(1)
-            });
+            // Enable simtime first: SWIM drivers started after this call will
+            // use the sim clock.  Start at T=0.
+            crate::deterministic::hew_simtime_enable(0);
             crate::env::ENV_LOCK.access(|()| {
                 // SAFETY: ENV_LOCK provides exclusive write access to the environ.
                 unsafe {
-                    std::env::set_var("HEW_SWIM_PROTOCOL_PERIOD_MS", (40 * scale).to_string());
-                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", (40 * scale).to_string());
-                    std::env::set_var("HEW_SWIM_SUSPECT_TIMEOUT_MS", (120 * scale).to_string());
+                    std::env::set_var(
+                        "HEW_SWIM_PROTOCOL_PERIOD_MS",
+                        SWIM_TEST_PERIOD_MS.to_string(),
+                    );
+                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", SWIM_TEST_PERIOD_MS.to_string());
+                    std::env::set_var(
+                        "HEW_SWIM_SUSPECT_TIMEOUT_MS",
+                        SWIM_TEST_SUSPECT_TIMEOUT_MS.to_string(),
+                    );
                 }
             });
-            Self { scale }
-        }
-
-        /// Returns the resolved time-scale multiplier so tests can derive their
-        /// own wall-clock waits from the same factor.
-        fn scale(&self) -> u32 {
-            self.scale
+            Self
         }
     }
 
     impl Drop for SwimTimingEnv {
         fn drop(&mut self) {
+            // Disable simtime first so any still-running threads switch back to
+            // the real clock before the env vars are removed.
+            crate::deterministic::hew_simtime_disable();
             crate::env::ENV_LOCK.access(|()| {
                 // SAFETY: ENV_LOCK provides exclusive access to the environ.
                 unsafe {
@@ -7294,6 +7290,11 @@ mod tests {
     /// call sites before the driver. Without the driver, node B would stay
     /// SUSPECT forever (the connection-event path only reaches SUSPECT) and the
     /// partition recv below would block until the test's deadline.
+    ///
+    /// Runs under simulated time (enabled by `SwimTimingEnv::fast()` before
+    /// any node starts): the SWIM driver uses the sim clock, so the test is
+    /// load-immune — wall time is irrelevant and `HEW_SWIM_TEST_TIME_SCALE`
+    /// has no effect on these tests.
     #[test]
     fn dead_node_is_detected_by_survivor_via_driven_swim() {
         use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};
@@ -7302,7 +7303,9 @@ mod tests {
         const NODE_A: u16 = 340;
         const NODE_B: u16 = 341;
         let _guard = crate::runtime_test_guard();
-        let swim_env = SwimTimingEnv::fast();
+        // Enable simtime BEFORE any node starts so the SWIM drivers pick up
+        // the sim clock at thread spawn time.
+        let _swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
         let node_a_bind = CString::new("127.0.0.1:0").unwrap();
@@ -7311,9 +7314,9 @@ mod tests {
         assert!(!node_a.as_ptr().is_null());
         // SAFETY: node_a is valid.
         unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        // Allow node A's runtime to settle before connecting; scaled so TSan's
-        // thread-scheduling overhead does not race the node-start path.
-        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
+        // Allow node A's runtime to settle before connecting.  50 ms real is
+        // enough; no scaling needed (wall time is not the constraint here).
+        thread::sleep(Duration::from_millis(50));
 
         let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
 
@@ -7344,9 +7347,23 @@ mod tests {
         // SAFETY: node_b is valid.
         unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
 
-        // The blocked recv must resolve to PartitionDetected once the driver
-        // declares B DEAD and on_member_dead fans out. Generous deadline (the
-        // suspect timeout is 120 ms; allow for scheduler jitter under load).
+        // The test controls sim time: advance past the suspect timeout so that
+        // A's driver observes elapsed > suspect_timeout_ms on its next tick.
+        // The driver loop's sim_sleep_ms yields without advancing time; it only
+        // fires a tick when SIMTIME_MS crosses next_period_ms.  Advancing by
+        // suspect_timeout + 2 * period guarantees at least one tick crosses the
+        // threshold.  After that, hew_cluster_tick escalates B to DEAD and
+        // on_member_dead fans out the PartitionDetected, unblocking recv.
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SWIM test timing constants are small (< 1000 ms); value is always representable as i64"
+        )]
+        crate::deterministic::hew_simtime_advance_ms(
+            (SWIM_TEST_SUSPECT_TIMEOUT_MS + 2 * SWIM_TEST_PERIOD_MS) as i64,
+        );
+        // recv_handle blocks until PartitionDetected arrives from on_member_dead.
+        // No real-time deadline is needed: the driver fires as soon as it gets
+        // a scheduling turn after the simtime advance (microseconds of real time).
         let result = recv_handle.join().expect("recv thread panicked");
         assert!(
             matches!(result, Err(RecvError::PartitionDetected)),
@@ -7369,25 +7386,44 @@ mod tests {
     }
 
     /// No false positive: two connected, both-alive nodes run the driven SWIM
-    /// detector for many protocol periods and neither is wrongly declared DEAD.
+    /// detector for many simulated protocol periods and neither is wrongly
+    /// declared DEAD.
     ///
     /// This proves the detector does not kill a slow-but-reachable peer: as
-    /// long as the mesh connection stays up (refreshing last-seen and feeding
-    /// the phi-accrual detector), the tick never escalates either node.
+    /// long as the mesh connection stays up (refreshing last-seen via incoming
+    /// SWIM frames) the tick never escalates either node.
+    ///
+    /// Runs under simulated time.  The test explicitly advances `SIMTIME_MS`
+    /// by one protocol period at a time, sleeping real `SWIM_ALIVE_REAL_SLEEP_MS`
+    /// between advances so the loopback TCP ping-ack round-trip completes and
+    /// the connection-reader thread can update `last_seen_ms = hew_now_ms()`.
+    /// This is load-immune: the SWIM thresholds are in sim time, so `TSan`'s
+    /// ~10× CPU overhead never causes a false-DEAD verdict.
+    ///
+    /// `HEW_SWIM_TEST_TIME_SCALE` is irrelevant for this test.
     #[cfg_attr(windows, ignore)]
-    // WINDOWS-TODO: SwimTimingEnv::fast() uses 40ms periods; Windows 15ms timer resolution causes
-    // spurious DEAD verdicts because the phi-accrual heartbeat intervals fall within the OS
-    // scheduling jitter (15ms default timer granularity vs 40ms period). Fix requires either
-    // timeBeginPeriod(1)/NtSetTimerResolution to tighten the system clock, widening the
-    // fast-test periods to tolerate 15ms drift, or a high-resolution SWIM timer backed by
-    // IOCP timer queues. Unblock once the IOCP reactor (Phase 2) provides timer infrastructure.
+    // WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
+    // (15 ms OS timer granularity) than this test's real-sleep window.  Fix
+    // requires the IOCP reactor (Phase 2) timer infrastructure.
     #[test]
     fn alive_node_is_not_falsely_killed_by_driven_swim() {
         use crate::cluster::hew_cluster_member_state;
         const NODE_A: u16 = 342;
         const NODE_B: u16 = 343;
+        // Real-sleep budget per simulated period: long enough for a loopback
+        // TCP round-trip (and the connection-reader to update last_seen_ms)
+        // even under TSan's ~10× slowdown.  25 ms is generous for a loopback
+        // socket; actual round-trips are <1 ms on unloaded hardware.
+        const SWIM_ALIVE_REAL_SLEEP_MS: u64 = 25;
+        // Number of simulated protocol periods to observe.  3 periods span
+        // suspect_timeout (120 ms sim) so this exercises the "don't kill a live
+        // peer" invariant across the full timeout window.
+        const OBSERVATION_PERIODS: u64 = 5;
+
         let _guard = crate::runtime_test_guard();
-        let swim_env = SwimTimingEnv::fast();
+        // Enable simtime BEFORE any node starts so the SWIM drivers pick up
+        // the sim clock at thread spawn time.
+        let _swim_env = SwimTimingEnv::fast();
         crate::registry::hew_registry_clear();
 
         let node_a_bind = CString::new("127.0.0.1:0").unwrap();
@@ -7396,9 +7432,8 @@ mod tests {
         assert!(!node_a.as_ptr().is_null());
         // SAFETY: node_a is valid.
         unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
-        // Allow node A's runtime to settle before connecting; scaled so TSan's
-        // thread-scheduling overhead does not race the node-start path.
-        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
+        // Allow node A's runtime to settle before connecting.
+        thread::sleep(Duration::from_millis(50));
 
         let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
 
@@ -7408,27 +7443,43 @@ mod tests {
         // SAFETY: both nodes are valid here.
         unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
 
-        // Let the driver run for well beyond the suspect timeout while both
-        // nodes stay up. ~25 protocol periods at the configured period length.
-        // Scaled by the same factor as the SWIM budgets so the ratio holds
-        // under TSan (HEW_SWIM_TEST_TIME_SCALE=10 → 10 s observation window).
-        thread::sleep(Duration::from_millis(1_000 * u64::from(swim_env.scale())));
+        // Step sim time forward one protocol period at a time.  After each
+        // advance the driver fires a tick (its next_period_ms has been crossed);
+        // the real sleep gives the connection-reader thread time to process the
+        // resulting PING-ACK and update last_seen_ms = hew_now_ms() before the
+        // next period fires.  As long as each tick sees elapsed = one period (<
+        // suspect_timeout), neither node is declared DEAD.
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "SWIM_TEST_PERIOD_MS is 40; always fits in i64"
+        )]
+        for _ in 0..OBSERVATION_PERIODS {
+            crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS as i64);
+            // Give TCP threads time to complete the ping-ack round-trip and
+            // update last_seen_ms.  This is the only real sleep in the
+            // measurement window; it is proportional to loopback latency, not
+            // to SWIM protocol periods, so it is load-immune.
+            thread::sleep(Duration::from_millis(SWIM_ALIVE_REAL_SLEEP_MS));
 
-        // Neither node may have been declared DEAD on the other's view.
-        // SAFETY: A's cluster is live (node still running).
-        let a_view_of_b = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
-        // SAFETY: B's cluster is live (node still running).
-        let b_view_of_a = unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
-        assert_ne!(
-            a_view_of_b,
-            crate::cluster::MEMBER_DEAD,
-            "A must not declare a still-alive B as DEAD (state={a_view_of_b})"
-        );
-        assert_ne!(
-            b_view_of_a,
-            crate::cluster::MEMBER_DEAD,
-            "B must not declare a still-alive A as DEAD (state={b_view_of_a})"
-        );
+            // SAFETY: A's cluster is live (node still running).
+            let a_view_of_b =
+                unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+            // SAFETY: B's cluster is live (node still running).
+            let b_view_of_a =
+                unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
+            assert_ne!(
+                a_view_of_b,
+                crate::cluster::MEMBER_DEAD,
+                "A must not declare a still-alive B as DEAD after period \
+                 (state={a_view_of_b})"
+            );
+            assert_ne!(
+                b_view_of_a,
+                crate::cluster::MEMBER_DEAD,
+                "B must not declare a still-alive A as DEAD after period \
+                 (state={b_view_of_a})"
+            );
+        }
 
         // SAFETY: nodes were allocated in this test and remain valid.
         unsafe {

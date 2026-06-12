@@ -1,0 +1,143 @@
+name: Publish npm packages (npmjs canonical + GitHub Packages mirror)
+
+# Publishes the browser-facing Hew packages, versioned in lockstep with the
+# Cargo workspace version:
+#   @hew-lang/wasm          (hew-wasm — analysis / editor + LSP tooling)
+#   @hew-lang/sandbox-wasm  (hew-sandbox-wasm — sandbox bytecode export)
+#   @hew-lang/sandbox-vm    (hew-sandbox-vm — deterministic TS interpreter)
+#
+# npmjs is canonical; GitHub Packages is a mirror published in the same run.
+# Manual dispatch keeps publishing decoupled from the large release.yml gate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run packaging checks without publishing"
+        required: true
+        default: true
+        type: boolean
+      registry_url:
+        description: "Canonical registry URL to publish to"
+        required: true
+        default: "https://registry.npmjs.org/"
+        type: string
+
+concurrency:
+  group: publish-npm-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish-npm:
+    name: Build + publish to npmjs (canonical)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: publish-npm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: publish-npm-${{ runner.os }}-
+
+      - name: Install wasm-pack v0.13.1
+        run: |
+          set -euo pipefail
+          WASM_PACK_VERSION=0.13.1
+          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
+            -o "/tmp/${TARBALL}"
+          tar -xzf "/tmp/${TARBALL}" -C /tmp
+          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: ${{ inputs.registry_url }}
+
+      - name: Build npm packages
+        run: node scripts/build-npm-packages.mjs
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: target/npm
+
+      - name: Publish to npmjs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REGISTRY_URL: ${{ inputs.registry_url }}
+        run: |
+          set -euo pipefail
+          for dir in target/npm/*/; do
+            name="$(node -p "require('./${dir}package.json').name")"
+            version="$(node -p "require('./${dir}package.json').version")"
+            if npm view "${name}@${version}" version --registry "$REGISTRY_URL" >/dev/null 2>&1; then
+              echo "::notice::${name}@${version} already on ${REGISTRY_URL}; skipping."
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              npm publish "$dir" --dry-run --ignore-scripts --registry "$REGISTRY_URL"
+            else
+              npm publish "$dir" --provenance --ignore-scripts --registry "$REGISTRY_URL"
+            fi
+          done
+
+  mirror-github-packages:
+    name: Mirror to GitHub Packages
+    needs: build-and-publish-npm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@hew-lang"
+
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: target/npm
+
+      - name: Publish to GitHub Packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          for dir in target/npm/*/; do
+            name="$(node -p "require('./${dir}package.json').name")"
+            version="$(node -p "require('./${dir}package.json').version")"
+            if npm view "${name}@${version}" version --registry https://npm.pkg.github.com >/dev/null 2>&1; then
+              echo "::notice::${name}@${version} already on GitHub Packages; skipping."
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              npm publish "$dir" --dry-run --ignore-scripts --registry https://npm.pkg.github.com
+            else
+              npm publish "$dir" --ignore-scripts --registry https://npm.pkg.github.com
+            fi
+          done

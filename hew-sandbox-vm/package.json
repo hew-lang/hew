@@ -1,10 +1,43 @@
 {
-  "name": "@hew-lang/sandbox-vm-spec",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Specification and validation scaffold for the Hew educational sandbox VM.",
+  "name": "@hew-lang/sandbox-vm",
+  "version": "0.5.0",
+  "description": "Deterministic TypeScript interpreter for Hew sandbox bytecode (educational sandbox VM).",
+  "author": "Stephen Olesen",
+  "license": "MIT OR Apache-2.0",
   "type": "module",
+  "sideEffects": false,
+  "main": "./dist/interpreter/index.js",
+  "types": "./dist/interpreter/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/interpreter/index.d.ts",
+      "import": "./dist/interpreter/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hew-lang/hew.git"
+  },
+  "homepage": "https://github.com/hew-lang/hew/tree/main/hew-sandbox-vm#readme",
+  "bugs": {
+    "url": "https://github.com/hew-lang/hew/issues"
+  },
+  "keywords": [
+    "hew",
+    "sandbox",
+    "interpreter",
+    "vm",
+    "typescript"
+  ],
   "scripts": {
+    "prepack": "npm run build",
     "build": "tsc --project src/tsconfig.json && node scaffolding/scripts/validate-sandbox-vm.mjs",
     "parity:run": "node dist/interpreter/parity-runner.js",
     "test": "npm run build && node --test test/*.test.mjs",

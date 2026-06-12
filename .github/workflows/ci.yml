@@ -32,9 +32,9 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       playground: ${{ steps.filter.outputs.playground }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: filter
         with:
           # Required heavy checks may no-op for docs-only changes, but anything
@@ -86,21 +86,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust-build
         with:
-          components: clippy, rustfmt
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
-            lint-${{ runner.os }}-
+          components: 'clippy, rustfmt'
+          cache-shared-key: lint
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX or llvm-config on PATH for
@@ -137,7 +128,7 @@ jobs:
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496  # codeql-bundle-v2.25.6 (v4)
         with:
           sarif_file: clippy-results.sarif
           category: clippy
@@ -158,17 +149,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
+      - uses: ./.github/actions/setup-rust-build
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: playground-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: playground-wasm-${{ runner.os }}-
+          cache-shared-key: playground-wasm
 
       - name: Install wasm-pack v0.13.1
         run: |
@@ -200,7 +185,7 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install build tools
@@ -215,21 +200,11 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: taiki-e/install-action@nextest
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: actions/cache@v4
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+          tools: nextest
+          cache-shared-key: build-test-linux
 
       - name: Build Rust runtime and frontend (release)
         if: env.RUN_CODE_PATH == 'true'
@@ -302,7 +277,7 @@ jobs:
 
       - name: Setup Node.js for sandbox parity
         if: env.RUN_CODE_PATH == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -314,7 +289,7 @@ jobs:
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Linux)
@@ -335,34 +310,27 @@ jobs:
       # the repo std/. Pin std explicitly for the instrumented run; the normal
       # test job finds it relative to target/debug/ and needs no override.
       HEW_STD: ${{ github.workspace }}/std
+      # SWIM failure-detector tests use wall-clock protocol periods. Under
+      # cargo-llvm-cov instrumentation the build is slow enough to blow the
+      # unscaled budget and false-declare a still-alive peer DEAD
+      # (alive_node_is_not_falsely_killed_by_driven_swim). Widen the SWIM
+      # timing budgets the same way the instrumented sanitizer jobs do
+      # (Makefile asan/tsan set =10) so the detector tolerates the latency.
+      HEW_SWIM_TEST_TIME_SCALE: "10"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy coverage work while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
           components: llvm-tools
-
-      - uses: taiki-e/install-action@cargo-llvm-cov
-        if: env.RUN_CODE_PATH == 'true'
-      - uses: taiki-e/install-action@nextest
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: actions/cache@v4
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
-            coverage-${{ runner.os }}-
+          tools: nextest,cargo-llvm-cov
+          cache-shared-key: coverage
 
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
@@ -402,14 +370,14 @@ jobs:
 
       - name: Upload coverage (lcov)
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-lcov
           path: lcov.info
 
       - name: Upload coverage (HTML)
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-html
           path: coverage-html/
@@ -435,7 +403,7 @@ jobs:
         run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
         shell: pwsh
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -444,21 +412,11 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: taiki-e/install-action@nextest
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: actions/cache@v4
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          path: |
-            ~\.cargo\registry\
-            ~\.cargo\git\
-            target\
-          key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
+          tools: nextest
+          cache-shared-key: build-test-windows
 
       - name: Build Rust crates
         if: env.RUN_CODE_PATH == 'true'
@@ -481,7 +439,7 @@ jobs:
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Windows)
@@ -493,44 +451,29 @@ jobs:
     name: Build & test (macOS arm64)
     needs: changes
     runs-on: macos-14
-    timeout-minutes: 120
+    timeout-minutes: 60
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # The 3-core macOS runner (now un-throttled — no CARGO_BUILD_JOBS=1)
+      # runs the SWIM failure-detector tests under enough load that the
+      # default observation window false-positives a still-alive node as
+      # DEAD. Widen the window the same way the coverage job does; the
+      # tests honour this scale (hew-runtime/src/hew_node.rs).
+      HEW_SWIM_TEST_TIME_SCALE: "10"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust-build
         if: env.RUN_CODE_PATH == 'true'
         with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-
-      - uses: taiki-e/install-action@nextest
-        if: env.RUN_CODE_PATH == 'true'
-
-      - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
-        # libffi and zstd are runtime deps of the upstream LLVM macOS
-        # tarball; libxml2 ships in /usr/lib but libffi does not, so
-        # llvm-sys's static-link path fails to resolve -lffi without
-        # the brew bottle. libffi is keg-only on Homebrew, so we add its
-        # lib dir to the linker search path via RUSTFLAGS (LIBRARY_PATH
-        # is honoured by clang but not by every rustc link invocation).
-        run: |
-          brew install libffi zstd
-          LIBFFI_PREFIX="$(brew --prefix libffi)"
-          # Apple's bundled ld (Xcode 15.4) ships libLTO 15.0.0, which cannot
-          # parse LLVM 22 bitcode attribute kinds embedded in llvm-sys-221's
-          # static libs. Use the ld64.lld that ships in the same upstream
-          # LLVM 22.1.5 tarball we already vendor (on PATH via setup-llvm).
-          # LLD doesn't auto-add libc++/libc++abi the way Apple's ld does, so
-          # link them explicitly — LTO of llvm-sys's C++ static libs pulls
-          # in operator new/delete and __cxa_* runtime symbols.
-          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -C link-arg=-fuse-ld=lld -C link-arg=-lc++ -C link-arg=-lc++abi ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
+          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          tools: nextest
+          cache-shared-key: build-test-macos
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
@@ -538,29 +481,9 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - name: Add LLVM lib to runtime rpath
-        if: env.RUN_CODE_PATH == 'true'
-        # LLD links the test binaries against -lc++ -lc++abi from the
-        # upstream LLVM 22 tarball, but does not record an LC_RPATH for
-        # the dynamic loader. Without an rpath, dyld fails to locate
-        # libc++abi.1.dylib at execution time. Append a -Wl,-rpath link
-        # arg pointing at the vendored LLVM tarball's lib/ directory.
-        run: |
-          echo "RUSTFLAGS=${RUSTFLAGS} -C link-arg=-Wl,-rpath,${LLVM_SYS_221_PREFIX}/lib" >> "$GITHUB_ENV"
-
       - name: Set macOS deployment target
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
-
-      - uses: actions/cache@v4
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-          key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-
 
       - name: Build libhew.a (runtime + stdlib)
         if: env.RUN_CODE_PATH == 'true'
@@ -590,17 +513,17 @@ jobs:
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
-        # macos-14 is a 3-core / 7 GB runner. Test binaries that statically
-        # link llvm-sys pull in the full LLVM archive; ld64.lld linking
-        # several of them in parallel (default -j3) peaks well past 7 GB and
-        # the runner swaps itself into a multi-minute stall (orphaned lld,
-        # no progress). CARGO_BUILD_JOBS=1 serialises the build so at most
-        # one heavy link runs at a time. Cold builds are slower but complete
-        # within the timeout; cached (warm) runs are unaffected.
-        env:
-          CARGO_BUILD_JOBS: "1"
+        # Skip the leak-slope oracles AND the coro substrate-leak exec test on
+        # the 3-core macos-14 runner. Both compile/run Hew programs through LLVM
+        # at test time and measure RSS/leak behaviour over loops; on 3 cores
+        # under the subprocess-intensive group's parallelism they exceed the ci
+        # profile's exec budget (coro_substrate_leak_clean_native ran >480s and
+        # was terminated) and slope/leak measurement is timing-sensitive on a
+        # noisy cloud runner. The Linux job runs the full oracle + coro-leak set
+        # on its faster runner, so leak coverage is not lost.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
           --profile ci
+          -E 'not binary(~oracle) - test(~coro_substrate_leak)'

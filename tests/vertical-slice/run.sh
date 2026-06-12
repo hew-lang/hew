@@ -115,11 +115,44 @@ expect_check_fail_contains() {
   grep -qF -- "${expected_substr}" "${reject_output}"
 }
 
-apply_optional_virtual_memory_limit() {
-  # GNU/Linux accepts `ulimit -v`; Darwin reports "Invalid argument". The cap is
-  # a best-effort guard for collection stress fixtures, not part of the semantic
-  # oracle, so unsupported hosts run the same fixture without the cap.
-  ulimit -v 524288 2>/dev/null || true
+# Compile a fixture to a native binary (no memory cap — the LLVM codegen +
+# clang/ld.lld link pipeline mmaps the multi-hundred-MB `libhew.a` and needs
+# well over 1 GB of address space), then run ONLY the produced binary under a
+# 512 MB virtual-memory cap.
+#
+# The cap is a best-effort guard that bounds the *fixture binary's* runtime
+# heap so a collection-memory regression surfaces as a fail rather than a
+# silent bloat; it is not part of the semantic oracle. It must NOT wrap the
+# compile/link step: applying `ulimit -v 524288` around `hew run` (which
+# compiles AND links before executing) throttled ld.lld's mmap of `libhew.a`
+# and failed deterministically with "cannot open libhew.a: Cannot allocate
+# memory". Splitting compile (uncapped) from run (capped) keeps the guard on
+# the runtime where it belongs.
+#
+# GNU/Linux accepts `ulimit -v`; Darwin reports "Invalid argument", so on
+# unsupported hosts the binary runs without the cap (the `|| true` swallows it).
+#
+# `HEW_WORKERS=2` pins the actor scheduler to two workers. The Hew runtime
+# defaults to one worker thread per core, and each worker reserves multiple MB
+# of stack address space; on a high-core host (e.g. 32 cores) those reservations
+# alone exceed the 512 MB virtual cap and thread spawn fails with EAGAIN, which
+# has nothing to do with the collection-heap regression being guarded. Pinning
+# the worker count makes the cap host-independent without weakening the guard:
+# these fixtures verify actor-teardown drop/free correctness, which is identical
+# regardless of worker count.
+#
+# Echoes the binary's stdout so callers can capture it. Returns the binary's
+# exit status.
+run_native_under_memory_cap() {
+  local fixture_path="$1"
+  local base
+  base="$(basename "${fixture_path}" .hew)"
+  "${HEW}" compile "${fixture_path}" >/dev/null
+  # shellcheck disable=SC2016  # $1 is a positional arg to the inner `bash -c`,
+  # expanded there — the single quotes are deliberate.
+  HEW_WORKERS=2 "${TIMEOUT}" --kill-after=5s 30s bash -c \
+    'ulimit -v 524288 2>/dev/null || true; exec "$1"' _ \
+    "${ROOT}/.tmp/compile-out/${base}"
 }
 
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
@@ -1534,10 +1567,7 @@ fi
 # W3.041b: native-only layout-keyed HashMap/HashSet run-pass. WASM is
 # deliberately covered by the codegen fail-closed substrate gate for
 # hew_hashmap_*_layout / hew_hashset_*_layout.
-(
-  apply_optional_virtual_memory_limit
-  "${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashmap_run_pass.hew"
-)
+run_native_under_memory_cap "${ROOT}/examples/v05/hashmap_run_pass.hew"
 
 # W4.045: HashSet<i64> / HashSet<string> actor-state drop run-pass. Regression
 # guard for the P0 use-after-free where scalar/string-element sets dropped a
@@ -1545,14 +1575,11 @@ fi
 # corrupting the heap on actor shutdown. The actor holds two populated sets
 # moved in from `main`; teardown frees them through the corrected
 # `hew_hashset_free_layout`. Post-fix it prints `ok` and exits 0.
-(
-  apply_optional_virtual_memory_limit
-  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
-  if [[ "${out}" != "ok" ]]; then
-    echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
-  fi
-)
+out="$(run_native_under_memory_cap "${ROOT}/examples/v05/hashset_actor_drop_run_pass.hew")"
+if [[ "${out}" != "ok" ]]; then
+  echo "W4.045: hashset actor drop run-pass: expected 'ok', got '${out}'" >&2
+  exit 1
+fi
 
 # W5.001 (F0a): Vec<i64> + HashMap<string,i64> actor-state drop run-pass.
 # Companion to the HashSet guard above. Pins the descriptor-derived collection
@@ -1563,14 +1590,11 @@ fi
 # through the witness-selected `hew_hashmap_free_layout` / `hew_vec_free`.
 # Prints `ok` and exits 0. WASM is deliberately covered by the codegen
 # fail-closed substrate gate (native-only layout family; tracked #1820).
-(
-  apply_optional_virtual_memory_limit
-  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
-  if [[ "${out}" != "ok" ]]; then
-    echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
-  fi
-)
+out="$(run_native_under_memory_cap "${ROOT}/examples/v05/collection_actor_drop_run_pass.hew")"
+if [[ "${out}" != "ok" ]]; then
+  echo "W5.001: collection actor drop run-pass: expected 'ok', got '${out}'" >&2
+  exit 1
+fi
 
 # W5.002 (F0b): Vec<string> actor-state drop run-pass. Pins the Vec migration
 # onto the witness-managed clone/free pair (`hew_vec_clone_managed` /
@@ -1580,14 +1604,11 @@ fi
 # double-free or leak — so a clean `ok`/exit-0 is the load-bearing signal that
 # the managed per-slot free is correct. WASM is deliberately covered by the
 # native-only collection substrate gate (tracked #1820).
-(
-  apply_optional_virtual_memory_limit
-  out="$("${TIMEOUT}" --kill-after=5s 30s "${HEW}" run "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
-  if [[ "${out}" != "ok" ]]; then
-    echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2
-    exit 1
-  fi
-)
+out="$(run_native_under_memory_cap "${ROOT}/examples/v05/vec_string_actor_drop_run_pass.hew")"
+if [[ "${out}" != "ok" ]]; then
+  echo "W5.002: vec<string> actor drop run-pass: expected 'ok', got '${out}'" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Q004: impl-vs-trait method signature equivalence checked at the impl site.

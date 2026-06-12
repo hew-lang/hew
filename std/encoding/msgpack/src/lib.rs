@@ -12,6 +12,7 @@
 extern crate hew_runtime;
 
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
+use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use std::cell::RefCell;
 use std::ffi::c_char;
 
@@ -353,139 +354,226 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
 }
 
 // ---------------------------------------------------------------------------
-// HewVec-ABI wrappers (used by std/msgpack.hew)
+// BytesTriple-ABI wrappers (used by std/encoding/msgpack/msgpack.hew)
+//
+// All `_hew` entry points follow the v0.5 BytesTriple ABI (mirrors
+// std/encoding/compress):
+//   - `bytes` input args are passed as `*const BytesTriple` (by-pointer consumer).
+//   - `bytes` return values are returned as `BytesTriple` by value, with a
+//     matching `_raw` sibling that writes through a caller-supplied
+//     `*mut BytesTriple` for the compiler's call-site out-pointer path.
+//
+// The previous HewVec-returning shape silently misread as a `BytesTriple` at
+// the codegen boundary (a `*mut HewVec` pointer reinterpreted as
+// `{ptr, offset, len}`), so `bytes.len()` on a from_json result read garbage —
+// passing the `len() > 0` round-trip assertions but failing the `len() == 0`
+// invalid-input assertion. Registering these symbols in the codegen
+// `is_bytes_triple_return_producer` / `is_bytes_by_pointer_consumer` allowlists
+// completes the migration.
 // ---------------------------------------------------------------------------
 
-/// Encode a JSON string to `MessagePack` bytes, returning a `bytes` `HewVec`.
+/// Extract a byte slice from a `BytesTriple` by-pointer consumer argument.
 ///
-/// Returns an empty `HewVec` on invalid JSON.
+/// Returns an empty slice for a null pointer or a zero-length triple.
+///
+/// # Safety
+///
+/// If non-null, `triple` must point to a live `BytesTriple` whose payload
+/// is valid for at least `offset + len` bytes.
+unsafe fn bytes_slice_from_triple<'a>(triple: *const BytesTriple) -> &'a [u8] {
+    if triple.is_null() {
+        return &[];
+    }
+    // SAFETY: caller guarantees triple is non-null and valid.
+    let t = unsafe { &*triple };
+    if t.len == 0 || t.ptr.is_null() {
+        return &[];
+    }
+    let offset = t.offset as usize;
+    let len = t.len as usize;
+    // SAFETY: t.ptr + offset is valid for len bytes per BytesTriple invariant.
+    unsafe { std::slice::from_raw_parts(t.ptr.add(offset), len) }
+}
+
+/// Allocate a `BytesTriple` from a byte slice via the runtime allocator.
+fn bytes_triple_from_slice(data: &[u8]) -> BytesTriple {
+    if data.is_empty() {
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    }
+    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    // SAFETY: data is valid for len bytes; hew_bytes_from_static copies the slice.
+    unsafe { hew_bytes_from_static(data.as_ptr(), len) }
+}
+
+/// Convert a `malloc`-allocated `(ptr, out_len)` codec result into a
+/// runtime-allocated `BytesTriple`, freeing the source buffer.
+///
+/// A null `ptr` (codec failure) yields an empty `BytesTriple` ({null, 0, 0}).
+///
+/// # Safety
+///
+/// `ptr` must be null or a `hew_msgpack_*` codec buffer valid for `out_len`
+/// bytes (it is freed via `hew_msgpack_free`).
+unsafe fn triple_from_codec_buf(ptr: *mut u8, out_len: usize) -> BytesTriple {
+    if ptr.is_null() {
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    }
+    // SAFETY: ptr is valid for out_len bytes.
+    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
+    let result = bytes_triple_from_slice(slice);
+    // SAFETY: ptr was allocated by a hew_msgpack_* codec function.
+    unsafe { hew_msgpack_free(ptr) };
+    result
+}
+
+/// Encode a JSON string to `MessagePack` bytes, returning a `BytesTriple`.
+///
+/// Returns an empty `BytesTriple` ({null, 0, 0}) on invalid JSON or null input.
 ///
 /// # Safety
 ///
 /// `json` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_from_json_hew(
-    json: *const c_char,
-) -> *mut hew_cabi::vec::HewVec {
-    if json.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
+pub unsafe extern "C" fn hew_msgpack_from_json_hew(json: *const c_char) -> BytesTriple {
     let mut out_len: usize = 0;
-    // SAFETY: json is a valid C string; out_len is writable.
+    // SAFETY: json is null-or-valid per caller contract; out_len is writable.
     let ptr = unsafe { hew_msgpack_from_json(json, &raw mut out_len) };
-    if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
-    // SAFETY: ptr is valid for out_len bytes.
-    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
-    // SAFETY: ptr was allocated by hew_msgpack_from_json.
-    unsafe { hew_msgpack_free(ptr) };
-    result
+    // SAFETY: ptr is null-or-valid for out_len bytes.
+    unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Decode a `bytes` `HewVec` of `MessagePack` data to a JSON string.
+/// Out-pointer sibling for `hew_msgpack_from_json_hew`.
+///
+/// # Safety
+///
+/// `json` must be null or a valid NUL-terminated C string. `out` must be a
+/// valid, writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msgpack_from_json_hew_raw(json: *const c_char, out: *mut BytesTriple) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_msgpack_from_json_hew(json) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Decode a `bytes` `BytesTriple` of `MessagePack` data to a JSON string.
 ///
 /// Returns an empty string on error or null/empty input.
 ///
 /// # Safety
 ///
-/// `v` must be null or a valid non-null pointer to a `HewVec` (i32 elements).
-/// A null pointer is treated as empty bytes and returns an empty string.
+/// `v` must be null or a valid `*const BytesTriple`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
-    if v.is_null() {
-        // bytes [] literal produces a null HewVec pointer (empty BytesTriple
-        // ptr field passed as the HewVec* argument). Return empty string
-        // rather than panicking.
+pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *const BytesTriple) -> *mut c_char {
+    // SAFETY: v is null-or-valid per caller contract.
+    let bytes = unsafe { bytes_slice_from_triple(v) };
+    if bytes.is_empty() {
+        // Null/empty input → empty string (the C layer rejects len == 0).
         return str_to_malloc("");
     }
-    // SAFETY: v is non-null per the guard above; hwvec_to_u8 forwards validity.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
     // SAFETY: bytes slice is valid for its length.
     unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Encode an i64 integer as a `MessagePack` varint, returning a `bytes` `HewVec`.
+/// Encode an i64 integer as a `MessagePack` varint, returning a `BytesTriple`.
 ///
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> *mut hew_cabi::vec::HewVec {
+pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> BytesTriple {
     let mut out_len: usize = 0;
     // SAFETY: out_len is writable.
     let ptr = unsafe { hew_msgpack_encode_int(val, &raw mut out_len) };
-    if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
-    // SAFETY: ptr is valid for out_len bytes.
-    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
-    // SAFETY: ptr was allocated by hew_msgpack_encode_int.
-    unsafe { hew_msgpack_free(ptr) };
-    result
+    // SAFETY: ptr is null-or-valid for out_len bytes.
+    unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Encode a C string as `MessagePack` str, returning a `bytes` `HewVec`.
+/// Out-pointer sibling for `hew_msgpack_encode_int_hew`.
+///
+/// # Safety
+///
+/// `out` must be a valid, writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msgpack_encode_int_hew_raw(val: i64, out: *mut BytesTriple) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_msgpack_encode_int_hew(val) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Encode a C string as `MessagePack` str, returning a `BytesTriple`.
+///
+/// Returns an empty `BytesTriple` ({null, 0, 0}) on null input or encode failure.
 ///
 /// # Safety
 ///
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_string_hew(
-    s: *const c_char,
-) -> *mut hew_cabi::vec::HewVec {
-    if s.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
+pub unsafe extern "C" fn hew_msgpack_encode_string_hew(s: *const c_char) -> BytesTriple {
     let mut out_len: usize = 0;
-    // SAFETY: s is a valid C string; out_len is writable.
+    // SAFETY: s is null-or-valid per caller contract; out_len is writable.
     let ptr = unsafe { hew_msgpack_encode_string(s, &raw mut out_len) };
-    if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
-    // SAFETY: ptr is valid for out_len bytes.
-    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
-    // SAFETY: ptr was allocated by hew_msgpack_encode_string.
-    unsafe { hew_msgpack_free(ptr) };
-    result
+    // SAFETY: ptr is null-or-valid for out_len bytes.
+    unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Encode a `bytes` `HewVec` as a `MessagePack` bin, returning a `bytes` `HewVec`.
+/// Out-pointer sibling for `hew_msgpack_encode_string_hew`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `s` must be null or a valid NUL-terminated C string. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(
-    v: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: v validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
+pub unsafe extern "C" fn hew_msgpack_encode_string_hew_raw(
+    s: *const c_char,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_msgpack_encode_string_hew(s) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
+}
+
+/// Encode a `bytes` `BytesTriple` as a `MessagePack` bin, returning a `BytesTriple`.
+///
+/// # Safety
+///
+/// `v` must be null or a valid `*const BytesTriple`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(v: *const BytesTriple) -> BytesTriple {
+    // SAFETY: v is null-or-valid per caller contract.
+    let input = unsafe { bytes_slice_from_triple(v) };
     let mut out_len: usize = 0;
     // SAFETY: input slice is valid; out_len is writable.
     let ptr = unsafe { hew_msgpack_encode_bytes(input.as_ptr(), input.len(), &raw mut out_len) };
-    if ptr.is_null() {
-        // SAFETY: hew_vec_new allocates a valid empty HewVec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
-    }
-    // SAFETY: ptr is valid for out_len bytes.
-    let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
-    // SAFETY: slice is valid.
-    let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
-    // SAFETY: ptr was allocated by hew_msgpack_encode_bytes.
-    unsafe { hew_msgpack_free(ptr) };
-    result
+    // SAFETY: ptr is null-or-valid for out_len bytes.
+    unsafe { triple_from_codec_buf(ptr, out_len) }
+}
+
+/// Out-pointer sibling for `hew_msgpack_encode_bytes_hew`.
+///
+/// # Safety
+///
+/// `v` must be null or a valid `*const BytesTriple`. `out` must be a valid,
+/// writable `*mut BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew_raw(
+    v: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: caller contract forwarded.
+    let triple = unsafe { hew_msgpack_encode_bytes_hew(v) };
+    // SAFETY: out is a valid writable slot per caller contract.
+    unsafe { out.write(triple) };
 }
 
 // ---------------------------------------------------------------------------

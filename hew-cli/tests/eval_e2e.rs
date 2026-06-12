@@ -298,15 +298,16 @@ actor Counter {
 // The awaited reply posts BEFORE the worker records the turn's
 // attribution, so the attributed series may lag the ask by a beat on a
 // loaded host. Poll the eventual invariant with a bounded deadline
-// (2s) instead of asserting a racy instantaneous read. (A function
+// (10s — 2s false-negatived on the loaded Windows runner) instead of
+// asserting a racy instantaneous read. (A function
 // body, not top-level statements: the eval session splits top-level
 // control flow away from its bindings.)
 fn wait_for_attribution() -> i64 {
     var tries = 0;
-    while tries < 200 {
+    while tries < 1000 {
         let snapshot = observe.series();
         if snapshot.contains("actors.attributed_turns_by_handler_total") {
-            tries = 200;
+            tries = 1000;
         } else {
             sleep_ms(10);
             tries = tries + 1;

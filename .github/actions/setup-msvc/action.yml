@@ -1,0 +1,145 @@
+name: Setup MSVC
+description: >
+  Locate Visual Studio via vswhere, initialise the MSVC x64 developer
+  environment by running vcvars64.bat, and export the resulting environment
+  delta (PATH, INCLUDE, LIB, LIBPATH, and all VSCMD_* / VC* variables) to
+  GITHUB_ENV and GITHUB_PATH so that every subsequent step sees the correct
+  MSVC toolchain.
+
+  Replaces the unmaintained ilammy/msvc-dev-cmd third-party action. Uses only
+  runner-preinstalled tooling — vswhere.exe and vcvars64.bat ship with every
+  Visual Studio installation on windows-2022/windows-2025 runners. No external
+  downloads or network requests.
+
+  WHY: ilammy/msvc-dev-cmd@v1.13.0 is still node20 (abandoned upstream) and
+  was the sole blocker for a fully node24-native actions surface. The vswhere +
+  vcvarsall pattern is the Microsoft-canonical way to initialise an MSVC
+  developer shell in CI (same approach used in prebuild-llvm.yml).
+  WHEN obsolete: never — this is the proper first-party pattern.
+
+inputs:
+  arch:
+    description: Target architecture passed to vcvarsall.bat (x64, x86, arm64, etc.)
+    required: false
+    default: x64
+
+runs:
+  using: composite
+  steps:
+    - name: Initialise MSVC developer environment
+      # Locate VS via the preinstalled vswhere.exe, call vcvarsall.bat for the
+      # requested architecture, capture the resulting environment, and export
+      # only the relevant delta entries (PATH additions + MSVC/SDK variables)
+      # to GITHUB_ENV and GITHUB_PATH. Subsequent steps in the caller's job
+      # automatically inherit cl.exe, link.exe, INCLUDE, LIB, etc.
+      shell: pwsh
+      run: |
+        # ── Locate vswhere ──────────────────────────────────────────────────
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path $vswhere)) {
+          Write-Host "::error::vswhere.exe not found at $vswhere"
+          exit 1
+        }
+
+        # ── Find the latest VS installation with MSVC tools ─────────────────
+        $vsInstall = (& $vswhere -latest -products * `
+          -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+          -property installationPath) | Select-Object -First 1
+        if (-not $vsInstall -or -not (Test-Path $vsInstall)) {
+          Write-Host "::error::Visual Studio with MSVC tools not found"
+          exit 1
+        }
+        Write-Host "VS install: $vsInstall"
+
+        # ── Resolve vcvarsall.bat path ──────────────────────────────────────
+        $vcvarsall = "$vsInstall\VC\Auxiliary\Build\vcvarsall.bat"
+        if (-not (Test-Path $vcvarsall)) {
+          Write-Host "::error::vcvarsall.bat not found at $vcvarsall"
+          exit 1
+        }
+
+        # ── Capture PATH before initialisation ────────────────────────────
+        $pathBefore = $env:PATH
+
+        # ── Run vcvarsall.bat and capture the resulting environment ─────────
+        # cmd /c "<bat> <arch> > nul && set" prints all env vars after init.
+        $arch = "${{ inputs.arch }}"
+        $rawEnv = cmd.exe /c "`"$vcvarsall`" $arch > nul 2>&1 && set" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "::error::vcvarsall.bat failed to initialise the MSVC environment for arch: $arch"
+          $rawEnv | ForEach-Object { Write-Host $_ }
+          exit 1
+        }
+
+        # ── Allowlist: variables set by vcvarsall that callers need ─────────
+        # Only export the variables that MSVC tools actually require so we do
+        # not pollute GITHUB_ENV with the entire runner environment.
+        $allow = [System.Collections.Generic.HashSet[string]]::new(
+          [System.StringComparer]::OrdinalIgnoreCase)
+        @(
+          'CommandPromptType',
+          'DevEnvDir',
+          'ExtensionSdkDir',
+          'FrameworkDir',
+          'FrameworkDIR64',
+          'FrameworkVersion',
+          'FrameworkVersion64',
+          'INCLUDE',
+          'LIB',
+          'LIBPATH',
+          'NETFXSDKDir',
+          'Platform',
+          'UCRTVersion',
+          'UniversalCRTSdkDir',
+          'VCIDEInstallDir',
+          'VCINSTALLDIR',
+          'VCToolsInstallDir',
+          'VCToolsRedistDir',
+          'VCToolsVersion',
+          'VisualStudioVersion',
+          'VS170COMNTOOLS',
+          'VSCMD_ARG_app_plat',
+          'VSCMD_ARG_HOST_ARCH',
+          'VSCMD_ARG_TGT_ARCH',
+          'VSCMD_VER',
+          'VSINSTALLDIR',
+          'WindowsLibPath',
+          'WindowsSdkBinPath',
+          'WindowsSdkDir',
+          'WindowsSDKLibVersion',
+          'WindowsSDKVersion'
+        ) | ForEach-Object { [void]$allow.Add($_) }
+
+        # ── Build set of pre-existing PATH entries ─────────────────────────
+        $before = [System.Collections.Generic.HashSet[string]]::new(
+          [System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in ($pathBefore -split ';' | Where-Object { $_ })) {
+          [void]$before.Add($entry)
+        }
+
+        # ── Export deltas to GITHUB_ENV / GITHUB_PATH ───────────────────────
+        foreach ($line in $rawEnv) {
+          if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+          $k = $Matches[1]; $v = $Matches[2]
+          if ($k -ieq 'PATH') {
+            # Append only the entries that vcvarsall.bat added; avoid duplicates.
+            $env:PATH = $v
+            foreach ($entry in ($v -split ';' | Where-Object { $_ })) {
+              if (-not $before.Contains($entry)) {
+                $entry | Out-File -FilePath $env:GITHUB_PATH -Encoding ascii -Append
+              }
+            }
+          } elseif ($allow.Contains($k)) {
+            Set-Item -Path "Env:\$k" -Value $v
+            "${k}=${v}" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+          }
+        }
+
+        # ── Verify cl.exe is now on PATH ────────────────────────────────────
+        $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+        if (-not $cl) {
+          Write-Host "::error::cl.exe was not found after vcvarsall.bat initialisation"
+          exit 1
+        }
+        Write-Host "MSVC compiler: $($cl.Source)"
+        Write-Host "MSVC developer environment ready (arch: $arch)"

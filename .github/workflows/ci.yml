@@ -516,7 +516,7 @@ jobs:
     name: Build & test (macOS arm64)
     needs: changes
     runs-on: macos-14
-    timeout-minutes: 120
+    timeout-minutes: 60
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
@@ -538,41 +538,11 @@ jobs:
         with:
           tool: nextest
 
-      - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
-        # libffi and zstd are runtime deps of the upstream LLVM macOS
-        # tarball; libxml2 ships in /usr/lib but libffi does not, so
-        # llvm-sys's static-link path fails to resolve -lffi without
-        # the brew bottle. libffi is keg-only on Homebrew, so we add its
-        # lib dir to the linker search path via RUSTFLAGS (LIBRARY_PATH
-        # is honoured by clang but not by every rustc link invocation).
-        run: |
-          brew install libffi zstd
-          LIBFFI_PREFIX="$(brew --prefix libffi)"
-          # Apple's bundled ld (Xcode 15.4) ships libLTO 15.0.0, which cannot
-          # parse LLVM 22 bitcode attribute kinds embedded in llvm-sys-221's
-          # static libs. Use the ld64.lld that ships in the same upstream
-          # LLVM 22.1.5 tarball we already vendor (on PATH via setup-llvm).
-          # LLD doesn't auto-add libc++/libc++abi the way Apple's ld does, so
-          # link them explicitly — LTO of llvm-sys's C++ static libs pulls
-          # in operator new/delete and __cxa_* runtime symbols.
-          echo "RUSTFLAGS=-L ${LIBFFI_PREFIX}/lib -C link-arg=-fuse-ld=lld -C link-arg=-lc++ -C link-arg=-lc++abi ${RUSTFLAGS:-}" >> "$GITHUB_ENV"
-
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
-
-      - name: Add LLVM lib to runtime rpath
-        if: env.RUN_CODE_PATH == 'true'
-        # LLD links the test binaries against -lc++ -lc++abi from the
-        # upstream LLVM 22 tarball, but does not record an LC_RPATH for
-        # the dynamic loader. Without an rpath, dyld fails to locate
-        # libc++abi.1.dylib at execution time. Append a -Wl,-rpath link
-        # arg pointing at the vendored LLVM tarball's lib/ directory.
-        run: |
-          echo "RUSTFLAGS=${RUSTFLAGS} -C link-arg=-Wl,-rpath,${LLVM_SYS_221_PREFIX}/lib" >> "$GITHUB_ENV"
 
       - name: Set macOS deployment target
         if: env.RUN_CODE_PATH == 'true'
@@ -615,16 +585,6 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
-        #
-        # macos-14 is a 3-core / 7 GB runner. Test binaries that statically
-        # link llvm-sys pull in the full LLVM archive; ld64.lld linking
-        # several of them in parallel (default -j3) peaks well past 7 GB and
-        # the runner swaps itself into a multi-minute stall (orphaned lld,
-        # no progress). CARGO_BUILD_JOBS=1 serialises the build so at most
-        # one heavy link runs at a time. Cold builds are slower but complete
-        # within the timeout; cached (warm) runs are unaffected.
-        env:
-          CARGO_BUILD_JOBS: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

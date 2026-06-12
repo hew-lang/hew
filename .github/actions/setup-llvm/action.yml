@@ -1,10 +1,10 @@
 name: Setup LLVM
 description: >
-  Download and cache a pinned LLVM upstream binary release (from
-  github.com/llvm/llvm-project releases), verify its SHA256, extract it
-  to the runner's tool cache, and export LLVM_SYS_221_PREFIX plus the
-  bin/ directory on PATH. Supports Linux x86_64, Linux arm64, macOS arm64, and
-  Windows x86_64 on hosted GitHub Actions runners.
+  Provision LLVM for the build and export LLVM_SYS_221_PREFIX plus the bin/
+  directory on PATH. Linux x86_64/arm64 and Windows x86_64 use a pinned LLVM
+  binary release (verified by SHA256, cached extracted). macOS arm64 uses the
+  Homebrew llvm@<major> bottle, whose static libs link with the platform
+  default linker — no lld/lc++/rpath forcing required.
 
 inputs:
   version:
@@ -20,6 +20,25 @@ outputs:
 runs:
   using: composite
   steps:
+    # macOS: use the Homebrew llvm@<major> bottle. Its static libs link with
+    # the platform default linker (unlike the upstream tarball, whose bitcode
+    # attribute kinds Apple's ld rejects), so no -fuse-ld=lld / -lc++ /
+    # -rpath forcing is needed. Exports LLVM_SYS_221_PREFIX + bin on PATH;
+    # the tarball steps below are skipped on macOS.
+    - name: Install LLVM via Homebrew (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Homebrew formulae are keyed by LLVM major version (llvm@22), while
+        # the caller passes the full upstream tag (e.g. 22.1.5). Derive major.
+        major="${{ inputs.version }}"
+        major="${major%%.*}"
+        brew install "llvm@${major}"
+        prefix="$(brew --prefix "llvm@${major}")"
+        echo "LLVM_SYS_221_PREFIX=${prefix}" >> "$GITHUB_ENV"
+        echo "${prefix}/bin" >> "$GITHUB_PATH"
+
     # Resolve the per-platform asset name, expected sha256 (pinned from the
     # sigstore attestations published alongside each release tarball at
     # github.com/llvm/llvm-project/releases), extraction subdirectory name,
@@ -27,6 +46,7 @@ runs:
     # bumps a single-file edit.
     - name: Resolve LLVM asset metadata
       id: layout
+      if: runner.os != 'macOS'
       shell: bash
       run: |
         set -euo pipefail
@@ -39,10 +59,6 @@ runs:
           Linux-ARM64)
             asset="LLVM-${version}-Linux-ARM64.tar.xz"
             subdir="LLVM-${version}-Linux-ARM64"
-            ;;
-          macOS-ARM64)
-            asset="LLVM-${version}-macOS-ARM64.tar.xz"
-            subdir="LLVM-${version}-macOS-ARM64"
             ;;
           Windows-X64)
             # The official upstream Windows tarball statically embeds rpmalloc
@@ -67,9 +83,6 @@ runs:
             ;;
           "LLVM-22.1.5-Linux-ARM64.tar.xz")
             sha256="05e303cf01a97ca2a11e42e75ade839e85af274f84573554c5e5c05f714be989"
-            ;;
-          "LLVM-22.1.5-macOS-ARM64.tar.xz")
-            sha256="c4e5aa26d5bb9938237fa1626fe3b0506887b50026bac785b85dd3314be8d5e6"
             ;;
           "hew-llvm-22.1.0-windows-msvc-v3.tar.gz")
             # Verified against the companion .sha256 asset on the toolchain
@@ -103,6 +116,7 @@ runs:
 
     - name: Cache extracted LLVM
       id: cache
+      if: runner.os != 'macOS'
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
       with:
         path: ${{ steps.layout.outputs.prefix }}
@@ -112,7 +126,7 @@ runs:
     # the extracted directory (skip re-extract cost) and re-download on miss
     # rather than caching the tarball.
     - name: Download and verify LLVM tarball
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: runner.os != 'macOS' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         set -euo pipefail
@@ -171,6 +185,7 @@ runs:
         fi
 
     - name: Export LLVM environment
+      if: runner.os != 'macOS'
       shell: bash
       run: |
         set -euo pipefail

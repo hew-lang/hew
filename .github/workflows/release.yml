@@ -225,7 +225,6 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-cargo-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-cargo-${{ matrix.os }}-
@@ -239,7 +238,6 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-cargo-
@@ -602,7 +600,6 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-jammy-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-

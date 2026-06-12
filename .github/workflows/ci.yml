@@ -97,7 +97,6 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/
           key: lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             lint-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
@@ -168,7 +167,6 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/
           key: playground-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: playground-wasm-${{ runner.os }}-
 
@@ -229,7 +227,6 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/
           key: build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             build-test-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
@@ -362,7 +359,6 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/
           key: coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             coverage-${{ runner.os }}-llvm${{ env.LLVM_VERSION }}-
@@ -562,7 +558,6 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            target/
           key: build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             build-test-${{ runner.os }}-arm64-llvm${{ env.LLVM_VERSION }}-

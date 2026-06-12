@@ -587,6 +587,23 @@ pub enum TypeErrorKind {
         /// Recursive binding name.
         name: String,
     },
+    /// A regular fn-closure attempted to capture a lambda-actor handle
+    /// (`Duplex<S, R>`) from an enclosing scope and call it with call syntax.
+    ///
+    /// Lambda-actor handles have no materialization protocol through a closure
+    /// capture env: the MIR routing discriminator (`Place::LambdaActorHandle`)
+    /// is attached to the spawning-scope slot, not to the env-loaded copy, and
+    /// the runtime ABI (`hew_lambda_actor_send` vs `hew_duplex_send`) cannot
+    /// be selected without it. Until a full env-materialization protocol exists,
+    /// fn-closure capture of lambda handles must be refused at the checker
+    /// boundary so the permissive MIR path (`lower_lambda_actor_call` via
+    /// `capture_env_sources`) is never silently reached.
+    ///
+    /// Envelope code: `E_CLOSURE_CAPTURES_LAMBDA_HANDLE`.
+    ClosureCapturesDuplexHandle {
+        /// Name of the captured binding.
+        name: String,
+    },
     /// A dyn associated-type binding could not be projected from the concrete impl.
     ///
     /// Envelope code: `E_ASSOC_TYPE_PROJECTION_FAILED`.
@@ -919,6 +936,7 @@ impl TypeErrorKind {
             Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
             Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
+            Self::ClosureCapturesDuplexHandle { .. } => "ClosureCapturesDuplexHandle",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",

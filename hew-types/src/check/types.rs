@@ -2252,6 +2252,15 @@ pub struct Checker {
     /// lambdas so `@actor_id`-style readers cannot silently capture a dispatch
     /// context across an unmodelled closure boundary.
     pub(super) in_actor_handler_context: bool,
+    /// Whether we are currently inside a lambda-actor body (`actor |...| { ... }`).
+    ///
+    /// Set to `true` when `check_lambda` is called from `SpawnLambdaActor`;
+    /// cleared when that same `check_lambda` invocation saves/restores state.
+    /// Distinct from `in_actor_handler_context` (which is for `receive fn` bodies
+    /// inside named actors). Used by `check_call` to permit recursive self-sends
+    /// (a Duplex capture called from within its own actor body) while rejecting
+    /// fn-closure captures of Duplex handles.
+    pub(super) in_lambda_actor_body: bool,
     /// Whether we are currently inside an unsafe block.
     pub(super) in_unsafe: bool,
     /// Nesting depth of `scope { }` structured-concurrency blocks in the
@@ -2573,6 +2582,7 @@ impl Checker {
             in_for_binding: false,
             in_receive_fn: false,
             in_actor_handler_context: false,
+            in_lambda_actor_body: false,
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,

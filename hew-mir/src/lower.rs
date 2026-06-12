@@ -18661,6 +18661,32 @@ impl Builder {
         for (idx, capture) in captures.iter().enumerate() {
             let offset =
                 FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
+
+            // Defence-in-depth gate: a Duplex<S,R> (lambda-actor handle) must
+            // never appear as a fn-closure capture env field. The authoritative
+            // rejection is `TypeErrorKind::ClosureCapturesDuplexHandle` in the
+            // checker's `check_call`; if MIR sees one here, the checker gate
+            // was bypassed by a new source form. Fail closed rather than
+            // misrouting to `hew_duplex_send` (wrong runtime ABI).
+            if matches!(
+                &capture.ty,
+                ResolvedTy::Named { name, .. } if name == "Duplex"
+            ) {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::ClosureCapturesDuplexHandle {
+                        name: capture.name.clone(),
+                        site: expr.site,
+                    },
+                    note: format!(
+                        "closure capture `{}` has type Duplex<_,_>; no env-materialization \
+                         protocol exists — checker gate in `check_call` must have been bypassed",
+                        capture.name
+                    ),
+                });
+                failed = true;
+                continue;
+            }
+
             let src = if let Some(place) = self.binding_locals.get(&capture.binding).copied() {
                 place
             } else if let Some(source) = self.capture_env_sources.get(&capture.binding).cloned() {

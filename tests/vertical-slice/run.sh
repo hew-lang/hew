@@ -847,11 +847,13 @@ expect_check_fail_contains \
 
 # Reject: a fn-closure capturing a LAMBDA-ACTOR handle (a Duplex, not a
 # no-drop pid) and calling it has no materialization protocol through a
-# closure env — it must refuse at the checker boundary, never silently
-# misroute the duplex send.
+# closure env — the checker refuses with ClosureCapturesDuplexHandle
+# (deliberate checker-authority wall) rather than an incidental
+# CheckerBoundaryViolation. The fixture pins the authoritative error site
+# (check_call in calls.rs, TypeErrorKind::ClosureCapturesDuplexHandle).
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/closure_capture_lambda_handle.hew" \
-  "CheckerBoundaryViolation" \
+  "E_CLOSURE_CAPTURES_LAMBDA_HANDLE" \
   "closure_capture_lambda_handle"
 
 # Reject: remote dispatch (RemotePid ask/tell) resolving to a multi-arg

@@ -5222,6 +5222,19 @@ pub enum MirDiagnosticKind {
     /// an owning position. `name` is the source binding when the operand is a
     /// binding read; expression-shaped operands carry `None`.
     ClosurePairBorrowedStore { name: Option<String>, site: SiteId },
+    /// Defence-in-depth gate at `materialize_closure_env`: a fn-closure
+    /// capture env contains a `Duplex<S,R>` (lambda-actor handle) field.
+    ///
+    /// The authoritative rejection is at the checker boundary
+    /// (`TypeErrorKind::ClosureCapturesDuplexHandle` in `check_call`). If MIR
+    /// ever sees a Duplex capture it means the checker gate was bypassed —
+    /// likely by a new source form that doesn't route through `check_call`.
+    /// MIR fails closed here rather than silently misrouting to
+    /// `hew_duplex_send` (the wrong runtime ABI for lambda-actor sends).
+    ///
+    /// When the full env-materialization protocol for Duplex captures is
+    /// implemented, remove this guard AND the checker gate in `check_call`.
+    ClosureCapturesDuplexHandle { name: String, site: SiteId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

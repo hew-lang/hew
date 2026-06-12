@@ -1010,7 +1010,7 @@ impl Checker {
         }
 
         // Then check if it's a variable with a function type (e.g., lambda parameters)
-        if let Some(binding) = self.env.lookup(&func_name) {
+        if let Some((binding_depth, binding)) = self.env.lookup_with_depth(&func_name) {
             if let Some(sig) = binding
                 .def_span
                 .as_ref()
@@ -1037,6 +1037,52 @@ impl Checker {
             }
 
             let func_ty = binding.ty.clone();
+
+            // Explicit fail-closed gate: a regular fn-closure must not capture a
+            // lambda-actor handle (`Duplex<S,R>`) and call it with call syntax.
+            //
+            // Authority: checker (this site). MIR has a defence-in-depth guard at
+            // `materialize_closure_env` that names this site as authoritative. The
+            // rejection is deliberate: there is no env-materialization protocol for
+            // Duplex handles yet — the MIR routing discriminator
+            // (`Place::LambdaActorHandle`) is bound to the spawning-scope slot, not
+            // to an env-loaded copy, so emitting the capture would silently
+            // misroute to `hew_duplex_send` instead of `hew_lambda_actor_send`.
+            //
+            // When this restriction is lifted (full env-materialization protocol
+            // for Duplex captures), remove this guard AND the MIR assert in
+            // `materialize_closure_env`.
+            let resolved_func_ty = self.subst.resolve(&func_ty);
+            if matches!(
+                &resolved_func_ty,
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::Duplex),
+                    ..
+                }
+            ) {
+                if let Some(capture_depth) = self.lambda_capture_depth {
+                    // Allow the lambda-actor body to call its own Duplex handle
+                    // recursively (self-send pattern). Regular fn-closures must not
+                    // capture Duplex handles — no env-materialization protocol exists yet.
+                    if binding_depth < capture_depth && !self.in_lambda_actor_body {
+                        self.report_error(
+                            TypeErrorKind::ClosureCapturesDuplexHandle {
+                                name: func_name.clone(),
+                            },
+                            span,
+                            format!(
+                                "fn-closure captures lambda-actor handle `{func_name}` \
+                                 from enclosing scope — no env-materialization protocol \
+                                 exists for Duplex captures yet; call the handle directly \
+                                 from the enclosing scope or spawn a dedicated forwarding actor \
+                                 (E_CLOSURE_CAPTURES_LAMBDA_HANDLE)"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
+            }
+
             let ret = self.check_call_with_type(&func_ty, args, span);
             return ret;
         }

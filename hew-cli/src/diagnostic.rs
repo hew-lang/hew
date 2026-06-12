@@ -137,7 +137,8 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
-        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => "E_MIR",
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. }
+        | hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { .. } => "E_MIR",
     }
 }
 
@@ -485,6 +486,9 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
             "OwnedHandleAggregateExtractionUnsupported"
         }
         hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "ClosurePairBorrowedStore",
+        hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { .. } => {
+            "ClosureCapturesDuplexHandle"
+        }
     }
 }
 
@@ -533,7 +537,8 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
         | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { site, .. }
         | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. }
-        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => Some(*site),
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. }
+        | hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { site, .. } => Some(*site),
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -685,6 +690,12 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
                  owns its closure instead"
             )
         }
+        hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { name, .. } => format!(
+            "defence-in-depth: fn-closure capture env contains a Duplex handle `{name}` — \
+             no env-materialization protocol exists; checker gate in `check_call` \
+             must have been bypassed by a new source form \
+             (E_CLOSURE_CAPTURES_LAMBDA_HANDLE)"
+        ),
     };
     format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
 }
@@ -733,7 +744,9 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
         | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
-        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. } => {
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. }
+        | hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { site, .. } => {
             notes.push(format!("site: {site}"));
         }
         hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
@@ -754,9 +767,6 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
             handle_ty, ..
         } => {
             notes.push(format!("handle type: {handle_ty}"));
-        }
-        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => {
-            notes.push(format!("store site: {site}"));
         }
     }
     if !diagnostic.note.is_empty() {

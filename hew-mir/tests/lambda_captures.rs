@@ -225,6 +225,94 @@ fn main() {
     );
 }
 
+/// Run the full pipeline but tolerate checker errors (used to test the MIR
+/// defence-in-depth guard against the checker-rejected shapes).
+///
+/// Returns the `IrPipeline` even if the checker emitted errors so the MIR
+/// diagnostic can be inspected.
+fn lower_accepting_checker_errors(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    // We expect checker errors (the Duplex capture), but HIR and MIR must still
+    // run to exercise the defence-in-depth guard. Do NOT assert tc_output.errors.is_empty().
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    lower_hir_module(&hir.module)
+}
+
+#[test]
+fn closure_duplex_capture_rejected_at_checker_with_new_error() {
+    // The authoritative wall for Duplex captures in fn-closures fires at the
+    // checker boundary (`TypeErrorKind::ClosureCapturesDuplexHandle`) — not at
+    // HIR's `CheckerBoundaryViolation`. This test confirms the checker emits the
+    // new deliberate error for the canonical capture shape so downstream
+    // reviewers have an assertion to point to.
+    let source = r"
+fn main() {
+    let log = actor |n: i64| { n; };
+    let relay = |n: i64| { log(n); };
+    relay(1);
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output
+            .errors
+            .iter()
+            .any(|e| e.kind.as_kind_str() == "ClosureCapturesDuplexHandle"),
+        "checker must emit ClosureCapturesDuplexHandle for fn-closure capturing a Duplex handle; \
+         got: {:?}",
+        tc_output.errors
+    );
+}
+
+#[test]
+fn closure_duplex_capture_mir_defence_in_depth_fires_on_method_evasion() {
+    // The `.send()` evasion: inside a closure body, call `log.send(n)` instead
+    // of `log(n)`. The method-call path synthesizes `log` (so the capture fact
+    // IS generated), bypassing the `check_call` gate. MIR's
+    // `materialize_closure_env` must then emit `ClosureCapturesDuplexHandle`
+    // as a defence-in-depth guard.
+    let source = r"
+fn main() {
+    let log = actor |n: i64| { n; };
+    let relay = |n: i64| {
+        log.send(n);
+    };
+    relay(1);
+}
+";
+    let p = lower_accepting_checker_errors(source);
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ClosureCapturesDuplexHandle { name, .. }
+            if name == "log"
+        )),
+        "method-send evasion must trigger MIR ClosureCapturesDuplexHandle; got: {:?}",
+        p.diagnostics
+    );
+}
+
 #[test]
 fn non_recursive_actor_lambda_records_zero_weak_captures() {
     // A lambda whose body does not reference its own let-name has no

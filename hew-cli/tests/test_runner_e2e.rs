@@ -270,6 +270,48 @@ fn multi_path_invocation_aggregates_results() {
 }
 
 #[test]
+fn test_runner_relative_path_invocation_discovers_same_tests_as_absolute_path() {
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "suite/relative_discovery_test.hew",
+        "#[test]\n#[ignore]\nfn before_import() {\n    assert(true);\n}\n\nimport std::testing;\n\n#[test]\n#[ignore]\nfn after_import() {\n    assert(true);\n}\n",
+    );
+    let absolute_path = dir.path().join("suite").join("relative_discovery_test.hew");
+
+    let relative = Command::new(hew_binary())
+        .arg("test")
+        .arg("suite/relative_discovery_test.hew")
+        .arg("--no-color")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let absolute = Command::new(hew_binary())
+        .arg("test")
+        .arg(&absolute_path)
+        .arg("--no-color")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(relative.status.success());
+    assert!(absolute.status.success());
+    let relative_stdout = String::from_utf8_lossy(&relative.stdout);
+    let absolute_stdout = String::from_utf8_lossy(&absolute.stdout);
+    assert!(
+        relative_stdout.contains("running 2 tests"),
+        "stdout: {relative_stdout}"
+    );
+    assert!(
+        absolute_stdout.contains("running 2 tests"),
+        "stdout: {absolute_stdout}"
+    );
+    assert!(relative_stdout.contains("test before_import ... ignored"));
+    assert!(relative_stdout.contains("test after_import ... ignored"));
+    assert_eq!(relative_stdout, absolute_stdout);
+}
+
+#[test]
 fn parse_errors_fail_the_suite() {
     let output = run_suite(
         &[(

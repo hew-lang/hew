@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Fibonacci across actors - Hew language example
+
 // Fibonacci across actors - Hew language example
 // Computes Fibonacci numbers using actor message passing
 fn fibonacci(n: i32) -> i32 {

@@ -1,6 +1,6 @@
 // Hash Set with Open Addressing (Linear Probing)
-// Uses Vec<int> with EMPTY=-1, DELETED=-2 sentinels
-fn hash(key: int, capacity: int) -> int {
+// Uses Vec<i64> with EMPTY=-1, DELETED=-2 sentinels
+fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -9,8 +9,8 @@ fn hash(key: int, capacity: int) -> int {
     }
 }
 
-fn make_set(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_set(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -18,7 +18,7 @@ fn make_set(capacity: int) -> Vec<int> {
     v
 }
 
-fn set_insert(set: Vec<int>, key: int) -> bool {
+fn set_insert(set: Vec<i64>, key: i64) -> bool {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -43,7 +43,7 @@ fn set_insert(set: Vec<int>, key: int) -> bool {
     false
 }
 
-fn set_contains(set: Vec<int>, key: int) -> bool {
+fn set_contains(set: Vec<i64>, key: i64) -> bool {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -63,7 +63,7 @@ fn set_contains(set: Vec<int>, key: int) -> bool {
     false
 }
 
-fn set_remove(set: Vec<int>, key: int) -> bool {
+fn set_remove(set: Vec<i64>, key: i64) -> bool {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -84,7 +84,7 @@ fn set_remove(set: Vec<int>, key: int) -> bool {
     false
 }
 
-fn set_size(set: Vec<int>) -> int {
+fn set_size(set: Vec<i64>) -> i64 {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;

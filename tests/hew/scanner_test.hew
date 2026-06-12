@@ -1,0 +1,396 @@
+//! Tests for std::io::scanner — bufio.Scanner-style line/word iteration.
+
+import std::io::scanner;
+
+import std::fs;
+import std::testing;
+
+// ── lines() batch API ─────────────────────────────────────────────────
+#[test]
+fn test_lines_empty_input_returns_empty_vec() {
+    let ls = scanner.lines("");
+    testing.assert_eq(ls.len(), 0);
+}
+
+#[test]
+fn test_lines_single_line_no_newline() {
+    let ls = scanner.lines("hello");
+    testing.assert_eq(ls.len(), 1);
+    testing.assert_eq_str(ls.get(0), "hello");
+}
+
+#[test]
+fn test_lines_single_line_with_trailing_newline() {
+    let ls = scanner.lines("hello\n");
+    testing.assert_eq(ls.len(), 1);
+    testing.assert_eq_str(ls.get(0), "hello");
+}
+
+#[test]
+fn test_lines_two_lines() {
+    let ls = scanner.lines("foo\nbar");
+    testing.assert_eq(ls.len(), 2);
+    testing.assert_eq_str(ls.get(0), "foo");
+    testing.assert_eq_str(ls.get(1), "bar");
+}
+
+#[test]
+fn test_lines_trailing_newline_no_extra_element() {
+    let ls = scanner.lines("foo\nbar\n");
+    testing.assert_eq(ls.len(), 2);
+    testing.assert_eq_str(ls.get(0), "foo");
+    testing.assert_eq_str(ls.get(1), "bar");
+}
+
+#[test]
+fn test_lines_crlf_endings_stripped() {
+    let ls = scanner.lines("a\r\nb\r\nc");
+    testing.assert_eq(ls.len(), 3);
+    testing.assert_eq_str(ls.get(0), "a");
+    testing.assert_eq_str(ls.get(1), "b");
+    testing.assert_eq_str(ls.get(2), "c");
+}
+
+#[test]
+fn test_lines_blank_lines_preserved() {
+    let ls = scanner.lines("a\n\nb");
+    testing.assert_eq(ls.len(), 3);
+    testing.assert_eq_str(ls.get(0), "a");
+    testing.assert_eq_str(ls.get(1), "");
+    testing.assert_eq_str(ls.get(2), "b");
+}
+
+#[test]
+fn test_lines_only_newline() {
+    // "\n" → one empty content line, trailing newline suppressed
+    let ls = scanner.lines("\n");
+    testing.assert_eq(ls.len(), 1);
+    testing.assert_eq_str(ls.get(0), "");
+}
+
+#[test]
+fn test_lines_multiple_trailing_newlines() {
+    // "a\n\n" → "a", "" (the empty line between \n and \n)
+    let ls = scanner.lines("a\n\n");
+    testing.assert_eq(ls.len(), 2);
+    testing.assert_eq_str(ls.get(0), "a");
+    testing.assert_eq_str(ls.get(1), "");
+}
+
+#[test]
+fn test_lines_crlf_trailing() {
+    let ls = scanner.lines("x\r\n");
+    testing.assert_eq(ls.len(), 1);
+    testing.assert_eq_str(ls.get(0), "x");
+}
+
+// ── scan() / has_next() / text() iterative API ────────────────────────
+#[test]
+fn test_scan_iterate_three_lines() {
+    var sc = scanner.from_string("line1\nline2\nline3");
+    let result: Vec<string> = Vec::new();
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        result.push(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq_str(result.get(0), "line1");
+    testing.assert_eq_str(result.get(1), "line2");
+    testing.assert_eq_str(result.get(2), "line3");
+}
+
+#[test]
+fn test_scan_empty_input_no_tokens() {
+    var sc = scanner.from_string("");
+    sc = scanner.scan(sc);
+    testing.assert_false(scanner.has_next(sc));
+}
+
+#[test]
+fn test_scan_single_line_without_newline() {
+    var sc = scanner.from_string("only");
+    sc = scanner.scan(sc);
+    testing.assert_true(scanner.has_next(sc));
+    testing.assert_eq_str(scanner.text(sc), "only");
+    sc = scanner.scan(sc);
+    testing.assert_false(scanner.has_next(sc));
+}
+
+#[test]
+fn test_scan_blank_lines_emitted() {
+    var sc = scanner.from_string("a\n\nb");
+    let result: Vec<string> = Vec::new();
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        result.push(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq_str(result.get(0), "a");
+    testing.assert_eq_str(result.get(1), "");
+    testing.assert_eq_str(result.get(2), "b");
+}
+
+#[test]
+fn test_scan_crlf_stripped() {
+    var sc = scanner.from_string("p\r\nq\r\nr");
+    let result: Vec<string> = Vec::new();
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        result.push(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq_str(result.get(0), "p");
+    testing.assert_eq_str(result.get(1), "q");
+    testing.assert_eq_str(result.get(2), "r");
+}
+
+#[test]
+fn test_scan_trailing_newline_no_extra_token() {
+    var sc = scanner.from_string("x\ny\n");
+    let result: Vec<string> = Vec::new();
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        result.push(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+    testing.assert_eq(result.len(), 2);
+    testing.assert_eq_str(result.get(0), "x");
+    testing.assert_eq_str(result.get(1), "y");
+}
+
+// ── next_line() ───────────────────────────────────────────────────────
+#[test]
+fn test_next_line_returns_some_for_real_empty_line_only() {
+    var sc = scanner.from_string("alpha\n\nomega\n");
+
+    let (sc1, first) = scanner.next_line(sc);
+    sc = sc1;
+    match first {
+        Some(line) => testing.assert_eq_str(line, "alpha"),
+        None => {
+            panic("expected first line");
+        },
+    }
+
+    let (sc2, blank) = scanner.next_line(sc);
+    sc = sc2;
+    match blank {
+        Some(line) => testing.assert_eq_str(line, ""),
+        None => {
+            panic("expected blank line");
+        },
+    }
+
+    let (sc3, third) = scanner.next_line(sc);
+    sc = sc3;
+    match third {
+        Some(line) => testing.assert_eq_str(line, "omega"),
+        None => {
+            panic("expected third line");
+        },
+    }
+
+    let (_sc4, eof) = scanner.next_line(sc);
+    match eof {
+        Some(line) => {
+            panic("unexpected EOF token: " + line);
+        },
+        None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_next_line_uses_line_mode_without_changing_split() {
+    var sc = scanner.from_string("one two\nthree");
+    sc = scanner.with_split(sc, SplitMode::SplitWords);
+    let (next, line) = scanner.next_line(sc);
+    match line {
+        Some(value) => testing.assert_eq_str(value, "one two"),
+        None => {
+            panic("expected line");
+        },
+    }
+
+    let after = scanner.scan(next);
+    testing.assert_true(scanner.has_next(after));
+    testing.assert_eq_str(scanner.text(after), "three");
+}
+
+// ── words() batch API ─────────────────────────────────────────────────
+#[test]
+fn test_words_empty_input_returns_empty_vec() {
+    let ws = scanner.words("");
+    testing.assert_eq(ws.len(), 0);
+}
+
+#[test]
+fn test_words_single_word() {
+    let ws = scanner.words("hello");
+    testing.assert_eq(ws.len(), 1);
+    testing.assert_eq_str(ws.get(0), "hello");
+}
+
+#[test]
+fn test_words_two_words_single_space() {
+    let ws = scanner.words("hello world");
+    testing.assert_eq(ws.len(), 2);
+    testing.assert_eq_str(ws.get(0), "hello");
+    testing.assert_eq_str(ws.get(1), "world");
+}
+
+#[test]
+fn test_words_leading_trailing_whitespace_ignored() {
+    let ws = scanner.words("  hello   world  ");
+    testing.assert_eq(ws.len(), 2);
+    testing.assert_eq_str(ws.get(0), "hello");
+    testing.assert_eq_str(ws.get(1), "world");
+}
+
+#[test]
+fn test_words_tab_and_newline_as_separator() {
+    let ws = scanner.words("a\tb\nc");
+    testing.assert_eq(ws.len(), 3);
+    testing.assert_eq_str(ws.get(0), "a");
+    testing.assert_eq_str(ws.get(1), "b");
+    testing.assert_eq_str(ws.get(2), "c");
+}
+
+#[test]
+fn test_words_only_whitespace_returns_empty() {
+    let ws = scanner.words("   \t\n  ");
+    testing.assert_eq(ws.len(), 0);
+}
+
+// ── with_split() mode switching ───────────────────────────────────────
+#[test]
+fn test_with_split_switches_to_words_mode() {
+    var sc = scanner.from_string("foo bar baz");
+    sc = scanner.with_split(sc, SplitMode::SplitWords);
+    let result: Vec<string> = Vec::new();
+    sc = scanner.scan(sc);
+    while scanner.has_next(sc) {
+        result.push(scanner.text(sc));
+        sc = scanner.scan(sc);
+    }
+    testing.assert_eq(result.len(), 3);
+    testing.assert_eq_str(result.get(0), "foo");
+    testing.assert_eq_str(result.get(1), "bar");
+    testing.assert_eq_str(result.get(2), "baz");
+}
+
+#[test]
+fn test_with_split_resets_position() {
+    var sc = scanner.from_string("a\nb\nc");
+    // Advance past first line, then reset via with_split.
+    sc = scanner.scan(sc);
+    sc = scanner.with_split(sc, SplitMode::SplitLines);
+    sc = scanner.scan(sc);
+    // Should see "a" again after reset.
+    testing.assert_true(scanner.has_next(sc));
+    testing.assert_eq_str(scanner.text(sc), "a");
+}
+
+// ── collect() ────────────────────────────────────────────────────────
+#[test]
+fn test_collect_from_fresh_scanner_scans_all() {
+    var sc = scanner.from_string("x\ny\nz");
+    sc = scanner.scan(sc);
+    let all = scanner.collect(sc);
+    testing.assert_eq(all.len(), 3);
+    testing.assert_eq_str(all.get(0), "x");
+    testing.assert_eq_str(all.get(1), "y");
+    testing.assert_eq_str(all.get(2), "z");
+}
+
+#[test]
+fn test_collect_after_partial_advance() {
+    var sc = scanner.from_string("a\nb\nc\nd");
+    sc = scanner.scan(sc); // current = "a"
+    sc = scanner.scan(sc); // current = "b"
+    let rest = scanner.collect(sc);
+    // collect includes current ("b") plus remainder
+    testing.assert_eq(rest.len(), 3);
+    testing.assert_eq_str(rest.get(0), "b");
+    testing.assert_eq_str(rest.get(1), "c");
+    testing.assert_eq_str(rest.get(2), "d");
+}
+
+#[test]
+fn test_collect_exhausted_scanner_returns_empty() {
+    var sc = scanner.from_string("solo");
+    sc = scanner.scan(sc); // current = "solo"
+    sc = scanner.scan(sc); // exhausted
+    let rest = scanner.collect(sc);
+    testing.assert_eq(rest.len(), 0);
+}
+
+// ── file constructors ─────────────────────────────────────────────────
+#[test]
+fn test_from_file_scans_real_empty_line_and_eof() {
+    let path = ".tmp/scanner-test-input.txt";
+    let _ = fs.write(path, "red\n\nblue\n");
+
+    match scanner.from_file(path) {
+        Ok(sc0) => {
+            var sc = sc0;
+
+            let (sc1, first) = scanner.next_line(sc);
+            sc = sc1;
+            match first {
+                Some(line) => testing.assert_eq_str(line, "red"),
+                None => {
+                    panic("expected red");
+                },
+            }
+
+            let (sc2, blank) = scanner.next_line(sc);
+            sc = sc2;
+            match blank {
+                Some(line) => testing.assert_eq_str(line, ""),
+                None => {
+                    panic("expected blank line");
+                },
+            }
+
+            let (sc3, third) = scanner.next_line(sc);
+            sc = sc3;
+            match third {
+                Some(line) => testing.assert_eq_str(line, "blue"),
+                None => {
+                    panic("expected blue");
+                },
+            }
+
+            let (_sc4, eof) = scanner.next_line(sc);
+            match eof {
+                Some(line) => {
+                    panic("unexpected EOF token: " + line);
+                },
+                None => testing.assert_true(true),
+            }
+        },
+        Err(e) => {
+            panic(fs.io_error_message(e));
+        },
+    }
+
+    let _ = fs.delete(path);
+}
+
+#[test]
+fn test_from_file_missing_path_returns_io_error() {
+    match scanner.from_file(".tmp/scanner-test-definitely-missing.txt") {
+        Ok(_) => {
+            panic("expected missing-file error");
+        },
+        Err(e) => match e {
+            IoError::NotFound(_) => testing.assert_true(true),
+            _ => {
+                panic("expected NotFound");
+            },
+        },
+    }
+}

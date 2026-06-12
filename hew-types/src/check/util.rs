@@ -46,6 +46,9 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
                 for arg in &bound.args {
                     collect_unresolved_inference_vars(arg, vars);
                 }
+                for (_, ty) in &bound.assoc_bindings {
+                    collect_unresolved_inference_vars(ty, vars);
+                }
             }
         }
         _ => {}
@@ -84,7 +87,8 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
         TypeExpr::Option(inner)
         | TypeExpr::Slice(inner)
         | TypeExpr::Array { element: inner, .. }
-        | TypeExpr::Pointer { pointee: inner, .. } => first_infer_span_in_type_expr(inner),
+        | TypeExpr::Pointer { pointee: inner, .. }
+        | TypeExpr::Borrow(inner) => first_infer_span_in_type_expr(inner),
         TypeExpr::Tuple(elems) => elems.iter().find_map(first_infer_span_in_type_expr),
         TypeExpr::Function {
             params,

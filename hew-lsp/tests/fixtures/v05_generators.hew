@@ -1,0 +1,12 @@
+fn generator_probe() -> i64 {
+    7
+}
+
+fn generators() -> i64 {
+    let _g = gen {
+        yield generator_probe();
+        yield 2;
+        3
+    };
+    generator_probe()
+}

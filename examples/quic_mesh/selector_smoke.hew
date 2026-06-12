@@ -1,0 +1,25 @@
+// quic_mesh/selector_smoke.hew — minimal Node API smoke for HEW_TRANSPORT selection
+//
+// Run:
+//   HEW_TRANSPORT=quic-mesh hew run examples/quic_mesh/selector_smoke.hew
+fn main() {
+    println("[selector-smoke] starting node");
+    let start_rc: i64 = unsafe {
+        hew_node_api_start("127.0.0.1:0")
+    };
+    if start_rc != 0 {
+        panic("hew_node_api_start failed");
+    }
+    let stop_rc: i64 = unsafe {
+        hew_node_api_shutdown()
+    };
+    if stop_rc != 0 {
+        panic("hew_node_api_shutdown failed");
+    }
+    println("[selector-smoke] shut down");
+}
+
+extern "C" {
+    fn hew_node_api_start(addr: string) -> i64;
+    fn hew_node_api_shutdown() -> i64;
+}

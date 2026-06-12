@@ -1,7 +1,12 @@
-// String operations test
+//! Status: runnable
+//! Description: string operations test
+
+// string operations test
 // Exercises string methods and operators
+import std::string;
+
 fn main() {
-    println("=== String Basics ===");
+    println("=== string Basics ===");
     let s = "hello world";
     let len = s.len();
     println(len); // 11
@@ -31,9 +36,9 @@ fn main() {
     let no_ct = s.contains("xyz");
     println(no_ct); // false
     println("=== Conversions ===");
-    let num_str = int_to_string(42);
+    let num_str = string.from_int(42);
     println(num_str); // 42
-    let num = string_to_int("123");
+    let num = string.to_int("123");
     println(num); // 123
     println("=== Trim/Replace ===");
     let trimmed = "  hello  ".trim();

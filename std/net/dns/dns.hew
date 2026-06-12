@@ -30,7 +30,7 @@ import std::fs;
 /// ```
 /// let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
 /// ```
-pub fn resolve(hostname: String) -> Vec<String> {
+pub fn resolve(hostname: string) -> Vec<string> {
     unsafe {
         hew_dns_resolve(hostname)
     }
@@ -44,7 +44,7 @@ pub fn resolve(hostname: String) -> Vec<String> {
 ///
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_resolve exposes it.
-pub fn try_resolve(hostname: String) -> Result<Vec<String>, fs.IoError> {
+pub fn try_resolve(hostname: string) -> Result<Vec<string>, fs.IoError> {
     let addrs = resolve(hostname);
     if addrs.len() == 0 {
         Err(fs.io_error_from_errno(0))
@@ -63,7 +63,7 @@ pub fn try_resolve(hostname: String) -> Result<Vec<String>, fs.IoError> {
 /// ```
 /// let ip = dns.lookup_host("localhost");  // "127.0.0.1"
 /// ```
-pub fn lookup_host(hostname: String) -> String {
+pub fn lookup_host(hostname: string) -> string {
     unsafe {
         hew_dns_lookup_host(hostname)
     }
@@ -77,7 +77,7 @@ pub fn lookup_host(hostname: String) -> String {
 ///
 /// Note: DNS has no OS errno channel; the errno payload is always 0.
 /// A follow-up issue will wire errno once hew_dns_lookup_host exposes it.
-pub fn try_lookup_host(hostname: String) -> Result<String, fs.IoError> {
+pub fn try_lookup_host(hostname: string) -> Result<string, fs.IoError> {
     let ip = lookup_host(hostname);
     if ip == "" {
         Err(fs.io_error_from_errno(0))
@@ -98,7 +98,7 @@ pub fn try_lookup_host(hostname: String) -> Result<String, fs.IoError> {
 /// ```
 /// let addrs = dns.resolve_timed("slow.example.com", 500);
 /// ```
-pub fn resolve_timed(hostname: String, deadline_ms: int) -> Vec<String> {
+pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
     unsafe {
         hew_dns_resolve_timed(hostname, deadline_ms as i64)
     } // INTERNAL-ABI: C ABI takes i64 deadline
@@ -108,7 +108,7 @@ pub fn resolve_timed(hostname: String, deadline_ms: int) -> Vec<String> {
 ///
 /// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
 /// failure returns an empty string.
-pub fn lookup_host_timed(hostname: String, deadline_ms: int) -> String {
+pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
     unsafe {
         hew_dns_lookup_host_timed(hostname, deadline_ms as i64)
     } // INTERNAL-ABI: C ABI takes i64 deadline
@@ -116,8 +116,8 @@ pub fn lookup_host_timed(hostname: String, deadline_ms: int) -> String {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_dns_resolve(hostname: String) -> Vec<String>;
-    fn hew_dns_lookup_host(hostname: String) -> String;
-    fn hew_dns_resolve_timed(hostname: String, deadline_ms: i64) -> Vec<String>;
-    fn hew_dns_lookup_host_timed(hostname: String, deadline_ms: i64) -> String;
+    fn hew_dns_resolve(hostname: string) -> Vec<string>;
+    fn hew_dns_lookup_host(hostname: string) -> string;
+    fn hew_dns_resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string>;
+    fn hew_dns_lookup_host_timed(hostname: string, deadline_ms: i64) -> string;
 }

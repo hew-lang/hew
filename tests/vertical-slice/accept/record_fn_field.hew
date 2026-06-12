@@ -1,0 +1,27 @@
+// A record with a fn-typed field is a first-class value: construct it with
+// a capturing closure, return it by value (the env stays heap-live across
+// the return), read the field, and drop the record — the environment is
+// released exactly once by the record's drop as the pair's sole owner.
+type Holder {
+    cb: fn(i64) -> i64;
+    tag: i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn make_holder() -> Holder {
+    Holder { cb: make_adder(1), tag: 7 }
+}
+
+fn main() {
+    let h = Holder { cb: make_adder(41), tag: 1 };
+    let f = h.cb;
+    println(f(1)); // 42
+    let g = make_holder();
+    let gcb = g.cb;
+    println(gcb(10)); // 11
+    // Tag rides alongside the pair untouched: 7.
+    println(g.tag);
+}

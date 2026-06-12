@@ -35,16 +35,16 @@ color brightmagenta "\<[0-9][0-9_]*\>"
 # Boolean & None
 color brightmagenta "\<(true|false|None)\>"
 
-# Control flow keywords
+# Control flow keywords (v0.5 additions: is)
 color brightwhite "\<(if|else|match|loop|for|while|break|continue|return|in)\>"
-color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope)\>"
+color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope|is)\>"
 
 # Declaration keywords
 color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
-color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct)\>"
+color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct|record)\>"
 
-# Actor & concurrency
-color brightgreen "\<(actor|fork|init|move|receive|spawn|this)\>"
+# Actor & concurrency (v0.5 additions: link, monitor)
+color brightgreen "\<(actor|fork|init|link|monitor|move|receive|spawn|this)\>"
 
 # Supervisor
 color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
@@ -52,11 +52,11 @@ color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
 # Wire protocol
 color green "\<(wire|reserved|optional|deprecated|default)\>"
 
-# Machine keywords
-color green "\<(machine|state|event|on|when)\>"
+# Machine keywords (v0.5 additions: drives, emit, entry, exit, transitions)
+color green "\<(drives|emit|entry|event|exit|machine|on|state|transitions|when)\>"
 
 # Other keywords
-color green "\<(dyn|unsafe|pure)\>"
+color green "\<(dyn|unsafe)\>"
 
 # Strategy & policy constants
 color brightmagenta "\<(one_for_one|one_for_all|rest_for_one)\>"
@@ -96,7 +96,8 @@ color white "::"
 # Attributes
 color magenta "#\[[^\]]*\]"
 
-# Labels
+# Labels and decorators
+color red "@reenter"
 color red "@[a-zA-Z_][a-zA-Z0-9_]*"
 
 # TODO/FIXME in comments

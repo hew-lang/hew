@@ -1,0 +1,38 @@
+// Accept fixture (NEW-6c): `await conn.read_string() | after d` — peer writes
+// before the long deadline, so the suspending read resolves to
+// `Ok(string)` and the deadline timer is cancelled without a spurious timeout.
+//
+// Exit-code contract: read-before-deadline Ok(string) -> 42; timeout Err -> 7;
+// no actor exit -> main fallback 99.
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Reader {
+    let port: i32;
+    receive fn go() {
+        sleep_ms(100);
+        let conn = net.connect(f"127.0.0.1:{port}");
+        let code = match await conn.read_string() | after 5s {
+            Ok(_body) => 42,
+            Err(_e) => 7,
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(port: port);
+    reader.go();
+    let client = listener.accept();
+    client.write_string("hello-from-server");
+    sleep_ms(500);
+    let _ = client.close();
+    exit(99);
+}

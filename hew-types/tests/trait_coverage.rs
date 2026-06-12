@@ -11,6 +11,7 @@ use hew_types::ty::{TraitObjectBound, Ty};
 // ---------------------------------------------------------------------------
 fn named(name: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args: vec![],
     }
@@ -18,6 +19,7 @@ fn named(name: &str) -> Ty {
 
 fn named_with(name: &str, args: Vec<Ty>) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args,
     }
@@ -222,7 +224,7 @@ fn array_of_string_is_not_copy() {
     let reg = TraitRegistry::new();
     let arr = Ty::Array(Box::new(Ty::String), 5);
     assert!(!reg.implements_marker(&arr, MarkerTrait::Copy));
-    // But should still be Send since String is Send
+    // But should still be Send since string is Send
     assert!(reg.implements_marker(&arr, MarkerTrait::Send));
 }
 
@@ -268,7 +270,7 @@ fn tuple_with_non_copy_element_is_not_copy() {
     let reg = TraitRegistry::new();
     let tuple = Ty::Tuple(vec![Ty::I32, Ty::String]);
     assert!(!reg.implements_marker(&tuple, MarkerTrait::Copy));
-    // But still Send since both I32 and String are Send
+    // But still Send since both I32 and string are Send
     assert!(reg.implements_marker(&tuple, MarkerTrait::Send));
 }
 
@@ -279,7 +281,7 @@ fn tuple_with_non_copy_element_is_not_copy() {
 #[test]
 fn stream_send_when_element_send() {
     let reg = TraitRegistry::new();
-    let stream = named_with("Stream", vec![Ty::I32]);
+    let stream = Ty::stream(Ty::I32);
     assert!(reg.implements_marker(&stream, MarkerTrait::Send));
     assert!(reg.implements_marker(&stream, MarkerTrait::Sync));
 }
@@ -291,14 +293,14 @@ fn stream_not_send_when_element_not_send() {
         pointee: Box::new(Ty::I32),
         is_mutable: false,
     };
-    let stream = named_with("Stream", vec![ptr]);
+    let stream = Ty::stream(ptr);
     assert!(!reg.implements_marker(&stream, MarkerTrait::Send));
 }
 
 #[test]
 fn stream_is_not_copy_or_clone() {
     let reg = TraitRegistry::new();
-    let stream = named_with("Stream", vec![Ty::I32]);
+    let stream = Ty::stream(Ty::I32);
     assert!(!reg.implements_marker(&stream, MarkerTrait::Copy));
     assert!(!reg.implements_marker(&stream, MarkerTrait::Clone));
 }
@@ -306,14 +308,14 @@ fn stream_is_not_copy_or_clone() {
 #[test]
 fn sink_send_when_element_send() {
     let reg = TraitRegistry::new();
-    let sink = named_with("Sink", vec![Ty::String]);
+    let sink = Ty::sink(Ty::String);
     assert!(reg.implements_marker(&sink, MarkerTrait::Send));
 }
 
 #[test]
 fn sink_not_copy() {
     let reg = TraitRegistry::new();
-    let sink = named_with("Sink", vec![Ty::I32]);
+    let sink = Ty::sink(Ty::I32);
     assert!(!reg.implements_marker(&sink, MarkerTrait::Copy));
 }
 
@@ -500,6 +502,7 @@ fn machine_type_derives_from_fields() {
     let mut reg = TraitRegistry::new();
     reg.register_type("CounterMachine".to_string(), vec![Ty::I32, Ty::Bool]);
     let machine = Ty::Named {
+        builtin: None,
         name: "CounterMachine".to_string(),
         args: vec![],
     };
@@ -525,6 +528,7 @@ fn trait_object_checks_super_traits() {
         traits: vec![TraitObjectBound {
             trait_name: "Drawable".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert!(reg.implements_marker(&obj, MarkerTrait::Send));
@@ -736,4 +740,49 @@ fn actor_ref_is_copy_clone_debug() {
     assert!(reg.implements_marker(&aref, MarkerTrait::Clone));
     assert!(reg.implements_marker(&aref, MarkerTrait::Debug));
     assert!(!reg.implements_marker(&aref, MarkerTrait::Eq));
+}
+
+// ===========================================================================
+// Duplex @resource marker (design contract D3 — slice 2 codification)
+// ===========================================================================
+
+#[test]
+fn duplex_is_resource() {
+    let reg = TraitRegistry::new();
+    let duplex = Ty::duplex(Ty::I64, Ty::I64);
+    assert!(
+        reg.implements_marker(&duplex, MarkerTrait::Resource),
+        "Duplex<i64, i64> must implement Resource (@resource D3 marker)"
+    );
+}
+
+#[test]
+fn duplex_is_not_copy_or_clone() {
+    let reg = TraitRegistry::new();
+    let duplex = named_with("Duplex", vec![Ty::I64, Ty::I64]);
+    assert!(
+        !reg.implements_marker(&duplex, MarkerTrait::Copy),
+        "Duplex must not be Copy (move-only resource)"
+    );
+    assert!(
+        !reg.implements_marker(&duplex, MarkerTrait::Clone),
+        "Duplex must not be Clone (no shared ownership in slice 2)"
+    );
+}
+
+#[test]
+fn primitives_are_not_resource() {
+    let reg = TraitRegistry::new();
+    for (ty, name) in [
+        (Ty::I64, "i64"),
+        (Ty::Bool, "bool"),
+        (Ty::F32, "f32"),
+        (Ty::F64, "f64"),
+        (Ty::String, "string"),
+    ] {
+        assert!(
+            !reg.implements_marker(&ty, MarkerTrait::Resource),
+            "{name} must not be Resource"
+        );
+    }
 }

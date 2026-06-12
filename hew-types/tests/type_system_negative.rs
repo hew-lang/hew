@@ -6,6 +6,7 @@ use hew_types::Ty;
 
 fn generic_param(name: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: name.to_string(),
         args: vec![],
     }
@@ -50,7 +51,7 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
                 || ty_contains_unresolved_var(ret)
                 || captures.iter().any(ty_contains_unresolved_var)
         }
-        Ty::Pointer { pointee, .. } => ty_contains_unresolved_var(pointee),
+        Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => ty_contains_unresolved_var(pointee),
         Ty::TraitObject { traits } => traits
             .iter()
             .flat_map(|bound| bound.args.iter())
@@ -63,6 +64,8 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::U16
         | Ty::U32
         | Ty::U64
+        | Ty::Isize
+        | Ty::Usize
         | Ty::F32
         | Ty::F64
         | Ty::IntLiteral
@@ -71,6 +74,7 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         | Ty::Char
         | Ty::String
         | Ty::Bytes
+        | Ty::CancellationToken
         | Ty::Duration
         | Ty::Unit
         | Ty::Never
@@ -80,6 +84,11 @@ fn ty_contains_unresolved_var(ty: &Ty) -> bool {
         // type-checking (today it is only produced during HIR lowering after
         // the checker has run, so this arm is structurally unreachable here).
         Ty::Task(inner) => ty_contains_unresolved_var(inner),
+        // AssocType { base, .. }: recurse into the base carrier, matching the
+        // Task<T> precedent. A still-unresolved projection carrier is itself
+        // a checker-internal leak, but this helper is for inference-var
+        // detection specifically.
+        Ty::AssocType { base, .. } => ty_contains_unresolved_var(base),
     }
 }
 
@@ -122,7 +131,7 @@ fn mutability_error_assign_to_let_binding() {
 fn if_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
-        fn main(opt: Option<int>) {
+        fn main(opt: Option<i64>) {
             if let Some(x) = opt {
                 x = 5;
             }
@@ -145,7 +154,7 @@ fn if_let_bound_name_is_immutable() {
 fn while_let_bound_name_is_immutable() {
     let output = typecheck(
         r"
-        fn main(opt: Option<int>) {
+        fn main(opt: Option<i64>) {
             while let Some(x) = opt {
                 x = 5;
             }
@@ -168,7 +177,7 @@ fn while_let_bound_name_is_immutable() {
 fn mutable_param_can_be_reassigned_no_error() {
     let output = typecheck(
         r"
-        fn bump(var x: int) -> int {
+        fn bump(var x: i64) -> i64 {
             x = x + 1;
             x
         }
@@ -225,7 +234,7 @@ fn var_never_reassigned_emits_unusedmut_warning() {
 fn let_field_assign_immutable_root_is_rejected() {
     let output = typecheck(
         r"
-        type Point { x: int; }
+        type Point { x: i64; }
 
         fn main() {
             let p = Point { x: 1 };
@@ -273,7 +282,7 @@ fn let_index_assign_immutable_root_is_rejected() {
 fn arity_mismatch_too_few_arguments() {
     let output = typecheck(
         r"
-        fn add(a: int, b: int) -> int { a + b }
+        fn add(a: i64, b: i64) -> i64 { a + b }
         fn main() { add(1); }
     ",
     );
@@ -316,7 +325,7 @@ fn return_type_mismatch_empty_return_in_non_unit_fn() {
 fn undefined_field_on_struct() {
     let output = typecheck(
         r"
-        type Point { x: int; y: int; }
+        type Point { x: i64; y: i64; }
         fn main() {
             let p = Point { x: 1, y: 2 };
             let z = p.z;
@@ -339,7 +348,7 @@ fn undefined_field_on_struct() {
 fn undefined_method_on_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
+        type Foo { x: i64; }
         fn main() {
             let f = Foo { x: 1 };
             f.bar();
@@ -383,8 +392,8 @@ fn duplicate_definition_same_function() {
 fn duplicate_definition_same_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
-        type Foo { y: int; }
+        type Foo { x: i64; }
+        type Foo { y: i64; }
         fn main() {}
     ",
     );
@@ -425,8 +434,8 @@ fn duplicate_definition_same_enum() {
 fn duplicate_definition_same_trait() {
     let output = typecheck(
         r"
-        trait Printable { fn render(val: Self) -> int; }
-        trait Printable { fn print(val: Self) -> int; }
+        trait Printable { fn render(val: Self) -> i64; }
+        trait Printable { fn print(val: Self) -> i64; }
         fn main() {}
     ",
     );
@@ -446,8 +455,8 @@ fn duplicate_definition_same_trait() {
 fn duplicate_definition_same_actor() {
     let output = typecheck(
         r"
-        actor Worker { let id: int; }
-        actor Worker { let count: int; }
+        actor Worker { let id: i64; }
+        actor Worker { let count: i64; }
         fn main() {}
     ",
     );
@@ -468,18 +477,24 @@ fn duplicate_definition_same_machine() {
     let output = typecheck(
         r"
         machine Traffic {
+            events {
+                Tick;
+            }
+
             state Red;
             state Green;
-            event Tick;
-            on Tick: Red -> Green;
-            on Tick: Green -> Red;
+            on Tick: Red => Green;
+            on Tick: Green => Red;
         }
         machine Traffic {
+            events {
+                Tick;
+            }
+
             state Idle;
             state Busy;
-            event Tick;
-            on Tick: Idle -> Busy;
-            on Tick: Busy -> Idle;
+            on Tick: Idle => Busy;
+            on Tick: Busy => Idle;
         }
         fn main() {}
     ",
@@ -501,13 +516,16 @@ fn duplicate_definition_machine_companion_event_same_type() {
     let output = typecheck(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
-        type LightEvent { code: int; }
+        type LightEvent { code: i64; }
         fn main() {}
     ",
     );
@@ -525,13 +543,16 @@ fn duplicate_definition_machine_companion_event_same_type() {
 fn duplicate_definition_machine_companion_event_type_before_machine() {
     let output = typecheck(
         r"
-        type LightEvent { code: int; }
+        type LightEvent { code: i64; }
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         fn main() {}
     ",
@@ -553,13 +574,16 @@ fn duplicate_definition_machine_companion_event_same_trait() {
     let output = typecheck(
         r"
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
-        trait LightEvent { fn render(val: Self) -> int; }
+        trait LightEvent { fn render(val: Self) -> i64; }
         fn main() {}
     ",
     );
@@ -577,13 +601,16 @@ fn duplicate_definition_machine_companion_event_same_trait() {
 fn duplicate_definition_machine_companion_event_trait_before_machine() {
     let output = typecheck(
         r"
-        trait LightEvent { fn render(val: Self) -> int; }
+        trait LightEvent { fn render(val: Self) -> i64; }
         machine Light {
+            events {
+                Toggle;
+            }
+
             state Off;
             state On;
-            event Toggle;
-            on Toggle: Off -> On;
-            on Toggle: On -> Off;
+            on Toggle: Off => On;
+            on Toggle: On => Off;
         }
         fn main() {}
     ",
@@ -608,7 +635,7 @@ fn duplicate_definition_same_wire_type() {
             id: i32 @1;
         }
         wire type Packet {
-            name: String @1;
+            name: string @1;
         }
         fn main() {}
     ",
@@ -629,8 +656,8 @@ fn duplicate_definition_same_wire_type() {
 fn duplicate_definition_same_type_alias() {
     let output = typecheck(
         r"
-        type Foo = int;
-        type Foo = int;
+        type Foo = i64;
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -650,8 +677,8 @@ fn duplicate_definition_same_type_alias() {
 fn duplicate_definition_type_alias_collides_with_struct() {
     let output = typecheck(
         r"
-        type Foo { x: int; }
-        type Foo = int;
+        type Foo { x: i64; }
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -671,8 +698,8 @@ fn duplicate_definition_type_alias_collides_with_struct() {
 fn duplicate_definition_type_alias_collides_with_trait() {
     let output = typecheck(
         r"
-        trait Foo { fn render(val: Self) -> int; }
-        type Foo = int;
+        trait Foo { fn render(val: Self) -> i64; }
+        type Foo = i64;
         fn main() {}
     ",
     );
@@ -714,7 +741,7 @@ fn inference_failed_unresolved_type_alias_hole() {
 fn nested_type_alias_hole_does_not_fail_closed() {
     let output = typecheck(
         r"
-        type Pair = (int, _);
+        type Pair = (i64, _);
         fn main() {}
     ",
     );
@@ -784,32 +811,7 @@ fn invalid_operation_string_plus_int() {
     );
 }
 
-// ── 9. PurityViolation — call impure fn from pure fn ────────────────
-// PurityViolation requires the `pure fn` keyword. Regular non-receive
-// actor functions are NOT automatically pure.
-
-#[test]
-fn purity_violation_call_impure_from_pure() {
-    let output = typecheck(
-        r"
-        fn side_effect() {}
-        pure fn must_be_pure() {
-            side_effect();
-        }
-        fn main() {}
-    ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::PurityViolation),
-        "Expected PurityViolation, got errors: {:?}",
-        output.errors
-    );
-}
-
-// ── 10. UseAfterMove — send non-Copy value to actor twice ───────────
+// ── 9. UseAfterMove — send non-Copy value to actor twice ───────────
 // The checker marks non-Copy values as moved at actor message boundaries.
 // A struct with a `string` field is non-Copy, triggering move semantics.
 
@@ -819,7 +821,7 @@ fn use_after_move_send_to_actor_twice() {
         r#"
         type Payload { data: string; }
         actor Sink {
-            let val: int;
+            let val: i64;
             receive fn consume(h: Payload) {}
         }
         fn main() {
@@ -888,7 +890,7 @@ fn unused_variable_warning_for_unread_binding() {
 fn nonexhaustive_match_option_missing_none() {
     let output = typecheck(
         r"
-        fn check(x: Option<int>) -> int {
+        fn check(x: Option<i64>) -> i64 {
             match x {
                 Some(v) => v,
             }
@@ -922,7 +924,7 @@ fn nonexhaustive_match_option_missing_none() {
 fn nonexhaustive_match_result_missing_err() {
     let output = typecheck(
         r"
-        fn check(r: Result<int, string>) -> int {
+        fn check(r: Result<i64, string>) -> i64 {
             match r {
                 Ok(v) => v,
             }
@@ -993,9 +995,12 @@ fn machine_exhaustiveness_too_few_states() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                Ping;
+            }
+
             state Only;
-            event Ping;
-            on Ping: Only -> Only;
+            on Ping: Only => Only;
         }
         fn main() {}
     ",
@@ -1040,12 +1045,15 @@ fn machine_exhaustiveness_unknown_event() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: B -> A;
-            on Ghost: A -> B;
+            on X: A => B;
+            on X: B => A;
+            on Ghost: A => B;
         }
         fn main() {}
     ",
@@ -1068,11 +1076,14 @@ fn machine_exhaustiveness_unknown_state() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: B -> Phantom;
+            on X: A => B;
+            on X: B => Phantom;
         }
         fn main() {}
     ",
@@ -1095,11 +1106,14 @@ fn machine_exhaustiveness_duplicate_wildcard() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: _ -> _ { state }
-            on X: _ -> _ { state }
+            on X: _ => _ { state }
+            on X: _ => _ { state }
         }
         fn main() {}
     ",
@@ -1526,7 +1540,7 @@ fn explicit_hole_nonitem_local_var_annotation_is_rejected() {
 fn explicit_hole_nonitem_local_let_annotation_is_resolved_from_later_use() {
     let output = typecheck(
         r"
-        fn takes(value: Option<int>) {}
+        fn takes(value: Option<i64>) {}
 
         fn main() {
             let value: _ = None;
@@ -1568,7 +1582,7 @@ fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
         r"
         const MAYBE: _ = None;
 
-        fn takes(value: Option<int>) {}
+        fn takes(value: Option<i64>) {}
 
         fn main() {
             takes(MAYBE);
@@ -1590,7 +1604,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = (x: _) => 1;
+            let _f = |x: _| 1;
         }
     ",
     );
@@ -1609,7 +1623,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type(
     let output = typecheck(
         r"
         fn main() {
-            let _f: fn(int) -> int = (x: _) => 1;
+            let _f: fn(i64) -> i64 = |x: _| 1;
         }
     ",
     );
@@ -1628,7 +1642,7 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = () -> _ => None;
+            let _f = || -> _ { None };
         }
     ",
     );
@@ -1647,7 +1661,7 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_resolved_from_body() {
     let output = typecheck(
         r"
         fn main() {
-            let _f = () -> _ => 1;
+            let _f = || -> _ { 1 };
         }
     ",
     );
@@ -1794,12 +1808,15 @@ fn machine_exhaustiveness_duplicate_explicit() {
     let output = typecheck(
         r"
         machine Broken {
+            events {
+                X;
+            }
+
             state A;
             state B;
-            event X;
-            on X: A -> B;
-            on X: A -> A;
-            on X: B -> A;
+            on X: A => B;
+            on X: A => A;
+            on X: B => A;
         }
         fn main() {}
     ",
@@ -1877,7 +1894,7 @@ fn postfix_try_in_option_lambda_inside_plain_fn_is_valid() {
             if x > 0 { Some(x) } else { None }
         }
         fn outer(x: i32) {
-            let _f = (v: i32) -> Option<i32> => {
+            let _f = |v: i32| -> Option<i32> {
                 let w = maybe(v)?;
                 Some(w)
             };
@@ -1902,7 +1919,7 @@ fn postfix_try_in_plain_lambda_inside_option_fn_is_invalid() {
             if x > 0 { Some(x) } else { None }
         }
         fn outer(x: i32) -> Option<i32> {
-            let _f = (v: i32) -> i32 => {
+            let _f = |v: i32| -> i32 {
                 let w = maybe(v)?;
                 w
             };
@@ -1935,7 +1952,7 @@ fn bounds_not_satisfied_missing_trait_impl() {
         impl Printable for Dog {
             fn describe(d: Dog) -> string { d.name }
         }
-        type Rock { weight: int; }
+        type Rock { weight: i64; }
         fn show<T: Printable>(val: T) -> string {
             val.describe()
         }
@@ -1955,7 +1972,7 @@ fn bounds_not_satisfied_missing_trait_impl() {
     );
 }
 
-// ── String::chars() typechecks and arity-guards ─────────────────────────────
+// ── string::chars() typechecks and arity-guards ─────────────────────────────
 
 #[test]
 fn string_chars_returns_vec_char() {
@@ -1970,7 +1987,7 @@ fn string_chars_returns_vec_char() {
     );
     assert!(
         output.errors.is_empty(),
-        "String::chars() should typecheck without errors; got: {:?}",
+        "string::chars() should typecheck without errors; got: {:?}",
         output.errors
     );
 }
@@ -1987,7 +2004,7 @@ fn string_chars_rejects_extra_args() {
     );
     assert!(
         !output.errors.is_empty(),
-        "String::chars(arg) should produce a typecheck error"
+        "string::chars(arg) should produce a typecheck error"
     );
 }
 
@@ -2039,5 +2056,541 @@ fn empty_type_args_on_generic_enum_variant_init_is_arity_mismatch() {
             .any(|e| e.kind == TypeErrorKind::ArityMismatch),
         "Expected ArityMismatch for `Event::Move<>`, got errors: {:?}",
         output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_on_non_result_rejected() {
+    // `let r? = expr;` requires the RHS to be Result<T,E> or Option<T>.
+    // A plain integer RHS must be rejected by the type-checker with the
+    // same diagnostic as a bare `expr?` on a non-Result expression.
+    let output = typecheck(
+        r"
+        fn plain() -> i64 {
+            let r? = 42;
+            r
+        }
+        fn main() { plain(); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("requires Result or Option")),
+        "Expected InvalidOperation for `let r? = 42` (non-Result RHS), got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_in_non_result_fn_rejected() {
+    // `let r? = result_expr;` inside a function that does not return
+    // Result or Option must be rejected — same rule as bare `?`.
+    let output = typecheck(
+        r"
+        fn make_result(x: i64) -> Result<i64, string> {
+            Ok(x)
+        }
+        fn plain(x: i64) -> i64 {
+            let r? = make_result(x);
+            r
+        }
+        fn main() { plain(5); }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("enclosing function must return")),
+        "Expected InvalidOperation for `let r?` in non-Result fn, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 23. Vec layout-element accepted/fail-closed boundary ─────────────
+//
+// BitCopy Plain layout Vec push/get/set/pop are now backed by runtime + codegen
+// for Copy record and tuple elements; the checker accepts those calls and
+// records a `_layout`-suffix rewrite. Every other layout-backed Vec method
+// (contains, remove, clear, clone, append, extend) still has no runtime
+// backing and must fail closed with `InvalidOperation` at the call site
+// naming the would-be runtime symbol — rather than cascading as
+// `UnresolvedSymbol` from HIR/MIR.
+
+#[test]
+fn vec_push_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.push(Point { x: 1, y: 2 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_copy_tuple_element_is_accepted() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.push((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy tuple Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_get_copy_record_element_is_accepted() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _p = v.get(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Copy record Vec::get must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 23b. Fix-forward: contains / remove / clear / clone / append / extend ──
+//
+// The initial squash wired the fail-closed fence for push/pop/get/set but
+// missed three classes of bug:
+//
+//   (1) `contains` — returned `None` from `resolve_vec_method` for layout
+//       types (because the match had no `"layout"` arm), which caused
+//       `resolve_vec_runtime_symbol` to early-return `None` without emitting
+//       any diagnostic. `Ty::Bool` was returned silently.
+//
+//   (2) `remove` — `resolve_vec_method` always returned the monomorphic
+//       `hew_vec_remove_at` for every element type, so the `_layout` suffix
+//       check in `resolve_vec_runtime_symbol` never triggered.
+//
+//   (3) `clear` / `clone` / `append` / `extend` — same as (2): always
+//       returned monomorphic symbols, bypassing the fence entirely.
+
+#[test]
+fn vec_contains_eligible_copy_record_compiles_after_w3_032_slice_3() {
+    // W3.032 Slice 3e: equality-eligible Copy records (all integer fields) are
+    // now lifted via `hew_vec_contains_thunk`.  Compiles cleanly with no
+    // diagnostic.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let p = Point { x: 1, y: 2 };
+            let _ = v.contains(p);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::contains (eligible Copy record) must compile: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_tuple_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.contains((1, 2.0));
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("floating-point")
+                && e.message.contains("f64")
+                && e.message.contains("no runtime method rewrite was recorded")),
+        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::contains, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_float_record_element_has_eq_eligibility_diagnostic() {
+    let output = typecheck(
+        r"
+        type Measurement {
+            value: f32;
+        }
+        fn main() {
+            let v: Vec<Measurement> = Vec::new();
+            let needle = Measurement { value: 1.0 };
+            let _ = v.contains(needle);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("floating-point")
+                && e.message.contains("f32")),
+        "Expected float-field equality eligibility diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
+    let output = typecheck(
+        r#"
+        type Person {
+            name: string;
+        }
+        fn main() {
+            var v: Vec<Person> = [];
+            let needle = Person { name: "ada" };
+            let _ = v.contains(needle);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::contains`")
+                && e.message.contains("layout-managed/non-Copy")
+                && e.message.contains("string")),
+        "Expected layout-managed equality eligibility diagnostic, got: {:?}",
+        output.errors
+    );
+}
+
+// Vec::remove is now runtime-backed for BitCopy layout elements (W3.003).
+// These tests verify the happy path; the old fail-closed behaviour is gone.
+#[test]
+fn vec_remove_copy_record_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy record must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<Point>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_remove_copy_tuple_element_now_succeeds() {
+    // Vec<T>::remove where T is a Copy tuple must resolve without errors
+    // after W3.003 lifts the gate.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, i64)> = Vec::new();
+            v.remove(0);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Vec<(i32,i64)>::remove must succeed after W3.003, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clear_tuple_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            v.clear();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::clear`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_clear_layout")),
+        "Expected layout fail-closed diagnostic for Vec<(i32,f64)>::clear, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_record_element_is_permitted() {
+    // Point has only i32 fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<Point>::clone (BitCopy record) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_bitcopy_tuple_element_is_permitted() {
+    // (i32, f64) has only scalar fields → Copy → clone is allowed via hew_vec_clone_layout.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(i32, f64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("hew_vec_clone_layout")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "Vec<(i32,f64)>::clone (BitCopy tuple) must NOT trigger the layout fence: {layout_fence_errors:?}",
+    );
+}
+
+#[test]
+fn vec_clone_owning_record_element_is_layout_fail_closed() {
+    // Person has a string field → not Copy / LayoutManaged → the checker must
+    // fail closed.  For named types the construction gate (`Vec::new()` with a
+    // LayoutManaged element) fires before the clone gate, so either
+    // `hew_vec_new_with_layout` or `hew_vec_clone_layout` in the error message
+    // is correct evidence of the fail-closed boundary.
+    let output = typecheck(
+        r"
+        type Person {
+            name: string;
+            age: i64;
+        }
+        fn main() {
+            let v: Vec<Person> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && (e.message.contains("hew_vec_clone_layout")
+                    || e.message.contains("hew_vec_new_with_layout"))),
+        "Expected layout fail-closed diagnostic for Vec<Person> (Owning), got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_owning_tuple_element_is_layout_fail_closed() {
+    // (string, i64) contains a string → not Copy / LayoutManaged → clone must remain fail-closed.
+    let output = typecheck(
+        r"
+        fn main() {
+            let v: Vec<(string, i64)> = Vec::new();
+            let _ = v.clone();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("hew_vec_clone_layout")),
+        "Expected layout fail-closed diagnostic for Vec<(string,i64)>::clone (Owning), got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_append_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.append(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::append`")
+                && e.message.contains("not runtime-backed yet")
+                && e.message.contains("hew_vec_append_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::append, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_extend_record_element_is_layout_fail_closed() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let other: Vec<Point> = Vec::new();
+            v.extend(other);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`Vec::extend`")
+                && e.message.contains("not runtime-backed yet")
+                // extend maps to the append runtime entry
+                && e.message.contains("hew_vec_append_layout")),
+        "Expected layout fail-closed diagnostic for Vec<Point>::extend, got: {:?}",
+        output.errors
+    );
+}
+
+// ── 23c. `len` and `is_empty` are header-only and must NOT fire the fence ──
+//
+// `Vec::len` bypasses `resolve_vec_runtime_symbol` entirely (hardcoded
+// `len_vec` rewrite in `check_vec_method`). `Vec::is_empty` routes through
+// the resolver but `resolve_vec_method` returns the monomorphic
+// `hew_vec_is_empty` which does not end with `_layout`, so no diagnostic
+// is emitted. Both methods are provably safe for layout-backed Vecs because
+// they only read the length header, not the element data.
+
+#[test]
+fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
+    let output = typecheck(
+        r"
+        type Point {
+            x: i32;
+            y: i32;
+        }
+        fn main() {
+            let v: Vec<Point> = Vec::new();
+            let _n = v.len();
+            let _e = v.is_empty();
+        }
+        ",
+    );
+    // Neither `len` nor `is_empty` should emit layout-fence diagnostics.
+    let layout_fence_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("not runtime-backed yet")
+        })
+        .collect();
+    assert!(
+        layout_fence_errors.is_empty(),
+        "`Vec::len` and `Vec::is_empty` must not trigger the layout fence: {layout_fence_errors:?}",
     );
 }

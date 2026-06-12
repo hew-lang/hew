@@ -1,0 +1,28 @@
+// Exercises match expressions over a user-defined unit enum.
+//
+// This fixture verifies:
+//   1. `match` over an enum-typed scrutinee dispatches by variant tag.
+//   2. Each arm's body expression contributes to the match result.
+//   3. The result flows through `let` and back into observable output.
+//
+// Companion to run_colour.hew (which exercises construction only).
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn describe(c: Colour) {
+    match c {
+        Colour::Red => println("red"),
+        Colour::Green => println("green"),
+        Colour::Blue => println("blue"),
+    }
+}
+
+fn main() {
+    describe(Colour::Red);
+    describe(Colour::Green);
+    describe(Colour::Blue);
+    println("done");
+}

@@ -1,0 +1,33 @@
+//! Worker-free `await rx.recv()` over a std/channel `Receiver<T>` (NEW-4).
+//!
+//! An actor receive handler `await`s `rx.recv()`: from an execution-context caller the
+//! recv flips to `Terminator::SuspendingChannelRecv` and SUSPENDS the worker
+//! when empty, resuming on a sender deposit / close. Here the value is already
+//! queued (immediate-ready bind), then a second recv on the closed channel
+//! binds `None`. Run under `HEW_WORKERS=1`: a blocking recv would strand the
+//! lone worker; the suspend ramp does not.
+
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        tx.send("ping");
+        tx.close();
+        match await rx.recv() {
+            Some(v) => println(v),
+            None => println("closed"),
+        }
+        match await rx.recv() {
+            Some(v) => println(v),
+            None => println("closed"),
+        }
+        rx.close();
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    w.run();
+    sleep_ms(100);
+}

@@ -63,6 +63,34 @@ fn fmt_stdin_writes_formatted_source_to_stdout() {
 }
 
 #[test]
+fn fmt_stdin_handles_regex_records_and_is_operator() {
+    let input = concat!(
+        r#"type Point{x:i32;y:i32} fn main()->i32{let pattern=re"^hew[0-9]+$";let base=Point{x:1,y:2};let updated=Point{x:3,..base};if updated.x is i32 {pattern;} updated.x}"#,
+        "\n"
+    );
+    let output = run_fmt(&["fmt", "--stdin"], input);
+
+    assert!(
+        output.status.success(),
+        "hew fmt --stdin failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("type Point {\n"), "stdout: {stdout}");
+    assert!(
+        stdout.contains(r#"let pattern = re"^hew[0-9]+$";"#),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("let updated = Point { x: 3, ..base };"),
+        "stdout: {stdout}"
+    );
+    assert!(stdout.contains("if updated.x is i32 {"), "stdout: {stdout}");
+}
+
+#[test]
 fn fmt_check_stdin_succeeds_for_formatted_source() {
     let input = "fn main() {\n    let x = 1;\n}\n";
     let output = run_fmt(&["fmt", "--check", "--stdin"], input);

@@ -1,7 +1,0 @@
-// Tests to_string with an inline heap-allocated String source that is not bound
-// to a name before being passed.  The concat temp must be registered in the drop
-// system for scope-exit cleanup; only the returned clone is owned by the caller.
-fn main() {
-    let t = to_string("foo" + "bar");
-    println(t);
-}

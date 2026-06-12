@@ -1,5 +1,5 @@
 // LCM using GCD
-fn gcd(a: int, b: int) -> int {
+fn gcd(a: i64, b: i64) -> i64 {
     var x = a;
     var y = b;
     while y != 0 {
@@ -10,12 +10,12 @@ fn gcd(a: int, b: int) -> int {
     x
 }
 
-fn lcm(a: int, b: int) -> int {
+fn lcm(a: i64, b: i64) -> i64 {
     let g = gcd(a, b);
     a / g * b
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

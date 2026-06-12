@@ -141,23 +141,27 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::Binary { left, right, .. } => {
             expr_contains_defer(&left.0) || expr_contains_defer(&right.0)
         }
-        Expr::Unary { operand, .. } | Expr::Await(operand) | Expr::PostfixTry(operand) => {
-            expr_contains_defer(&operand.0)
-        }
+        Expr::Unary { operand, .. }
+        | Expr::Await(operand)
+        | Expr::PostfixTry(operand)
+        | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
-        | Expr::Cooperate
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
-        | Expr::ScopeCancel
-        | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_)
         | Expr::ForkChild { .. } => false,
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => block_contains_defer(body),
+        Expr::ScopeDeadline { duration, body } => {
+            expr_contains_defer(&duration.0) || block_contains_defer(body)
+        }
+        Expr::MachineEmit { fields, .. } => {
+            fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
@@ -167,10 +171,8 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| expr_contains_defer(&key.0) || expr_contains_defer(&value.0)),
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Fork { body: block } => block_contains_defer(block),
+        Expr::Block(block) | Expr::Scope { body: block } => block_contains_defer(block),
+        Expr::UnsafeBlock(block) => block_contains_defer(block),
         Expr::If {
             condition,
             then_block,
@@ -201,7 +203,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                         || expr_contains_defer(&arm.body.0)
                 })
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             expr_contains_defer(&target.0)
                 || args.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
@@ -219,9 +221,6 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         }
         Expr::StructInit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
-        }
-        Expr::Send { target, message } => {
-            expr_contains_defer(&target.0) || expr_contains_defer(&message.0)
         }
         Expr::Select { arms, timeout } => {
             arms.iter()
@@ -246,6 +245,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                     .as_ref()
                     .is_some_and(|expr| expr_contains_defer(&expr.0))
         }
+        Expr::Is { lhs, rhs } => expr_contains_defer(&lhs.0) || expr_contains_defer(&rhs.0),
     }
 }
 
@@ -329,23 +329,33 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut left.0, false);
             mark_expr(&mut right.0, false);
         }
-        Expr::Unary { operand, .. } | Expr::Await(operand) | Expr::PostfixTry(operand) => {
+        // `clone <operand>` wraps its operand's value, so no call inside the
+        // operand is in tail position — same as the other unary forms.
+        Expr::Unary { operand, .. }
+        | Expr::Await(operand)
+        | Expr::PostfixTry(operand)
+        | Expr::Clone(operand) => {
             mark_expr(&mut operand.0, false);
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This
-        | Expr::Cooperate
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
-        | Expr::ScopeCancel
-        | Expr::ScopeLaunch(_)
-        | Expr::ScopeSpawn(_)
         | Expr::ForkChild { .. } => {}
+        // Generator blocks are not tail-call candidates; mark the body
+        // so any inner call expressions can still be identified.
+        Expr::ForkBlock { body } | Expr::GenBlock { body } => {
+            mark_block(body, false);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            mark_expr(&mut duration.0, false);
+            mark_block(body, false);
+        }
         Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
             for (expr, _) in items {
                 mark_expr(expr, false);
@@ -361,10 +371,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut value.0, false);
             }
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::Scope { body: block, .. }
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            mark_block(block, is_tail_position);
+        }
+        Expr::UnsafeBlock(block) => {
             mark_block(block, is_tail_position);
         }
         Expr::If {
@@ -399,7 +409,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut arm.body.0, is_tail_position);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             mark_expr(&mut target.0, false);
             for (_, expr) in args {
                 mark_expr(&mut expr.0, false);
@@ -432,14 +442,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut arg.expr_mut().0, false);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, expr) in fields {
                 mark_expr(&mut expr.0, false);
             }
-        }
-        Expr::Send { target, message } => {
-            mark_expr(&mut target.0, false);
-            mark_expr(&mut message.0, false);
         }
         Expr::Select { arms, timeout } => {
             for arm in arms {
@@ -468,6 +474,10 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             if let Some(expr) = end {
                 mark_expr(&mut expr.0, false);
             }
+        }
+        Expr::Is { lhs, rhs } => {
+            mark_expr(&mut lhs.0, false);
+            mark_expr(&mut rhs.0, false);
         }
     }
 }
@@ -528,8 +538,9 @@ mod tests {
             "fn example(cond: bool) -> int { match cond { true => { return expensive_call(); }, false => { return other_call(); } } }",
         );
 
-        let Stmt::Match { arms, .. } = &function.body.stmts[0].0 else {
-            panic!("expected match statement");
+        // A bare `match` as the last item in a block is a trailing expression.
+        let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected trailing match expression");
         };
 
         for arm in arms {

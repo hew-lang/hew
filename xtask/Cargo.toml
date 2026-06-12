@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Workspace automation tasks for Hew"
+repository = "https://github.com/hew-lang/hew"
+readme = "../README.md"
+keywords = ["hew", "xtask"]
+categories = ["development-tools"]
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-sandbox-wasm = { path = "../hew-sandbox-wasm" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

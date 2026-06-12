@@ -1,0 +1,40 @@
+//! `select { pat from rx.recv() }` — a channel-receive arm in select (NEW-4).
+//!
+//! Two channels race plus an `after` safety net; the ready channel's arm wins,
+//! the loser arm's poll is cancelled at the dispatch site, and the after-timer
+//! never fires. A correct run prints the winning channel's value.
+
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() {
+        let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+        let (txb, rxb): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+        txb.send(7);
+        select {
+            a from rxa.recv() => {
+                match a {
+                    Some(s) => println(f"a:{s}"),
+                    None => println("a:none"),
+                }
+            },
+            b from rxb.recv() => {
+                match b {
+                    Some(n) => println(f"b:{n}"),
+                    None => println("b:none"),
+                }
+            },
+            after 1s => println("timeout"),
+        };
+        txa.close();
+        txb.close();
+        rxa.close();
+        rxb.close();
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    w.run();
+    sleep_ms(100);
+}

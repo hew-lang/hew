@@ -1,0 +1,90 @@
+//! Seedable pseudo-random number generation.
+//!
+//! Backed by a CPython-compatible MT19937 Mersenne Twister implemented in
+//! `hew-runtime/src/random.rs`. State is thread-local — one generator per
+//! thread. A fixed seed produces a deterministic, reproducible sequence that
+//! matches CPython's `random` module output for the same seed.
+//!
+//! # Examples
+//!
+//! ```
+//! fn main() {
+//!     random.seed(42);
+//!     let r = random.random();   // ≈ 0.6394267984578837
+//!     let n = random.randint(0, 10);
+//! }
+//! ```
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+// All functions delegate to `hew-runtime/src/random.rs` via C ABI.
+// The runtime entry points are thread-local: each OS thread has its own
+// MT state, seeded from OS entropy at first use.
+/// Seed the PRNG so subsequent calls produce a deterministic sequence.
+///
+/// The seed is reduced to its low 32 bits and passed to CPython's
+/// `init_by_array`. Calling `seed` with the same value always produces
+/// the same stream.
+pub fn seed(s: i64) {
+    unsafe {
+        hew_random_seed(s)
+    }
+}
+
+/// Return a random float in [0.0, 1.0) with 53-bit precision.
+///
+/// Uses CPython's `random()` algorithm (two 27/26-bit MT words combined).
+pub fn random() -> f64 {
+    unsafe {
+        hew_random_random()
+    }
+}
+
+/// Return a random float drawn from a Gaussian (normal) distribution
+/// with the given `mean` and `sigma` (standard deviation).
+///
+/// Uses the Box-Muller method with spare-value caching, matching
+/// CPython's `random.gauss` implementation.
+pub fn gauss(mean: f64, sigma: f64) -> f64 {
+    unsafe {
+        hew_random_gauss(mean, sigma)
+    }
+}
+
+/// Return a random integer in the half-open range [`lo`, `hi`).
+///
+/// Returns `lo` when `hi <= lo`.
+pub fn randint(lo: i64, hi: i64) -> i64 {
+    unsafe {
+        hew_random_randint(lo, hi)
+    }
+}
+
+/// Shuffle a `Vec<i64>` in-place using Fisher-Yates.
+///
+/// Matches CPython's `random.shuffle` output for the same seed.
+pub fn shuffle(v: Vec<i64>) {
+    unsafe {
+        hew_random_shuffle_i64(v)
+    }
+}
+
+/// Weighted choice by bisecting cumulative weights. Returns the chosen index.
+///
+/// `weights` is a `Vec<f64>` of cumulative weights (each entry is the sum of
+/// all weights up to and including that index), `total` is the grand total,
+/// and `n` is reserved for future multi-sample use (pass 1).
+pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
+    unsafe {
+        hew_random_choices_vec(weights, total, n)
+    }
+}
+
+// ── Runtime externs ───────────────────────────────────────────────────
+extern "C" {
+    fn hew_random_seed(seed: i64);
+    fn hew_random_random() -> f64;
+    fn hew_random_gauss(mu: f64, sigma: f64) -> f64;
+    fn hew_random_randint(lo: i64, hi: i64) -> i64;
+    fn hew_random_shuffle_i64(v: Vec<i64>);
+    fn hew_random_choices_vec(v: Vec<f64>, total: f64, n: i64) -> i64;
+}

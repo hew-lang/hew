@@ -9,7 +9,7 @@
 // available when this crate's tests run (and when linked into the final binary).
 extern crate hew_runtime;
 
-use hew_cabi::cabi::malloc_bytes;
+use hew_cabi::cabi::{alloc_cstring, free_cstring, malloc_bytes};
 use std::ffi::{c_void, CStr};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -727,15 +727,11 @@ fn spawn_attach_reader(
                         break;
                     }
                     let bytes = text.as_bytes();
-                    // SAFETY: Allocating len+1 bytes for NUL-terminated string copy.
-                    let str_ptr = unsafe { libc::malloc(bytes.len() + 1) }.cast::<u8>();
+                    // Header-aware (S1): passed to the callback / dropped via hew_string_drop.
+                    // SAFETY: bytes is valid for bytes.len(); alloc_cstring copies it.
+                    let str_ptr = unsafe { alloc_cstring(bytes.as_ptr(), bytes.len()) }; // CSTRING-ALLOC: str-open (reader str_ptr: header-aware Hew string passed to callback)
                     if str_ptr.is_null() {
                         break;
-                    }
-                    // SAFETY: `str_ptr` is freshly allocated; `bytes` is valid for `bytes.len()`.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), str_ptr, bytes.len());
-                        *str_ptr.add(bytes.len()) = 0;
                     }
                     let mut arg_buf = [0u8; std::mem::size_of::<usize>()];
                     arg_buf.copy_from_slice(&(str_ptr as usize).to_ne_bytes());
@@ -747,7 +743,7 @@ fn spawn_attach_reader(
                     ) {
                         eprintln!("[attach-reader] message delivery failed: rc={rc}; exiting");
                         // SAFETY: send failed before the actor took ownership of the string.
-                        unsafe { libc::free(str_ptr.cast()) };
+                        unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees reader str_ptr on send-fail)
                         break;
                     }
                 }
@@ -1195,18 +1191,13 @@ pub unsafe extern "C" fn hew_ws_message_text(msg: *const HewWsMessage) -> *mut c
     if m.data.is_null() || m.data_len == 0 {
         return std::ptr::null_mut();
     }
-    // SAFETY: Allocating data_len+1 bytes via malloc for the NUL-terminated copy.
-    let ptr = unsafe { libc::malloc(m.data_len + 1) }.cast::<u8>();
+    // Header-aware (S1): returned to Hew, dropped via hew_string_drop / free_cstring.
+    // SAFETY: m.data is valid for m.data_len bytes; alloc_cstring copies it.
+    let ptr = unsafe { alloc_cstring(m.data, m.data_len) }; // CSTRING-ALLOC: str-open (hew_ws_message_text — header-aware Hew string; dropped via hew_string_drop)
     if ptr.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: m.data is valid for m.data_len bytes; ptr is freshly allocated with
-    // data_len+1 bytes. Both regions are non-overlapping.
-    unsafe {
-        std::ptr::copy_nonoverlapping(m.data, ptr, m.data_len);
-        *ptr.add(m.data_len) = 0; // NUL terminator
-    }
-    ptr.cast::<c_char>()
+    ptr
 }
 
 /// Free a [`HewWsMessage`] previously returned by [`hew_ws_recv`].
@@ -1224,7 +1215,7 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
     let message = unsafe { Box::from_raw(msg) };
     if !message.data.is_null() {
         // SAFETY: `data` was allocated with libc::malloc in malloc_bytes.
-        unsafe { libc::free(message.data.cast()) };
+        unsafe { libc::free(message.data.cast()) }; // CSTRING-FREE: libc-bytes (message.data = malloc_bytes payload)
     }
     // Box is dropped here, freeing the HewWsMessage struct.
 }
@@ -1552,12 +1543,14 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn websocket_test_dispatch(
+    unsafe extern "C-unwind" fn websocket_test_dispatch(
+        _ctx: *mut hew_runtime::HewExecutionContext,
         state: *mut c_void,
         msg_type: i32,
         data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
         let state = unsafe { &*(state.cast::<TestActorState>()) };
         match msg_type {
@@ -1574,7 +1567,7 @@ mod tests {
                         .expect("websocket payload must be valid utf-8")
                         .to_owned();
                     // SAFETY: ownership transfers to the actor handler on successful send.
-                    unsafe { libc::free(str_ptr.cast()) };
+                    unsafe { free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees str_ptr after readback)
                     text
                 };
                 send_actor_event(state.test_id, ActorEvent::Message(text));
@@ -1590,16 +1583,20 @@ mod tests {
             }
             _ => {}
         }
+
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn websocket_cancel_owner_dispatch(
+    unsafe extern "C-unwind" fn websocket_cancel_owner_dispatch(
+        _ctx: *mut hew_runtime::HewExecutionContext,
         state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         if msg_type != TEST_STOP_TYPE {
-            return;
+            return std::ptr::null_mut();
         }
 
         // SAFETY: test actor state is a POD snapshot allocated by `hew_actor_spawn`.
@@ -1611,6 +1608,8 @@ mod tests {
             unsafe { hew_ws_server_close(state.server as *mut HewWsServer) };
         }
         actor::hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
     struct RuntimeGuard;

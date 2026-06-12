@@ -1,0 +1,23 @@
+import std::text::unicode;
+
+fn main() {
+    match unicode.try_codepoint_at("hi", 2) {
+        Ok(v) => println(f"unexpected-codepoint={v}"),
+        Err(e) => println(e),
+    }
+    match unicode.try_codepoint_at("hi", -1) {
+        Ok(v) => println(f"unexpected-negative={v}"),
+        Err(e) => println(e),
+    }
+    match unicode.try_rune_len(-1) {
+        Ok(n) => println(f"unexpected-rune-len={n}"),
+        Err(e) => println(e),
+    }
+    match unicode.try_rune_len(0x110000) {
+        Ok(n) => println(f"unexpected-rune-len-high={n}"),
+        Err(e) => println(e),
+    }
+    let missing = unicode.codepoint_at("hi", 2);
+    let invalid_len = unicode.rune_len(-1);
+    println(f"sentinels={missing},{invalid_len}");
+}

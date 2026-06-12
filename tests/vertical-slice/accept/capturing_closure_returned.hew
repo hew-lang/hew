@@ -1,0 +1,11 @@
+// Returned capturing closure: `base` is a function parameter (typed, no
+// const_values entry). Previously failed with E_MIR_CHECK InitialisedBeforeUse
+// because MirStatement::Use was emitted unconditionally for captured bindings,
+// and the dataflow checker saw the outer binding id as Uninit.
+fn make_adder(base: i64) -> fn(i64) -> i64 {
+    |n: i64| base + n
+}
+fn main() {
+    let add5 = make_adder(5);
+    println(add5(3));  // 8
+}

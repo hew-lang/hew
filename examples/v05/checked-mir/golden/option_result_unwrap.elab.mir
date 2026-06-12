@@ -1,0 +1,3032 @@
+ElaboratedMirFunction {
+    name: "main",
+    return_ty: I64,
+    statements: [
+        Bind {
+            binding: BindingId(
+                0,
+            ),
+            name: "a",
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "a",
+            site: SiteId(
+                4,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                1,
+            ),
+            name: "b",
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "b",
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                9,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                2,
+            ),
+            name: "c",
+            site: SiteId(
+                14,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                2,
+            ),
+            name: "c",
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "cv",
+            site: SiteId(
+                16,
+            ),
+            ty: I32,
+        },
+        Bind {
+            binding: BindingId(
+                4,
+            ),
+            name: "d",
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                4,
+            ),
+            name: "d",
+            site: SiteId(
+                23,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                21,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                5,
+            ),
+            name: "e",
+            site: SiteId(
+                27,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "e",
+            site: SiteId(
+                31,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                29,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                6,
+            ),
+            name: "g",
+            site: SiteId(
+                35,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                6,
+            ),
+            name: "g",
+            site: SiteId(
+                38,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                7,
+            ),
+            name: "gv",
+            site: SiteId(
+                37,
+            ),
+            ty: I32,
+        },
+        Bind {
+            binding: BindingId(
+                8,
+            ),
+            name: "r",
+            site: SiteId(
+                41,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                8,
+            ),
+            name: "r",
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                43,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                9,
+            ),
+            name: "rf",
+            site: SiteId(
+                48,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                9,
+            ),
+            name: "rf",
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                50,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                10,
+            ),
+            name: "ri",
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                10,
+            ),
+            name: "ri",
+            site: SiteId(
+                58,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                11,
+            ),
+            name: "riv",
+            site: SiteId(
+                57,
+            ),
+            ty: I32,
+        },
+        Bind {
+            binding: BindingId(
+                12,
+            ),
+            name: "ru",
+            site: SiteId(
+                60,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "ru",
+            site: SiteId(
+                64,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                62,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                13,
+            ),
+            name: "rv",
+            site: SiteId(
+                68,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                13,
+            ),
+            name: "rv",
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                14,
+            ),
+            name: "rvv",
+            site: SiteId(
+                70,
+            ),
+            ty: I32,
+        },
+        Bind {
+            binding: BindingId(
+                15,
+            ),
+            name: "p",
+            site: SiteId(
+                74,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "p",
+            site: SiteId(
+                77,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                16,
+            ),
+            name: "ok",
+            site: SiteId(
+                76,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "p",
+            site: SiteId(
+                80,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                17,
+            ),
+            name: "err",
+            site: SiteId(
+                79,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                16,
+            ),
+            name: "ok",
+            site: SiteId(
+                84,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                17,
+            ),
+            name: "err",
+            site: SiteId(
+                88,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                82,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "cv",
+            site: SiteId(
+                100,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                7,
+            ),
+            name: "gv",
+            site: SiteId(
+                102,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                11,
+            ),
+            name: "riv",
+            site: SiteId(
+                104,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                14,
+            ),
+            name: "rvv",
+            site: SiteId(
+                106,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                18,
+            ),
+            name: "keep",
+            site: SiteId(
+                96,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                18,
+            ),
+            name: "keep",
+            site: SiteId(
+                108,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                107,
+            ),
+            ty: Unit,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    110,
+                ),
+            ),
+            ty: I64,
+        },
+        Drop {
+            binding: BindingId(
+                15,
+            ),
+            name: "p",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                13,
+            ),
+            name: "rv",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                12,
+            ),
+            name: "ru",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                10,
+            ),
+            name: "ri",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                9,
+            ),
+            name: "rf",
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                8,
+            ),
+            name: "r",
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                6,
+            ),
+            name: "g",
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                5,
+            ),
+            name: "e",
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                4,
+            ),
+            name: "d",
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                2,
+            ),
+            name: "c",
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                1,
+            ),
+            name: "b",
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                0,
+            ),
+            name: "a",
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                1,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                35,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                42,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                48,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                50,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                92,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                87,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                90,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                88,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                96,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                97,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                98,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                99,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                100,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                101,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                102,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                103,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                104,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                105,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                106,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                107,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                108,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                110,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 9,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 10,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 11,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 12,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 13,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 14,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 15,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 16,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 17,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 18,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 19,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 20,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 21,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 22,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "println_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 1,
+                callee: "println_f64",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 2,
+                callee: "println_i64",
+                next: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "println_f64",
+                next: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 4,
+                callee: "println_i64",
+                next: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 5,
+                callee: "println_f64",
+                next: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 6,
+                callee: "println_i64",
+                next: 7,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 7,
+                callee: "to_string_bool",
+                next: 8,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 8,
+                callee: "string_concat",
+                next: 9,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 9,
+                callee: "to_string_bool",
+                next: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 10,
+                callee: "string_concat",
+                next: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 11,
+                callee: "println_str",
+                next: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 12,
+                then_target: 13,
+                else_target: 14,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 14,
+                then_target: 15,
+                else_target: 16,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 15,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 16,
+                then_target: 17,
+                else_target: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 17,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 18,
+                callee: "println_i64",
+                next: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                22,
+            ),
+            name: "val",
+            site: SiteId(
+                140,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    139,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                139,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                140,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                23,
+            ),
+            name: "val",
+            site: SiteId(
+                143,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    142,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                142,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                143,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                24,
+            ),
+            name: "val",
+            site: SiteId(
+                146,
+            ),
+            ty: U32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    145,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                145,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                146,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                25,
+            ),
+            name: "val",
+            site: SiteId(
+                149,
+            ),
+            ty: U64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    148,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                148,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                149,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                26,
+            ),
+            name: "val",
+            site: SiteId(
+                152,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    151,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                151,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                152,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_bool",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                27,
+            ),
+            name: "val",
+            site: SiteId(
+                155,
+            ),
+            ty: Char,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    154,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                154,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                155,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_char",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                28,
+            ),
+            name: "val",
+            site: SiteId(
+                158,
+            ),
+            ty: F64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    157,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                157,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                158,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_f64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                29,
+            ),
+            name: "val",
+            site: SiteId(
+                160,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    160,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                160,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Return {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}

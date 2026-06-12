@@ -8,7 +8,7 @@ fn test_non_exhaustive_match() {
     let output = typecheck(
         r"
         enum Colour { Red; Green; Blue; }
-        fn check(c: Colour) -> int {
+        fn check(c: Colour) -> i64 {
             match c {
                 Red => 1,
                 Green => 2,
@@ -73,7 +73,7 @@ fn test_non_exhaustive_match_stmt() {
 fn test_exhaustive_or_option_match() {
     let output = typecheck(
         r"
-        fn check(opt: Option<int>) -> int {
+        fn check(opt: Option<i64>) -> i64 {
             match opt {
                 Option::Some(x) => x,
                 Option::None => 1,
@@ -110,7 +110,7 @@ fn test_exhaustive_or_option_match() {
 fn test_non_exhaustive_option_match() {
     let output = typecheck(
         r"
-        fn check(opt: Option<int>) -> int {
+        fn check(opt: Option<i64>) -> i64 {
             match opt {
                 Some(x) => x,
             }
@@ -152,11 +152,11 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
         r"
         enum Packet {
             Empty;
-            Value(int);
-            Named { count: int };
+            Value(i64);
+            Named { count: i64 };
         }
 
-        fn label(packet: Packet) -> int {
+        fn label(packet: Packet) -> i64 {
             match packet {
                 Empty => 0,
             }
@@ -178,7 +178,7 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
 fn test_exhaustive_or_result_match() {
     let output = typecheck(
         r"
-        fn check(res: Result<int, int>) -> int {
+        fn check(res: Result<i64, i64>) -> i64 {
             match res {
                 Result::Ok(x) => x,
                 Result::Err(e) => e,
@@ -215,7 +215,7 @@ fn test_exhaustive_or_enum_match() {
     let output = typecheck(
         r"
         enum Colour { Red; Green; Blue; }
-        fn check(c: Colour) -> int {
+        fn check(c: Colour) -> i64 {
             match c {
                 Red | Green | Blue => 1,
             }
@@ -238,13 +238,13 @@ fn test_exhaustive_or_enum_match() {
         .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
 }
 
-/// Scalar (non-enum) types have no closed variant set; missing a catch-all
-/// should be a *warning*, not a hard error.
+/// Literal-only i64 matches have infinitely many missing values; missing a
+/// catch-all is a hard error, not a warning.
 #[test]
-fn test_scalar_missing_catchall_is_warning() {
+fn test_i64_literal_missing_catchall_is_error() {
     let output = typecheck(
         r"
-        fn check(n: int) -> int {
+        fn check(n: i64) -> i64 {
             match n {
                 1 => 10,
                 2 => 20,
@@ -259,28 +259,25 @@ fn test_scalar_missing_catchall_is_warning() {
         output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
-        "scalar missing catch-all should be a warning, got warnings: {:?}",
+            .all(|w| w.kind != TypeErrorKind::NonExhaustiveMatch),
+        "i64 literal missing catch-all must not be a warning, got warnings: {:?}",
         output.warnings
     );
     assert!(
         output
             .errors
             .iter()
-            .all(|e| e.kind != TypeErrorKind::NonExhaustiveMatch),
-        "scalar missing catch-all must not be an error, got errors: {:?}",
+            .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch),
+        "i64 literal missing catch-all should be an error, got errors: {:?}",
         output.errors
     );
-    let warning = output
-        .warnings
+    let error = output
+        .errors
         .iter()
         .find(|w| w.kind == TypeErrorKind::NonExhaustiveMatch)
-        .expect("expected NonExhaustiveMatch warning for scalar catch-all");
-    assert_eq!(warning.severity, Severity::Warning);
-    assert_eq!(
-        warning.message,
-        "non-exhaustive match: consider adding a wildcard `_` arm"
-    );
+        .expect("expected NonExhaustiveMatch error for scalar catch-all");
+    assert_eq!(error.severity, Severity::Error);
+    assert_eq!(error.message, "non-exhaustive match: missing _");
 }
 
 #[test]
@@ -309,7 +306,7 @@ fn test_mutability_error() {
 fn test_arity_mismatch() {
     let output = typecheck(
         r"
-        fn add(a: int, b: int) -> int {
+        fn add(a: i64, b: i64) -> i64 {
             a + b
         }
         fn main() {
@@ -324,36 +321,47 @@ fn test_arity_mismatch() {
 }
 
 #[test]
-fn test_numeric_same_sign_coercion_allowed() {
-    // With width check, narrowing i64 -> i8 should be rejected
+fn test_numeric_widening_i8_to_i64_rejected() {
+    // Implicit same-sign widening (i8 → i64) is not allowed; requires `as i64`.
     let output = typecheck(
         r"
         fn main() {
             let x: i8 = 42;
-            let y: i64 = x; // OK: widening i8 -> i64
+            let y: i64 = x;
         }
     ",
     );
     assert!(
-        output.errors.is_empty(),
-        "Widening integer coercion should be allowed, got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i8")
+                && e.message.contains("i64")),
+        "expected integer-widening rejection for i8 -> i64, got: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn test_numeric_widening_allowed() {
+fn test_numeric_widening_i8_to_i32_rejected() {
+    // Implicit same-sign widening (i8 → i32) is not allowed; requires `as i32`.
     let output = typecheck(
         r"
         fn main() {
             let x: i8 = 42;
-            let y: i32 = x; // OK: widening i8 -> i32
+            let y: i32 = x;
         }
     ",
     );
     assert!(
-        output.errors.is_empty(),
-        "Expected no errors for i8 -> i32 widening, got: {:?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot implicitly convert")
+                && e.message.contains("i8")
+                && e.message.contains("i32")),
+        "expected integer-widening rejection for i8 -> i32, got: {:?}",
         output.errors
     );
 }
@@ -363,7 +371,7 @@ fn test_lambda_arity_mismatch() {
     let output = typecheck(
         r"
         fn main() {
-            let f: fn(int, int) -> int = (x: int) => x + 1; // Error: lambda has 1 param, expected 2
+            let f: fn(i64, i64) -> i64 = |x: i64| x + 1; // Error: lambda has 1 param, expected 2
         }
     ",
     );
@@ -377,14 +385,14 @@ fn test_lambda_arity_mismatch() {
 }
 
 /// Receiver detection must compare generic arguments, not just the type name.
-/// `impl Box<int>` should reject `b: Box<string>` as a receiver parameter.
+/// `impl Box<i64>` should reject `b: Box<string>` as a receiver parameter.
 #[test]
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
         r"
         type Box<T> { value: T; }
-        impl Box<int> {
-            fn bad(b: Box<string>) -> int { 0 }
+        impl Box<i64> {
+            fn bad(b: Box<string>) -> i64 { 0 }
         }
         fn main() {
             let b = Box { value: 42 };
@@ -396,7 +404,7 @@ fn test_receiver_param_rejects_mismatched_generics() {
         !output.errors.is_empty(),
         "Expected a type error when receiver generic arguments don't match the impl target, \
          but type-checking succeeded. `Box<string>` should not be treated as a receiver \
-         for `impl Box<int>`."
+         for `impl Box<i64>`."
     );
 }
 
@@ -406,9 +414,9 @@ fn test_receiver_param_rejects_mismatched_generics() {
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
         r"
-        type Box { value: int; }
+        type Box { value: i64; }
         impl Box {
-            fn combine(b: Box, var other: Box) -> int { b.value + other.value }
+            fn combine(b: Box, var other: Box) -> i64 { b.value + other.value }
         }
         fn main() {
             let b1 = Box { value: 1 };

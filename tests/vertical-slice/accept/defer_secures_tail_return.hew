@@ -1,0 +1,12 @@
+// Tail return secures the value BEFORE function-scope defers run.
+// Q205-B: a defer body may mutate a `var` named by the tail expression,
+// but the value the caller observes must be the pre-defer value.
+//
+// Without the fix the tail's Place referenced `x` and was Moved to
+// ReturnSlot AFTER the defer ran — caller would see `99`.
+// With the fix the Move to ReturnSlot runs FIRST, so the caller sees `5`.
+fn main() -> i64 {
+    var x = 5;
+    defer { x = 99; };
+    x
+}

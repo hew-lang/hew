@@ -1,0 +1,22 @@
+// Reject fixture (NEW-6b): `await <actor>.<ask>() | after d` from a blocking
+// caller. `main` and free functions run on a foreign thread with no parkable
+// continuation for the deadline timer to resume; before this wall the
+// combinator compiled and the deadline was SILENTLY dropped — the ask blocked
+// until the reply regardless of `after`. Must fail CLOSED at compile time.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "blocking caller"
+actor Slow {
+    receive fn fetch() -> i64 {
+        sleep_ms(500);
+        42
+    }
+}
+
+fn main() -> i64 {
+    let s = spawn Slow;
+    match await s.fetch() | after 50ms {
+        Ok(v) => v,
+        Err(_) => -1,
+    }
+}

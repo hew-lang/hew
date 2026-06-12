@@ -1,0 +1,19 @@
+fn main() {
+    let s = "Hello";
+    println(s.slice(1, 3));
+    println("aba".replace("a", "x"));
+    println("banana".find("na"));
+    println("banana".index_of("na"));
+    let parts = "a,b,c".split(",");
+    println(parts.len());
+    let ls = "x\ny".lines();
+    println(ls.len());
+    println("ha".repeat(3));
+    println("abc".char_at(1));
+    let cs = "Hi".chars();
+    println(cs.len());
+    println("123".is_digit());
+    println("abc".is_alpha());
+    println("abc123".is_alphanumeric());
+    println(s.clone());
+}

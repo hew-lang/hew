@@ -1,0 +1,36 @@
+// Acceptance fixture for #[on(crash)] handler attachment end-to-end.
+//
+// Exercises the codegen-runtime path for on(crash) hooks:
+//   - `Crasher` actor declares an `#[on(crash)]` handler
+//   - the handler is synthesised as `Crasher__on_crash` in MIR with the
+//     ActorHandler ABI (EnterContext/ExitContext + i32 param/return coercion)
+//   - the codegen emits a non-null on_crash fn-pointer into `HewChildSpec`
+//   - `AppSupervisor` bootstrap registers the spec and starts; main returns 42
+//
+// The crash handler body uses `panic(...)` (a diverging expression) so the
+// `CrashAction` return type is satisfied without constructing an enum variant.
+// Constructing `CrashAction::Restart` would emit `UnresolvedSymbol` for the
+// enum-variant path in HIR lowering, which is deferred until std/failure.hew
+// is loaded through the module graph.
+//
+// The crash path is NOT triggered at runtime: the goal is to prove the handler
+// attachment codegen path compiles and the supervisor boots cleanly.
+// Runtime invocation is covered by hew-runtime/tests/on_crash_invocation.rs.
+actor Crasher {
+    #[on(crash)]
+    fn handle_crash(info: CrashInfo) -> CrashAction {
+        panic("handled")
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child c: Crasher;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

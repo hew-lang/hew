@@ -1,0 +1,9 @@
+fn main() {
+    var total = 0;
+    for i in 0 .. 4 {
+        if i > 0 {
+            total = total + i;
+        }
+    }
+    println(total);
+}

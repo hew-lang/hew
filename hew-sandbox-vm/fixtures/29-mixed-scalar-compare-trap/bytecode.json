@@ -1,0 +1,140 @@
+{
+  "capabilities": [],
+  "compiler_version": "handcrafted-pending-mixed-scalar-parser-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "9007199254740993"
+                }
+              ],
+              "dst": "local:main.large",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 9007199254740992
+                }
+              ],
+              "dst": "local:main.rounded",
+              "op": "const.f64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.large"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.rounded"
+                }
+              ],
+              "dst": "local:main.wrong",
+              "op": "cmp.gt",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.large",
+          "mutable": false,
+          "name": "large",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.rounded",
+          "mutable": false,
+          "name": "rounded",
+          "span": null,
+          "type": "type:f64"
+        },
+        {
+          "id": "local:main.wrong",
+          "mutable": false,
+          "name": "wrong",
+          "span": null,
+          "type": "type:bool"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:mixed-scalar-compare-trap",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": []
+}

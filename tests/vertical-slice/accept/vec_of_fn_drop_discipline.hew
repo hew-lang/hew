@@ -1,0 +1,15 @@
+// Drop discipline: a Vec of capture-carrying closures releases each
+// element's env box and pair box exactly once at scope exit.
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let fns: Vec<fn(i64) -> i64> = Vec::new();
+    fns.push(make_adder(10));
+    fns.push(make_adder(20));
+    fns.push(make_adder(30));
+    let middle = fns[1];
+    println(middle(5)); // 25
+    println(fns.len());
+} // 3

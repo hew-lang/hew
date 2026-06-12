@@ -1,21 +1,24 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Basic lambda actor
+
 fn main() {
     println("=== Lambda Actors ===");
 
     // Basic lambda actor
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: i64| {
         println(x * 2);
     };
     doubler.send(21);
-    await close(doubler);
+    await doubler.close();
 
     // Multiple lambda actors running concurrently
-    let printer = spawn (msg: int) => {
+    let printer = actor |msg: i64| {
         println(f"Got: {msg}");
     };
-    let multiplier = spawn (x: int) => {
+    let multiplier = actor |x: i64| {
         println(f"Triple: {x * 3}");
     };
-    let adder = spawn (x: int) => {
+    let adder = actor |x: i64| {
         println(f"Plus 10: {x + 10}");
     };
     // Send to all concurrently
@@ -23,32 +26,29 @@ fn main() {
     multiplier.send(7);
     adder.send(5);
     printer.send(200);
-    close(printer);
-    close(multiplier);
-    close(adder);
-    await printer;
-    await multiplier;
-    await adder;
+    await printer.close();
+    await multiplier.close();
+    await adder.close();
 
     // Lambda actors within scope blocks
     {
-        let scoped_actor = spawn (msg: int) => {
+        let scoped_actor = actor |msg: i64| {
             println(f"Scoped: {msg}");
         };
         scoped_actor.send(42);
-        await close(scoped_actor);
+        await scoped_actor.close();
     };
     // Multiple sends to same actor
-    let counter = spawn (x: int) => {
+    let counter = actor |x: i64| {
         println(f"Count: {x}");
     };
     counter.send(1);
     counter.send(2);
     counter.send(3);
-    await close(counter);
+    await counter.close();
 
     // Lambda actor with complex body (if/else, function calls)
-    let complex_actor = spawn (n: int) => {
+    let complex_actor = actor |n: i64| {
         if n > 10 {
             println(f"Large number: {n}");
         } else {
@@ -59,7 +59,7 @@ fn main() {
     };
     complex_actor.send(5);
     complex_actor.send(15);
-    await close(complex_actor);
+    await complex_actor.close();
 
     // Test actor factory pattern
     run_multiplier_actor(4, 10); // should print 40
@@ -67,11 +67,11 @@ fn main() {
 }
 
 // Actor factory pattern - create and drain a lambda actor from a function
-fn run_multiplier_actor(factor: int, value: int) {
-    let worker = spawn (x: int) => {
+fn run_multiplier_actor(factor: i64, value: i64) {
+    let worker = actor |x: i64| {
         println(f"Multiplied by {factor}: {x * factor}");
     };
     worker.send(value);
-    await close(worker);
+    await worker.close();
     return;
 }

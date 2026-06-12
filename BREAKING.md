@@ -48,8 +48,8 @@ three** of the following:
    registry's wrapper-shape coverage.
 
 3. The same defect is captured as a reproduction fixture under
-   `hew-codegen/tests/examples/` so the cutover branch can consume it as
-   both a target and a regression check.
+   `tests/hew/` or `hew-cli/tests/` so the cutover branch can consume it
+   as both a target and a regression check.
 
 Changes that do not satisfy all three criteria **pause** until the relevant
 cutover step on the cutover branch picks them up.
@@ -62,3 +62,34 @@ The freeze rules above apply to **compiler internals only**. Public language
 semantics, standard-library APIs, and wire-protocol surfaces follow their
 normal deprecation and stability policy. See `CHANGELOG.md` for user-visible
 changes.
+
+---
+
+## Removed in v0.5
+
+### `std::collections::hashset` module
+
+- **Removed:** the Hew-source module `std::collections::hashset` and its
+  opaque `HashSet` handle API (`hashset.new()`, `insert_int`,
+  `insert_string`, `contains_int`, `contains_string`, `remove_int`,
+  `remove_string`, `clear`, and `free`).
+- **Replacement:** use built-in `HashSet<T>` directly, for example
+  `HashSet::<i64>::new()` or `HashSet::<String>::new()`, with `.insert()`,
+  `.contains()`, `.remove()`, `.len()`, and `.is_empty()`.
+- **Behaviour change:** built-in `HashSet<T>` releases through RAII; callers
+  do not call `free()`.
+
+### `HewScope` runtime substrate + `hew_scope_*` C ABI
+
+- **Removed:** the `hew-runtime::scope` module (`HewScope`, `hew_scope_new`,
+  `hew_scope_create`, `hew_scope_destroy`, `hew_scope_free`, `hew_scope_spawn`,
+  `hew_scope_cancel`, `hew_scope_is_cancelled`, `hew_scope_wait_all`).
+- **Removed:** `hew-runtime-testkit::TestScope` (RAII wrapper around the
+  legacy ABI).
+- **Replacement:** `HewTaskScope` (`hew_task_scope_*`) is the canonical
+  structured-concurrency substrate; `scope { … }` source syntax is preserved
+  unchanged and now lowers exclusively to `hew_task_scope_*`.
+- **Behaviour change (looser):** the legacy `MAX_ACTORS=64` ceiling
+  (`HEW_SCOPE_MAX_ACTORS`) is gone; `HewTaskScope` is unbounded.
+- **Rationale:** A244 substrate-first / A250 one-canonical-name.
+  No compat shim per the pre-1.0 policy.

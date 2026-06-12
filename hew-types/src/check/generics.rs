@@ -12,6 +12,36 @@ enum StructuralMethodStatus {
 }
 
 impl Checker {
+    pub(super) fn apply_trait_object_bound_substitutions(
+        &self,
+        sig: &mut FnSig,
+        bound: &crate::ty::TraitObjectBound,
+    ) {
+        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+            let type_params = &trait_info.type_params;
+            if type_params.len() == bound.args.len() {
+                // Build the substitution map once and apply in parallel so
+                // permuted trait args (e.g. `dyn Mapper<B, A>` for a trait
+                // declared `Mapper<A, B>`) don't alias under sequential
+                // per-pair substitution.
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(bound.args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for param_ty in &mut sig.params {
+                    *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                }
+                sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
+            }
+        }
+        for param_ty in &mut sig.params {
+            *param_ty = substitute_trait_object_assoc_bindings(param_ty, &bound.trait_name, bound);
+        }
+        sig.return_type =
+            substitute_trait_object_assoc_bindings(&sig.return_type, &bound.trait_name, bound);
+    }
+
     pub(super) fn freshen_inner(&self, ty: &Ty, mapping: &mut HashMap<u32, Ty>) -> Ty {
         match ty {
             Ty::Var(v) => {
@@ -27,8 +57,13 @@ impl Checker {
                     resolved
                 }
             }
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|a| self.freshen_inner(a, mapping))
@@ -53,6 +88,11 @@ impl Checker {
                             .args
                             .iter()
                             .map(|arg| self.freshen_inner(arg, mapping))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), self.freshen_inner(ty, mapping)))
                             .collect(),
                     })
                     .collect(),
@@ -126,13 +166,25 @@ impl Checker {
             while resolved_type_args.len() < sig.type_params.len() {
                 resolved_type_args.push(Ty::Var(TypeVar::fresh()));
             }
-            for (tp, ta) in sig.type_params.iter().zip(resolved_type_args.iter()) {
+            {
+                let subst_map: HashMap<String, Ty> = sig
+                    .type_params
+                    .iter()
+                    .zip(resolved_type_args.iter())
+                    .map(|(tp, ta)| (tp.clone(), ta.clone()))
+                    .collect();
                 params = params
                     .iter()
-                    .map(|param| param.substitute_named_param(tp, ta))
+                    .map(|param| param.substitute_named_params_parallel(&subst_map))
                     .collect();
-                ret = ret.substitute_named_param(tp, ta);
+                ret = ret.substitute_named_params_parallel(&subst_map);
             }
+            // Collapse any `Ty::AssocType` carriers whose `base` has now
+            // become concrete (e.g. `I::Item` with `I → Counter` and the
+            // impl `Counter: Iterator { type Item = i32 }`). Carriers whose
+            // base is still abstract pass through unchanged.
+            params = params.iter().map(|p| self.project_assoc_types(p)).collect();
+            ret = self.project_assoc_types(&ret);
         }
 
         // For each call, freshen any unresolved type variables in the signature
@@ -161,14 +213,236 @@ impl Checker {
         (freshened_params, freshened_ret, resolved_type_args)
     }
 
+    #[cfg(test)]
     pub(super) fn enforce_type_param_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
-        if sig.type_params.is_empty() {
+        self.enforce_type_param_bounds_with_assoc(sig, &HashMap::new(), type_args, span);
+    }
+
+    pub(super) fn enforce_type_param_bounds_with_assoc(
+        &mut self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        let assoc_bindings =
+            self.instantiate_type_param_assoc_bindings(sig, type_param_assoc_bindings, type_args);
+        self.enforce_named_type_param_bounds_with_assoc(
+            &sig.type_params,
+            &sig.type_param_bounds,
+            &assoc_bindings,
+            type_args,
+            span,
+        );
+    }
+
+    fn instantiate_type_param_assoc_bindings(
+        &self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+    ) -> HashMap<(String, String, String), Ty> {
+        let subst_map: HashMap<String, Ty> = sig
+            .type_params
+            .iter()
+            .zip(type_args.iter())
+            .map(|(tp, ta)| (tp.clone(), self.subst.resolve(ta)))
+            .collect();
+        let mut instantiated = HashMap::with_capacity(type_param_assoc_bindings.len());
+        for (key, binding) in type_param_assoc_bindings {
+            let ty = binding.substitute_named_params_parallel(&subst_map);
+            instantiated.insert(key.clone(), ty);
+        }
+        instantiated
+    }
+
+    /// Canonical machine-instantiation bound-enforcement entry point.
+    /// Every checker path that builds a `Ty::Named` whose `name` is a
+    /// registered machine and whose `args` carry substituted concrete
+    /// types must route through this helper. It looks up the machine's
+    /// declared bounds from the registration-time side table (which
+    /// already merges inline `<T: Trait>` bounds and `where T: Trait`
+    /// predicates into a single per-machine map) and delegates to the
+    /// implementation.
+    ///
+    /// No-op when the named entity is not a registered machine, when
+    /// the machine has no bounds, or when `type_args` is empty (a
+    /// non-instantiated declaration-shape reference).
+    ///
+    /// Routed-through sites today:
+    ///   1. struct-state brace init (`Holder::Active { … }` typed
+    ///      against the machine self-type) — `expressions.rs`.
+    ///   2. type-annotation resolution at `resolve_type_expr` (covers
+    ///      `var x: Lifecycle<File>`, param annotations, return-type
+    ///      slots, and record field types via the single converging
+    ///      wrapper) — `resolution.rs`.
+    ///   3. constructor / call forms — every `record_concrete_record_init_type_args`
+    ///      emission site in `expressions.rs` (plain struct init,
+    ///      enum-variant coercion arm, plain struct coercion arm, enum
+    ///      struct-variant init) is paired with a helper call.
+    ///   4. supervisor-child PID synthesis (defense-in-depth: today's
+    ///      child-spec table carries bare names with no type-args, so
+    ///      the helper short-circuits on empty `args`; any future
+    ///      change admitting parameterised child specs inherits
+    ///      enforcement here).
+    ///
+    /// The invariant this helper locks in: when a machine name is
+    /// being instantiated with concrete type arguments and the checker
+    /// has the bounds to consult, there is exactly one shared way to
+    /// do the consult — not four.
+    pub(super) fn enforce_machine_instantiation_bounds(
+        &mut self,
+        machine_name: &str,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_args.is_empty() {
             return;
         }
-        for (idx, param_name) in sig.type_params.iter().enumerate() {
-            let Some(bounds) = sig.type_param_bounds.get(param_name) else {
+        let Some(bounds) = self.machine_type_param_bounds.get(machine_name).cloned() else {
+            return;
+        };
+        // Dedup identical `(machine, type_args, span)` triples across
+        // repeated visits. A single annotation can be re-resolved
+        // multiple times (e.g. once during signature registration and
+        // again during body checking), and the recursive walker over
+        // a resolved `Ty` may visit the same nested instantiation via
+        // overlapping paths. Without this gate, each repeat emits an
+        // identical `BoundsNotSatisfied` diagnostic. The key includes
+        // span so two distinct annotation occurrences of the same
+        // textual instantiation (e.g. `Holder<Plain>` as both a
+        // parameter and a return type) each report once.
+        let dedup_key = (
+            machine_name.to_string(),
+            type_args.to_vec(),
+            SpanKey::in_module(span, self.current_module_idx),
+        );
+        if !self.reported_machine_bound_violations.insert(dedup_key) {
+            return;
+        }
+        // Recover the machine's declared type-param names from the side
+        // table. The table's outer key is the machine name; its keys
+        // are the param names that have at least one bound. Params
+        // without bounds are absent — for those, no enforcement is
+        // required, so the helper builds a positional name vector from
+        // the type-args' arity and only enforces for the slots whose
+        // param has a bound entry.
+        //
+        // Because `enforce_named_type_param_bounds` reads bounds by
+        // param-name lookup, the positional alignment between the
+        // synthesised `type_params` and `type_args` only matters for
+        // the slots with bounds. Empty-slot names are placeholders
+        // (`__unbounded_<idx>`) chosen to never collide with the bound
+        // map, ensuring the helper short-circuits cleanly.
+        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
+        for (idx, _) in type_args.iter().enumerate() {
+            // We do not have positional access to the original param
+            // names here without a second lookup. The side table
+            // preserves names but not order; instead, the canonical
+            // type-param-order source is the registered TypeDef. Fall
+            // back to scanning bounds map keys against positional
+            // arity by querying the matching TypeDef entry.
+            if let Some(td) = self.type_defs.get(machine_name) {
+                if let Some(name) = td.type_params.get(idx) {
+                    type_params.push(name.clone());
+                    continue;
+                }
+            }
+            type_params.push(format!("__unbounded_{idx}"));
+        }
+        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
+    }
+
+    /// Actor-spawn-site bound enforcement.
+    ///
+    /// Called from `check_spawn` when explicit type args are supplied for a
+    /// generic actor. Clones the pattern of `enforce_machine_instantiation_bounds`
+    /// verbatim — actors and machines share the same bound-enforcement semantics
+    /// but are stored in separate tables so the two categories cannot suppress
+    /// each other's violations via the shared dedup set.
+    ///
+    /// The dedup key includes the actor name, resolved type args, and span.
+    /// Identical `(actor, args, span)` triples across repeated checker passes
+    /// emit exactly one diagnostic.
+    pub(super) fn enforce_actor_instantiation_bounds(
+        &mut self,
+        actor_name: &str,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_args.is_empty() {
+            return;
+        }
+        let Some(bounds) = self.actor_type_param_bounds.get(actor_name).cloned() else {
+            return;
+        };
+        let dedup_key = (
+            actor_name.to_string(),
+            type_args.to_vec(),
+            SpanKey::in_module(span, self.current_module_idx),
+        );
+        if !self.reported_actor_bound_violations.insert(dedup_key) {
+            return;
+        }
+        // Recover positional type-param names from the registered TypeDef so
+        // that `enforce_named_type_param_bounds` can look up bounds by name.
+        // Falls back to placeholder names for positions without a TypeDef entry
+        // (defensive; should not occur for a registered actor).
+        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
+        for (idx, _) in type_args.iter().enumerate() {
+            if let Some(td) = self.type_defs.get(actor_name) {
+                if let Some(name) = td.type_params.get(idx) {
+                    type_params.push(name.clone());
+                    continue;
+                }
+            }
+            type_params.push(format!("__unbounded_{idx}"));
+        }
+        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
+    }
+
+    /// Generic bound-enforcement entry point parameterised by type-param names
+    /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
+    /// and by use-site enforcement for machine generic constructors that do
+    /// not route through a function call (struct-state brace init via
+    /// `check_struct_init`).
+    pub(super) fn enforce_named_type_param_bounds(
+        &mut self,
+        type_params: &[String],
+        type_param_bounds: &HashMap<String, Vec<String>>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        self.enforce_named_type_param_bounds_with_assoc(
+            type_params,
+            type_param_bounds,
+            &HashMap::new(),
+            type_args,
+            span,
+        );
+    }
+
+    fn enforce_named_type_param_bounds_with_assoc(
+        &mut self,
+        type_params: &[String],
+        type_param_bounds: &HashMap<String, Vec<String>>,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_params.is_empty() {
+            return;
+        }
+        for (idx, param_name) in type_params.iter().enumerate() {
+            let bounds = type_param_bounds
+                .get(param_name)
+                .cloned()
+                .unwrap_or_default();
+            let assoc_bindings =
+                Self::assoc_bindings_for_type_param(type_param_assoc_bindings, param_name);
+            if bounds.is_empty() && assoc_bindings.is_empty() {
                 continue;
-            };
+            }
             let Some(type_arg) = type_args.get(idx) else {
                 continue;
             };
@@ -183,14 +457,34 @@ impl Checker {
             if resolved_arg.has_inference_var() {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
-                    bounds: bounds.clone(),
+                    bounds,
+                    assoc_bindings,
                     type_arg: type_arg.clone(),
                     span: span.clone(),
                 });
                 continue;
             }
-            self.report_unsatisfied_type_param_bounds(param_name, bounds, &resolved_arg, span);
+            self.report_unsatisfied_type_param_bounds(param_name, &bounds, &resolved_arg, span);
+            self.report_unsatisfied_assoc_type_bindings(
+                param_name,
+                &assoc_bindings,
+                &resolved_arg,
+                span,
+            );
         }
+    }
+
+    fn assoc_bindings_for_type_param(
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
+        param_name: &str,
+    ) -> Vec<(String, String, Ty)> {
+        type_param_assoc_bindings
+            .iter()
+            .filter(|((param, _, _), _)| param == param_name)
+            .map(|((_, trait_name, assoc_name), ty)| {
+                (trait_name.clone(), assoc_name.clone(), ty.clone())
+            })
+            .collect()
     }
 
     pub(super) fn drain_deferred_bound_checks(&mut self) {
@@ -205,6 +499,12 @@ impl Checker {
             self.report_unsatisfied_type_param_bounds(
                 &entry.type_param,
                 &entry.bounds,
+                &resolved_arg,
+                &entry.span,
+            );
+            self.report_unsatisfied_assoc_type_bindings(
+                &entry.type_param,
+                &entry.assoc_bindings,
                 &resolved_arg,
                 &entry.span,
             );
@@ -232,6 +532,44 @@ impl Checker {
                 span,
                 msg,
                 suggestions,
+            );
+        }
+    }
+
+    fn report_unsatisfied_assoc_type_bindings(
+        &mut self,
+        param_name: &str,
+        assoc_bindings: &[(String, String, Ty)],
+        resolved_arg: &Ty,
+        span: &Span,
+    ) {
+        for (trait_name, assoc_name, expected_ty) in assoc_bindings {
+            if !self.type_satisfies_trait_bound(resolved_arg, trait_name) {
+                continue;
+            }
+            let actual = self.project_assoc_types(&Ty::AssocType {
+                base: Box::new(resolved_arg.clone()),
+                trait_name: trait_name.clone().into_boxed_str(),
+                assoc_name: assoc_name.clone().into_boxed_str(),
+            });
+            let actual = self.subst.resolve(&actual).materialize_literal_defaults();
+            let expected = self
+                .subst
+                .resolve(expected_ty)
+                .materialize_literal_defaults();
+            if actual.has_inference_var() || expected.has_inference_var() || actual == expected {
+                continue;
+            }
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "type `{}` does not satisfy associated type binding \
+                     `{param_name}: {trait_name}<{assoc_name} = {}>`; found `{}`",
+                    resolved_arg.user_facing(),
+                    expected.user_facing(),
+                    actual.user_facing()
+                ),
             );
         }
     }
@@ -313,6 +651,7 @@ impl Checker {
         }
 
         let concrete_ty = Ty::Named {
+            builtin: None,
             name: type_name.clone(),
             args: vec![],
         };
@@ -385,6 +724,11 @@ impl Checker {
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
         match ty {
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Generator | crate::BuiltinType::AsyncGenerator),
+                args,
+                ..
+            } if trait_name == "Iterator" && !args.is_empty() => true,
             Ty::Named { name, .. } => {
                 let name = name.clone();
                 if self.type_implements_trait(&name, trait_name)
@@ -405,9 +749,32 @@ impl Checker {
                 });
                 matched
             }
-            // For primitives and other built-in types, delegate to the marker-trait table which
-            // already knows which built-ins satisfy which markers (e.g. i32 satisfies Ord).
+            // For primitives and other built-in types: first consult the
+            // user-defined impl registry (`trait_impls_set`), keyed by the
+            // canonical lowering name (e.g. `"i64"`, `"bool"`).  An `impl
+            // UserTrait for i64` records `("i64", "UserTrait")` in that set via
+            // `record_trait_impl`; without this check, user-trait bounds on
+            // primitives were always rejected even when an impl existed.
+            //
+            // Literal kinds (`IntLiteral`, `FloatLiteral`) default to `i64`/`f64`
+            // so that bounds can be satisfied for literal call-site args whose
+            // type is not yet fully materialized (the deferred path materializes
+            // first, but the immediate path may reach here with a literal kind).
+            //
+            // The `MarkerTrait` table is consulted second so that built-in
+            // structural markers (e.g. `Ord`, `Clone`) continue to work without
+            // requiring an explicit `impl` in the source.
             _ => {
+                let canonical = ty.canonical_lowering_name().or(match ty {
+                    Ty::IntLiteral => Some("i64"),
+                    Ty::FloatLiteral => Some("f64"),
+                    _ => None,
+                });
+                if let Some(name) = canonical {
+                    if self.type_implements_trait(name, trait_name) {
+                        return true;
+                    }
+                }
                 if let Some(marker) = MarkerTrait::from_name(trait_name) {
                     self.registry.implements_marker(ty, marker)
                 } else {
@@ -421,6 +788,19 @@ impl Checker {
     /// its enclosing impl) carries `trait_name` as a where-clause bound, either
     /// directly or via super-trait extension.
     pub(super) fn type_param_carries_bound(&self, param_name: &str, trait_name: &str) -> bool {
+        // Consult the active bounds stack first (covers machine transition
+        // bodies, impl-method scopes, and any other context that pushes
+        // `current_type_param_bounds` without setting `current_function`).
+        for frame in self.current_type_param_bounds.iter().rev() {
+            if let Some(bounds) = frame.bounds.get(param_name) {
+                if bounds
+                    .iter()
+                    .any(|b| b == trait_name || self.trait_extends(b, trait_name))
+                {
+                    return true;
+                }
+            }
+        }
         let Some(fn_name) = self.current_function.as_ref() else {
             return false;
         };
@@ -653,7 +1033,12 @@ impl Checker {
     /// * Each non-receiver parameter type matches after substituting `Self` → concrete type.
     /// * Return type matches after the same substitution.
     ///
-    /// `dyn Trait` / vtable / codegen is explicitly out of scope.
+    /// `dyn Trait` coercion is handled by `Checker::try_record_dyn_trait_coercion`
+    /// in `coerce.rs`, which calls this structural-satisfaction predicate as
+    /// part of the fallback path. Vtable static emission itself is owned by
+    /// the LLVM emitter; the checker populates `TypeCheckOutput::dyn_trait_coercions`
+    /// at every accepted coercion site and rejects non-object-safe traits
+    /// (generic methods, `Self`-returning methods) with `E_TRAIT_NOT_OBJECT_SAFE`.
     pub(super) fn type_structurally_satisfies(
         &mut self,
         type_name: &str,
@@ -694,6 +1079,7 @@ impl Checker {
 
         // The concrete type, used for Self substitution in trait signatures.
         let concrete_ty = Ty::Named {
+            builtin: None,
             name: type_name.clone(),
             args: vec![],
         };
@@ -764,6 +1150,11 @@ impl Checker {
             } else {
                 0
             };
+            // Activate `Self::Bar` projection so the resolver materialises
+            // a `Ty::AssocType` carrier for the trait method's signature.
+            let prev_trait_self = self
+                .current_trait_for_self_projection
+                .replace(trait_name.to_string());
             let params: Vec<Ty> = m
                 .params
                 .iter()
@@ -774,6 +1165,7 @@ impl Checker {
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            self.current_trait_for_self_projection = prev_trait_self;
             let param_names: Vec<String> =
                 m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             let type_params = m
@@ -783,13 +1175,25 @@ impl Checker {
                 .unwrap_or_default();
             let type_param_bounds =
                 self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
+            // W3.042 S2-S4: propagate `requires_mutable_receiver` from the
+            // trait declaration's receiver parameter so the dyn-trait
+            // dispatch gate in `(Ty::TraitObject, _)` (and any other
+            // consumer that reads the substituted `FnSig`) sees the flag.
+            // The substituted `FnSig` is recorded on `DynMethodCall` and
+            // travels with the vtable slot resolution; without this the
+            // flag is permanently cleared at the trait-method-lookup
+            // boundary and the dyn dispatch gate cannot fire.
+            let requires_mutable_receiver = m
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
             return Some(FnSig {
                 type_params,
                 type_param_bounds,
                 param_names,
                 params,
                 return_type,
-                is_pure: m.is_pure,
+                requires_mutable_receiver,
                 ..FnSig::default()
             });
         }
@@ -805,5 +1209,255 @@ impl Checker {
             }
         }
         None
+    }
+
+    /// Like `lookup_trait_method` but returns the *declaring* trait name alongside
+    /// the signature. The declaring trait is the trait whose `trait_defs` entry
+    /// directly contains the method (not a supertrait walk result).
+    ///
+    /// Used by static trait dispatch to distinguish a method declared in trait A
+    /// but reached through bound B (where `trait B: A`).
+    pub(super) fn lookup_trait_method_with_origin(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+    ) -> Option<(String, FnSig)> {
+        self.lookup_trait_method_with_origin_inner(trait_name, method, true)
+    }
+
+    /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting
+    /// every trait that DIRECTLY declares a method named `method` in its
+    /// `trait_defs` entry. The returned `Vec` is sorted + deduplicated so
+    /// repeated bound paths collapse to a stable set.
+    ///
+    /// This is the supertrait-aware companion to
+    /// `lookup_trait_method_with_origin`, which returns only the first
+    /// declaring trait it encounters. Used by the static-dispatch path to
+    /// detect supertrait-redeclaration ambiguity (plan §4 V14): if the same
+    /// method name is directly declared by both a trait and one of its
+    /// supertraits, a bound `T: SubTrait` reaches the method via two
+    /// distinct declaring traits and the call site is ambiguous.
+    pub(super) fn collect_all_declaring_traits_for_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = vec![trait_name.to_string()];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let declares_directly = self
+                .trait_defs
+                .get(&current)
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == method));
+            if declares_directly {
+                out.push(current.clone());
+            }
+            if let Some(supers) = self.trait_super.get(&current) {
+                for s in supers {
+                    stack.push(s.clone());
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn lookup_trait_method_with_origin_inner(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+        skip_receiver: bool,
+    ) -> Option<(String, FnSig)> {
+        // Check the trait's own methods first (direct declaration).
+        let found_method = self
+            .trait_defs
+            .get(trait_name)
+            .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
+        if let Some(m) = found_method {
+            let skip = if skip_receiver {
+                usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
+            } else {
+                0
+            };
+            let prev_trait_self = self
+                .current_trait_for_self_projection
+                .replace(trait_name.to_string());
+            let params: Vec<Ty> = m
+                .params
+                .iter()
+                .skip(skip)
+                .map(|p| self.resolve_type_expr(&p.ty))
+                .collect();
+            let return_type = m
+                .return_type
+                .as_ref()
+                .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation));
+            self.current_trait_for_self_projection = prev_trait_self;
+            let param_names: Vec<String> =
+                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
+            let type_params = m
+                .type_params
+                .as_ref()
+                .map(|params| params.iter().map(|tp| tp.name.clone()).collect())
+                .unwrap_or_default();
+            let type_param_bounds =
+                self.collect_type_param_bounds(m.type_params.as_ref(), m.where_clause.as_ref());
+            // This trait directly declares the method — it IS the declaring trait.
+            // W3.042 S2-S4: propagate `requires_mutable_receiver` from the
+            // trait declaration's receiver parameter so the static-dispatch
+            // gate in `(Ty::Named, _)`'s generic-bound sub-arm can consult
+            // the substituted `trait_sig.requires_mutable_receiver` flag.
+            // Without this, `fn step(var self)` on the trait reaches the
+            // dispatch site with the flag cleared and the call site
+            // erroneously admits a `let`-bound receiver.
+            let requires_mutable_receiver = m
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            return Some((
+                trait_name.to_string(),
+                FnSig {
+                    type_params,
+                    type_param_bounds,
+                    param_names,
+                    params,
+                    return_type,
+                    requires_mutable_receiver,
+                    ..FnSig::default()
+                },
+            ));
+        }
+        // Walk super-traits — propagate origin unchanged from the recursion.
+        let supers = self.trait_super.get(trait_name).cloned();
+        if let Some(supers) = supers {
+            for super_trait in &supers {
+                if let Some(result) =
+                    self.lookup_trait_method_with_origin_inner(super_trait, method, skip_receiver)
+                {
+                    return Some(result);
+                }
+            }
+        }
+        None
+    }
+}
+
+fn substitute_trait_object_assoc_bindings(
+    ty: &Ty,
+    trait_name: &str,
+    bound: &crate::ty::TraitObjectBound,
+) -> Ty {
+    match ty {
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } if projected_trait.as_ref() == trait_name
+            && matches!(
+                base.as_ref(),
+                Ty::Named { name, args, .. } if name == "Self" && args.is_empty()
+            ) =>
+        {
+            bound
+                .assoc_bindings
+                .iter()
+                .find(|(name, _)| name == assoc_name.as_ref())
+                .map_or_else(
+                    || ty.clone(),
+                    |(_, binding_ty)| {
+                        substitute_trait_object_assoc_bindings(binding_ty, trait_name, bound)
+                    },
+                )
+        }
+        Ty::AssocType {
+            base,
+            trait_name: projected_trait,
+            assoc_name,
+        } => Ty::AssocType {
+            base: Box::new(substitute_trait_object_assoc_bindings(
+                base, trait_name, bound,
+            )),
+            trait_name: projected_trait.clone(),
+            assoc_name: assoc_name.clone(),
+        },
+        _ => ty.map_children_pub(&|child| {
+            substitute_trait_object_assoc_bindings(child, trait_name, bound)
+        }),
+    }
+}
+
+// ── W3.039 Stage 2/2.5: machine const-generic arg validation ────────────
+
+impl Checker {
+    /// Validate a single const-generic argument at a machine
+    /// instantiation site.
+    ///
+    /// Routes the argument expression through the constexpr sub-engine
+    /// (`super::const_eval::eval_const_expr`, R268=B). On success
+    /// returns `Some(MachineConstArgValue::Usize(n))`; on failure emits
+    /// a typed diagnostic against `self.errors` and returns `None`.
+    ///
+    /// The `decl_param` argument carries the declaration-side parameter
+    /// shape so the function can reject width mismatches (R269=A: only
+    /// `usize` is supported in Phase 0; the parameter is retained so
+    /// widening can extend without re-threading callers).
+    ///
+    /// Stage 3 (W3.039) wires this into the machine instantiation
+    /// resolution path; until then the function is callable from tests
+    /// and from any future call site without further plumbing.
+    #[allow(
+        dead_code,
+        reason = "wired by Stage 3 of W3.039; exposed now so the sub-engine surface and side-table contract are testable"
+    )]
+    pub(super) fn validate_const_param_arg(
+        &mut self,
+        arg: &Spanned<Expr>,
+        decl_param: &super::types::MachineConstParamDecl,
+        env: &super::const_eval::ConstEnv,
+    ) -> Option<super::types::MachineConstArgValue> {
+        match decl_param.ty {
+            super::types::MachineConstParamTy::Usize => {}
+        }
+        match super::const_eval::eval_const_expr(arg, env) {
+            Ok(value) => Some(super::types::MachineConstArgValue::Usize(value)),
+            Err(super::const_eval::ConstEvalError::Overflow) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` overflows usize or uses a negative value",
+                        decl_param.name
+                    ),
+                ));
+                None
+            }
+            Err(super::const_eval::ConstEvalError::UnknownConst(name)) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::UndefinedVariable,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` references unknown const `{}`",
+                        decl_param.name, name
+                    ),
+                ));
+                None
+            }
+            Err(super::const_eval::ConstEvalError::NotConstant) => {
+                self.errors.push(crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    arg.1.clone(),
+                    format!(
+                        "const argument for `{}` must be a compile-time integer expression",
+                        decl_param.name
+                    ),
+                ));
+                None
+            }
+        }
     }
 }

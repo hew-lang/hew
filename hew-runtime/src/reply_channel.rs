@@ -4,11 +4,20 @@
 //! sender calls [`hew_reply`] to deposit a value, and the receiver
 //! blocks in [`hew_reply_wait`] (or [`hew_reply_wait_timeout`]) until
 //! the value is ready.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
+use crate::actor::HewActor;
+use crate::await_cancel::{
+    hew_await_cancel_complete, hew_await_cancel_free, hew_await_cancel_retain,
+};
+use crate::await_cancel::{hew_await_cancel_status, AwaitCancelStatus, HewAwaitCancel};
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +27,32 @@ use std::time::{Duration, Instant};
 static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
+
+/// Force the next `alloc_reply_buffer` call to fail (return null), simulating
+/// OOM in the reply-buffer copy path inside `hew_reply`. Exposed to other
+/// runtime modules (e.g. `lambda_actor` tests) so they can pin the
+/// status=Ok / payload=null edge case the codegen ask-payload guard catches.
+/// Auto-clears after the next call to `alloc_reply_buffer`.
+#[cfg(test)]
+pub(crate) fn force_reply_alloc_failure_for_test() {
+    FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
+}
+
+// ── Debug allocator-pairing tracker ────────────────────────────────────────
+//
+// Reply payloads allocated here via `libc::malloc` are registered in the
+// runtime-wide tracker (crate::alloc_tracker).  Lambda-actor body reply
+// buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and are freed via
+// `lambda_actor::free_body_reply_buf` — each free site in that module asserts
+// the pointer is NOT in the set, catching any allocator crossing before it
+// reaches `Box::from_raw`.
+//
+// Active only in debug builds; zero overhead in release.
+
+#[cfg(debug_assertions)]
+use crate::alloc_tracker::{
+    debug_is_libc_tracked, debug_track_libc_alloc, debug_untrack_libc_alloc,
+};
 
 /// One-shot reply channel for the actor ask pattern.
 ///
@@ -41,10 +76,22 @@ pub struct HewReplyChannel {
     value_size: usize,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
+    /// The waiter-kind discriminator (W6.010). When non-null, the waiter is a
+    /// PARKED CONTINUATION belonging to this actor: a reply wakes it via
+    /// `scheduler::enqueue_resume(caller_actor, ..)` (the suspend edge owns the
+    /// `suspended_cont` handle; the FG3 two-phase park inside `enqueue_resume`
+    /// covers a reply that fires mid-park). When null (the default), the waiter
+    /// is a CONDVAR-blocked foreign/main thread woken by `cond.notify_one()`
+    /// (E6 — the foreign-thread ask path stays on the condvar). Set BEFORE the
+    /// ask is submitted (so before any possible reply) by
+    /// [`hew_reply_channel_set_parked_waiter`].
+    caller_actor: AtomicPtr<HewActor>,
     /// Mutex protecting the condvar wait.
     lock: Mutex<()>,
     /// Condvar signalled by [`hew_reply`].
     cond: Condvar,
+    /// Optional common cancellation/deadline record attached to a suspended ask.
+    await_cancel: AtomicPtr<HewAwaitCancel>,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -82,9 +129,89 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         value: ptr::null_mut(),
         value_size: 0,
         allocation_failed: AtomicBool::new(false),
+        caller_actor: AtomicPtr::new(ptr::null_mut()),
         lock: Mutex::new(()),
         cond: Condvar::new(),
+        await_cancel: AtomicPtr::new(ptr::null_mut()),
     }))
+}
+
+/// Record that the waiter on this reply channel is a PARKED CONTINUATION
+/// belonging to `actor` (W6.010), so [`hew_reply`] wakes it via
+/// `scheduler::enqueue_resume` instead of the condvar.
+///
+/// Called by the suspendable-caller ask emission BEFORE submitting the ask, so
+/// the waiter-kind is visible to any reply (no race: the set happens-before the
+/// send, the send happens-before the handler can reply). A null `actor` is a
+/// no-op that leaves the channel on the condvar path (the foreign-thread
+/// default, E6).
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`]. `actor`,
+/// if non-null, must reference the live `HewActor` whose continuation is being
+/// parked on this ask; it must outlive the reply (upheld by the suspend edge
+/// owning the parked continuation).
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
+    ch: *mut HewReplyChannel,
+    actor: *mut HewActor,
+) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference.
+    unsafe {
+        (*ch).caller_actor.store(actor, Ordering::Release);
+    }
+}
+
+/// Attach a shared await-cancellation registration to this suspended reply wait.
+///
+/// # Safety
+///
+/// `ch` must be a live reply channel and `reg`, when non-null, must be a live
+/// await-cancellation registration. The channel retains the registration until
+/// final free or replacement.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_set_await_cancel(
+    ch: *mut HewReplyChannel,
+    reg: *mut HewAwaitCancel,
+) {
+    if ch.is_null() {
+        return;
+    }
+    if !reg.is_null() {
+        // SAFETY: caller provides a live registration to retain for the channel.
+        unsafe { hew_await_cancel_retain(reg) };
+    }
+    // SAFETY: caller holds a live channel reference.
+    let old = unsafe { (*ch).await_cancel.swap(reg, Ordering::AcqRel) };
+    if !old.is_null() {
+        // SAFETY: releases the channel's previous retained registration.
+        unsafe { hew_await_cancel_free(old) };
+    }
+}
+
+/// Cleanup callback for [`crate::await_cancel::HewAwaitCancel`] reply waits.
+///
+/// # Safety
+///
+/// `source` must be a live reply-channel reference retained by the suspended ask
+/// source. The callback is invoked at most once by the common await CAS.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_cancel_cleanup(source: *mut c_void, _status: i32) {
+    let ch = source.cast::<HewReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: await-cancel source contract supplies a live channel reference.
+    unsafe {
+        (*ch).cancelled.store(true, Ordering::Release);
+        let guard = (*ch).lock.lock_or_recover();
+        (*ch).cond.notify_one();
+        drop(guard);
+    }
 }
 
 unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
@@ -93,7 +220,12 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
         return ptr::null_mut();
     }
     // SAFETY: delegates to libc allocator for the requested reply payload size.
-    unsafe { libc::malloc(size) }
+    let ptr = unsafe { libc::malloc(size) };
+    #[cfg(debug_assertions)]
+    if !ptr.is_null() {
+        debug_track_libc_alloc(ptr.cast());
+    }
+    ptr
 }
 
 /// Retain an additional reference to a reply channel.
@@ -140,11 +272,54 @@ unsafe fn publish_reply_from_sender_ref(
         (*ch).value_size = value_size;
         // Release barrier ensures value writes are visible to the waiter.
         (*ch).ready.store(true, Ordering::Release);
+        // NEW-6b exactly-one-waker: the reply only owns the wake if it WINS the
+        // completion arbiter. When a deadline registration is attached,
+        // `hew_await_cancel_complete` returns 1 iff this reply won the one-shot
+        // CAS (claiming the reply and cancelling the timer); it returns 0 if the
+        // deadline timer already won (and has already, or will, wake the caller).
+        // Re-enqueuing on the losing edge produces a spurious wake that lingers
+        // into the caller's NEXT park (the scheduler's `pending_wake`), so the
+        // parked-continuation wake below is gated on winning. With NO registration
+        // (a plain ask, no `| after d`) the reply is the only waker and always
+        // wakes. The arbiter `complete` itself MUST still run unconditionally so a
+        // winning reply cancels the timer.
+        let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
+        let reply_won = if await_cancel.is_null() {
+            true
+        } else {
+            // SAFETY: the channel holds a retained registration reference.
+            hew_await_cancel_complete(await_cancel) != 0
+        };
 
-        // Wake the condvar waiter.
-        let guard = (*ch).lock.lock_or_recover();
-        (*ch).cond.notify_one();
-        drop(guard);
+        // Waiter-kind branch (W6.010, E5/E6). A parked-continuation waiter
+        // (`caller_actor` non-null) is woken by re-enqueuing its actor; the
+        // resumed continuation reads the now-ready reply value from `ch` on its
+        // resume edge. A condvar-blocked foreign/main thread (`caller_actor`
+        // null — the default, E6) is woken by `cond.notify_one()`. The load is
+        // Acquire-paired with the Release store in
+        // `hew_reply_channel_set_parked_waiter`, which happens-before the ask
+        // submission and therefore before any reply can fire.
+        let caller_actor = (*ch).caller_actor.load(Ordering::Acquire);
+        if caller_actor.is_null() {
+            // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
+            // waiter re-checks its `ready`/`cancelled` predicate under the lock,
+            // so a notify on the losing edge is harmless; it is left ungated.
+            let guard = (*ch).lock.lock_or_recover();
+            (*ch).cond.notify_one();
+            drop(guard);
+        } else if reply_won {
+            // Parked-continuation waiter: re-enqueue the caller actor ONLY when
+            // the reply won the arbiter (or carried no deadline registration). The
+            // continuation handle is owned by the scheduler's suspend edge (the
+            // `suspended_cont` slot); `enqueue_resume` reads the slot itself and
+            // records a `pending_wake` if the reply fired in the FG3 park window
+            // (so a mid-park reply is never lost). The `cont` argument is unused
+            // by the resume edge (the slot is authoritative), so pass null.
+            // SAFETY: `caller_actor` references the live `HewActor` whose
+            // continuation is parked on this ask; the suspend edge keeps it
+            // alive until the resume reclaims the parked continuation.
+            crate::scheduler::enqueue_resume(caller_actor, ptr::null_mut());
+        }
         hew_reply_channel_free(ch);
     }
 }
@@ -277,12 +452,87 @@ pub unsafe extern "C" fn hew_reply(
     }
 }
 
+/// Mark a retained reply-channel reference ready without depositing a payload.
+///
+/// This is the callback-compatible readiness proxy for multiplexed waits:
+/// pass a retained `HewReplyChannel*` as the observer context, and this
+/// function consumes that retained producer/observer reference when it fires.
+/// The original waiter reference remains owned by the caller and must still
+/// be released with [`hew_reply_channel_free`].
+///
+/// # Safety
+///
+/// `ch` must be either null or a retained `HewReplyChannel*` reference. When
+/// non-null, this function consumes exactly one reference. It must be called
+/// at most once for that retained reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
+    let ch = ch.cast::<HewReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller provides a retained producer/observer reference. The
+    // helper either consumes it on cancellation or publishes a null payload and
+    // releases it, matching `hew_reply`'s sender-reference ownership model.
+    unsafe {
+        if release_sender_ref_if_cancelled(ch) {
+            return;
+        }
+        publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+    }
+}
+
+// ── Reply payload free ────────────────────────────────────────────────────
+
+/// Free a reply payload returned by [`hew_reply_wait`], [`hew_reply_wait_timeout`],
+/// or [`hew_lambda_actor_ask`].
+///
+/// # Allocator pairing contract
+///
+/// Reply payloads are allocated via `libc::malloc` inside [`alloc_reply_buffer`].
+/// They **must** be freed with this function (which calls `libc::free`) — NOT
+/// with `hew_duplex_payload_free`, which uses Rust's `GlobalAlloc` and would
+/// produce **undefined behaviour** on any platform where `GlobalAlloc ≠ libc
+/// malloc` (e.g. jemalloc, mimalloc).
+///
+/// Lambda-actor body reply buffers use `GlobalAlloc` (`Box::into_raw`) and are
+/// freed via `lambda_actor::free_body_reply_buf` — see that module for the
+/// counterpart free path. The two allocators must never be crossed.
+///
+/// Passing `ptr = null` is safe and a no-op.
+///
+/// # Safety
+///
+/// `ptr` must be a pointer previously returned by a successful reply wait call
+/// (or `hew_lambda_actor_ask`). The pointer is invalid after this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    #[cfg(debug_assertions)]
+    {
+        debug_assert!(
+            debug_is_libc_tracked(ptr),
+            "allocator-pairing contract violation: {ptr:p} is not libc-tracked; \
+             use hew_reply_payload_free only for reply-wait payloads (libc::malloc). \
+             Body reply buffers (Box/GlobalAlloc) are freed by lambda_actor::free_body_reply_buf.",
+        );
+        debug_untrack_libc_alloc(ptr);
+    }
+    // SAFETY: ptr was allocated by alloc_reply_buffer → libc::malloc.
+    // Symmetric deallocation via libc::free preserves allocator pairing on
+    // every platform regardless of Rust's GlobalAlloc configuration.
+    unsafe { libc::free(ptr.cast()) };
+}
+
 // ── Wait (receiver side) ────────────────────────────────────────────────
 
 /// Block until a reply is available, then return the value.
 ///
 /// The caller owns the returned pointer and must free it with
-/// [`libc::free`].
+/// [`hew_reply_payload_free`].
 ///
 /// # Safety
 ///
@@ -415,7 +665,13 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
             return;
         }
         if !(*ch).value.is_null() {
+            #[cfg(debug_assertions)]
+            debug_untrack_libc_alloc((*ch).value.cast());
             libc::free((*ch).value);
+        }
+        let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
+        if !await_cancel.is_null() {
+            hew_await_cancel_free(await_cancel);
         }
         #[cfg(test)]
         ACTIVE_CHANNELS.fetch_sub(1, Ordering::Relaxed);
@@ -437,10 +693,40 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
-
     // SAFETY: Caller guarantees `ch` is valid while cancellation is recorded.
     unsafe {
         (*ch).cancelled.store(true, Ordering::Release);
+    }
+}
+
+/// Return the attached suspended-await status for a reply channel.
+///
+/// When no common registration is attached, this reports the legacy channel
+/// state (`Completed` if ready, `Cancelled` if tombstoned, otherwise `Pending`).
+///
+/// # Safety
+///
+/// `ch` must be null or a live reply channel reference.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_await_status(ch: *mut HewReplyChannel) -> i32 {
+    if ch.is_null() {
+        return AwaitCancelStatus::Cancelled as i32;
+    }
+    // SAFETY: caller holds a live channel reference.
+    let await_cancel = unsafe { (*ch).await_cancel.load(Ordering::Acquire) };
+    if !await_cancel.is_null() {
+        // SAFETY: the channel holds a retained registration reference.
+        return unsafe { hew_await_cancel_status(await_cancel) };
+    }
+    // SAFETY: caller holds a live channel reference.
+    unsafe {
+        if (*ch).ready.load(Ordering::Acquire) {
+            AwaitCancelStatus::Completed as i32
+        } else if (*ch).cancelled.load(Ordering::Acquire) {
+            AwaitCancelStatus::Cancelled as i32
+        } else {
+            AwaitCancelStatus::Pending as i32
+        }
     }
 }
 
@@ -461,6 +747,30 @@ pub(crate) unsafe fn hew_reply_channel_is_ready(ch: *mut HewReplyChannel) -> boo
     }
     // SAFETY: caller holds a reference that keeps `ch` alive.
     unsafe { (*ch).ready.load(Ordering::Acquire) }
+}
+
+/// Return `1` if the channel was marked orphaned by mailbox teardown
+/// ([`hew_reply_channel_retire_orphaned_ask_sender_ref`]), `0` otherwise.
+///
+/// The orphaned flag distinguishes a mailbox-teardown null reply (the actor's
+/// mailbox was torn down before the handler called `hew_reply`) from a
+/// legitimate null reply the handler deposited. The blocking ask path reads it
+/// directly to bind [`AskError::OrphanedAsk`]; the codegen suspending-ask
+/// resume edge calls this FFI to bind the SAME discriminator instead of the
+/// TLS last-error slot (which never carries the channel-local orphaned fact).
+/// Must be called on the caller-side reference BEFORE it is released.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`] that the
+/// caller still holds a reference to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_is_orphaned(ch: *mut HewReplyChannel) -> i32 {
+    if ch.is_null() {
+        return 0;
+    }
+    // SAFETY: caller holds a reference that keeps `ch` alive.
+    i32::from(unsafe { (*ch).orphaned.load(Ordering::Acquire) })
 }
 
 /// Poll multiple reply channels, returning the index of the first one
@@ -548,8 +858,19 @@ pub(crate) unsafe fn hew_reply_channel_allocation_failed_for_test(
 mod tests {
     use super::*;
 
+    // All tests that create or free a reply channel must hold
+    // `crate::runtime_test_guard()` for their entire body.  The
+    // `ACTIVE_CHANNELS` counter is process-wide; any concurrent
+    // allocation or free in another test (including actor::tests) shifts
+    // the counter and corrupts delta measurements.  `runtime_test_guard`
+    // is the crate-wide serialisation primitive — shared by actor::tests
+    // — so holding it here excludes all other allocating tests across
+    // every module.  The only exempt test is
+    // `select_first_null_returns_negative_one`, which never allocates.
+
     #[test]
     fn cancel_then_owner_release_leaves_sender_reference_for_late_reply() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
 
         // SAFETY: ch is a valid channel pointer; FFI calls test ref-counting behaviour.
@@ -567,7 +888,264 @@ mod tests {
     }
 
     #[test]
+    fn await_cancel_cleanup_tombstones_reply_channel_exactly_once() {
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn cleanup(source: *mut c_void, status: i32) {
+            let _ = status;
+            CLEANUPS.fetch_add(1, Ordering::AcqRel);
+            // SAFETY: the registration source is the live reply channel for this test.
+            unsafe {
+                hew_reply_channel_cancel_cleanup(source, AwaitCancelStatus::Cancelled as i32);
+            };
+        }
+
+        let _guard = crate::runtime_test_guard();
+        CLEANUPS.store(0, Ordering::Release);
+        let pre = active_channel_count();
+        let ch = hew_reply_channel_new();
+        // SAFETY: this test owns the newly-created channel and registration until
+        // the final frees below.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            let reg = crate::await_cancel::hew_await_cancel_new(
+                ptr::null_mut(),
+                Some(cleanup),
+                ch.cast(),
+            );
+            hew_reply_channel_set_await_cancel(ch, reg);
+
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::Cancelled as i32,
+                    0,
+                ),
+                1
+            );
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                ),
+                0
+            );
+            assert_eq!(CLEANUPS.load(Ordering::Acquire), 1);
+            assert_eq!(
+                hew_reply_channel_await_status(ch),
+                AwaitCancelStatus::Cancelled as i32
+            );
+
+            hew_reply_channel_free(ch);
+            let _ = hew_reply(ch, ptr::null_mut(), 0);
+            hew_await_cancel_free(reg);
+        }
+        assert_eq!(
+            active_channel_count(),
+            pre,
+            "cancelled suspended ask must release the waiter and late sender exactly once"
+        );
+    }
+
+    // NEW-6b regression: exactly-one-waker under the deadline-vs-reply split-brain
+    // race. The reviewer's P1 was the loser-stale-wake: a reply that passes the
+    // pre-publish `cancelled` check just before the timer's cleanup, then reaches
+    // `publish_reply_from_sender_ref` and LOSES the completion arbiter, used to
+    // re-enqueue the caller UNCONDITIONALLY. That spurious wake survived as a
+    // `pending_wake` into the caller's NEXT park and could resume a SECOND await
+    // before its own source was ready. The fix gates the parked-continuation wake
+    // on winning the arbiter (or carrying no registration). This test drives the
+    // exact split-brain ordering deterministically — no timing, no flake — by
+    // terminalising the registration as `TimedOut` (the timer won) and then
+    // calling `publish_reply_from_sender_ref` directly (the reply that already
+    // passed the pre-publish check). The observable is the caller's
+    // `pending_wake`: the loser edge must leave it FALSE (so a following park /
+    // second await is not spuriously resumed), while a winning reply and a
+    // no-registration (plain ask) reply must each set it TRUE (the legitimate,
+    // sole waker still fires).
+    #[test]
+    fn loser_reply_does_not_wake_caller_winner_and_plain_ask_do() {
+        use crate::internal::types::{ContTag, HewActorState};
+        use std::sync::atomic::{AtomicI32, AtomicU64};
+
+        // A tracked caller actor whose state is `Running` with a null
+        // `suspended_cont`: in that shape `enqueue_resume` records the wake via
+        // `mark_pending_wake` and returns without touching the global run queue,
+        // so `take_pending_wake` is a clean, isolated observation of whether the
+        // reply path woke the caller.
+        fn caller_actor(id: u64) -> Box<HewActor> {
+            Box::new(HewActor {
+                sched_link_next: AtomicPtr::new(ptr::null_mut()),
+                id,
+                state: ptr::null_mut(),
+                state_size: 0,
+                dispatch: None,
+                mailbox: ptr::null_mut(),
+                actor_state: AtomicI32::new(HewActorState::Running as i32),
+                budget: AtomicI32::new(0),
+                init_state: ptr::null_mut(),
+                init_state_size: 0,
+                coalesce_key_fn: None,
+                terminate_fn: None,
+                state_drop_fn: None,
+                state_clone_fn: None,
+                terminate_called: AtomicBool::new(false),
+                terminate_finished: AtomicBool::new(false),
+                error_code: AtomicI32::new(0),
+                supervisor: ptr::null_mut(),
+                supervisor_child_index: 0,
+                priority: AtomicI32::new(1),
+                reductions: AtomicI32::new(0),
+                idle_count: AtomicI32::new(0),
+                hibernation_threshold: AtomicI32::new(0),
+                hibernating: AtomicI32::new(0),
+                prof_messages_processed: AtomicU64::new(0),
+                prof_processing_time_ns: AtomicU64::new(0),
+                arena: ptr::null_mut(),
+                suspended_cont: AtomicPtr::new(ptr::null_mut()),
+                cont_tag: AtomicI32::new(ContTag::Empty as i32),
+                pending_wake: AtomicBool::new(false),
+                suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
+                suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+            })
+        }
+
+        unsafe extern "C" fn cleanup(source: *mut c_void, status: i32) {
+            // SAFETY: the registration source is the live reply channel for this test.
+            unsafe { hew_reply_channel_cancel_cleanup(source, status) };
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let pre = active_channel_count();
+
+        let mut actor = caller_actor(0x00C0_FFEE);
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: `actor` outlives the registry tracking (untracked before drop).
+        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+
+        // ── Case 1: the reply LOSES the arbiter (timer already won). ──────────
+        // SAFETY: this test owns the channel + registration for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(actor_ptr, Some(cleanup), ch.cast());
+            hew_reply_channel_set_await_cancel(ch, reg);
+
+            // The deadline timer wins first: terminalise the registration as
+            // TimedOut (wake_actor=0 — we are isolating the REPLY edge, so the
+            // timer's own wake is suppressed here).
+            assert_eq!(
+                crate::await_cancel::hew_await_cancel_cancel(
+                    reg,
+                    AwaitCancelStatus::TimedOut as i32,
+                    0,
+                ),
+                1,
+                "timer must win the one-shot arbiter"
+            );
+            actor.pending_wake.store(false, Ordering::Release);
+
+            // The reply that already passed the pre-publish cancelled check now
+            // reaches publish and LOSES (`hew_await_cancel_complete` returns 0).
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+
+            crate::await_cancel::hew_await_cancel_free(reg);
+        }
+        assert!(
+            !crate::coro_exec::take_pending_wake(&actor),
+            "a reply that lost the deadline arbiter must NOT wake the caller — \
+             a stale wake would spuriously resume the caller's next park"
+        );
+
+        // ── Case 2: the reply WINS the arbiter (no timer). ───────────────────
+        // SAFETY: this test owns the channel + registration for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(actor_ptr, Some(cleanup), ch.cast());
+            hew_reply_channel_set_await_cancel(ch, reg);
+            actor.pending_wake.store(false, Ordering::Release);
+
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+
+            crate::await_cancel::hew_await_cancel_free(reg);
+        }
+        assert!(
+            crate::coro_exec::take_pending_wake(&actor),
+            "a reply that won the deadline arbiter MUST wake the caller"
+        );
+
+        // ── Case 3: a plain ask with NO deadline registration still wakes. ───
+        // SAFETY: this test owns the channel for the whole case.
+        unsafe {
+            let ch = hew_reply_channel_new();
+            hew_reply_channel_set_parked_waiter(ch, actor_ptr);
+            actor.pending_wake.store(false, Ordering::Release);
+
+            publish_reply_from_sender_ref(ch, ptr::null_mut(), 0);
+        }
+        assert!(
+            crate::coro_exec::take_pending_wake(&actor),
+            "a plain ask (no deadline registration) must always wake the caller"
+        );
+
+        crate::lifetime::live_actors::untrack_actor(actor_ptr);
+        assert_eq!(
+            active_channel_count(),
+            pre,
+            "every channel allocated by this test must be freed (no leak)"
+        );
+    }
+
+    #[test]
+    fn loser_cleanup_sequence_does_not_leak_channel() {
+        // Pins the ABI sequence codegen will emit when a select{}
+        // actor-ask arm loses: allocate the reply channel, then
+        // (because the ask either failed to dispatch or the arm lost
+        // the race) cancel + free without ever waiting for a reply.
+        // The pair must be a net-zero on `ACTIVE_CHANNELS`: the
+        // single `new` increments it by 1, and the matching `free`
+        // must decrement it by 1 once the last reference drops.
+        //
+        // COUNTER_LOCK serialises the measurement window. Without it,
+        // a concurrent test allocating or freeing a channel between the
+        // pre/post observations can shift the counter and produce a
+        // spurious failure.
+        let _guard = crate::runtime_test_guard();
+        let pre_new = active_channel_count();
+
+        let ch = hew_reply_channel_new();
+        assert!(!ch.is_null(), "hew_reply_channel_new must not return null");
+        let post_new = active_channel_count();
+        assert!(
+            post_new > pre_new,
+            "hew_reply_channel_new must increment ACTIVE_CHANNELS \
+             (pre={pre_new}, post={post_new})"
+        );
+
+        // SAFETY: ch is a valid channel pointer produced by
+        // hew_reply_channel_new immediately above. No sender was
+        // retained, so `cancel` is a no-op on the refcount and `free`
+        // drops the only outstanding reference.
+        unsafe {
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+        }
+
+        let post_free = active_channel_count();
+        assert!(
+            post_free < post_new,
+            "loser-cleanup sequence (cancel + free) must decrement \
+             ACTIVE_CHANNELS (post_new={post_new}, post_free={post_free})"
+        );
+    }
+
+    #[test]
     fn reply_then_cancel_preserves_ready_value_until_owner_releases() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let value = 42_i32;
 
@@ -595,7 +1173,121 @@ mod tests {
     }
 
     #[test]
+    fn signal_ready_marks_channel_ready_without_payload() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the test retains an observer-side reference that
+        // `hew_reply_channel_signal_ready` consumes, leaving the original
+        // waiter reference live for select/wait/free.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_signal_ready(ch.cast());
+
+            assert!(hew_reply_channel_is_ready_for_test(ch));
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(
+                hew_reply_wait(ch).is_null(),
+                "readiness proxy must not fabricate a reply payload"
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn is_orphaned_reports_mailbox_teardown_flag() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: ch is a fresh, live channel for this scope.
+        unsafe {
+            // A fresh channel is not orphaned.
+            assert_eq!(
+                hew_reply_channel_is_orphaned(ch),
+                0,
+                "a fresh reply channel must not report orphaned"
+            );
+
+            // Mailbox-teardown sets the orphaned flag before publishing the null
+            // sentinel; the FFI must surface it for the suspending-ask resume edge
+            // to bind AskError::OrphanedAsk (matching the blocking path).
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_retire_orphaned_ask_sender_ref(ch);
+            assert_eq!(
+                hew_reply_channel_is_orphaned(ch),
+                1,
+                "mailbox teardown must make is_orphaned report 1"
+            );
+
+            hew_reply_channel_free(ch);
+        }
+
+        // A null channel is treated as not-orphaned (fail-safe, no deref).
+        // SAFETY: passing null is an explicit no-op contract.
+        assert_eq!(unsafe { hew_reply_channel_is_orphaned(ptr::null_mut()) }, 0);
+    }
+
+    #[test]
+    fn signal_ready_after_cancel_consumes_observer_reference() {
+        let _guard = crate::runtime_test_guard();
+        let pre_new = active_channel_count();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the retained observer reference keeps `ch` live after the
+        // waiter cancels and releases its own reference.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+            assert_eq!(active_channel_count(), pre_new + 1);
+
+            hew_reply_channel_signal_ready(ch.cast());
+        }
+
+        assert_eq!(
+            active_channel_count(),
+            pre_new,
+            "late readiness callback must release its retained channel reference"
+        );
+    }
+
+    #[test]
+    fn task_completion_observer_can_signal_select_readiness_proxy() {
+        let _guard = crate::runtime_test_guard();
+
+        // SAFETY: the test owns all scope/task/channel pointers exclusively.
+        unsafe {
+            let scope = crate::task_scope::hew_task_scope_new();
+            let task = crate::task_scope::hew_task_new();
+            crate::task_scope::hew_task_scope_spawn(scope, task);
+            let ch = hew_reply_channel_new();
+
+            hew_reply_channel_retain(ch);
+            assert_eq!(
+                crate::task_scope::hew_task_completion_observe(
+                    scope,
+                    task,
+                    Some(hew_reply_channel_signal_ready),
+                    ch.cast(),
+                ),
+                0
+            );
+
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), -1);
+            crate::task_scope::hew_task_scope_complete_task(scope, task);
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(hew_reply_wait(ch).is_null());
+
+            hew_reply_channel_free(ch);
+            crate::task_scope::hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
     fn send_recv_roundtrip() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 99_i64;
 
@@ -619,6 +1311,7 @@ mod tests {
 
     #[test]
     fn timeout_expires_returns_null() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
 
         // SAFETY: ch is a valid channel pointer; testing timeout with no reply pending.
@@ -640,11 +1333,13 @@ mod tests {
             hew_reply_channel_retain(ptr::null_mut());
             hew_reply_channel_free(ptr::null_mut());
             hew_reply_channel_cancel(ptr::null_mut());
+            hew_reply_channel_signal_ready(ptr::null_mut());
         }
     }
 
     #[test]
     fn threaded_send_recv() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let value = 77_i32;
 
@@ -675,6 +1370,7 @@ mod tests {
 
     #[test]
     fn reply_wait_surfaces_copy_oom() {
+        let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
         let ch = hew_reply_channel_new();
         let payload = 55_i32;
@@ -711,6 +1407,7 @@ mod tests {
     /// the cancel/timeout legs of the ask seam.
     #[test]
     fn hew_reply_returns_false_when_channel_was_cancelled() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 42_i32;
 
@@ -741,6 +1438,7 @@ mod tests {
     /// and the deep-cloned heap object lifetime transfers to the caller.
     #[test]
     fn hew_reply_returns_true_on_successful_delivery() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         let payload = 99_i32;
 
@@ -769,6 +1467,7 @@ mod tests {
     /// clone with the matching destructor, and no leak remains.
     #[test]
     fn cancelled_channel_lets_caller_reclaim_deep_cloned_string_payload() {
+        let _guard = crate::runtime_test_guard();
         let ch = hew_reply_channel_new();
         // Allocate a heap "state-owned" string and the cloned reply, the
         // way codegen does immediately before invoking hew_reply.
@@ -809,6 +1508,7 @@ mod tests {
     /// alloc must report `false` so the caller can reclaim its clone.
     #[test]
     fn alloc_failure_lets_caller_reclaim_deep_cloned_payload() {
+        let _guard = crate::runtime_test_guard();
         crate::hew_clear_error();
         let ch = hew_reply_channel_new();
         let original = std::ffi::CString::new("owned-state").unwrap();
@@ -866,6 +1566,7 @@ mod tests {
     #[test]
     fn threaded_cancel_races_late_reply() {
         const ITERS: usize = 500;
+        let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: ch is valid; ref counts are managed explicitly below.
             unsafe {
@@ -904,6 +1605,7 @@ mod tests {
     fn threaded_select_cancel_with_late_replies() {
         const ARMS: usize = 3;
         const ITERS: usize = 200;
+        let _guard = crate::runtime_test_guard();
         for _ in 0..ITERS {
             // SAFETY: channel lifetimes are managed through ref counts;
             // all sender threads join before the next iteration.
@@ -970,6 +1672,7 @@ mod tests {
     fn threaded_parallel_roundtrips() {
         const THREADS: usize = 8;
         const ROUNDS: usize = 64;
+        let _guard = crate::runtime_test_guard();
 
         let handles: Vec<_> = (0..THREADS)
             .map(|t| {

@@ -26,7 +26,7 @@
 // (In practice you'd restructure; this fixture documents the diagnostic.)
 @linear
 struct SnapshotBuffer {
-    data: Vec<int>,
+    data: Vec<i64>,
 }
 
 actor Archiver {

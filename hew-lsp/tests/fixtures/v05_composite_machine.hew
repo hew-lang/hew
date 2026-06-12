@@ -1,0 +1,35 @@
+machine ConnectionLifecycle {
+    events {
+        Connect;
+        AuthOk;
+        Disconnect;
+    }
+
+    state Disconnected;
+
+    state Connected {
+        initial state Authenticating;
+        state Active;
+        on Disconnect: _ => Disconnected;
+    }
+
+    on Connect: Disconnected => Authenticating;
+    on AuthOk: Authenticating => Active;
+    on Connect: _ => _ {
+        state
+    }
+    on AuthOk: _ => _ {
+        state
+    }
+    on Disconnect: _ => _ {
+        state
+    }
+}
+
+fn composite_machine_probe() -> i64 {
+    7
+}
+
+fn composite_machine_use() -> i64 {
+    composite_machine_probe()
+}

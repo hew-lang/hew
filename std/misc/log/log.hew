@@ -1,36 +1,210 @@
-//! Structured logging for Hew programs.
+//! Structured, leveled logging for Hew programs (slog-style).
 //!
 //! import std::misc::log;
-//! Provides five log levels with structured key-value fields
-//! and automatic actor context injection.
 //!
-//! # Usage
+//! Provides two surfaces:
+//!
+//! 1. **Module-level functions** — convenience API using the global level/format
+//!    settings, equivalent to Go's `log/slog` package-level functions.
+//!
+//! 2. **Logger record** — a value that carries its own `level` and `format`,
+//!    so multiple loggers can coexist with different settings without touching
+//!    the global state.
+//!
+//! # Usage — module-level
 //!
 //! ```
 //! fn main() {
-//!     log.setup();
-//!     log.info("server starting", port: 8080);
-//!     log.debug("cache initialized", capacity: 1024);
+//!     log.setup();   // set global level to INFO
+//!     log.info("server starting");
+//!     log.info_with("listening", [log.field_int("port", 8080), log.field("env", "prod")]);
+//!     log.debug_with("cache miss", [log.field("key", "user:1")]);
 //! }
 //! ```
 //!
-//! # Levels
+//! # Usage — Logger value
+//!
+//! ```
+//! fn main() {
+//!     let lg = log.new_logger(log.DEBUG, log.JSON);
+//!     log.logger_info(lg, "startup", [log.field("svc", "auth")]);
+//!     log.logger_debug(lg, "trace", [log.field_int("uid", 42)]);
+//! }
+//! ```
+//!
+//! # Structured fields
+//!
+//! Fields are `key=value` strings built by the helper functions:
+//!
+//!   - `log.field(key, val)`           string value
+//!   - `log.field_int(key, n)`         i64 value
+//!   - `log.field_float(key, f)`       f64 value
+//!   - `log.field_bool(key, b)`        bool value
+//!
+//! Pass them as a `Vec<string>` to any `*_with` or `logger_*` function.
+//! Empty `Vec` is valid and equivalent to calling the plain one-arg variant.
+//!
+//! # Level constants
 //!
 //! ERROR (0) > WARN (1) > INFO (2) > DEBUG (3) > TRACE (4)
 //!
-//! # Output
+//! # Output formats
 //!
-//! Default: coloured text to stderr
+//! TEXT (0) — coloured timestamp + level + message + fields to stderr:
 //! ```
 //! 12:34:56.789 INFO  server starting  port=8080
 //! ```
+//!
+//! JSON (1) — single-line NDJSON to stderr:
+//! ```
+//! {"ts":1234567890.123,"level":"INFO","msg":"server starting","port":"8080"}
+//! ```
+
+import std::string;
+
+// ── Level constants ───────────────────────────────────────────────────
+/// Error-level severity (highest priority).
+pub const ERROR: i64 = 0;
+
+/// Warning-level severity.
+pub const WARN: i64 = 1;
+
+/// Info-level severity (default threshold after `setup()`).
+pub const INFO: i64 = 2;
+
+/// Debug-level severity.
+pub const DEBUG: i64 = 3;
+
+/// Trace-level severity (lowest priority).
+pub const TRACE: i64 = 4;
 
 // ── Format constants ─────────────────────────────────────────────────
 /// Coloured text output format (default).
-pub const TEXT: int = 0;
+pub const TEXT: i64 = 0;
 
 /// Single-line JSON (NDJSON) output format.
-pub const JSON: int = 1;
+pub const JSON: i64 = 1;
+
+// ── Logger record ────────────────────────────────────────────────────
+/// A logger value with its own level filter and output format.
+///
+/// Construct with `log.new_logger(level, format)`.  Pass to `logger_*`
+/// functions; it is a plain record so it can be stored in actor fields,
+/// passed to functions, or kept in a `let` binding.
+///
+/// # Example
+///
+/// ```
+/// let lg = log.new_logger(log.DEBUG, log.JSON);
+/// log.logger_info(lg, "ready", [log.field_int("port", 8080)]);
+/// ```
+pub type Logger {
+    level: i64;
+    format: i64;
+}
+
+/// Construct a Logger with the given level threshold and output format.
+///
+/// `level`  — minimum severity to emit (0=ERROR … 4=TRACE).
+/// `format` — `log.TEXT` (0) or `log.JSON` (1).
+pub fn new_logger(level: i64, format: i64) -> Logger {
+    Logger { level: level, format: format }
+}
+
+/// Return the level threshold of a Logger.
+///
+/// Because the `Logger` record's fields are not directly accessible from
+/// outside this module (cross-module record field access is not yet
+/// supported by the MIR), use this accessor when the level needs to be
+/// inspected — for example, in tests.
+pub fn logger_level(lg: Logger) -> i64 {
+    lg.level
+}
+
+/// Return the output format of a Logger.
+///
+/// See `logger_level` for why an explicit accessor is provided.
+pub fn logger_format(lg: Logger) -> i64 {
+    lg.format
+}
+
+// ── Field builders ────────────────────────────────────────────────────
+/// Build a `key=value` field from two strings.
+///
+/// Values that contain spaces, double-quotes, backslashes, or newlines are
+/// automatically quoted so they roundtrip correctly through the log wire
+/// format.  `field("user", "John Doe")` produces `user="John Doe"` on
+/// the wire and renders as `user=John Doe` in TEXT output.
+///
+/// # Example
+///
+/// ```
+/// let f = log.field("env", "production");    // "env=production"
+/// let g = log.field("user", "John Doe");     // user="John Doe"  (quoted)
+/// ```
+pub fn field(key: string, val: string) -> string {
+    let encoded = unsafe {
+        hew_log_encode_field_value(val)
+    };
+    key + "=" + encoded
+}
+
+/// Build a `key=N` field from a string key and an i64 value.
+///
+/// # Example
+///
+/// ```
+/// let f = log.field_int("port", 8080);  // "port=8080"
+/// ```
+pub fn field_int(key: string, val: i64) -> string {
+    key + "=" + string.from_int(val)
+}
+
+/// Build a `key=X` field from a string key and an f64 value.
+///
+/// # Example
+///
+/// ```
+/// let f = log.field_float("ratio", 0.75);  // "ratio=0.75"
+/// ```
+pub fn field_float(key: string, val: f64) -> string {
+    key + "=" + string.from_float(val)
+}
+
+/// Build a `key=true` or `key=false` field.
+///
+/// # Example
+///
+/// ```
+/// let f = log.field_bool("debug", true);  // "debug=true"
+/// ```
+pub fn field_bool(key: string, val: bool) -> string {
+    key + "=" + string.from_bool(val)
+}
+
+// ── Internal: assemble message + fields into one string ──────────────
+fn join_fields(fields: Vec<string>) -> string {
+    var result = "";
+    let n = fields.len();
+    for i in 0 .. n {
+        let f = fields.get(i);
+        if result.len() > 0 {
+            result = result + " " + f;
+        } else {
+            result = f;
+        }
+    }
+    result
+}
+
+fn compose(msg: string, fields: Vec<string>) -> string {
+    let n = fields.len();
+    if n == 0 {
+        msg
+    } else {
+        msg + " " + join_fields(fields)
+    }
+}
 
 // ── Module-level functions ────────────────────────────────────────────
 /// Initialize logging at the default INFO level.
@@ -47,18 +221,18 @@ pub fn setup() {
 /// # Examples
 ///
 /// ```
-/// log.set_level(3); // enable debug and above
+/// log.set_level(log.DEBUG);
 /// ```
-pub fn set_level(level: int) {
+pub fn set_level(level: i64) {
     unsafe {
         hew_log_set_level(level as i32)
     };
 }
 
 /// Get the current log level filter.
-pub fn get_level() -> int {
+pub fn get_level() -> i64 {
     unsafe {
-        hew_log_get_level()
+        hew_log_get_level() as i64
     }
 }
 
@@ -70,61 +244,167 @@ pub fn get_level() -> int {
 ///
 /// ```
 /// log.set_format(log.JSON);
-/// log.info("structured", service: "api");
+/// log.info_with("structured", [log.field("service", "api")]);
 /// ```
-pub fn set_format(format: int) {
+pub fn set_format(format: i64) {
     unsafe {
         hew_log_set_format(format as i32)
     };
 }
 
 /// Get the current log output format.
-pub fn get_format() -> int {
+pub fn get_format() -> i64 {
     unsafe {
-        hew_log_get_format()
+        hew_log_get_format() as i64
     }
 }
 
-/// Log a message at error level (named args handled by compiler).
-pub fn error(msg: String) {
+/// Log a message at error level with no structured fields.
+pub fn error(msg: string) {
     unsafe {
         hew_log_emit(0, msg)
     };
 }
 
-/// Log a message at warn level.
-pub fn warn(msg: String) {
+/// Log a message at error level with structured key-value fields.
+///
+/// # Example
+///
+/// ```
+/// log.error_with("request failed", [log.field_int("status", 500), log.field("path", "/api")]);
+/// ```
+pub fn error_with(msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit(0, full)
+    };
+}
+
+/// Log a message at warn level with no structured fields.
+pub fn warn(msg: string) {
     unsafe {
         hew_log_emit(1, msg)
     };
 }
 
-/// Log a message at info level.
-pub fn info(msg: String) {
+/// Log a message at warn level with structured key-value fields.
+pub fn warn_with(msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit(1, full)
+    };
+}
+
+/// Log a message at info level with no structured fields.
+pub fn info(msg: string) {
     unsafe {
         hew_log_emit(2, msg)
     };
 }
 
-/// Log a message at debug level.
-pub fn debug(msg: String) {
+/// Log a message at info level with structured key-value fields.
+///
+/// # Example
+///
+/// ```
+/// log.info_with("server started", [log.field_int("port", 8080)]);
+/// ```
+pub fn info_with(msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit(2, full)
+    };
+}
+
+/// Log a message at debug level with no structured fields.
+pub fn debug(msg: string) {
     unsafe {
         hew_log_emit(3, msg)
     };
 }
 
-/// Log a message at trace level.
-pub fn trace(msg: String) {
+/// Log a message at debug level with structured key-value fields.
+pub fn debug_with(msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit(3, full)
+    };
+}
+
+/// Log a message at trace level with no structured fields.
+pub fn trace(msg: string) {
     unsafe {
         hew_log_emit(4, msg)
     };
 }
 
+/// Log a message at trace level with structured key-value fields.
+pub fn trace_with(msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit(4, full)
+    };
+}
+
+// ── Logger-scoped emit functions ─────────────────────────────────────
+//
+// These bypass global LOG_LEVEL / LOG_FORMAT and use the Logger's own
+// settings, making them safe to use when multiple loggers coexist with
+// different levels or formats.
+/// Emit an error-level message through a Logger with structured fields.
+pub fn logger_error(lg: Logger, msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit_ex(0, lg.level as i32, lg.format as i32, full)
+    };
+}
+
+/// Emit a warn-level message through a Logger with structured fields.
+pub fn logger_warn(lg: Logger, msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit_ex(1, lg.level as i32, lg.format as i32, full)
+    };
+}
+
+/// Emit an info-level message through a Logger with structured fields.
+///
+/// # Example
+///
+/// ```
+/// let lg = log.new_logger(log.INFO, log.JSON);
+/// log.logger_info(lg, "ready", [log.field("svc", "auth")]);
+/// ```
+pub fn logger_info(lg: Logger, msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit_ex(2, lg.level as i32, lg.format as i32, full)
+    };
+}
+
+/// Emit a debug-level message through a Logger with structured fields.
+pub fn logger_debug(lg: Logger, msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit_ex(3, lg.level as i32, lg.format as i32, full)
+    };
+}
+
+/// Emit a trace-level message through a Logger with structured fields.
+pub fn logger_trace(lg: Logger, msg: string, fields: Vec<string>) {
+    let full = compose(msg, fields);
+    unsafe {
+        hew_log_emit_ex(4, lg.level as i32, lg.format as i32, full)
+    };
+}
+
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
-    fn hew_log_emit(level: i32, msg: String);
+    fn hew_log_emit(level: i32, msg: string);
+    fn hew_log_emit_ex(level: i32, min_level: i32, format: i32, msg: string);
     fn hew_log_get_level() -> i32;
     fn hew_log_set_level(level: i32);
     fn hew_log_set_format(format: i32);
     fn hew_log_get_format() -> i32;
+    fn hew_log_encode_field_value(val: string) -> string;
 }

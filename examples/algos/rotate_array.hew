@@ -1,8 +1,9 @@
 // Rotate array by k positions to the right
 // [1,2,3,4,5] k=2 -> [4,5,1,2,3]
 fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
-    var l = start;
-    var r = end - 1;
+    var l: i64 = start as i64;
+    let end64: i64 = end as i64;
+    var r: i64 = end64 - 1;
     while l < r {
         let tmp = arr.get(l);
         arr.set(l, arr.get(r));

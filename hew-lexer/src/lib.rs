@@ -126,6 +126,8 @@ pub enum Token<'src> {
     Var,
     #[token("const")]
     Const,
+    #[token("mut")]
+    Mut,
     #[token("fn")]
     Fn,
     #[token("if")]
@@ -190,6 +192,14 @@ pub enum Token<'src> {
     OneForAll,
     #[token("rest_for_one")]
     RestForOne,
+    #[token("simple_one_for_one")]
+    SimpleOneForOne,
+    #[token("pool")]
+    Pool,
+    /// `brutal_kill` shutdown directive on a supervisor child: skip the
+    /// graceful-stop deadline and terminate the child immediately.
+    #[token("brutal_kill")]
+    BrutalKill,
     #[token("scope")]
     Scope,
     #[token("fork")]
@@ -204,6 +214,8 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
+    #[token("record")]
+    Record,
     #[token("type")]
     Type,
     #[token("this")]
@@ -256,8 +268,6 @@ pub enum Token<'src> {
     Catch,
     #[token("defer")]
     Defer,
-    #[token("pure")]
-    Pure,
     #[token("as")]
     As,
     #[token("machine")]
@@ -270,6 +280,14 @@ pub enum Token<'src> {
     On,
     #[token("when")]
     When,
+    #[token("entry")]
+    Entry,
+    #[token("exit")]
+    Exit,
+    #[token("emit")]
+    Emit,
+    #[token("is")]
+    Is,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -280,8 +298,6 @@ pub enum Token<'src> {
     FatArrow,
     #[token("->")]
     Arrow,
-    #[token("<-")]
-    LeftArrow,
     #[token("<<=")]
     LessLessEqual,
     #[token(">>=")]
@@ -312,6 +328,19 @@ pub enum Token<'src> {
     DoubleColon,
     #[token("#[")]
     HashBracket,
+
+    // ── Wrapping arithmetic operators ─────────────────────────────────
+    // These are SINGLE tokens, not `&` followed by `+`/`-`/`*`.
+    // Logos uses maximal munch: `&+` with no whitespace between the
+    // characters lexes as `AmpPlus` (wrapping add), while `& +` (with
+    // whitespace) lexes as two tokens `Ampersand` + `Plus`. This is the
+    // disambiguation rule: spacing determines operator identity.
+    #[token("&+")]
+    AmpPlus,
+    #[token("&-")]
+    AmpMinus,
+    #[token("&*")]
+    AmpStar,
 
     // ── Compound assignment ───────────────────────────────────────────
     #[token("+=")]
@@ -492,9 +521,13 @@ impl std::fmt::Display for Token<'_> {
             Token::Question => f.write_str("`?`"),
             Token::FatArrow => f.write_str("`=>`"),
             Token::Arrow => f.write_str("`->`"),
-            Token::LeftArrow => f.write_str("`<-`"),
+
             Token::LessLess => f.write_str("`<<`"),
             Token::GreaterGreater => f.write_str("`>>`"),
+            // Wrapping arithmetic operators
+            Token::AmpPlus => f.write_str("`&+`"),
+            Token::AmpMinus => f.write_str("`&-`"),
+            Token::AmpStar => f.write_str("`&*`"),
             // Compound assignment
             Token::PlusEqual => f.write_str("`+=`"),
             Token::MinusEqual => f.write_str("`-=`"),
@@ -567,6 +600,7 @@ define_keywords! {
     Let        => "let",
     Var        => "var",
     Const      => "const",
+    Mut        => "mut",
     Fn         => "fn",
     If         => "if",
     Else       => "else",
@@ -596,9 +630,12 @@ define_keywords! {
     Permanent  => "permanent",
     Transient  => "transient",
     Temporary  => "temporary",
-    OneForOne  => "one_for_one",
-    OneForAll  => "one_for_all",
-    RestForOne => "rest_for_one",
+    OneForOne        => "one_for_one",
+    OneForAll        => "one_for_all",
+    RestForOne       => "rest_for_one",
+    SimpleOneForOne  => "simple_one_for_one",
+    Pool             => "pool",
+    BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
@@ -606,6 +643,7 @@ define_keywords! {
     Await      => "await",
     Receive    => "receive",
     Init       => "init",
+    Record     => "record",
     Type       => "type",
     This       => "this",
     Dyn        => "dyn",
@@ -632,13 +670,16 @@ define_keywords! {
     Cooperate  => "cooperate",
     Catch      => "catch",
     Defer      => "defer",
-    Pure       => "pure",
     As         => "as",
     Machine    => "machine",
     State      => "state",
     Event      => "event",
     On         => "on",
     When       => "when",
+    Entry      => "entry",
+    Exit       => "exit",
+    Emit       => "emit",
+    Is         => "is",
 }
 
 impl Token<'_> {
@@ -665,7 +706,6 @@ impl Token<'_> {
                 | Token::PipePipe
                 | Token::Arrow
                 | Token::FatArrow
-                | Token::LeftArrow
                 | Token::DotDot
                 | Token::DotDotEqual
                 | Token::PlusEqual
@@ -706,6 +746,7 @@ impl Token<'_> {
                 | Token::Supervisor
                 | Token::Wire
                 | Token::Type
+                | Token::Machine
         )
     }
 
@@ -722,6 +763,7 @@ impl Token<'_> {
                 | Token::Supervisor
                 | Token::Wire
                 | Token::Type
+                | Token::Machine
         )
     }
 }
@@ -753,18 +795,20 @@ mod tests {
 
     #[test]
     fn all_keywords() {
-        let src = "let var const fn if else match loop for while break continue return \
+        let src = "let var const mut fn if else match loop for while break continue return \
                    import pub package super struct enum trait impl wire actor \
                    supervisor child restart budget strategy permanent transient temporary \
-                   one_for_one one_for_all rest_for_one scope fork spawn async await receive \
+                   one_for_one one_for_all rest_for_one simple_one_for_one pool \
+                   scope fork spawn async await receive \
                    init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race join from after gen yield \
-                   where cooperate catch defer";
+                   where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 67);
+        assert_eq!(toks.len(), 71);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[66], Token::Defer);
+        assert_eq!(toks[3], Token::Mut);
+        assert_eq!(toks[70], Token::Is);
     }
 
     #[test]
@@ -806,13 +850,12 @@ mod tests {
     #[test]
     fn operators_multi_char() {
         assert_eq!(
-            tokens("== != => -> <- <= >= && || ..= .. :: #["),
+            tokens("== != => -> <= >= && || ..= .. :: #["),
             vec![
                 Token::EqualEqual,
                 Token::NotEqual,
                 Token::FatArrow,
                 Token::Arrow,
-                Token::LeftArrow,
                 Token::LessEqual,
                 Token::GreaterEqual,
                 Token::AmpAmp,
@@ -934,6 +977,35 @@ mod tests {
             vec![
                 Token::RawString(r#"r"raw\nstring""#),
                 Token::InterpolatedString("f\"hello {name}\""),
+            ]
+        );
+    }
+
+    #[test]
+    fn regex_literals_tokenize() {
+        // Basic regex literal with whitespace class
+        assert_eq!(
+            tokens(r#"re"\s+""#),
+            vec![Token::RegexLiteral(r#"re"\s+""#)]
+        );
+        // Dot escape — a literal dot in regex
+        assert_eq!(tokens(r#"re"\.""#), vec![Token::RegexLiteral(r#"re"\.""#)]);
+        // Escaped quote inside regex literal
+        assert_eq!(
+            tokens(r#"re"^\"quoted\"$""#),
+            vec![Token::RegexLiteral(r#"re"^\"quoted\"$""#)]
+        );
+        // Named capture group
+        assert_eq!(
+            tokens(r#"re"(?P<token>.+)""#),
+            vec![Token::RegexLiteral(r#"re"(?P<token>.+)""#)]
+        );
+        // Multiple regex literals separated by whitespace
+        assert_eq!(
+            tokens(r#"re"^[0-9]+$" re"https?://""#),
+            vec![
+                Token::RegexLiteral(r#"re"^[0-9]+$""#),
+                Token::RegexLiteral(r#"re"https?://""#),
             ]
         );
     }
@@ -1075,8 +1147,107 @@ mod tests {
                 "unexpected error token in fibonacci.hew"
             );
         }
-        // Spot-check: starts with a line comment (skipped), then `fn`
-        assert_eq!(toks[0].0, Token::Fn);
+        // Spot-check: skip any leading inner-doc-comment header (a v0.5
+        // convention for example files documenting their status), then the
+        // first significant token should be `fn`.
+        let first_significant = toks
+            .iter()
+            .map(|(t, _)| t)
+            .find(|t| !matches!(t, Token::InnerDocComment(_)))
+            .expect("fibonacci.hew should contain a non-comment token");
+        assert_eq!(*first_significant, Token::Fn);
+    }
+
+    #[test]
+    fn wrapping_ops_single_token() {
+        // `&+`, `&-`, `&*` with no whitespace each lex as a single wrapping-op
+        // token, NOT as `Ampersand` followed by `Plus`/`Minus`/`Star`.
+        assert_eq!(tokens("&+"), vec![Token::AmpPlus]);
+        assert_eq!(tokens("&-"), vec![Token::AmpMinus]);
+        assert_eq!(tokens("&*"), vec![Token::AmpStar]);
+    }
+
+    #[test]
+    fn wrapping_ops_spaced_are_two_tokens() {
+        // `& +` (with whitespace) is `Ampersand` + `Plus` — NOT a wrapping op.
+        // This is the disambiguation rule: spacing determines operator identity.
+        assert_eq!(tokens("& +"), vec![Token::Ampersand, Token::Plus]);
+        assert_eq!(tokens("& -"), vec![Token::Ampersand, Token::Minus]);
+        assert_eq!(tokens("& *"), vec![Token::Ampersand, Token::Star]);
+    }
+
+    #[test]
+    fn wrapping_ops_in_expression_context() {
+        // Verify that `a &+ b` lexes correctly in a typical use position.
+        assert_eq!(
+            tokens("a &+ b"),
+            vec![
+                Token::Identifier("a"),
+                Token::AmpPlus,
+                Token::Identifier("b"),
+            ]
+        );
+        assert_eq!(
+            tokens("x &- 1"),
+            vec![Token::Identifier("x"), Token::AmpMinus, Token::Integer("1"),]
+        );
+        assert_eq!(
+            tokens("m &* n"),
+            vec![
+                Token::Identifier("m"),
+                Token::AmpStar,
+                Token::Identifier("n"),
+            ]
+        );
+    }
+
+    #[test]
+    fn unsafe_keyword_recognised() {
+        // `unsafe` must lex to Token::Unsafe, not an identifier.
+        assert_eq!(tokens("unsafe"), vec![Token::Unsafe]);
+        // Verify keyword_str round-trip.
+        assert_eq!(Token::Unsafe.keyword_str(), Some("unsafe"));
+        // Identifiers that start with "unsafe" must not be mistaken for the keyword.
+        assert_eq!(tokens("unsafe_ptr"), vec![Token::Identifier("unsafe_ptr")]);
+    }
+
+    #[test]
+    fn is_decl_keyword_covers_named_declarations() {
+        // Every keyword that introduces a named binding must return true.
+        assert!(Token::Let.is_decl_keyword());
+        assert!(Token::Var.is_decl_keyword());
+        assert!(Token::Const.is_decl_keyword());
+        assert!(Token::Fn.is_decl_keyword());
+        assert!(Token::Actor.is_decl_keyword());
+        assert!(Token::Struct.is_decl_keyword());
+        assert!(Token::Enum.is_decl_keyword());
+        assert!(Token::Trait.is_decl_keyword());
+        assert!(Token::Supervisor.is_decl_keyword());
+        assert!(Token::Wire.is_decl_keyword());
+        assert!(Token::Type.is_decl_keyword());
+        // `machine` introduces a named state-machine type — must be included.
+        assert!(Token::Machine.is_decl_keyword());
+        // A non-decl keyword must return false.
+        assert!(!Token::If.is_decl_keyword());
+        assert!(!Token::Return.is_decl_keyword());
+    }
+
+    #[test]
+    fn is_type_decl_keyword_covers_type_declarations() {
+        // Every keyword that introduces a named type must return true.
+        assert!(Token::Actor.is_type_decl_keyword());
+        assert!(Token::Struct.is_type_decl_keyword());
+        assert!(Token::Enum.is_type_decl_keyword());
+        assert!(Token::Trait.is_type_decl_keyword());
+        assert!(Token::Supervisor.is_type_decl_keyword());
+        assert!(Token::Wire.is_type_decl_keyword());
+        assert!(Token::Type.is_type_decl_keyword());
+        // `machine` declares a named type — must be included.
+        assert!(Token::Machine.is_type_decl_keyword());
+        // Non-type-decl keywords must return false.
+        assert!(!Token::Let.is_type_decl_keyword());
+        assert!(!Token::Fn.is_type_decl_keyword());
+        assert!(!Token::If.is_type_decl_keyword());
     }
 
     #[test]

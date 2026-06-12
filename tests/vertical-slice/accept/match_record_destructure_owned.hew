@@ -1,0 +1,36 @@
+//! Non-BitCopy record match destructure — full extraction.
+//!
+//! `Wrapper { value: string }` is a non-BitCopy record (`string` field
+//! owns heap). Until the partial-move/drop elaboration spine landed,
+//! `lower_match_project` rejected this shape fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy record/tuple match
+//! destructure`. After the lift, the per-binding loop registers `v` in
+//! `owned_locals` so its function-scope drop fires exactly once, and
+//! `derive_owned_record_drop_allowed` sees `v` as a field-binder release
+//! owner and excludes `w`'s composite drop — no double-free, no leak.
+//!
+//! Observable contract: across many iterations the program prints `done`
+//! and exits 0 with bounded RSS. A regressed lift that double-freed would
+//! abort at `free_cstring`'s sentinel; a regressed lift that leaked would
+//! grow RSS linearly with iteration count.
+
+type Wrapper {
+    value: string,
+}
+
+fn make_wrapper(n: i64) -> Wrapper {
+    Wrapper { value: string_concat("item-", "-tail") }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let w = make_wrapper(i);
+        let _s = match w {
+            Wrapper { value: v } => v,
+        };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

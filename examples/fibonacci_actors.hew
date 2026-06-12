@@ -1,6 +1,9 @@
+//! Status: runnable (actor fan-out via join{} structured concurrency; native codegen-rs)
+//! Description: Actor-based Fibonacci - Hew language example
+
 // Actor-based Fibonacci - Hew language example
 // Demonstrates actors computing fibonacci via deterministic fan-out
-fn fibonacci(n: int) -> int {
+fn fibonacci(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -8,12 +11,12 @@ fn fibonacci(n: int) -> int {
     }
 }
 
-fn print_result(worker_id: int, n: int, result: int) {
+fn print_result(worker_id: i64, n: i64, result: i64) {
     println(f"FibWorker {worker_id}: fib({n}) = {result}");
 }
 
 actor FibWorker {
-    receive fn compute(n: int) -> int {
+    receive fn compute(n: i64) -> i64 {
         fibonacci(n)
     }
 }

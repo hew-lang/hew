@@ -4,6 +4,10 @@
 //! zero-payload self-sends. On wasm32 there is no background ticker thread, so
 //! the host (or [`crate::scheduler_wasm::hew_wasm_sched_tick`]) drives this
 //! queue explicitly.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -307,15 +311,19 @@ mod tests {
 
     static NEXT_TEST_ACTOR_ID: AtomicU64 = AtomicU64::new(1);
 
-    unsafe extern "C" fn count_dispatch(
+    unsafe extern "C-unwind" fn count_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         // SAFETY: tests install an AtomicU32 state pointer for every TestActor.
         let counter = unsafe { &*(state.cast::<AtomicU32>()) };
         counter.fetch_add(1, Ordering::Relaxed);
+
+        std::ptr::null_mut()
     }
 
     struct TestActor {
@@ -333,7 +341,6 @@ mod tests {
             let actor = Box::into_raw(Box::new(HewActor {
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
-                pid: id,
                 state: counter.cast(),
                 state_size: size_of::<AtomicU32>(),
                 dispatch: Some(count_dispatch),
@@ -345,6 +352,7 @@ mod tests {
                 coalesce_key_fn: None,
                 terminate_fn: None,
                 state_drop_fn: None,
+                state_clone_fn: None,
                 terminate_called: AtomicBool::new(false),
                 terminate_finished: AtomicBool::new(false),
                 error_code: AtomicI32::new(0),
@@ -358,6 +366,11 @@ mod tests {
                 prof_messages_processed: AtomicU64::new(0),
                 prof_processing_time_ns: AtomicU64::new(0),
                 arena: arena.cast(),
+                suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+                cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+                pending_wake: AtomicBool::new(false),
+                suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+                suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             }));
             Self { actor, counter }
         }

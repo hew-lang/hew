@@ -1,16 +1,96 @@
 use std::collections::HashMap;
 
-use hew_parser::ast::ResourceMarker;
-use hew_types::ResolvedTy;
+use hew_parser::ast::ResourceMarker as AstResourceMarker;
+use hew_types::{BuiltinType, ResolvedTy};
+
+/// HIR-owned type classification marker.
+///
+/// Parser-level markers only represent user-written ownership attributes
+/// (`#[resource]` / `#[linear]`). HIR also needs substrate registrations for
+/// compiler-known value types that are not user-authored attributes, such as
+/// `BitCopy` crash-hook payload records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ResourceMarker {
+    #[default]
+    None,
+    BitCopy,
+    Resource,
+    Linear,
+}
+
+impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
+    fn from(marker: hew_parser::ast::ResourceMarker) -> Self {
+        match marker {
+            AstResourceMarker::None => Self::None,
+            AstResourceMarker::Resource => Self::Resource,
+            AstResourceMarker::Linear => Self::Linear,
+        }
+    }
+}
 
 /// Per-named-type classification table consumed by `ValueClass::of_ty`.
 ///
 /// Construction-site authority: the table is populated by HIR lowering
-/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker, and
-/// is the single fact about whether a Named type participates in the
-/// ownership-discipline surface. Downstream phases read; they never
-/// re-derive by walking the parser AST. LESSONS: `type-info-survival`.
+/// from every `Item::TypeDecl`'s `#[resource]` / `#[linear]` marker and
+/// compiler-known substrate registrations. Parser-level storage is retained
+/// for compatibility with existing HIR/MIR construction sites; callers must use
+/// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
+/// are still observed. LESSONS: `type-info-survival`.
 pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
+
+#[must_use]
+pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
+    crate::builtin_type_classes::builtin_type_registration(name)
+        .map(|registration| registration.marker)
+        .or_else(|| {
+            let exact = type_classes.get(name).map(|(marker, _)| *marker);
+            match (exact, name.rsplit_once('.')) {
+                (Some(ResourceMarker::None), Some((_, short))) => {
+                    type_classes.get(short).map(|(marker, _)| *marker).or(exact)
+                }
+                (Some(marker), _) => Some(marker),
+                (None, Some((_, short))) => type_classes.get(short).map(|(marker, _)| *marker),
+                (None, None) => None,
+            }
+        })
+}
+
+#[must_use]
+pub fn lookup_type_marker_for_ty(
+    ty: &ResolvedTy,
+    type_classes: &TypeClassTable,
+) -> Option<ResourceMarker> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+
+    if builtin.is_some() {
+        return lookup_type_marker(name, type_classes);
+    }
+
+    if !args.is_empty() {
+        let concrete_key = crate::monomorph::mangle(name, args);
+        if let Some((marker, _)) = type_classes.get(&concrete_key) {
+            return Some(*marker);
+        }
+    }
+
+    let exact = type_classes.get(name).map(|(marker, _)| *marker);
+    match (exact, name.rsplit_once('.')) {
+        (Some(ResourceMarker::None), Some((_, short))) => {
+            type_classes.get(short).map(|(marker, _)| *marker).or(exact)
+        }
+        (Some(marker), _) => Some(marker),
+        (None, Some((_, short))) => type_classes.get(short).map(|(marker, _)| *marker),
+        (None, None) => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueClass {
@@ -35,6 +115,7 @@ impl ValueClass {
     ///
     /// For `ResolvedTy::Named { name, .. }`, looks up the marker in the
     /// supplied `TypeClassTable`:
+    /// - `Some((BitCopy, _))` → `Self::BitCopy`
     /// - `Some((Resource, _))` → `Self::AffineResource`
     /// - `Some((Linear, _))` → `Self::Linear`
     /// - `Some((None, _))` or absent → `Self::Unknown` (preserved fallback;
@@ -55,6 +136,8 @@ impl ValueClass {
             | ResolvedTy::U16
             | ResolvedTy::U32
             | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
             | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Duration
@@ -64,15 +147,43 @@ impl ValueClass {
             | ResolvedTy::Bytes
             | ResolvedTy::Array(_, _)
             | ResolvedTy::Tuple(_) => Self::CowValue,
-            ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } => Self::View,
+            // A `Generator<Y, R>` / `AsyncGenerator<Y>` value is an owned, affine
+            // runtime handle (`*mut HewGenCtx`), same as CancellationToken: it
+            // has exactly one owner, must be released exactly once on scope exit
+            // (via `hew_gen_free`), and is never bit-copied. Classifying it as
+            // `AffineResource` makes the construction binding enter `owned_locals`
+            // and get a scope-exit drop.
+            ResolvedTy::CancellationToken
+            | ResolvedTy::Named {
+                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                ..
+            } => Self::AffineResource,
+            // `&T` immutable borrow is a non-owning view (F3): reuse `View` so
+            // it shares the no-retain / no-drop drop-elaboration arm. A borrow
+            // binding emits no drop (`build_lifo_drops` View no-op).
+            ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => {
+                Self::View
+            }
             ResolvedTy::Function { .. }
             | ResolvedTy::Closure { .. }
             | ResolvedTy::TraitObject { .. } => Self::PersistentShare,
-            ResolvedTy::Named { name, .. } => match type_classes.get(name) {
-                Some((ResourceMarker::Resource, _)) => Self::AffineResource,
-                Some((ResourceMarker::Linear, _)) => Self::Linear,
-                Some((ResourceMarker::None, _)) | None => Self::Unknown,
-            },
+            ResolvedTy::Named { builtin, .. } => {
+                match lookup_type_marker_for_ty(ty, type_classes) {
+                    Some(ResourceMarker::BitCopy) => Self::BitCopy,
+                    Some(ResourceMarker::Resource) => Self::AffineResource,
+                    Some(ResourceMarker::Linear) => Self::Linear,
+                    Some(ResourceMarker::None) | None => {
+                        if matches!(
+                            builtin,
+                            Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet)
+                        ) {
+                            Self::CowValue
+                        } else {
+                            Self::Unknown
+                        }
+                    }
+                }
+            }
             // Task handles are consume-once: MirCheck::MustConsume fires if a
             // ForkTaskHandle binding is live at an exit without being consumed
             // via AwaitTask or the implicit block-end join. Linear is the
@@ -81,6 +192,12 @@ impl ValueClass {
             // class is checked independently when the task is awaited and T is
             // produced.
             ResolvedTy::Task(_) => Self::Linear,
+            // An abstract parameter's value-class depends on the type that
+            // monomorphisation substitutes in. Until then it is genuinely
+            // unknown, so it routes through the conservative `Unknown` arm
+            // (the same fail-closed boundary as an unmarked Named). This only
+            // arises in gated polymorphic bodies, which never reach codegen.
+            ResolvedTy::TypeParam { .. } => Self::Unknown,
         }
     }
 }
@@ -92,32 +209,56 @@ pub fn contains_named_type(ty: &ResolvedTy) -> bool {
 
 #[must_use]
 pub fn named_type_names(ty: &ResolvedTy) -> Vec<String> {
-    let mut names = Vec::new();
-    collect_named_type_names(ty, &mut names);
-    names
+    named_type_components(ty)
+        .into_iter()
+        .map(|component| component.name)
+        .collect()
 }
 
-fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedTypeComponent {
+    pub name: String,
+    pub builtin: Option<BuiltinType>,
+    pub has_args: bool,
+}
+
+#[must_use]
+pub fn named_type_components(ty: &ResolvedTy) -> Vec<NamedTypeComponent> {
+    let mut components = Vec::new();
+    collect_named_type_components(ty, &mut components);
+    components
+}
+
+fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedTypeComponent>) {
     match ty {
         ResolvedTy::Tuple(elems) => {
             for elem in elems {
-                collect_named_type_names(elem, names);
+                collect_named_type_components(elem, components);
             }
         }
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
-            collect_named_type_names(elem, names);
+            collect_named_type_components(elem, components);
         }
-        ResolvedTy::Named { name, args } => {
-            names.push(name.clone());
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            components.push(NamedTypeComponent {
+                name: name.clone(),
+                builtin: *builtin,
+                has_args: !args.is_empty(),
+            });
             for arg in args {
-                collect_named_type_names(arg, names);
+                collect_named_type_components(arg, components);
             }
         }
         ResolvedTy::Function { params, ret } => {
             for param in params {
-                collect_named_type_names(param, names);
+                collect_named_type_components(param, components);
             }
-            collect_named_type_names(ret, names);
+            collect_named_type_components(ret, components);
         }
         ResolvedTy::Closure {
             params,
@@ -125,25 +266,30 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
             captures,
         } => {
             for param in params {
-                collect_named_type_names(param, names);
+                collect_named_type_components(param, components);
             }
-            collect_named_type_names(ret, names);
+            collect_named_type_components(ret, components);
             for capture in captures {
-                collect_named_type_names(capture, names);
+                collect_named_type_components(capture, components);
             }
         }
-        ResolvedTy::Pointer { pointee, .. } => collect_named_type_names(pointee, names),
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            collect_named_type_components(pointee, components);
+        }
         ResolvedTy::TraitObject { traits } => {
             for bound in traits {
                 for arg in &bound.args {
-                    collect_named_type_names(arg, names);
+                    collect_named_type_components(arg, components);
+                }
+                for (_, ty) in &bound.assoc_bindings {
+                    collect_named_type_components(ty, components);
                 }
             }
         }
         // Task<T> is compiler-internal; recurse into T so that a
         // `Task<SomeResource>` binding is still diagnosed correctly if T
         // is a named type with a resource/linear marker.
-        ResolvedTy::Task(inner) => collect_named_type_names(inner, names),
+        ResolvedTy::Task(inner) => collect_named_type_components(inner, components),
         ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
@@ -152,21 +298,28 @@ fn collect_named_type_names(ty: &ResolvedTy, names: &mut Vec<String>) {
         | ResolvedTy::U16
         | ResolvedTy::U32
         | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
         | ResolvedTy::F32
         | ResolvedTy::F64
         | ResolvedTy::Bool
         | ResolvedTy::Char
         | ResolvedTy::String
         | ResolvedTy::Bytes
+        | ResolvedTy::CancellationToken
         | ResolvedTy::Duration
         | ResolvedTy::Unit
-        | ResolvedTy::Never => {}
+        | ResolvedTy::Never
+        // A structural type parameter is abstract, not a named user type, so
+        // it contributes no named-type component.
+        | ResolvedTy::TypeParam { .. } => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::named_type_names;
+    use super::{named_type_components, named_type_names};
+    use hew_types::BuiltinType;
     use hew_types::{ResolvedTraitBound, ResolvedTy};
 
     #[test]
@@ -175,6 +328,7 @@ mod tests {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Display".to_string(),
                 args: Vec::new(),
+                assoc_bindings: Vec::new(),
             }],
         };
 
@@ -186,10 +340,8 @@ mod tests {
         let ty = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".to_string(),
-                args: vec![ResolvedTy::Named {
-                    name: "Foo".to_string(),
-                    args: Vec::new(),
-                }],
+                args: vec![ResolvedTy::named_user("Foo", Vec::new())],
+                assoc_bindings: Vec::new(),
             }],
         };
 
@@ -202,20 +354,16 @@ mod tests {
             traits: vec![ResolvedTraitBound {
                 trait_name: "OuterTrait".to_string(),
                 args: vec![ResolvedTy::Tuple(vec![
-                    ResolvedTy::Named {
-                        name: "Foo".to_string(),
-                        args: Vec::new(),
-                    },
+                    ResolvedTy::named_user("Foo", Vec::new()),
                     ResolvedTy::TraitObject {
                         traits: vec![ResolvedTraitBound {
                             trait_name: "InnerTrait".to_string(),
-                            args: vec![ResolvedTy::Named {
-                                name: "Bar".to_string(),
-                                args: Vec::new(),
-                            }],
+                            args: vec![ResolvedTy::named_user("Bar", Vec::new())],
+                            assoc_bindings: Vec::new(),
                         }],
                     },
                 ])],
+                assoc_bindings: Vec::new(),
             }],
         };
 
@@ -223,5 +371,23 @@ mod tests {
             named_type_names(&ty),
             vec!["Foo".to_string(), "Bar".to_string()]
         );
+    }
+
+    #[test]
+    fn named_type_components_preserve_builtin_discriminator_and_arg_shape() {
+        let ty = ResolvedTy::named_builtin(
+            "Vec",
+            BuiltinType::Vec,
+            vec![ResolvedTy::named_user("Foo", Vec::new())],
+        );
+
+        let components = named_type_components(&ty);
+        assert_eq!(components.len(), 2);
+        assert_eq!(components[0].name, "Vec");
+        assert_eq!(components[0].builtin, Some(BuiltinType::Vec));
+        assert!(components[0].has_args);
+        assert_eq!(components[1].name, "Foo");
+        assert_eq!(components[1].builtin, None);
+        assert!(!components[1].has_args);
     }
 }

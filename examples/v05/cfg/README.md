@@ -2,7 +2,7 @@
 
 These `.hew` sources exercise the basic-block structure introduced
 by real CFG construction for `if`/`else`. Each compiles cleanly
-through `hew compile-v05`; the resulting binary returns a value
+through `hew compile`; the resulting binary returns a value
 that names which arm was taken.
 
 | Fixture | Returns | Asserts |
@@ -19,4 +19,4 @@ The inline-source counterparts live in `hew-mir/tests/vertical.rs` as
 `if_no_else_unit_typed_lowers_without_diagnostic`,
 `sequential_ifs_each_contribute_three_blocks`. They pin the CFG
 shape at the MIR layer; the `.hew` files here document the source
-form and double as targets for manual `hew compile-v05` runs.
+form and double as targets for manual `hew compile` runs.

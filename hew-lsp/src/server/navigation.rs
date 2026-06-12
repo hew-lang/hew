@@ -1787,11 +1787,16 @@ mod tests {
     /// Build a temporary workspace with the given (`relative_path`, content) pairs.
     /// Returns the workspace root and the list of file URIs.
     fn make_temp_workspace(files: &[(&str, &str)]) -> (std::path::PathBuf, Vec<Url>) {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (secs, nanos) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or((0u64, 0u32), |d| (d.as_secs(), d.subsec_nanos()));
         let root = std::env::temp_dir().join(format!(
-            "hew-nav-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.subsec_nanos())
+            "hew-nav-test-{:x}-{:x}-{}-{}",
+            secs,
+            nanos,
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         let mut uris = Vec::new();
         for (rel, content) in files {

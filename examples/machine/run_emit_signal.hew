@@ -1,0 +1,61 @@
+// Runnable fixture: machine with unit-event emit, executed end-to-end.
+//
+// Drives the MachineEmitPlaceholder → hew_machine_emit_push codegen path
+// via `hew run`:
+//   1. Construct a `Signal` machine at its initial state.
+//   2. Step with `Start`, which triggers `emit Ready {}` then transitions
+//      to `Active`.
+//   3. Observe that the step succeeds and state_name() reflects the new state.
+//
+// The emit call (`emit Ready {}`) is a unit-payload Mealy output. It lowers
+// through `Instr::MachineEmitPlaceholder` → `call void @hew_machine_emit_push`
+// in the LLVM IR. The thread-local EmitQueue records the event; it is not
+// drained by the host program yet (drain is deferred to the actor scheduler
+// integration slice). This fixture validates that the codegen path does not
+// trap, corrupt state, or prevent the transition from completing normally.
+//
+// `tests/machine_exec.rs::run_emit_signal_fixture_executes` is the
+// end-to-end signal for this fixture.
+machine Signal {
+    events {
+        Start;
+        Stop;
+        Ready;
+    }
+
+    emits {
+        Ready;
+    }
+
+    state Idle;
+    state Active;
+
+    on Start: Idle => Active {
+        emit Ready {};
+        Active
+    }
+    on Stop: Active => Idle {
+        Idle
+    }
+    on Ready: Idle => Idle reenter {
+        Idle
+    }
+    on Ready: Active => Active reenter {
+        Active
+    }
+    on Start: Active => Active reenter {
+        Active
+    }
+    on Stop: Idle => Idle reenter {
+        Idle
+    }
+}
+
+fn main() {
+    var s = Idle;
+    println(s.state_name());
+    s.step(Start);
+    println(s.state_name());
+    s.step(Stop);
+    println(s.state_name());
+}

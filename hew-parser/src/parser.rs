@@ -1,20 +1,24 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
-    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
-    WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, CompositeGroup, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy, ElseBlock,
+    Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl,
+    ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl,
+    MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase, OverflowFallback,
+    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordField,
+    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
 use std::cell::Cell;
+
+type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
+type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
 /// Parse an integer literal string, returning both value and radix.
 ///
@@ -43,6 +47,16 @@ fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::ParseIntError
 }
 
 /// Parse a duration literal string (e.g. "100ns", "5s") into nanoseconds.
+/// Parse a duration literal source string (e.g. `"60s"`, `"5m"`, `"100ms"`)
+/// into a count of nanoseconds. Returns `None` on an unrecognised unit suffix
+/// or an out-of-range value. This is the single source of truth for duration
+/// unit interpretation; downstream stages (codegen) call it rather than
+/// reimplementing unit math, keeping one duration parser.
+#[must_use]
+pub fn parse_duration_ns(s: &str) -> Option<i64> {
+    parse_duration_literal(s)
+}
+
 fn parse_duration_literal(s: &str) -> Option<i64> {
     let s = &s.replace('_', "");
     if let Some(num) = s.strip_suffix("ns") {
@@ -70,6 +84,48 @@ fn parse_duration_literal(s: &str) -> Option<i64> {
     }
 }
 
+/// Resolve a `#[max_heap(…)]` attribute's argument(s) to a byte count.
+///
+/// Accepted forms and their `args` representation after `parse_attributes`:
+/// - `#[max_heap(1024)]`  → `[Positional("1024")]`               → 1024 bytes
+/// - `#[max_heap(512 b)]` → `[Positional("512"), Positional("b")]`   → 512 bytes
+/// - `#[max_heap(2 kb)]`  → `[Positional("2"),   Positional("kb")]`  → 2048 bytes
+/// - `#[max_heap(1 mb)]`  → `[Positional("1"),   Positional("mb")]`  → 1 048 576 bytes
+///
+/// Returns `Ok(bytes)` on success, `Err(message)` on unsupported suffix or bad integer.
+fn resolve_max_heap_args(args: &[AttributeArg]) -> Result<u64, String> {
+    match args {
+        // Bare integer: `#[max_heap(1024)]`
+        [AttributeArg::Positional(n)] => n
+            .parse::<u64>()
+            .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`")),
+        // Integer + unit suffix: `#[max_heap(2 kb)]`
+        [AttributeArg::Positional(n), AttributeArg::Positional(unit)] => {
+            let base: u64 = n
+                .parse::<u64>()
+                .map_err(|_| format!("invalid integer in `#[max_heap]`: `{n}`"))?;
+            match unit.as_str() {
+                "b" => Ok(base),
+                "kb" => base
+                    .checked_mul(1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} kb")),
+                "mb" => base
+                    .checked_mul(1024 * 1024)
+                    .ok_or_else(|| format!("`#[max_heap]` value overflows u64: {n} mb")),
+                other => Err(format!(
+                    "unsupported unit `{other}` in `#[max_heap]`; accepted suffixes: b, kb, mb \
+                     (gb and larger are not supported in v0.5)"
+                )),
+            }
+        }
+        _ => Err(
+            "`#[max_heap]` requires exactly one argument: a byte count optionally followed by \
+             a unit (b, kb, mb)"
+                .to_string(),
+        ),
+    }
+}
+
 /// Strip surrounding quotes from a `StringLit` or `RawString` token value.
 ///
 /// Handles `r"..."` (raw) and `"..."` (regular) forms, returning the inner content.
@@ -84,8 +140,11 @@ fn unquote_str(s: &str) -> &str {
 /// These attributes are permitted on plain `fn` declarations inside an
 /// actor body; all other attributes on such fns are rejected.
 ///
-/// The parameterized form `#[on(start)]` / `#[on(stop)]` uses a single
-/// attribute name `on` with the hook kind as a positional argument.
+/// The parameterized form `#[on(<event>)]` uses a single attribute name
+/// `on` with the hook kind as a positional argument. Recognised events
+/// in v0.5 are `start`, `stop`, `crash`, and `upgrade`. Validation of
+/// the event identifier and per-event signature shape lives in the
+/// type-checker (`hew-types::check::items`).
 pub(crate) fn is_lifecycle_hook_attr(name: &str) -> bool {
     name == "on"
 }
@@ -135,6 +194,44 @@ fn push_unescaped_sequence(
     }
 
     2
+}
+
+/// Normalise a `re"..."` token into the regex pattern string.
+///
+/// Regex literals use different escape semantics from Hew string literals:
+/// backslashes are passed through verbatim to the regex engine (so `re"\s+"`
+/// is whitespace, `re"\."` is a literal dot). Only the delimiter escape
+/// `\"` is consumed to allow a literal double-quote inside the pattern.
+/// Any other two-character `\x` sequence is emitted as-is (both backslash
+/// and the next character) so regex operators like `\d`, `\w`, `\b`,
+/// `(?P<name>...)` named groups, and anchors survive unchanged.
+///
+/// `raw` must be the full token text including the `re"` prefix and `"` suffix.
+pub(crate) fn normalize_regex_literal(raw: &str) -> String {
+    // Strip re" prefix and " suffix.
+    let inner = raw
+        .strip_prefix("re\"")
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(raw);
+
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('"') => out.push('"'), // delimiter escape: \" → "
+                Some(next) => {
+                    // All other backslash sequences: pass through both characters.
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'), // trailing lone backslash — pass through
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
@@ -344,13 +441,16 @@ pub struct Parser<'src> {
     pos: usize,
     errors: Vec<ParseError>,
     depth: Cell<usize>,
-    /// When inside a `scope |s| { ... }` block, this holds the binding name "s"
-    /// so that `s.launch`, `s.cancel()` can be desugared
-    /// to the corresponding AST nodes.
-    scope_binding: Option<String>,
     /// Stack of token mutations performed by `eat_closing_angle`, so they can
     /// be rolled back on speculative-parse backtrack.
     angle_mutations: Vec<(usize, (Token<'src>, Span))>,
+    /// True while parsing an impl-method parameter list that accepts bare
+    /// `self` as sugar for a `Self` receiver parameter.
+    allow_implicit_self_params: bool,
+    /// Number of enclosing `scope { ... }` expression bodies being parsed.
+    scope_expr_depth: usize,
+    /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
+    fork_block_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,6 +489,8 @@ pub enum ParseDiagnosticKind {
         /// The token (or `"end of file"`) that was encountered.
         got: String,
     },
+    /// Pipe-closure syntax is malformed or incomplete.
+    ClosurePipeSyntax,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -403,6 +505,7 @@ impl ParseDiagnosticKind {
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
+            Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::Other => "Other",
         }
     }
@@ -450,8 +553,10 @@ impl<'src> Parser<'src> {
             pos: 0,
             errors,
             depth: Cell::new(0),
-            scope_binding: None,
             angle_mutations: Vec::new(),
+            allow_implicit_self_params: false,
+            scope_expr_depth: 0,
+            fork_block_depth: 0,
         }
     }
 
@@ -542,6 +647,23 @@ impl<'src> Parser<'src> {
         self.tokens.get(index).map(|(t, _)| t)
     }
 
+    /// Whether the current position is a contextual `clone <operand>` prefix.
+    ///
+    /// True only when the current token is the identifier `clone` AND the next
+    /// token begins an operand (`token_begins_clone_operand`). When `clone` is
+    /// followed by a continuation token (`.`, `(`, `[`, `?`, an infix operator,
+    /// or a terminator) it stays an ordinary identifier — so `x.clone()`,
+    /// `fn clone(...)`, and `clone(args)` are unaffected. The adjacency check
+    /// is precedence-free: `clone x` was always a parse error before (two
+    /// adjacent primaries), so repurposing it cannot change the meaning of any
+    /// previously valid program.
+    fn peek_is_clone_prefix(&self) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == "clone")
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(token_begins_clone_operand)
+    }
+
     /// Check whether the current token starts with `>` (i.e. is `>`, `>>`, `>=`, or `>>=`).
     /// Used in type-argument / type-parameter parsing so that `Vec<Vec<i32>>`
     /// works without requiring a space before `>>`.
@@ -626,6 +748,21 @@ impl<'src> Parser<'src> {
             hint: Some(hint.into()),
             severity: Severity::Error,
             kind: ParseDiagnosticKind::Other,
+        });
+    }
+
+    fn error_closure_pipe_syntax(
+        &mut self,
+        message: impl Into<String>,
+        span: Span,
+        hint: impl Into<String>,
+    ) {
+        self.errors.push(ParseError {
+            message: message.into(),
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::ClosurePipeSyntax,
         });
     }
 
@@ -810,13 +947,69 @@ impl<'src> Parser<'src> {
             Token::On => Some("on"),
             Token::When => Some("when"),
             Token::Join => Some("join"),
+            // Machine-block keywords that can also appear as external function names
+            // or identifiers in other positions.
+            Token::Entry => Some("entry"),
+            Token::Exit => Some("exit"),
+            Token::Emit => Some("emit"),
             _ => None,
         }
+    }
+
+    fn looks_like_scope_deadline(&self) -> bool {
+        if !matches!(self.peek(), Some(Token::After)) {
+            return false;
+        }
+        if !matches!(
+            self.tokens.get(self.pos + 1).map(|(token, _)| token),
+            Some(Token::LeftParen)
+        ) {
+            return false;
+        }
+
+        let mut paren_depth = 0usize;
+        for idx in (self.pos + 1)..self.tokens.len() {
+            match &self.tokens[idx].0 {
+                Token::LeftParen => paren_depth += 1,
+                Token::RightParen => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    if paren_depth == 0 {
+                        return matches!(
+                            self.tokens.get(idx + 1).map(|(token, _)| token),
+                            Some(Token::LeftBrace)
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
     fn is_ident_token(tok: &Token<'_>) -> bool {
         matches!(tok, Token::Identifier(_)) || Self::contextual_keyword_name(tok).is_some()
+    }
+
+    /// Returns true when the current token is a bare `Identifier` matching `kw`.
+    ///
+    /// Used for machine-body contextual keywords (`events`, `emits`, `reenter`,
+    /// `initial`) that are NOT lexer keywords — they tokenize as ordinary
+    /// identifiers and only carry keyword meaning inside the machine body, so
+    /// they cost nothing in the global identifier namespace.
+    fn peek_machine_kw(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == kw)
+    }
+
+    /// Consumes the current token iff it is a bare `Identifier` matching `kw`.
+    /// See `peek_machine_kw` for the contextual-keyword rationale.
+    fn eat_machine_kw(&mut self, kw: &str) -> bool {
+        if self.peek_machine_kw(kw) {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     fn expect_ident(&mut self) -> Option<String> {
@@ -1149,6 +1342,22 @@ impl<'src> Parser<'src> {
                         } else {
                             self.error(format!("invalid duration literal: {s}"));
                         }
+                    } else if let Some(Token::Integer(n)) = self.peek() {
+                        // Bare integer positional, e.g. `#[max_heap(1024)]`.
+                        let n_str = n.to_string();
+                        self.advance();
+                        args.push(AttributeArg::Positional(n_str));
+                        // Consume an immediately following identifier as a unit suffix
+                        // (no comma required), e.g. `#[max_heap(1 kb)]`.  Only ident
+                        // tokens are valid unit suffixes; anything else is left for the
+                        // outer loop's comma-or-break check.
+                        if self.peek().is_some_and(|tok| {
+                            Self::is_ident_token(tok)
+                                && !matches!(tok, Token::RightParen | Token::Comma)
+                        }) {
+                            let unit = self.expect_ident().unwrap_or_default();
+                            args.push(AttributeArg::Positional(unit));
+                        }
                     } else {
                         break;
                     }
@@ -1158,9 +1367,9 @@ impl<'src> Parser<'src> {
                 }
                 let _ = self.expect(&Token::RightParen);
             }
-            let end = self.peek_span().start;
-            let _ = self.expect(&Token::RightBracket);
-            let end = self.peek_span().start.max(end);
+            let end = self
+                .expect(&Token::RightBracket)
+                .map_or_else(|| self.peek_span().start, |span| span.end);
             attrs.push(Attribute {
                 name,
                 args,
@@ -1207,7 +1416,6 @@ impl<'src> Parser<'src> {
     fn parse_fn_with_modifiers(
         &mut self,
         vis: Visibility,
-        is_pure: bool,
         attrs: Vec<Attribute>,
         doc_comment: &Option<String>,
     ) -> Option<Item> {
@@ -1227,19 +1435,8 @@ impl<'src> Parser<'src> {
                     }
                     (fn_start, true, true)
                 } else {
-                    let fn_start = self.peek_span().start;
-                    if self.eat(&Token::Fn) {
-                        self.error(
-                            "Hew has no `async fn` keyword — async-ness comes from `fork{}` \
-                             context. Use `fn` for regular functions or `async gen fn` for \
-                             async generators."
-                                .to_string(),
-                        );
-                        (fn_start, false, false)
-                    } else {
-                        self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
-                        return None;
-                    }
+                    self.error("expected 'gen fn' after 'async'".to_string());
+                    return None;
                 }
             }
             Some(Token::Gen) => {
@@ -1253,7 +1450,7 @@ impl<'src> Parser<'src> {
             }
             _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
         };
-        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, is_pure, attrs)?;
+        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, attrs)?;
         f.doc_comment.clone_from(doc_comment);
         Some(Item::Function(f))
     }
@@ -1267,9 +1464,36 @@ impl<'src> Parser<'src> {
         if doc_comment.is_none() {
             doc_comment = self.collect_doc_comments();
         }
+        // `#[extern_symbol("…")]` attaches to a `fn` declaration nested inside
+        // either an `extern "C" { … }` block or an `impl Ty { … }` / `impl Trait
+        // for Ty { … }` block (parsed via `parse_extern_block` and
+        // `parse_impl_decl`'s body loop respectively). At item level it is
+        // never valid — reject it here with a clear diagnostic rather than
+        // silently dropping it onto whatever item follows.
+        for attr in &attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block"
+                        .to_string(),
+                    attr.span.clone(),
+                );
+            }
+        }
         let start = self.peek_span().start;
         // Pre-compute attribute span before attrs is moved into the item.
         let attr_start = attrs.first().map(|a| a.span.start);
+
+        // Extract `#[max_heap]` before dispatch so we can set it on the actor
+        // and reject it on any non-actor item.  We pull both the result and the
+        // diagnostic span out as owned values so `attrs` can be moved freely
+        // into the match arms below.
+        let (max_heap_result, max_heap_attr_span): (Option<Result<u64, String>>, Option<Span>) =
+            if let Some(a) = attrs.iter().find(|a| a.name == "max_heap") {
+                (Some(resolve_max_heap_args(&a.args)), Some(a.span.clone()))
+            } else {
+                (None, None)
+            };
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -1282,10 +1506,9 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Pub) => {
                 let vis = self.parse_visibility();
-                let is_pure = self.eat(&Token::Pure);
                 match self.peek() {
                     Some(Token::Fn | Token::Async | Token::Gen) => {
-                        self.parse_fn_with_modifiers(vis, is_pure, attrs, &doc_comment)?
+                        self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
                         let mut t = self.parse_wire_struct(&attrs, vis)?;
@@ -1301,10 +1524,20 @@ impl<'src> Parser<'src> {
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
                     }
+                    Some(Token::Enum) if attrs.iter().any(|a| a.name == "wire") => {
+                        let mut t = self.parse_wire_enum(&attrs, vis)?;
+                        t.doc_comment = doc_comment;
+                        Item::TypeDecl(t)
+                    }
                     Some(Token::Enum) => {
                         let mut t = self.parse_struct_or_enum(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::TypeDecl(t)
+                    }
+                    Some(Token::Record) => {
+                        let mut r = self.parse_record_decl(vis)?;
+                        r.doc_comment = doc_comment;
+                        Item::Record(r)
                     }
                     Some(Token::Type) => {
                         if self.is_type_alias_lookahead() {
@@ -1317,7 +1550,7 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Trait) => {
                         self.advance();
-                        let mut t = self.parse_trait_decl(vis)?;
+                        let mut t = self.parse_trait_decl(vis, &attrs)?;
                         t.doc_comment = doc_comment;
                         Item::Trait(t)
                     }
@@ -1349,28 +1582,13 @@ impl<'src> Parser<'src> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
-                        if is_pure {
-                            self.error(
-                                "'pure' can only be applied to function declarations".to_string(),
-                            );
-                        } else {
-                            self.error("invalid item after 'pub'".to_string());
-                        }
+                        self.error("invalid item after 'pub'".to_string());
                         return None;
                     }
                 }
             }
             Some(Token::Fn | Token::Async | Token::Gen) => {
-                self.parse_fn_with_modifiers(Visibility::Private, false, attrs, &doc_comment)?
-            }
-            Some(Token::Pure) => {
-                self.advance();
-                if let Some(Token::Fn | Token::Async | Token::Gen) = self.peek() {
-                    self.parse_fn_with_modifiers(Visibility::Private, true, attrs, &doc_comment)?
-                } else {
-                    self.error("'pure' can only be applied to function declarations".to_string());
-                    return None;
-                }
+                self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
             }
             Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
                 let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
@@ -1386,10 +1604,20 @@ impl<'src> Parser<'src> {
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
             }
+            Some(Token::Enum) if attrs.iter().any(|a| a.name == "wire") => {
+                let mut t = self.parse_wire_enum(&attrs, Visibility::Private)?;
+                t.doc_comment = doc_comment;
+                Item::TypeDecl(t)
+            }
             Some(Token::Enum) => {
                 let mut t = self.parse_struct_or_enum(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::TypeDecl(t)
+            }
+            Some(Token::Record) => {
+                let mut r = self.parse_record_decl(Visibility::Private)?;
+                r.doc_comment = doc_comment;
+                Item::Record(r)
             }
             Some(Token::Type) => {
                 if self.is_type_alias_lookahead() {
@@ -1402,7 +1630,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Trait) => {
                 self.advance();
-                let mut t = self.parse_trait_decl(Visibility::Private)?;
+                let mut t = self.parse_trait_decl(Visibility::Private, &attrs)?;
                 t.doc_comment = doc_comment;
                 Item::Trait(t)
             }
@@ -1452,7 +1680,7 @@ impl<'src> Parser<'src> {
                 // Detect common keywords from other languages
                 if let Some(Token::Identifier(id)) = self.peek() {
                     match *id {
-                        "struct" | "record" => {
+                        "struct" => {
                             self.error_with_hint(
                                 format!("unexpected '{id}'"),
                                 "Hew uses 'type' to declare structs: type Name { ... }",
@@ -1490,6 +1718,30 @@ impl<'src> Parser<'src> {
             }
         };
 
+        // Wire `#[max_heap]` into the actor, or emit a diagnostic if it appears
+        // on a non-actor item.
+        let item = match (item, max_heap_result) {
+            (Item::Actor(mut actor), Some(Ok(bytes))) => {
+                actor.max_heap_bytes = Some(bytes);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), Some(Err(msg))) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(msg, span);
+                Item::Actor(actor)
+            }
+            (Item::Actor(actor), None) => Item::Actor(actor),
+            (other_item, Some(_)) => {
+                let span = max_heap_attr_span.unwrap_or(start..start);
+                self.error_at(
+                    "#[max_heap] is only allowed on actor declarations".to_string(),
+                    span,
+                );
+                other_item
+            }
+            (other_item, None) => other_item,
+        };
+
         let end = self.peek_span().start;
         // Extend span to cover leading attributes if present.
         let item_start = attr_start.unwrap_or(start);
@@ -1502,7 +1754,6 @@ impl<'src> Parser<'src> {
         is_async: bool,
         is_gen: bool,
         visibility: Visibility,
-        is_pure: bool,
         attributes: Vec<Attribute>,
     ) -> Option<FnDecl> {
         // Capture the byte position of the name token so the debug pipeline
@@ -1515,21 +1766,40 @@ impl<'src> Parser<'src> {
         let type_params = self.parse_opt_type_params()?;
 
         self.expect(&Token::LeftParen)?;
-        let params = self.parse_params();
+        let params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
         self.expect(&Token::RightParen)?;
 
         let return_type = self.parse_opt_return_type()?;
         let where_clause = self.parse_opt_where_clause()?;
 
-        let body = self.parse_block()?;
-        let fn_end = self.peek_span().start;
+        // Extract intrinsic key from `#[intrinsic("name")]` if present.
+        // An intrinsic declaration may omit the body and use `;` instead.
+        let intrinsic = attributes
+            .iter()
+            .find(|a| a.name == "intrinsic")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
+        let (body, fn_end) = if intrinsic.is_some() && self.peek() == Some(&Token::Semicolon) {
+            // `#[intrinsic("key")] pub fn name(...) -> T;` — bodyless form.
+            // Produce an empty block so the rest of the pipeline sees a well-formed FnDecl.
+            let semi_end = self.peek_span().end;
+            self.advance(); // consume `;`
+            let empty_block = Block {
+                stmts: vec![],
+                trailing_expr: None,
+            };
+            (empty_block, semi_end)
+        } else {
+            let body = self.parse_block()?;
+            let fn_end = self.peek_span().start;
+            (body, fn_end)
+        };
 
         Some(FnDecl {
             attributes,
             is_async,
             is_generator: is_gen,
             visibility,
-            is_pure,
             name,
             type_params,
             params,
@@ -1539,6 +1809,7 @@ impl<'src> Parser<'src> {
             doc_comment: None,
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
+            intrinsic,
         })
     }
 
@@ -1573,7 +1844,6 @@ impl<'src> Parser<'src> {
             is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
-            is_pure: false,
             name,
             type_params,
             params,
@@ -1583,6 +1853,7 @@ impl<'src> Parser<'src> {
             doc_comment: None,
             decl_span: decl_start..decl_end,
             fn_span: fn_start..fn_end,
+            intrinsic: None,
         };
         Some((decl, has_consuming_self))
     }
@@ -1624,6 +1895,10 @@ impl<'src> Parser<'src> {
         // `#[resource]` and `#[linear]` are consumed here and do not propagate
         // to TypeBodyItem fields or the formatter's attribute list.
         let resource_marker = self.extract_resource_marker(attrs);
+        // `#[opaque]` marks a pointer-width opaque runtime handle. Validated
+        // post-body (must be an empty-body struct). Representation axis —
+        // orthogonal to the `resource_marker` ownership axis.
+        let is_opaque = attrs.iter().any(|a| a.name == "opaque");
 
         let kind = match self.peek() {
             Some(Token::Type) => {
@@ -1674,6 +1949,14 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
+        if is_opaque && (kind != TypeDeclKind::Struct || !body.is_empty()) {
+            self.error(
+                "#[opaque] type must be an empty-body struct — an opaque handle \
+                 has no fields and is produced only via FFI [E_OPAQUE_TYPE_SHAPE]"
+                    .to_string(),
+            );
+        }
+
         Some(TypeDecl {
             visibility,
             kind,
@@ -1685,8 +1968,129 @@ impl<'src> Parser<'src> {
             wire: None,
             is_indirect: false,
             resource_marker,
+            is_opaque,
             consuming_methods,
         })
+    }
+
+    /// Parse a `record` declaration in either named-field or tuple-positional form.
+    ///
+    /// Named form:  `record Name<T>? where...? { field: Type, ... }`
+    /// Tuple form:  `record Name<T>? (Type, ...) ;`
+    ///
+    /// The `record` keyword must already be consumed before this is called.
+    /// Both forms reject empty field lists.
+    fn parse_record_decl(&mut self, visibility: Visibility) -> Option<RecordDecl> {
+        let start = self.peek_span().start;
+
+        // Consume `record`
+        self.advance();
+
+        let name = self.expect_ident()?;
+        let type_params = self.parse_opt_type_params()?;
+        let where_clause = self.parse_opt_where_clause()?;
+
+        if self.eat(&Token::LeftParen) {
+            // Tuple-positional form: `record Name(T1, T2, ...) ;`
+            let mut field_types: Vec<Spanned<TypeExpr>> = Vec::new();
+
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                let ty = self.parse_type()?;
+                field_types.push(ty);
+
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            if field_types.is_empty() {
+                self.error("tuple record must have at least one positional field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightParen)?;
+            self.expect(&Token::Semicolon)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Tuple(field_types),
+                doc_comment: None,
+                span: start..end,
+            })
+        } else {
+            // Named-field form: `record Name { field: Type, ... }`
+            self.expect(&Token::LeftBrace)?;
+
+            let mut fields: Vec<RecordField> = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let field_start = self.peek_span().start;
+
+                // Field name
+                let field_name = if let Some(Token::Identifier(_)) = self.peek() {
+                    self.expect_ident()?
+                } else {
+                    let found = match self.peek() {
+                        Some(tok) => format!("{tok}"),
+                        None => "end of file".to_string(),
+                    };
+                    self.error(format!("expected field name, found {found}"));
+                    return None;
+                };
+
+                self.expect(&Token::Colon)?;
+
+                let ty = self.parse_type()?;
+                let field_end = self.peek_span().start;
+
+                fields.push(RecordField {
+                    name: field_name,
+                    ty,
+                    doc_comment: None,
+                    span: field_start..field_end,
+                });
+
+                // Comma or end of body. Semicolons are common when users
+                // switch from `type` fields; keep them invalid but recover
+                // with a targeted hint instead of cascading item-level errors.
+                if self.peek() == Some(&Token::Comma) {
+                    self.advance();
+                } else if self.peek() == Some(&Token::Semicolon) {
+                    let semi_span = self.peek_span();
+                    self.error_at_with_hint(
+                        "expected `,` or `}` after record field, found `;`".to_string(),
+                        semi_span,
+                        "record fields use commas; write `field: Type,` instead of `field: Type;`",
+                    );
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            if fields.is_empty() {
+                self.error("record body must contain at least one field".to_string());
+                return None;
+            }
+
+            let end = self.peek_span().start;
+            self.expect(&Token::RightBrace)?;
+
+            Some(RecordDecl {
+                visibility,
+                name,
+                type_params,
+                where_clause,
+                kind: RecordKind::Named(fields),
+                doc_comment: None,
+                span: start..end,
+            })
+        }
     }
 
     /// Extract `ResourceMarker` from a pre-parsed attribute slice.
@@ -1706,13 +2110,21 @@ impl<'src> Parser<'src> {
     /// consumer, so we leave the slice untouched.
     ///
     /// Valid type-decl attributes: `resource`, `linear`, `wire`, `json`,
-    /// `yaml`, `deprecated`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
+    /// `yaml`, `deprecated`, `opaque`.  Anything else triggers `E_UNKNOWN_TYPE_MARKER`.
     fn extract_resource_marker(&mut self, attrs: &[Attribute]) -> ResourceMarker {
         // Known-valid attributes for type declarations.  These are consumed by
-        // other parser paths (wire metadata, deprecation, naming-case); only
-        // `resource` and `linear` belong to the ownership-discipline surface.
-        const KNOWN_TYPE_ATTRS: &[&str] =
-            &["resource", "linear", "wire", "json", "yaml", "deprecated"];
+        // other parser paths (wire metadata, deprecation, naming-case, opaque
+        // representation); only `resource` and `linear` belong to the
+        // ownership-discipline surface this helper returns.
+        const KNOWN_TYPE_ATTRS: &[&str] = &[
+            "resource",
+            "linear",
+            "wire",
+            "json",
+            "yaml",
+            "deprecated",
+            "opaque",
+        ];
 
         let mut resource_span: Option<std::ops::Range<usize>> = None;
         let mut linear_span: Option<std::ops::Range<usize>> = None;
@@ -1799,6 +2211,20 @@ impl<'src> Parser<'src> {
                     doc_comment = self.collect_doc_comments();
                 }
 
+                // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+                // methods — not on methods declared inline in a type body.
+                for attr in &attributes {
+                    if attr.name == "extern_symbol" {
+                        self.error_at(
+                            "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                             `extern \"C\"` block or an `impl` block; declare the method in an \
+                             `impl` block instead"
+                                .to_string(),
+                            attr.span.clone(),
+                        );
+                    }
+                }
+
                 if self.peek() == Some(&Token::Fn) {
                     let fn_start = self.peek_span().start;
                     self.advance();
@@ -1881,7 +2307,11 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_trait_decl(&mut self, visibility: Visibility) -> Option<TraitDecl> {
+    fn parse_trait_decl(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<TraitDecl> {
         let name = self.expect_ident()?;
 
         let type_params = self.parse_opt_type_params()?;
@@ -1905,6 +2335,11 @@ impl<'src> Parser<'src> {
 
         self.expect(&Token::RightBrace)?;
 
+        let lang_item = attrs
+            .iter()
+            .find(|a| a.name == "lang_item")
+            .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
         Some(TraitDecl {
             visibility,
             name,
@@ -1912,12 +2347,30 @@ impl<'src> Parser<'src> {
             super_traits,
             items,
             doc_comment: None,
+            lang_item,
         })
     }
 
     fn parse_trait_item(&mut self) -> Option<TraitItem> {
         let doc_comment = self.collect_doc_comments();
-        let is_pure = self.eat(&Token::Pure);
+        let attrs = self.parse_attributes();
+
+        // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+        // methods — not on trait-item declarations. Trait items describe
+        // an abstract surface; the C-ABI binding lives on the concrete
+        // `impl` method.
+        for attr in &attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
+                     concrete `impl` method instead"
+                        .to_string(),
+                    attr.span.clone(),
+                );
+            }
+        }
+
         match self.peek() {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
@@ -1926,7 +2379,7 @@ impl<'src> Parser<'src> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params();
+                let params = self.parse_params_with_implicit_self(true);
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -1940,9 +2393,13 @@ impl<'src> Parser<'src> {
                 };
                 let fn_end = self.peek_span().start;
 
+                let lang_item = attrs
+                    .iter()
+                    .find(|a| a.name == "lang_item")
+                    .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
+
                 Some(TraitItem::Method(TraitMethod {
                     name,
-                    is_pure,
                     type_params,
                     params,
                     return_type,
@@ -1950,9 +2407,11 @@ impl<'src> Parser<'src> {
                     body,
                     span: fn_start..fn_end,
                     doc_comment,
+                    lang_item,
                 }))
             }
             Some(Token::Type) => {
+                let type_start = self.peek_span().start;
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -1968,11 +2427,12 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon)?;
+                let semi_span = self.expect(&Token::Semicolon)?;
                 Some(TraitItem::AssociatedType {
                     name,
                     bounds,
                     default,
+                    span: type_start..semi_span.end,
                 })
             }
             _ => {
@@ -2015,14 +2475,21 @@ impl<'src> Parser<'src> {
         let mut type_aliases = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
+            let method_attrs = self.parse_attributes();
             let vis = if self.peek() == Some(&Token::Pub) {
                 self.parse_visibility()
             } else {
                 Visibility::Private
             };
-            let is_pure = self.eat(&Token::Pure);
             match self.peek() {
                 Some(Token::Type) => {
+                    if !method_attrs.is_empty() {
+                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
+                        self.error_at(
+                            "attributes are not supported on impl-block type aliases".to_string(),
+                            span,
+                        );
+                    }
                     if vis != Visibility::Private {
                         self.error(
                             "type aliases in impl bodies cannot have visibility modifiers"
@@ -2039,9 +2506,12 @@ impl<'src> Parser<'src> {
                 Some(Token::Fn) => {
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    if let Some(mut method) =
-                        self.parse_function(fn_start, false, false, vis, is_pure, Vec::new())
-                    {
+                    let prev_allow_implicit_self =
+                        std::mem::replace(&mut self.allow_implicit_self_params, true);
+                    let parsed_method =
+                        self.parse_function(fn_start, false, false, vis, method_attrs);
+                    self.allow_implicit_self_params = prev_allow_implicit_self;
+                    if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {
                             method.doc_comment = Some(doc);
                         }
@@ -2049,9 +2519,18 @@ impl<'src> Parser<'src> {
                     }
                 }
                 other => {
-                    self.error(format!(
-                        "expected 'fn' or 'type' in impl body, found {other:?}"
-                    ));
+                    let other_msg =
+                        format!("expected 'fn' or 'type' in impl body, found {other:?}");
+                    if !method_attrs.is_empty() {
+                        let span = method_attrs.first().map_or(0..0, |a| a.span.clone());
+                        self.error_at(
+                            "attributes inside an impl block must be followed by a `fn` \
+                             declaration"
+                                .to_string(),
+                            span,
+                        );
+                    }
+                    self.error(other_msg);
                     self.advance(); // error recovery: skip the bad token
                 }
             }
@@ -2088,6 +2567,13 @@ impl<'src> Parser<'src> {
     fn parse_actor_decl(&mut self, visibility: Visibility) -> Option<ActorDecl> {
         let name = self.expect_ident()?;
 
+        // Optional `<T, U: Bound>` type-parameter list immediately after the actor name.
+        let type_params = if self.eat(&Token::Less) {
+            self.parse_type_params()?
+        } else {
+            vec![]
+        };
+
         let super_traits = self.parse_optional_super_traits()?;
 
         self.expect(&Token::LeftBrace)?;
@@ -2107,6 +2593,21 @@ impl<'src> Parser<'src> {
                 doc_comment = self.collect_doc_comments();
             }
 
+            // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
+            // methods — not on actor body members (init, receive fn,
+            // receive gen fn, or inherent methods).
+            for attr in &attrs {
+                if attr.name == "extern_symbol" {
+                    self.error_at(
+                        "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                         `extern \"C\"` block or an `impl` block; actor members cannot \
+                         bind to a runtime C-ABI symbol"
+                            .to_string(),
+                        attr.span.clone(),
+                    );
+                }
+            }
+
             if self.peek() == Some(&Token::Init) {
                 if !attrs.is_empty() {
                     self.error("attributes are not supported on init blocks".to_string());
@@ -2117,82 +2618,45 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
-            } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
-                let is_pure = self.eat(&Token::Pure);
-                if self.peek() == Some(&Token::Receive) {
-                    let recv_start = self.peek_span().start;
-                    self.advance();
-                    let is_generator = if self.eat(&Token::Gen) {
-                        if !self.eat(&Token::Fn) {
-                            self.error("expected 'fn' after 'receive gen'".to_string());
-                            return None;
-                        }
-                        true
-                    } else {
-                        if !self.eat(&Token::Fn) {
-                            self.error("expected 'fn' after 'receive'".to_string());
-                            return None;
-                        }
-                        false
-                    };
-                    let handler_name = self.expect_ident()?;
-                    let type_params = self.parse_opt_type_params()?;
-                    self.expect(&Token::LeftParen)?;
-                    let params = self.parse_params();
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-                    let where_clause = self.parse_opt_where_clause()?;
-
-                    let body = self.parse_block()?;
-                    let recv_end = self.peek_span().start;
-                    receive_fns.push(ReceiveFnDecl {
-                        is_generator,
-                        is_pure,
-                        name: handler_name,
-                        type_params,
-                        params,
-                        return_type,
-                        where_clause,
-                        body,
-                        span: recv_start..recv_end,
-                        attributes: attrs,
-                        doc_comment,
-                    });
-                } else if self.peek() == Some(&Token::Fn) {
-                    // `pure fn` inside an actor body: lifecycle-hook
-                    // annotations propagate so the type-checker can
-                    // diagnose `#[on_*]` + `pure` combinations as
-                    // signature violations (HEW-SPEC-2026 §9.1.2).
-                    let mut hook_attrs = Vec::new();
-                    let mut other_attrs = Vec::new();
-                    for attr in attrs {
-                        if is_lifecycle_hook_attr(&attr.name) {
-                            hook_attrs.push(attr);
-                        } else {
-                            other_attrs.push(attr);
-                        }
+            } else if self.peek() == Some(&Token::Receive) {
+                let recv_start = self.peek_span().start;
+                self.advance();
+                let is_generator = if self.eat(&Token::Gen) {
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'receive gen'".to_string());
+                        return None;
                     }
-                    if !other_attrs.is_empty() {
-                        self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
-                    }
-                    let fn_start = self.peek_span().start;
-                    self.advance();
-                    if let Some(mut method) = self.parse_function(
-                        fn_start,
-                        false,
-                        false,
-                        Visibility::Private,
-                        is_pure,
-                        hook_attrs,
-                    ) {
-                        method.doc_comment = doc_comment;
-                        methods.push(method);
-                    }
+                    true
                 } else {
-                    self.error("'pure' can only be applied to function declarations".to_string());
-                    return None;
-                }
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'receive'".to_string());
+                        return None;
+                    }
+                    false
+                };
+                let handler_name = self.expect_ident()?;
+                let type_params = self.parse_opt_type_params()?;
+                self.expect(&Token::LeftParen)?;
+                let params = self.parse_params();
+                self.expect(&Token::RightParen)?;
+
+                let return_type = self.parse_opt_return_type()?;
+                let where_clause = self.parse_opt_where_clause()?;
+
+                let body = self.parse_block()?;
+                let recv_end = self.peek_span().start;
+                receive_fns.push(ReceiveFnDecl {
+                    is_generator,
+                    name: handler_name,
+                    type_params,
+                    params,
+                    return_type,
+                    where_clause,
+                    body,
+                    span: recv_start..recv_end,
+                    attributes: attrs,
+                    doc_comment,
+                });
             } else if self.peek() == Some(&Token::Fn) {
                 // Lifecycle-hook attributes `#[on(start)]` and `#[on(stop)]` are
                 // permitted on plain `fn` declarations inside an actor body.
@@ -2212,14 +2676,9 @@ impl<'src> Parser<'src> {
                 }
                 let fn_start = self.peek_span().start;
                 self.advance();
-                if let Some(mut method) = self.parse_function(
-                    fn_start,
-                    false,
-                    false,
-                    Visibility::Private,
-                    false,
-                    hook_attrs,
-                ) {
+                if let Some(mut method) =
+                    self.parse_function(fn_start, false, false, Visibility::Private, hook_attrs)
+                {
                     method.doc_comment = doc_comment;
                     methods.push(method);
                 }
@@ -2231,6 +2690,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2238,6 +2702,8 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: false,
+                    default,
                     doc_comment,
                 });
             } else if self.peek() == Some(&Token::Var) {
@@ -2245,10 +2711,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                // Skip optional `= expr` initializer
-                if self.eat(&Token::Equal) && self.parse_expr().is_none() {
-                    self.error("expected expression for field initializer".to_string());
-                }
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2256,6 +2723,8 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: true,
+                    default,
                     doc_comment,
                 });
             } else if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "mailbox") {
@@ -2279,6 +2748,11 @@ impl<'src> Parser<'src> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
+                let default = if self.eat(&Token::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -2286,6 +2760,8 @@ impl<'src> Parser<'src> {
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
+                    is_mutable: false,
+                    default,
                     doc_comment,
                 });
             } else {
@@ -2299,6 +2775,7 @@ impl<'src> Parser<'src> {
         Some(ActorDecl {
             visibility,
             name,
+            type_params,
             super_traits,
             init,
             fields,
@@ -2308,6 +2785,7 @@ impl<'src> Parser<'src> {
             overflow_policy,
             is_isolated: false,
             doc_comment: None,
+            max_heap_bytes: None, // set by parse_item from outer #[max_heap] attr
         })
     }
 
@@ -2381,132 +2859,87 @@ impl<'src> Parser<'src> {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "state machine parser has many production rules"
-    )]
     fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
+
+        // Optional generic type parameters: `machine Name<T, U> { ... }` or
+        // `machine Name<T: Trait, U> { ... }`. Trait bounds are accepted at
+        // the parser level — bound enforcement is the type-checker's job
+        // (see `docs/specs/HEW-SPEC-2026.md` §3.11.8). Variance markers,
+        // defaults, and machine-over-machine generics remain unsupported.
+        let (type_params, const_params) = if self.eat(&Token::Less) {
+            self.parse_machine_generic_params()?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        // Optional `where T: Trait, U: Trait + Trait` clause between the
+        // generic parameter list and the body's `{`. The clause may also
+        // appear when no `<…>` list is present (mirrors fn/type/trait
+        // sibling decls). Bound enforcement is the type-checker's job;
+        // the parser threads the clause verbatim onto `MachineDecl`.
+        let where_clause = self.parse_opt_where_clause()?;
 
         self.expect(&Token::LeftBrace)?;
 
         let mut states = Vec::new();
         let mut events = Vec::new();
+        let mut emits = Vec::new();
         let mut transitions = Vec::new();
+        let mut composite_groups = Vec::new();
         let mut has_default = false;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            if self.peek() == Some(&Token::State) {
+            if self.peek_machine_kw("events") {
+                // `events { Name; Name { f: T; } … }` — the input-event
+                // vocabulary header (contextual keyword; replaces the former
+                // interleaved `event Name;` declarations).
                 self.advance();
-                let state_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
-                        fields.push((field_name, ty));
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
-                self.eat(&Token::Semicolon);
-                states.push(MachineState {
-                    name: state_name,
-                    fields,
-                });
-            } else if self.peek() == Some(&Token::Event) {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let ty = self.parse_type()?;
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
-                        fields.push((field_name, ty));
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
-                self.eat(&Token::Semicolon);
-                events.push(MachineEvent {
-                    name: event_name,
-                    fields,
-                });
-            } else if self.peek() == Some(&Token::On) {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                self.expect(&Token::Colon)?;
-                let source_state = self.parse_state_pattern()?;
-                self.expect(&Token::Arrow)?;
-                let target_state = self.parse_state_pattern()?;
-
-                // Optional guard: `when <expr>`
-                let guard = if self.peek() == Some(&Token::When) {
-                    self.advance();
-                    Some(self.parse_expr()?)
-                } else {
-                    None
-                };
-
-                // Body is optional for unit target states, and target state
-                // name is inferred for payload states:
-                //   on Event: Source -> Target;                     ← no body
-                //   on Event: Source -> Target { field: expr, ... } ← struct fields, target inferred
-                //   on Event: Source -> Target { expression }       ← explicit body
-                let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
-                    let span_pos = self.peek_span().start;
-                    let body_expr = Expr::Identifier(target_state.clone());
-                    (body_expr, span_pos, span_pos)
-                } else if target_state != "_" && self.is_struct_init_body() {
-                    // `{ field: expr, ... }` — wrap in TargetState { ... }
-                    let bs = self.peek_span().start;
-                    self.expect(&Token::LeftBrace)?;
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let fname = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let fval = self.parse_expr()?;
-                        fields.push((fname, fval));
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    let be = self.peek_span().start;
-                    let struct_init = Expr::StructInit {
-                        name: target_state.clone(),
+                self.expect(&Token::LeftBrace)?;
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let event_name = self.expect_ident()?;
+                    let fields = self.parse_machine_event_fields()?;
+                    self.eat(&Token::Semicolon);
+                    events.push(MachineEvent {
+                        name: event_name,
                         fields,
-                        type_args: None,
-                    };
-                    (struct_init, bs, be)
-                } else {
-                    let bs = self.peek_span().start;
-                    let block = self.parse_block()?;
-                    let be = self.peek_span().start;
-                    (Expr::Block(block), bs, be)
-                };
-
-                transitions.push(MachineTransition {
-                    event_name,
-                    source_state,
-                    target_state,
-                    guard,
-                    body: (body, body_start..body_end),
-                });
+                    });
+                }
+                self.expect(&Token::RightBrace)?;
+            } else if self.peek_machine_kw("emits") {
+                // `emits { Name; … }` — optional Mealy-output manifest. Each
+                // entry names a declared event the machine may `emit`. Stored
+                // as a bare name list; HIR cross-checks emit sites against it.
+                self.advance();
+                self.expect(&Token::LeftBrace)?;
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let emitted = self.expect_ident()?;
+                    self.eat(&Token::Semicolon);
+                    emits.push(emitted);
+                }
+                self.expect(&Token::RightBrace)?;
+            } else if self.peek() == Some(&Token::State) {
+                self.parse_machine_state_or_composite(
+                    &mut states,
+                    &mut transitions,
+                    &mut composite_groups,
+                )?;
+            } else if self.peek() == Some(&Token::Event) {
+                // Legacy interleaved `event Name;` form is a hard cutover —
+                // events now live in the `events { … }` header.
+                let span = self.peek_span();
+                self.error_at(
+                    "interleaved `event` declarations are no longer supported; \
+                     declare events in an `events { … }` header at the top of the machine body"
+                        .to_string(),
+                    span,
+                );
+                self.advance();
+            } else if self.peek() == Some(&Token::On) {
+                let transition = self.parse_machine_transition()?;
+                transitions.push(transition);
             } else if self.peek() == Some(&Token::Default) {
-                // `default { self }` — unhandled events stay in current state
+                // `default { state }` — unhandled events stay in current state.
                 self.advance();
                 if self.eat(&Token::LeftBrace) {
                     let mut depth = 1;
@@ -2528,32 +2961,591 @@ impl<'src> Parser<'src> {
                 }
                 has_default = true;
             } else {
-                self.error("expected state, event, or transition in machine body".to_string());
+                self.error(
+                    "expected `events`, `emits`, `state`, `on`, or `default` in machine body"
+                        .to_string(),
+                );
                 self.advance();
             }
         }
 
         self.expect(&Token::RightBrace)?;
 
+        // Splice composite entry/exit hooks into every boundary-crossing
+        // transition (top-level + expanded) now that the full flat list is
+        // assembled. Done as a post-pass so a top-level `Outside => Sk` enter
+        // and `Sk => Outside` leave are covered, not just parent-rule clones.
+        Self::splice_all_composite_hooks(&mut transitions, &composite_groups);
+
         Some(MachineDecl {
             visibility,
             name,
+            type_params,
+            const_params,
+            where_clause,
             states,
             events,
+            emits,
             transitions,
             has_default,
+            composite_groups,
         })
     }
 
-    /// Parse a state pattern: an identifier or `_` (wildcard).
-    fn parse_state_pattern(&mut self) -> Option<String> {
-        match self.peek() {
-            Some(Token::Identifier(name)) if *name == "_" => {
-                self.advance();
-                Some("_".to_string())
+    /// Post-pass: splice composite `entry`/`exit` hooks into every transition
+    /// that crosses a composite boundary, for each depth-1 group. A transition
+    /// entering composite C (source ∉ C, target ∈ C) gets `C.entry` prepended;
+    /// one leaving C (source ∈ C, target ∉ C) gets `C.exit` prepended. With the
+    /// MIR firing the source substate's own `exit` before the body and the
+    /// target substate's own `entry` after, this yields Harel ordering.
+    fn splice_all_composite_hooks(
+        transitions: &mut [MachineTransition],
+        composite_groups: &[CompositeGroup],
+    ) {
+        // First resolve any transition targeting a composite BY NAME
+        // (`=> Connected`) to that composite's initial substate, so the live
+        // target is a real leaf state and the entry chain (D2) splices.
+        for group in composite_groups {
+            for transition in transitions.iter_mut() {
+                if transition.target_state == group.name {
+                    transition.target_state.clone_from(&group.initial);
+                    // Rewrite a bare-identifier passthrough body that named the
+                    // composite to name the initial substate instead.
+                    if let Expr::Identifier(name) = &transition.body.0 {
+                        if name == &group.name {
+                            transition.body.0 = Expr::Identifier(group.initial.clone());
+                        }
+                    }
+                }
             }
-            _ => self.expect_ident(),
         }
+
+        for group in composite_groups {
+            let member_set: std::collections::HashSet<String> =
+                group.members.iter().cloned().collect();
+            for transition in transitions.iter_mut() {
+                Self::splice_composite_hooks(
+                    transition,
+                    &transition.source_state.clone(),
+                    &member_set,
+                    group.entry.as_ref(),
+                    group.exit.as_ref(),
+                );
+            }
+        }
+    }
+
+    /// Parse a single `on …` machine transition (the new `=>` / `reenter`
+    /// surface, with optional `on E(bindings):` head binding). Used both at the
+    /// top level of a machine body and inside composite blocks.
+    fn parse_machine_transition(&mut self) -> Option<MachineTransition> {
+        self.expect(&Token::On)?;
+        let event_name = self.expect_ident()?;
+
+        // Optional head binding: `on E(a, b): …`. The names alias the event's
+        // payload fields so the body can reference them directly instead of
+        // `event.field`. Threaded into the body as a let-binding prelude by
+        // `apply_event_head_bindings`.
+        let head_bindings = if self.eat(&Token::LeftParen) {
+            let mut binds = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                binds.push(self.expect_ident()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Token::RightParen)?;
+            binds
+        } else {
+            Vec::new()
+        };
+
+        self.expect(&Token::Colon)?;
+        let source_state = self.parse_state_pattern()?;
+        // Hard cutover: `=>` (Token::FatArrow) is the state-routing arrow.
+        self.expect(&Token::FatArrow)?;
+        let target_state = self.parse_state_pattern()?;
+
+        // Optional `reenter` contextual keyword (self-transition Mealy
+        // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
+        let reenter = self.eat_machine_kw("reenter");
+
+        // Optional guard: `when <expr>`.
+        let guard = if self.peek() == Some(&Token::When) {
+            self.advance();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        // Body forms:
+        //   on Event: Source => Target;                     ← no body (unit)
+        //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
+        //   on Event: Source => Target { expression }       ← explicit body
+        let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
+            let span_pos = self.peek_span().start;
+            let body_expr = Expr::Identifier(target_state.clone());
+            (body_expr, span_pos, span_pos)
+        } else if target_state != "_" && self.is_struct_init_body() {
+            let bs = self.peek_span().start;
+            self.expect(&Token::LeftBrace)?;
+            let mut fields = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let fname = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let fval = self.parse_expr()?;
+                fields.push((fname, fval));
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+            let be = self.peek_span().start;
+            let struct_init = Expr::StructInit {
+                name: target_state.clone(),
+                fields,
+                type_args: None,
+                base: None,
+            };
+            (struct_init, bs, be)
+        } else {
+            let bs = self.peek_span().start;
+            let block = self.parse_block()?;
+            let be = self.peek_span().start;
+            (Expr::Block(block), bs, be)
+        };
+
+        let body = if head_bindings.is_empty() {
+            body
+        } else {
+            Self::apply_event_head_bindings(&head_bindings, body)
+        };
+
+        Some(MachineTransition {
+            event_name,
+            source_state,
+            target_state,
+            event_bindings: head_bindings,
+            composite_prelude_len: 0,
+            guard,
+            body: (body, body_start..body_end),
+            reenter,
+        })
+    }
+
+    /// Parse the field list of a single event declaration inside `events { }`:
+    /// either `;` (no fields) or `{ name: Type; … }`.
+    fn parse_machine_event_fields(&mut self) -> Option<Vec<(String, Spanned<TypeExpr>)>> {
+        if self.eat(&Token::LeftBrace) {
+            let mut fields = Vec::new();
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                let field_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let ty = self.parse_type()?;
+                if !self.eat(&Token::Semicolon) {
+                    self.eat(&Token::Comma);
+                }
+                fields.push((field_name, ty));
+            }
+            self.expect(&Token::RightBrace)?;
+            Some(fields)
+        } else {
+            Some(Vec::new())
+        }
+    }
+
+    /// Parse a `state Name … ` declaration that begins at the current `state`
+    /// token. A leaf state pushes one `MachineState`; a composite (a `state`
+    /// body containing substate declarations) desugars to flat substates plus
+    /// concrete-source transitions (D1–D5) and records a `CompositeGroup` for
+    /// the formatter / diagram renderer.
+    fn parse_machine_state_or_composite(
+        &mut self,
+        states: &mut Vec<MachineState>,
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<()> {
+        self.expect(&Token::State)?;
+        let state_name = self.expect_ident()?;
+        let mut fields: Vec<(String, Spanned<TypeExpr>)> = Vec::new();
+        let mut entry_block: Option<Block> = None;
+        let mut exit_block: Option<Block> = None;
+
+        if self.eat(&Token::LeftBrace) {
+            loop {
+                if self.at_end() || self.peek() == Some(&Token::RightBrace) {
+                    break;
+                }
+                if self.peek() == Some(&Token::Entry) {
+                    self.advance();
+                    entry_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::Exit) {
+                    self.advance();
+                    exit_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
+                    // Composite block: this `state` owns substates. Hand the
+                    // already-parsed prefix (fields, entry, exit) to the
+                    // composite parser, which consumes the rest of the brace.
+                    return self.parse_composite_block(
+                        &state_name,
+                        fields,
+                        entry_block,
+                        exit_block,
+                        states,
+                        transitions,
+                        composite_groups,
+                    );
+                } else {
+                    let field_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let ty = self.parse_type()?;
+                    if !self.eat(&Token::Semicolon) {
+                        self.eat(&Token::Comma);
+                    }
+                    fields.push((field_name, ty));
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+        }
+        self.eat(&Token::Semicolon);
+
+        states.push(MachineState {
+            name: state_name,
+            fields,
+            entry: entry_block,
+            exit: exit_block,
+        });
+        Some(())
+    }
+
+    /// Parse a depth-1 composite-state block and desugar it to the flat state
+    /// and transition lists, recording a `CompositeGroup` for the formatter and
+    /// diagram renderer. The `state`/`initial state` cursor is positioned at
+    /// the first substate; `composite_name`/`fields`/`entry`/`exit` are the
+    /// prefix already parsed by the caller.
+    ///
+    /// Desugar (all at parser/AST level, per the hierarchy contract):
+    ///   * each substate becomes a flat `MachineState`; composite-owned fields
+    ///     are stamped onto every member (shared-layout shorthand).
+    ///   * D1: each parent-level `on E: _ => T { body }` expands to one
+    ///     transition per member `Sk` with a CONCRETE `source_state = "Sk"`
+    ///     (never literal `_`, which the checker rejects for `self.field`).
+    ///     An explicit per-member `(Sk, E)` rule wins (override-skip).
+    ///   * D2/D3: composite `entry`/`exit` hooks splice into transition bodies
+    ///     so the existing MIR per-state hook firing yields Harel ordering:
+    ///     enter C ⇒ `C.entry` then child entry; leave C ⇒ child exit then
+    ///     `C.exit`. Intra-composite moves fire no composite hook (D4).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "threads the leaf-parse prefix plus the machine-body \
+                  accumulators the composite desugar appends to"
+    )]
+    fn parse_composite_block(
+        &mut self,
+        composite_name: &str,
+        fields: Vec<(String, Spanned<TypeExpr>)>,
+        entry: Option<Block>,
+        exit: Option<Block>,
+        states: &mut Vec<MachineState>,
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<()> {
+        let mut members: Vec<MachineState> = Vec::new();
+        let mut member_names: Vec<String> = Vec::new();
+        let mut initial: Option<String> = None;
+        let mut parent_transitions: Vec<MachineTransition> = Vec::new();
+
+        // ── Substate + parent-rule body of the composite block. ──────────────
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let is_initial = self.eat_machine_kw("initial");
+            if self.peek() == Some(&Token::State) {
+                let substate = self.parse_machine_substate(composite_name)?;
+                if is_initial {
+                    if initial.is_some() {
+                        self.error_at(
+                            format!(
+                                "composite state `{composite_name}` declares more than one \
+                                 `initial` substate; exactly one is required"
+                            ),
+                            self.peek_span(),
+                        );
+                    }
+                    initial = Some(substate.name.clone());
+                }
+                member_names.push(substate.name.clone());
+                members.push(substate);
+            } else if is_initial {
+                self.error_at(
+                    "`initial` must be followed by a substate declaration \
+                     (`initial state Name`)"
+                        .to_string(),
+                    self.peek_span(),
+                );
+                break;
+            } else if self.peek() == Some(&Token::On) {
+                // Parent-level rule. Source is `_` (any member of THIS
+                // composite); kept verbatim on the group for the formatter and
+                // expanded to concrete members below.
+                parent_transitions.push(self.parse_machine_transition()?);
+            } else {
+                self.error_at(
+                    format!(
+                        "expected a substate (`state`/`initial state`) or a parent-level \
+                         `on …` rule inside composite state `{composite_name}`"
+                    ),
+                    self.peek_span(),
+                );
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        self.eat(&Token::Semicolon);
+
+        let Some(initial_name) = initial else {
+            self.error_at(
+                format!(
+                    "composite state `{composite_name}` must mark exactly one substate \
+                     `initial` (`initial state Name`)"
+                ),
+                self.peek_span(),
+            );
+            return Some(());
+        };
+
+        // ── Desugar to the flat lists. ───────────────────────────────────────
+        let member_set: std::collections::HashSet<String> = member_names.iter().cloned().collect();
+
+        // Stamp composite-owned fields onto every member (shared layout).
+        for member in &mut members {
+            for (fname, fty) in &fields {
+                if !member.fields.iter().any(|(n, _)| n == fname) {
+                    member.fields.push((fname.clone(), fty.clone()));
+                }
+            }
+        }
+
+        // Explicit per-member rules already authored (inside the block as
+        // `on E: Sk => …`, or at the machine top level). Used for D1
+        // override-skip so an explicit rule beats the expanded parent rule.
+        let explicit_keys: std::collections::HashSet<(String, String)> = transitions
+            .iter()
+            .chain(parent_transitions.iter())
+            .filter(|t| member_set.contains(&t.source_state))
+            .map(|t| (t.source_state.clone(), t.event_name.clone()))
+            .collect();
+
+        // D1: expand each parent rule to one concrete-source transition per
+        // member. Composite entry/exit hooks are spliced uniformly in a
+        // post-pass (`splice_all_composite_hooks`) once every transition —
+        // top-level and expanded — is in the flat list, so boundary-crossing
+        // top-level transitions are covered too.
+        for pt in &parent_transitions {
+            for member in &member_names {
+                if explicit_keys.contains(&(member.clone(), pt.event_name.clone())) {
+                    continue;
+                }
+                let mut expanded = pt.clone();
+                expanded.source_state.clone_from(member);
+                transitions.push(expanded);
+            }
+        }
+
+        composite_groups.push(CompositeGroup {
+            name: composite_name.to_string(),
+            members: member_names,
+            initial: initial_name,
+            entry,
+            exit,
+            fields,
+            parent_transitions,
+        });
+
+        for member in members {
+            states.push(member);
+        }
+        Some(())
+    }
+
+    /// Parse a single substate declaration (`state Name;` /
+    /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
+    /// body is depth>1 nesting, rejected with a v0.6 diagnostic.
+    fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
+        self.expect(&Token::State)?;
+        let name = self.expect_ident()?;
+        let mut fields = Vec::new();
+        let mut entry_block: Option<Block> = None;
+        let mut exit_block: Option<Block> = None;
+        if self.eat(&Token::LeftBrace) {
+            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                if self.peek() == Some(&Token::Entry) {
+                    self.advance();
+                    entry_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::Exit) {
+                    self.advance();
+                    exit_block = Some(self.parse_block()?);
+                } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
+                    self.error_at(
+                        format!(
+                            "nested composite states (depth > 1) are reserved for v0.6; \
+                             substate `{name}` of composite `{composite_name}` may not contain \
+                             further substates"
+                        ),
+                        self.peek_span(),
+                    );
+                    // Recover: skip the nested block.
+                    let mut depth = 0;
+                    while !self.at_end() {
+                        match self.peek() {
+                            Some(Token::LeftBrace) => depth += 1,
+                            Some(Token::RightBrace) => {
+                                if depth == 0 {
+                                    break;
+                                }
+                                depth -= 1;
+                            }
+                            _ => {}
+                        }
+                        self.advance();
+                    }
+                } else {
+                    let field_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let ty = self.parse_type()?;
+                    if !self.eat(&Token::Semicolon) {
+                        self.eat(&Token::Comma);
+                    }
+                    fields.push((field_name, ty));
+                }
+            }
+            self.expect(&Token::RightBrace)?;
+        }
+        self.eat(&Token::Semicolon);
+        Some(MachineState {
+            name,
+            fields,
+            entry: entry_block,
+            exit: exit_block,
+        })
+    }
+
+    /// Splice composite `entry`/`exit` hook statements into a transition body
+    /// so the existing MIR per-state hook firing produces Harel ordering. The
+    /// composite hooks are prepended as body statements; MIR runs the source
+    /// substate's own `exit` before the body and the target substate's own
+    /// `entry` after it, so:
+    ///
+    ///   * leaving C (source ∈ C, target ∉ C): MIR `Sk.exit` → spliced
+    ///     `C.exit` → next.
+    ///   * entering C (source ∉ C, target ∈ C): spliced `C.entry` → MIR
+    ///     `Sk.entry`.
+    ///   * intra-composite moves splice nothing (both endpoints ∈ C).
+    fn splice_composite_hooks(
+        transition: &mut MachineTransition,
+        source_member: &str,
+        member_set: &std::collections::HashSet<String>,
+        entry: Option<&Block>,
+        exit: Option<&Block>,
+    ) {
+        let target = &transition.target_state;
+        let source_in = member_set.contains(source_member);
+        let target_in = target != "_" && member_set.contains(target);
+
+        // Prepend order matters: statements pushed last end up first. For a
+        // cross-composite move we want `exit-of-source-composite` before
+        // `entry-of-target-composite`; here each call handles ONE composite, so
+        // a single prepend per relevant hook is correct.
+        if source_in && !target_in {
+            if let Some(exit_block) = exit {
+                Self::prepend_block_stmts(transition, exit_block);
+            }
+        } else if !source_in && target_in {
+            if let Some(entry_block) = entry {
+                Self::prepend_block_stmts(transition, entry_block);
+            }
+        }
+        // Intra-composite (source_in && target_in) or unrelated: no splice.
+    }
+
+    /// Prepend a hook block's statements to the front of a transition body,
+    /// wrapping a non-block body into a block whose tail is the original value.
+    fn prepend_block_stmts(transition: &mut MachineTransition, hook: &Block) {
+        let body = std::mem::replace(&mut transition.body.0, Expr::Identifier(String::new()));
+        let mut block = match body {
+            Expr::Block(block) => block,
+            other => Block {
+                stmts: Vec::new(),
+                trailing_expr: Some(Box::new((other, transition.body.1.clone()))),
+            },
+        };
+        let mut prelude = hook.stmts.clone();
+        // If the hook block has a trailing expression (rare for entry/exit),
+        // treat it as a statement so it runs for its effect.
+        if let Some(tail) = &hook.trailing_expr {
+            prelude.push((
+                Stmt::Expression((tail.0.clone(), tail.1.clone())),
+                tail.1.clone(),
+            ));
+        }
+        // Record how many leading statements are composite-hook splices so the
+        // formatter can strip them and re-emit the authored transition body.
+        transition.composite_prelude_len += prelude.len();
+        prelude.append(&mut block.stmts);
+        block.stmts = prelude;
+        transition.body.0 = Expr::Block(block);
+    }
+
+    /// Rewrite a transition body so the named head bindings (`on E(a, b): …`)
+    /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
+    /// This lowers identically to writing `event.a` directly — no new HIR kind.
+    fn apply_event_head_bindings(bindings: &[String], body: Expr) -> Expr {
+        let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
+        for name in bindings {
+            let value = Expr::FieldAccess {
+                object: Box::new((Expr::Identifier("event".to_string()), 0..0)),
+                field: name.clone(),
+            };
+            stmts.push((
+                Stmt::Let {
+                    pattern: (Pattern::Identifier(name.clone()), 0..0),
+                    ty: None,
+                    value: Some((value, 0..0)),
+                },
+                0..0,
+            ));
+        }
+        // Splice the prelude in front of the existing body. A bare expression /
+        // struct-init body becomes the block's tail; an existing block has the
+        // prelude prepended to its statements.
+        match body {
+            Expr::Block(mut block) => {
+                let mut all = stmts;
+                all.append(&mut block.stmts);
+                block.stmts = all;
+                Expr::Block(block)
+            }
+            other => Expr::Block(Block {
+                stmts,
+                trailing_expr: Some(Box::new((other, 0..0))),
+            }),
+        }
+    }
+
+    /// Parse a state pattern: `_` (wildcard) or a state name, optionally a
+    /// dotted qualified name (`Composite.Leaf`). The dotted form is a
+    /// readability aid — the parser strips it to the leaf name, which is what
+    /// reaches the AST (substate names are flat and globally unique).
+    fn parse_state_pattern(&mut self) -> Option<String> {
+        if matches!(self.peek(), Some(Token::Identifier(name)) if *name == "_") {
+            self.advance();
+            return Some("_".to_string());
+        }
+        let mut name = self.expect_ident()?;
+        // Strip any qualifier prefix: `Composite.Leaf` → `Leaf`.
+        while self.peek() == Some(&Token::Dot) {
+            self.advance();
+            name = self.expect_ident()?;
+        }
+        Some(name)
     }
 
     /// Check if the next tokens look like a struct init body: `{ ident: expr }`.
@@ -2584,8 +3576,7 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut strategy = None;
-        let mut max_restarts = None;
-        let mut window = None;
+        let mut intensity = None;
         let mut children = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -2606,55 +3597,181 @@ impl<'src> Parser<'src> {
                             self.advance();
                             Some(SupervisorStrategy::RestForOne)
                         }
+                        Some(Token::SimpleOneForOne) => {
+                            self.advance();
+                            Some(SupervisorStrategy::SimpleOneForOne)
+                        }
                         _ => None,
                     };
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Identifier(s)) if *s == "max_restarts" => {
+                // `intensity: N within <duration>` — the restart-budget contract.
+                // Fuses the legacy `max_restarts:` + `window:` fields. `within`
+                // is a contextual keyword (a plain identifier outside this body).
+                Some(Token::Identifier(s)) if *s == "intensity" => {
                     self.advance();
                     self.expect(&Token::Colon)?;
-                    if let Some(Token::Integer(num_str)) = self.peek() {
-                        max_restarts = parse_int_literal(num_str).ok().map(|(v, _)| v);
+                    let restarts = if let Some(Token::Integer(num_str)) = self.peek() {
+                        let n = parse_int_literal(num_str).ok().map(|(v, _)| v);
                         self.advance();
-                    }
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
-                }
-                Some(Token::Identifier(s)) if *s == "window" => {
-                    self.advance();
-                    self.expect(&Token::Colon)?;
-                    let mut val = String::new();
-                    if let Some(Token::Integer(num_str)) = self.peek() {
-                        val.push_str(num_str);
+                        n
+                    } else {
+                        self.error_with_hint(
+                            "supervisor `intensity:` requires a restart count, \
+                             e.g. `intensity: 5 within 60s`"
+                                .to_string(),
+                            "write the maximum number of restarts as an integer",
+                        );
+                        None
+                    };
+                    // The `within` contextual keyword separates the count from
+                    // the window duration. Require it so the budget reads as one
+                    // English clause and can never be half-specified.
+                    if matches!(self.peek(), Some(Token::Identifier(w)) if *w == "within") {
                         self.advance();
+                    } else {
+                        self.error_with_hint(
+                            "supervisor `intensity:` requires `within <duration>`, \
+                             e.g. `intensity: 5 within 60s`"
+                                .to_string(),
+                            "add `within` followed by a duration literal (60s, 5m, 1h)",
+                        );
                     }
-                    // Accept optional 's' suffix for seconds (e.g. `10s`)
-                    if let Some(Token::Identifier(s)) = self.peek() {
-                        if *s == "s" {
-                            val.push('s');
+                    // The window is a real `Token::Duration` literal. A bare
+                    // integer is a parse error with a fix-it — the implicit-unit
+                    // ambiguity of the old `window:` field is gone.
+                    let window = match self.peek() {
+                        Some(Token::Duration(d)) => {
+                            let d = d.to_string();
                             self.advance();
+                            Some(d)
                         }
-                    }
-                    if !val.is_empty() {
-                        window = Some(val);
+                        Some(Token::Integer(n)) => {
+                            let n = n.to_string();
+                            self.error_with_hint(
+                                format!(
+                                    "supervisor `intensity:` window must be a duration literal, \
+                                     not a bare integer `{n}`"
+                                ),
+                                format!("write `{n}s` (or another unit: {n}m, {n}h)"),
+                            );
+                            self.advance();
+                            None
+                        }
+                        _ => {
+                            self.error_with_hint(
+                                "supervisor `intensity:` requires a duration window, \
+                                 e.g. `intensity: 5 within 60s`"
+                                    .to_string(),
+                                "add a duration literal after `within` (60s, 5m, 1h)",
+                            );
+                            None
+                        }
+                    };
+                    if let (Some(restarts), Some(window)) = (restarts, window) {
+                        intensity = Some(Intensity { restarts, window });
                     }
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
                 }
-                Some(Token::Child) => {
+                // Legacy `max_restarts:` / `window:` fields — removed in the
+                // flat-reliability-fields cutover. Emit a migration diagnostic
+                // naming the new `intensity:` form, then skip the field.
+                Some(Token::Identifier(s)) if *s == "max_restarts" || *s == "window" => {
+                    let field = (*s).to_string();
+                    self.error_with_hint(
+                        format!(
+                            "supervisor field `{field}:` was replaced by the fused \
+                             `intensity: N within <duration>` field"
+                        ),
+                        "write `intensity: <max_restarts> within <window>s`, \
+                         e.g. `intensity: 5 within 60s`",
+                    );
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    // Skip the value up to the field terminator for recovery.
+                    while !self.at_end()
+                        && !matches!(
+                            self.peek(),
+                            Some(Token::Semicolon | Token::Comma | Token::RightBrace)
+                        )
+                    {
+                        self.advance();
+                    }
+                    if !self.eat(&Token::Semicolon) {
+                        self.eat(&Token::Comma);
+                    }
+                }
+                Some(Token::Child | Token::Pool) => {
+                    let is_pool = matches!(self.peek(), Some(Token::Pool));
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
-                    let actor_type = self.expect_ident()?;
+                    // Child type position accepts the module-qualified dotted
+                    // form (`child a: bank.Account(...)`), matching spawn and
+                    // method-call qualification. The dotted string is the
+                    // actor's qualified identity downstream (checker
+                    // `type_defs["bank.Account"]`, MIR layout key); a bare
+                    // name stays the root/local identity.
+                    let mut actor_type = self.expect_ident()?;
+                    if self.eat(&Token::Dot) {
+                        let type_name = self.expect_ident()?;
+                        actor_type = format!("{actor_type}.{type_name}");
+                    }
 
-                    let mut args = Vec::new();
+                    // Parse named init args: `child w: Worker(field: expr, ...)`.
+                    // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
+                    // Positional args (no `name:` prefix) are rejected with a migration
+                    // diagnostic to guide users to the named form.
+                    let mut args: Vec<(String, Spanned<Expr>)> = Vec::new();
                     if self.eat(&Token::LeftParen) {
-                        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                            args.push(self.parse_expr()?);
+                        while !self.at_end() && !matches!(self.peek(), Some(Token::RightParen)) {
+                            // Try to parse `ident_or_kw: expr` (named form). Speculatively
+                            // consume the potential field name; if a `:` follows, commit.
+                            // If no `:` follows, it's a positional arg — reject it.
+                            let saved = self.save_pos();
+                            let maybe_field = self.expect_ident();
+                            if let Some(field_name) = maybe_field {
+                                if !matches!(self.peek(), Some(Token::Colon)) {
+                                    // Ident not followed by `:` — positional arg.
+                                    self.restore_pos(saved);
+                                    self.error(
+                                        "supervisor child init args must use named form: \
+                                         `child w: Worker(field: value)` \
+                                         — positional args are not accepted"
+                                            .to_string(),
+                                    );
+                                    while !self.at_end()
+                                        && !matches!(self.peek(), Some(Token::RightParen))
+                                    {
+                                        self.advance();
+                                    }
+                                    break;
+                                }
+                                // Named form confirmed: `field_name: expr`.
+                                self.expect(&Token::Colon)?;
+                                let value = self.parse_expr()?;
+                                args.push((field_name, value));
+                            } else {
+                                // Either the ident parse failed or no `:` follows — positional.
+                                self.restore_pos(saved);
+                                self.error(
+                                    "supervisor child init args must use named form: \
+                                     `child w: Worker(field: value)` \
+                                     — positional args are not accepted"
+                                        .to_string(),
+                                );
+                                // Consume through to `)` for error recovery.
+                                while !self.at_end()
+                                    && !matches!(self.peek(), Some(Token::RightParen))
+                                {
+                                    self.advance();
+                                }
+                                break;
+                            }
                             if !self.eat(&Token::Comma) {
                                 break;
                             }
@@ -2662,47 +3779,138 @@ impl<'src> Parser<'src> {
                         self.expect(&Token::RightParen)?;
                     }
 
-                    let restart = match self.peek() {
-                        Some(Token::Permanent) => {
-                            self.advance();
-                            Some(RestartPolicy::Permanent)
-                        }
-                        Some(Token::Transient) => {
-                            self.advance();
-                            Some(RestartPolicy::Transient)
-                        }
-                        Some(Token::Temporary) => {
-                            self.advance();
-                            Some(RestartPolicy::Temporary)
-                        }
-                        _ => None,
-                    };
-
-                    // Skip inline modifiers like restart(...) budget(...) strategy(...)
-                    while matches!(
+                    // Legacy bare restart keyword (e.g. `child n: T permanent`)
+                    // was removed in the flat-reliability-fields cutover. The
+                    // only restart spelling is the `restart: <policy>` clause.
+                    if matches!(
                         self.peek(),
-                        Some(
-                            Token::Identifier(_) | Token::Strategy | Token::Restart | Token::Budget
-                        )
+                        Some(Token::Permanent | Token::Transient | Token::Temporary)
                     ) {
+                        self.error_with_hint(
+                            "bare restart keyword on a supervisor child was removed; \
+                             use the `restart:` clause"
+                                .to_string(),
+                            "write `restart: permanent` (or `transient` / `temporary`)",
+                        );
                         self.advance();
-                        if self.eat(&Token::LeftParen) {
-                            let mut depth = 1u32;
-                            while !self.at_end() && depth > 0 {
-                                match self.peek() {
-                                    Some(Token::LeftParen) => {
-                                        depth += 1;
+                    }
+                    // Legacy `with restart:` form was removed; only `restart:`.
+                    if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "with") {
+                        self.error_with_hint(
+                            "the `with restart:` form was removed; \
+                             use the `restart:` clause directly"
+                                .to_string(),
+                            "drop `with` and write `restart: <policy>`",
+                        );
+                        self.advance(); // consume `with`
+                    }
+
+                    // Per-child suffix clauses, accepted in any order:
+                    //   restart: permanent | transient | temporary
+                    //   shutdown: <duration> | brutal_kill | infinity
+                    //   wired_to: { param: sibling, bare_sibling }
+                    let mut restart: Option<RestartPolicy> = None;
+                    let mut shutdown: Option<ShutdownDirective> = None;
+                    let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
+                    loop {
+                        match self.peek() {
+                            // `restart: <policy>` clause (the only restart spelling).
+                            Some(Token::Restart) => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                restart = match self.peek() {
+                                    Some(Token::Permanent) => {
                                         self.advance();
+                                        Some(RestartPolicy::Permanent)
                                     }
-                                    Some(Token::RightParen) => {
-                                        depth -= 1;
+                                    Some(Token::Transient) => {
                                         self.advance();
+                                        Some(RestartPolicy::Transient)
+                                    }
+                                    Some(Token::Temporary) => {
+                                        self.advance();
+                                        Some(RestartPolicy::Temporary)
                                     }
                                     _ => {
+                                        self.error_with_hint(
+                                            "supervisor child `restart:` requires a policy"
+                                                .to_string(),
+                                            "write `restart: permanent` \
+                                             (or `transient` / `temporary`)",
+                                        );
+                                        None
+                                    }
+                                };
+                            }
+                            // `shutdown: <duration> | brutal_kill | infinity` clause.
+                            // `infinity` is accepted-only in v0.5 (no per-child
+                            // deadline wheel yet) and is a contextual keyword.
+                            Some(Token::Identifier(s)) if *s == "shutdown" => {
+                                self.advance();
+                                self.expect(&Token::Colon)?;
+                                shutdown = match self.peek() {
+                                    Some(Token::Duration(d)) => {
+                                        let d = d.to_string();
                                         self.advance();
+                                        Some(ShutdownDirective::Timeout(d))
+                                    }
+                                    Some(Token::BrutalKill) => {
+                                        self.advance();
+                                        Some(ShutdownDirective::BrutalKill)
+                                    }
+                                    Some(Token::Identifier(k)) if *k == "infinity" => {
+                                        self.advance();
+                                        Some(ShutdownDirective::Infinity)
+                                    }
+                                    Some(Token::Integer(n)) => {
+                                        let n = n.to_string();
+                                        self.error_with_hint(
+                                            format!(
+                                                "supervisor child `shutdown:` must be a duration \
+                                                 literal, `brutal_kill`, or `infinity`, \
+                                                 not a bare integer `{n}`"
+                                            ),
+                                            format!("write `{n}s` (or another unit: {n}ms, {n}m)"),
+                                        );
+                                        self.advance();
+                                        None
+                                    }
+                                    _ => {
+                                        self.error_with_hint(
+                                            "supervisor child `shutdown:` requires a duration, \
+                                             `brutal_kill`, or `infinity`"
+                                                .to_string(),
+                                            "write `shutdown: 30s`, `shutdown: brutal_kill`, \
+                                             or `shutdown: infinity`",
+                                        );
+                                        None
+                                    }
+                                };
+                            }
+                            // `wired_to: { key: sibling, bare_sibling }` clause.
+                            Some(Token::Identifier(s)) if *s == "wired_to" => {
+                                self.advance(); // consume `wired_to`
+                                self.expect(&Token::Colon)?;
+                                self.expect(&Token::LeftBrace)?;
+                                let mut map = std::collections::HashMap::new();
+                                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                                    let key = self.expect_ident()?;
+                                    if self.eat(&Token::Colon) {
+                                        // explicit `key: sibling_name` form
+                                        let val = self.expect_ident()?;
+                                        map.insert(key, val);
+                                    } else {
+                                        // shorthand `sibling_name` — key == value
+                                        map.insert(key.clone(), key);
+                                    }
+                                    if !self.eat(&Token::Comma) {
+                                        break;
                                     }
                                 }
+                                self.expect(&Token::RightBrace)?;
+                                wired_to = if map.is_empty() { None } else { Some(map) };
                             }
+                            _ => break,
                         }
                     }
 
@@ -2714,6 +3922,9 @@ impl<'src> Parser<'src> {
                         actor_type,
                         args,
                         restart,
+                        wired_to,
+                        is_pool,
+                        shutdown,
                     });
                 }
                 _ => {
@@ -2736,8 +3947,7 @@ impl<'src> Parser<'src> {
             visibility,
             name,
             strategy,
-            max_restarts,
-            window,
+            intensity,
             children,
         })
     }
@@ -2755,8 +3965,14 @@ impl<'src> Parser<'src> {
 
         let mut functions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            // Collect any per-fn attributes (e.g. `#[extern_symbol("hew_x")]`).
+            // Doc comments are not supported inside extern blocks today; only
+            // attributes between the opening `{` and the next `fn` are parsed.
+            let attributes = self.parse_attributes();
             if self.peek() == Some(&Token::Fn) {
-                let item_start = self.peek_span().start;
+                let item_start = attributes
+                    .first()
+                    .map_or_else(|| self.peek_span().start, |a| a.span.start);
                 self.advance();
                 let name = self.expect_ident()?;
 
@@ -2778,6 +3994,7 @@ impl<'src> Parser<'src> {
                 let item_end = self.peek_span().start;
 
                 functions.push(ExternFnDecl {
+                    attributes,
                     name,
                     params,
                     return_type,
@@ -2785,6 +4002,15 @@ impl<'src> Parser<'src> {
                     span: item_start..item_end,
                 });
             } else {
+                if !attributes.is_empty() {
+                    let span = attributes.first().map_or(0..0, |a| a.span.clone());
+                    self.error_at(
+                        "attributes inside an extern block must be followed by a `fn` \
+                         declaration"
+                            .to_string(),
+                        span,
+                    );
+                }
                 self.error(format!(
                     "expected 'fn' in extern block, found {:?}",
                     self.peek()
@@ -2985,8 +4211,82 @@ impl<'src> Parser<'src> {
             }),
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: Vec::new(),
         })
+    }
+
+    /// Parse `#[wire] enum Name { Variant1, Variant2(T), Variant3 { f: U } }` into a
+    /// `TypeDecl` with wire metadata attached.  Enums carry the type-level wire
+    /// metadata (`version`, `min_version`, `json_case`, `yaml_case`) but no
+    /// per-field tag numbers — variant payloads are tagged by the variant
+    /// index, not by `@N` annotations on individual fields.
+    ///
+    /// The enum body itself is parsed by the shared `parse_struct_or_enum`
+    /// helper (which handles unit / tuple / struct variant payloads, type
+    /// parameters, and where clauses).  This function attaches the wire
+    /// metadata to the resulting `TypeDecl` and validates the marker-conflict
+    /// rules that also apply to `#[wire] struct`.
+    fn parse_wire_enum(&mut self, attrs: &[Attribute], visibility: Visibility) -> Option<TypeDecl> {
+        // `#[wire]` is exclusive with `#[resource]` and `#[linear]`: wire types
+        // describe runtime traffic shapes; resource/linear are ownership-
+        // discipline markers.  Same rule as `parse_wire_struct`.
+        for attr in attrs {
+            if attr.name == "resource" || attr.name == "linear" {
+                self.error_at(
+                    format!(
+                        "#[wire] cannot be combined with #[{}] on the same type — \
+                         wire types are traffic-shape declarations; #[resource] and \
+                         #[linear] are ownership-discipline markers \
+                         [E_TYPE_MARKER_CONFLICT]",
+                        attr.name
+                    ),
+                    attr.span.clone(),
+                );
+            }
+        }
+
+        // Delegate enum-body parsing to the shared helper.  It consumes the
+        // `enum` keyword, name, type-params, where-clause, body braces, and
+        // populates `body` with `TypeBodyItem::Variant` entries.  The
+        // resulting `TypeDecl` has `wire: None`, which we override below.
+        let mut td = self.parse_struct_or_enum(visibility, attrs)?;
+        if td.kind != TypeDeclKind::Enum {
+            // Caller dispatched us on `Token::Enum`; parse_struct_or_enum
+            // should have produced an Enum.  Anything else is a parser bug.
+            self.error("internal: parse_wire_enum reached non-enum TypeDecl".to_string());
+            return None;
+        }
+
+        let WireNamingCases {
+            json_case,
+            yaml_case,
+        } = Self::extract_wire_naming_cases(attrs);
+
+        // Extract version/min_version from `#[wire(version = N, min_version = M)]`.
+        let wire_attr = attrs.iter().find(|a| a.name == "wire");
+        let version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "version" => value.parse().ok(),
+                _ => None,
+            })
+        });
+        let min_version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "min_version" => value.parse().ok(),
+                _ => None,
+            })
+        });
+
+        td.wire = Some(WireMetadata {
+            field_meta: Vec::new(),
+            reserved_numbers: Vec::new(),
+            json_case,
+            yaml_case,
+            version,
+            min_version,
+        });
+        Some(td)
     }
 
     #[expect(
@@ -3035,12 +4335,7 @@ impl<'src> Parser<'src> {
                     // Parse wire field
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
-                    let raw_ty = self.expect_ident()?;
-                    // Normalize legacy lowercase aliases to canonical type names
-                    let ty = match raw_ty.as_str() {
-                        "string" | "str" => "String".to_string(),
-                        _ => raw_ty,
-                    };
+                    let ty = self.expect_ident()?;
 
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -3315,13 +4610,66 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::Star) => {
+                let star_span = self.peek_span();
                 self.advance();
-                let is_mutable = self.eat(&Token::Var);
+                // v0.5 canonical pointer spelling: `*const T` and `*mut T`.
+                // Bare `*T` and legacy `*var T` are explicitly rejected so
+                // callers cannot silently get one mutability and assume
+                // the other.
+                let is_mutable = match self.peek() {
+                    Some(Token::Mut) => {
+                        self.advance();
+                        true
+                    }
+                    Some(Token::Const) => {
+                        self.advance();
+                        false
+                    }
+                    Some(Token::Var) => {
+                        let span = self.peek_span();
+                        self.error_at(
+                            "pointer type uses canonical spelling `*mut T` — \
+                             `*var T` is no longer accepted"
+                                .to_string(),
+                            span,
+                        );
+                        return None;
+                    }
+                    _ => {
+                        self.error_at(
+                            "pointer type must specify mutability: write `*const T` \
+                             or `*mut T`"
+                                .to_string(),
+                            star_span,
+                        );
+                        return None;
+                    }
+                };
                 let pointee = self.parse_type()?;
                 TypeExpr::Pointer {
                     is_mutable,
                     pointee: Box::new(pointee),
                 }
+            }
+            Some(Token::Ampersand) => {
+                // `&T` — immutable non-owning borrow marker (Q320).
+                // Only `&T` is supported in v0.5; `&mut T` / `&var T` are
+                // reserved (locked out of scope by Q320) and produce a
+                // diagnostic.
+                self.advance();
+                // Reject `&mut T` and `&var T` with a helpful diagnostic.
+                if matches!(self.peek(), Some(Token::Mut | Token::Var)) {
+                    let span = self.peek_span();
+                    self.error_at(
+                        "mutable borrows (`&mut T`) are not supported in v0.5; \
+                         use `&T` for an immutable borrow"
+                            .to_string(),
+                        span,
+                    );
+                    return None;
+                }
+                let inner = self.parse_type()?;
+                TypeExpr::Borrow(Box::new(inner))
             }
             Some(Token::Dyn) => {
                 self.advance();
@@ -3331,12 +4679,16 @@ impl<'src> Parser<'src> {
                     let mut bounds = Vec::new();
                     loop {
                         let name = self.expect_ident()?;
-                        let type_args = if self.eat(&Token::Less) {
-                            Some(self.parse_type_args()?)
+                        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                            self.parse_trait_bound_args()?
                         } else {
-                            None
+                            (None, Vec::new())
                         };
-                        bounds.push(TraitBound { name, type_args });
+                        bounds.push(TraitBound {
+                            name,
+                            type_args,
+                            assoc_type_bindings,
+                        });
 
                         if !self.eat(&Token::Plus) {
                             break;
@@ -3347,12 +4699,16 @@ impl<'src> Parser<'src> {
                 } else {
                     // Single trait: dyn TraitName
                     let name = self.expect_ident()?;
-                    let type_args = if self.eat(&Token::Less) {
-                        Some(self.parse_type_args()?)
+                    let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+                        self.parse_trait_bound_args()?
                     } else {
-                        None
+                        (None, Vec::new())
                     };
-                    vec![TraitBound { name, type_args }]
+                    vec![TraitBound {
+                        name,
+                        type_args,
+                        assoc_type_bindings,
+                    }]
                 };
                 TypeExpr::TraitObject(bounds)
             }
@@ -3418,6 +4774,18 @@ impl<'src> Parser<'src> {
     fn parse_type_params(&mut self) -> Option<Vec<TypeParam>> {
         let mut params = Vec::new();
 
+        // Detect and reject empty `<>` immediately — a declaration like
+        // `pub type Box<>` has no meaningful semantics; the author almost
+        // certainly forgot to name the type parameter.
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list: add at least one type parameter, e.g. `<T>`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
+
         while !self.at_end() && !self.at_closing_angle() {
             let name = self.expect_ident()?;
 
@@ -3439,6 +4807,106 @@ impl<'src> Parser<'src> {
             return None;
         }
         Some(params)
+    }
+
+    /// Parse `<...>` after `machine Name`, admitting both type parameters
+    /// and Phase 0 const-generic parameters (`const N: usize` /
+    /// `const N: usize = 16`). The opening `<` has already been consumed.
+    ///
+    /// Source position convention: all type parameters must appear before
+    /// any const parameters in the parameter list (e.g. `<T, U, const N: usize>`).
+    /// Mixed orderings such as `<const N: usize, T>` are rejected with a
+    /// typed diagnostic to keep the Phase 0 monomorphisation key shape
+    /// (`type_args` then `const_args`) trivially derivable from source order.
+    fn parse_machine_generic_params(&mut self) -> Option<(Vec<TypeParam>, Vec<ConstParam>)> {
+        let mut type_params: Vec<TypeParam> = Vec::new();
+        let mut const_params: Vec<ConstParam> = Vec::new();
+        let mut seen_const = false;
+
+        // Reject empty `<>` immediately (mirrors `parse_type_params`).
+        if self.at_closing_angle() {
+            self.error(
+                "empty type parameter list: add at least one type or const parameter, \
+                 e.g. `<T>` or `<const N: usize>`"
+                    .to_string(),
+            );
+            self.eat_closing_angle();
+            return None;
+        }
+
+        while !self.at_end() && !self.at_closing_angle() {
+            if self.eat(&Token::Const) {
+                // Const-generic parameter: `const N: usize` or
+                // `const N: usize = 16`.
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                // R269=A: usize only in Phase 0; reject anything else
+                // by name. The element type is parsed as an identifier
+                // rather than a full `TypeExpr` so the error message
+                // can pinpoint the unsupported width.
+                let ty_name = self.expect_ident()?;
+                let ty = match ty_name.as_str() {
+                    "usize" => ConstParamTy::Usize,
+                    other => {
+                        self.error(format!(
+                            "only `usize` is supported as a const parameter type \
+                             in Phase 0; found `{other}`"
+                        ));
+                        ConstParamTy::Usize
+                    }
+                };
+                let default = if self.eat(&Token::Equal) {
+                    if let Some(Token::Integer(n_str)) = self.peek() {
+                        let value = parse_int_literal(n_str)
+                            .ok()
+                            .and_then(|(v, _)| u64::try_from(v).ok());
+                        if value.is_none() {
+                            self.error(format!(
+                                "invalid default value for const parameter `{name}`: \
+                                 must be a non-negative integer fitting in usize"
+                            ));
+                        }
+                        self.advance();
+                        value
+                    } else {
+                        self.error(format!(
+                            "expected integer literal as default value for \
+                             const parameter `{name}`"
+                        ));
+                        None
+                    }
+                } else {
+                    None
+                };
+                const_params.push(ConstParam { name, ty, default });
+                seen_const = true;
+            } else {
+                if seen_const {
+                    self.error(
+                        "type parameters must precede const parameters in \
+                         a machine generic-parameter list"
+                            .to_string(),
+                    );
+                }
+                let name = self.expect_ident()?;
+                let bounds = if self.eat(&Token::Colon) {
+                    self.parse_trait_bound_list()?
+                } else {
+                    Vec::new()
+                };
+                type_params.push(TypeParam { name, bounds });
+            }
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected '>'".to_string());
+            return None;
+        }
+        Some((type_params, const_params))
     }
 
     /// Parse optional `<T, U: Trait>` type parameters after a name.
@@ -3498,16 +4966,53 @@ impl<'src> Parser<'src> {
         Some(args)
     }
 
+    fn parse_trait_bound_args(&mut self) -> Option<ParsedTraitBoundArgs> {
+        let mut type_args = Vec::new();
+        let mut assoc_type_bindings = Vec::new();
+
+        while !self.at_end() && !self.at_closing_angle() {
+            if matches!(self.peek(), Some(Token::Identifier(_)))
+                && self.peek_at(self.pos + 1) == Some(&Token::Equal)
+            {
+                let name = self.expect_ident()?;
+                self.expect(&Token::Equal)?;
+                let ty = self.parse_type()?;
+                assoc_type_bindings.push(AssocTypeBinding { name, ty });
+            } else {
+                type_args.push(self.parse_type()?);
+            }
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        if !self.eat_closing_angle() {
+            self.error("expected '>'".to_string());
+            return None;
+        }
+        let type_args = if type_args.is_empty() {
+            None
+        } else {
+            Some(type_args)
+        };
+        Some((type_args, assoc_type_bindings))
+    }
+
     fn parse_trait_bound(&mut self) -> Option<TraitBound> {
         let name = self.expect_ident()?;
 
-        let type_args = if self.eat(&Token::Less) {
-            Some(self.parse_type_args()?)
+        let (type_args, assoc_type_bindings) = if self.eat(&Token::Less) {
+            self.parse_trait_bound_args()?
         } else {
-            None
+            (None, Vec::new())
         };
 
-        Some(TraitBound { name, type_args })
+        Some(TraitBound {
+            name,
+            type_args,
+            assoc_type_bindings,
+        })
     }
 
     #[allow(
@@ -3561,6 +5066,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_params(&mut self) -> Vec<Param> {
+        self.parse_params_with_implicit_self(false)
+    }
+
+    fn parse_params_with_implicit_self(&mut self, allow_implicit_self: bool) -> Vec<Param> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -3569,16 +5078,37 @@ impl<'src> Parser<'src> {
                 break;
             };
 
-            // `self` is not a valid parameter name in Hew — neither bare nor typed.
-            // Users must use named receivers: fn method(val: Self) or fn method(p: Point)
             if name == "self" {
                 let span = self
                     .tokens
                     .get(self.pos.wrapping_sub(1))
                     .map_or(self.peek_span(), |(_, s)| s.clone());
+                // `self` and `var self` are both valid implicit receivers.
+                // The receiver-mutability axis is the contract carrier for
+                // trait methods with mutable receivers (see `Iterator::next`
+                // in `std/builtins.hew`); rejecting `var self` here would
+                // make the surface unreachable from valid programs.
+                if allow_implicit_self && params.is_empty() && self.peek() != Some(&Token::Colon) {
+                    params.push(Param {
+                        name,
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Self".to_string(),
+                                type_args: None,
+                            },
+                            span,
+                        ),
+                        is_mutable,
+                    });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 self.errors.push(ParseError {
                     message: "`self` is not a valid parameter name in Hew; \
-                              use a named receiver with explicit type instead: \
+                              use bare `self` as the first parameter of a trait/impl method, \
+                              or use a named receiver with explicit type: \
                               `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
                         .to_string(),
                     span,
@@ -3670,10 +5200,9 @@ impl<'src> Parser<'src> {
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
                 | Expr::Scope { .. }
-                | Expr::Fork { .. }
-                | Expr::ScopeLaunch(_)
-                | Expr::ScopeSpawn(_)
-                | Expr::Unsafe(_)
+                | Expr::ForkBlock { .. }
+                | Expr::ScopeDeadline { .. }
+                | Expr::UnsafeBlock(_)
                 | Expr::Select { .. }
         )
     }
@@ -3691,8 +5220,27 @@ impl<'src> Parser<'src> {
         let mut trailing_expr = None;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            // Try to parse as statement first
+            // Try to parse as statement first.
             if let Some(stmt) = self.parse_stmt() {
+                // If this is the last item in the block (`}` follows immediately, no
+                // semicolon consumed), and the statement is a value-bearing form (`if`,
+                // `if let`, `match`), promote it to the block's trailing expression.
+                // These forms produce a value — the HIR/MIR pipeline reads
+                // `block.trailing_expr` as the return value of the block; a
+                // `Stmt::If`/`Stmt::Match` leaves the return slot uninitialised.
+                let at_tail = self.peek() == Some(&Token::RightBrace);
+                let is_value_bearing = matches!(
+                    stmt.0,
+                    Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
+                );
+                if at_tail && is_value_bearing {
+                    // SAFETY: `is_value_bearing` ensures promote_stmt_to_trailing_expr
+                    // will always return Some for these exact variants.
+                    let expr = Self::promote_stmt_to_trailing_expr(stmt)
+                        .expect("promote_stmt_to_trailing_expr must succeed for If/IfLet/Match");
+                    trailing_expr = Some(Box::new(expr));
+                    break;
+                }
                 stmts.push(stmt);
                 while self.peek() == Some(&Token::Semicolon) {
                     let span = self.peek_span();
@@ -3738,7 +5286,10 @@ impl<'src> Parser<'src> {
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
-                } else if self.peek() != Some(&Token::RightBrace) && Self::is_block_expr(&expr.0) {
+                } else if Self::is_block_expr(&expr.0)
+                    && (self.peek() != Some(&Token::RightBrace)
+                        || matches!(expr.0, Expr::ForkBlock { .. } | Expr::ScopeDeadline { .. }))
+                {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
@@ -3765,13 +5316,141 @@ impl<'src> Parser<'src> {
         })
     }
 
+    /// Convert a value-bearing statement (`Stmt::If`, `Stmt::IfLet`,
+    /// `Stmt::Match`) that appears in tail position into the equivalent
+    /// expression form, so the block's `trailing_expr` slot can be populated.
+    ///
+    /// Returns `None` for statement forms that are not value-bearing (i.e.
+    /// statements that never reach this function in practice because the caller
+    /// guards on `is_value_bearing` first).
+    ///
+    /// Span notes: `Stmt::If` does not store individual spans for `then_block`
+    /// and `else_block`.  We wrap their `Block` values inside `Expr::Block`
+    /// nodes and assign each one a span that starts at the end of the
+    /// preceding element and ends at the close of the outer statement.  This is
+    /// a conservative approximation; diagnostic positions within the blocks are
+    /// still anchored by the expressions and statements inside them, so the
+    /// wrapper span matters only for coarse messages like "this block has type
+    /// T" — where "the if statement" is equally informative.
+    fn promote_stmt_to_trailing_expr(stmt: Spanned<Stmt>) -> Option<Spanned<Expr>> {
+        let (stmt_kind, stmt_span) = stmt;
+        match stmt_kind {
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                // Wrap `then_block: Block` as `Expr::Block` with an empty
+                // (zero-length) span.
+                //
+                // WHY empty span: `Stmt::If` does not store individual block
+                // spans; they are consumed inside `parse_block` and not
+                // propagated.  Recovering them without modifying `Stmt::If`
+                // (which would cascade through HIR/MIR and serialisers) is out
+                // of scope for this slice.
+                //
+                // CONSERVATIVE CORRECTNESS: `span_contains_offset` in
+                // completions.rs returns `true` for any empty span, so LSP
+                // completions walk both branches unconditionally — matching the
+                // pre-promotion behaviour where `collect_locals_from_stmt` for
+                // `Stmt::If` also walks both branches without a span guard.
+                //
+                // WHEN obsolete: once `Stmt::If` carries `then_block_span` and
+                // `else_block_span` fields, thread them through here and drop
+                // the empty-span approximation.
+                //
+                // WHAT the real fix looks like: capture `self.peek_span()` at
+                // each `parse_block()` call site for `then_block` and `else_block`
+                // inside `parse_stmt`, store those ranges on `Stmt::If`, then
+                // use them here.
+                let block_start = condition.1.end;
+                let then_expr = Box::new((Expr::Block(then_block), block_start..block_start));
+                let else_expr = else_block
+                    .map(|eb| Box::new(Self::convert_else_block_to_expr(eb, stmt_span.end)));
+                Some((
+                    Expr::If {
+                        condition: Box::new(condition),
+                        then_block: then_expr,
+                        else_block: else_expr,
+                    },
+                    stmt_span,
+                ))
+            }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                // Stmt::IfLet and Expr::IfLet share the same `else_body: Option<Block>` type.
+                Some((
+                    Expr::IfLet {
+                        pattern,
+                        expr,
+                        body,
+                        else_body,
+                    },
+                    stmt_span,
+                ))
+            }
+            Stmt::Match { scrutinee, arms } => Some((
+                Expr::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                },
+                stmt_span,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Convert an `ElseBlock` (from `Stmt::If`) into a `Spanned<Expr>` usable
+    /// as the `else_block` field of `Expr::If`.
+    fn convert_else_block_to_expr(else_block: ElseBlock, parent_end: usize) -> Spanned<Expr> {
+        if let Some(if_stmt) = else_block.if_stmt {
+            // `else if ...` — recursively promote the nested `Stmt::If`.
+            let span = if_stmt.1.clone();
+            if let Some(promoted) = Self::promote_stmt_to_trailing_expr(*if_stmt) {
+                return promoted;
+            }
+            // Fallback: should be unreachable if the nested stmt is Stmt::If.
+            (
+                Expr::Block(Block {
+                    stmts: vec![],
+                    trailing_expr: None,
+                }),
+                span,
+            )
+        } else if let Some(block) = else_block.block {
+            // `else { ... }` — Block has no own span; use an empty span so that
+            // span_contains_offset always returns true (empty spans are treated as
+            // "universally contained").  This is conservative but correct: callers
+            // still consult inner statement spans for finer positioning.
+            // See the WHY/WHEN/WHAT on the Stmt::If arm in
+            // `promote_stmt_to_trailing_expr` for the full rationale.
+            (Expr::Block(block), parent_end..parent_end)
+        } else {
+            // Malformed ElseBlock — produce an empty block as a safe default.
+            (
+                Expr::Block(Block {
+                    stmts: vec![],
+                    trailing_expr: None,
+                }),
+                parent_end..parent_end,
+            )
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
     fn parse_stmt(&mut self) -> Option<Spanned<Stmt>> {
         let _guard = self.enter_recursion()?;
         let start = self.peek_span().start;
 
-        // Check for labeled loop/while: 'label: loop/while
-        if let Some(Token::Label(_)) = self.peek() {
+        // Check for labeled loop/while: @label: loop/while. A bare @name in
+        // expression position is a context-reader candidate.
+        if matches!(self.peek(), Some(Token::Label(_)))
+            && self.peek_at(self.pos + 1) == Some(&Token::Colon)
+        {
             return self.parse_labeled_stmt(start);
         }
 
@@ -3780,6 +5459,27 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let pattern = self.parse_pattern()?;
 
+                // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
+                // The `?` must immediately follow a simple identifier pattern;
+                // complex patterns (tuples, constructors) cannot carry the
+                // propagation suffix — the binding site is ambiguous without a
+                // single name to anchor the unwrapped value to.
+                let propagate = if self.peek() == Some(&Token::Question) {
+                    let q_span = self.peek_span();
+                    if !matches!(pattern.0, Pattern::Identifier(_)) {
+                        self.error_at(
+                            "`?` propagation suffix requires a simple identifier pattern"
+                                .to_string(),
+                            q_span,
+                        );
+                        return None;
+                    }
+                    self.advance();
+                    true
+                } else {
+                    false
+                };
+
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
                 } else {
@@ -3787,7 +5487,26 @@ impl<'src> Parser<'src> {
                 };
 
                 let value = if self.eat(&Token::Equal) {
-                    Some(self.parse_expr()?)
+                    let (expr, expr_span) = self.parse_expr()?;
+                    if propagate {
+                        // Desugar: wrap RHS in PostfixTry so `let r? = e;`
+                        // is exactly `let r = e?;` from the type-checker onward.
+                        // The span covers the full RHS so diagnostics from the
+                        // `?` type-check land on the expression, not on `r?`.
+                        let end = expr_span.end;
+                        Some((
+                            Expr::PostfixTry(Box::new((expr, expr_span))),
+                            pattern.1.start..end,
+                        ))
+                    } else {
+                        Some((expr, expr_span))
+                    }
+                } else if propagate {
+                    self.error(
+                        "`let r? = expr;` requires an initialiser; `let r?;` is not valid"
+                            .to_string(),
+                    );
+                    return None;
                 } else {
                     None
                 };
@@ -4110,8 +5829,37 @@ impl<'src> Parser<'src> {
     fn parse_expr_bp(&mut self, min_bp: u8) -> Option<Spanned<Expr>> {
         let start = self.peek_span().start;
 
+        // `&expr` is not an expression in Hew. `&` is infix bitwise-and and the
+        // type-level borrow marker (`&T`, ABI substrate); there is no
+        // prefix-reference/borrow expression. Duplication is spelled `clone x`.
+        // Catch a leading `&` in operand position with a targeted diagnostic so
+        // the reader is pointed at `clone` instead of a generic parse error,
+        // then recover by parsing the operand as if the `&` were absent (one
+        // diagnostic, no cascade).
+        if self.peek() == Some(&Token::Ampersand) {
+            self.error_with_hint(
+                "`&` is not a prefix operator; Hew has no reference or borrow \
+                 expression"
+                    .to_string(),
+                "to duplicate a value, write `clone x`",
+            );
+            self.advance()?; // consume `&` and recover on the operand
+            return self.parse_expr_bp(min_bp);
+        }
+
         // Prefix operators
-        let mut lhs = if let Some(rbp) = self.peek().and_then(prefix_bp) {
+        let mut lhs = if self.peek_is_clone_prefix() {
+            // Contextual `clone <operand>` duplication prefix. `clone` is not a
+            // reserved word — it is also a method/free-fn name — so it only acts
+            // as the prefix when it sits in operator position immediately
+            // followed by an operand token (`peek_is_clone_prefix`). Binds at
+            // unary precedence so `clone a + b` is `(clone a) + b` and
+            // `clone x.field` / `clone foo()` clone the whole postfix chain.
+            self.advance()?; // consume `clone`
+            let operand = self.parse_expr_bp(CLONE_PREFIX_BP)?;
+            let end = operand.1.end;
+            (Expr::Clone(Box::new(operand)), start..end)
+        } else if let Some(rbp) = self.peek().and_then(prefix_bp) {
             let (op_tok, _) = self.advance()?;
             match op_tok {
                 Token::Bang => {
@@ -4151,6 +5899,21 @@ impl<'src> Parser<'src> {
                     let operand = self.parse_expr_bp(rbp)?;
                     let end = operand.1.end;
                     (Expr::Await(Box::new(operand)), start..end)
+                }
+                Token::Star => {
+                    // Raw pointer dereference (`*expr`).  v0.5 parses but
+                    // the type checker rejects with either
+                    // `UnsafeOperationRequiresBlock` (outside unsafe) or a
+                    // "not lowered in v0.5" diagnostic (inside unsafe).
+                    let operand = self.parse_expr_bp(rbp)?;
+                    let end = operand.1.end;
+                    (
+                        Expr::Unary {
+                            op: UnaryOp::RawDeref,
+                            operand: Box::new(operand),
+                        },
+                        start..end,
+                    )
                 }
                 _ => unreachable!(),
             }
@@ -4250,12 +6013,127 @@ impl<'src> Parser<'src> {
                 self.restore_pos(saved);
             }
 
+            // Detect removed `=~` and `!~` regex operators.  The lexer never
+            // produced `EqTilde`/`BangTilde` tokens, so the character sequences
+            // tokenise as adjacent `=`+`~` or `!`+`~`.  Neither `=` nor `!` has
+            // infix binding power, so the loop would break and leave a confusing
+            // "expected `;`" error — check here before the infix break.
+            {
+                let next = self.peek();
+                let is_eq_tilde = next == Some(&Token::Equal)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let eq_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == eq_end)
+                    };
+                let is_bang_tilde = next == Some(&Token::Bang)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Tilde)
+                    && {
+                        let bang_end = self.peek_span().end;
+                        self.tokens
+                            .get(self.pos + 1)
+                            .is_some_and(|(_, s)| s.start == bang_end)
+                    };
+                if is_eq_tilde || is_bang_tilde {
+                    let op_str = if is_eq_tilde { "=~" } else { "!~" };
+                    let op_start = self.peek_span().start;
+                    self.advance(); // consume `=` or `!`
+                    let op_end = self.peek_span().end;
+                    self.advance(); // consume `~`
+                    let op_span = op_start..op_end;
+                    self.error_at_with_hint(
+                        format!(
+                            "E_REGEX_OP_REMOVED: the `{op_str}` regex operator has been removed; \
+                             use a match arm or `Pattern.is_match()` instead (HEW-SPEC-2026 §5)"
+                        ),
+                        op_span.clone(),
+                        format!(
+                            "replace `expr {op_str} pattern` with `match expr {{ re\"...\" => true, _ => false }}`"
+                        ),
+                    );
+                    while !matches!(
+                        self.peek(),
+                        Some(&Token::Semicolon | &Token::RightBrace) | None
+                    ) {
+                        self.advance();
+                    }
+                    if self.peek() == Some(&Token::Semicolon) {
+                        self.advance();
+                    }
+                    lhs = (Expr::Tuple(vec![]), op_span);
+                    break;
+                }
+            }
+
             // Then try infix
             let Some((lbp, rbp)) = self.peek().and_then(infix_bp) else {
                 break;
             };
             if lbp < min_bp {
                 break;
+            }
+
+            // Detect the removed `<-` send operator: lexer now produces two tokens
+            // `<` (at pos) and `-` (at pos+1) adjacently.  Emit E_OPERATOR_REMOVED,
+            // then skip to the statement boundary (`;` or `}`) so that the caller
+            // does not produce cascading "unexpected token" diagnostics for the
+            // right-hand side tokens.
+            if self.peek() == Some(&Token::Less) {
+                let less_end = self.peek_span().end;
+                if self.peek_at(self.pos + 1) == Some(&Token::Minus) {
+                    let minus_start = self
+                        .tokens
+                        .get(self.pos + 1)
+                        .map_or(usize::MAX, |(_, s)| s.start);
+                    if less_end == minus_start {
+                        let op_span = self.peek_span().start..minus_start + 1;
+                        self.advance(); // consume `<`
+                        self.advance(); // consume `-`
+                        self.error_at_with_hint(
+                            "E_OPERATOR_REMOVED: the `<-` send operator has been removed; \
+                             use `handle(msg)` call syntax instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
+                            op_span.clone(),
+                            "replace `target <- msg` with `target(msg)`".to_string(),
+                        );
+                        // Skip tokens through the end of the statement to suppress
+                        // cascading "unexpected token" diagnostics on the RHS.
+                        while !matches!(
+                            self.peek(),
+                            Some(&Token::Semicolon | &Token::RightBrace) | None
+                        ) {
+                            self.advance();
+                        }
+                        // Consume the `;` now so that parse_block treats this as a
+                        // fully consumed expression statement rather than seeing the
+                        // semicolon as unexpected.
+                        if self.peek() == Some(&Token::Semicolon) {
+                            self.advance();
+                        }
+                        // Return a synthetic unit expression so the block parser
+                        // completes the statement without entering the error-recovery path.
+                        lhs = (Expr::Tuple(vec![]), op_span);
+                        break;
+                    }
+                }
+            }
+
+            // `is` is a keyword token (not a symbol), handled as a special infix form.
+            if self.peek() == Some(&Token::Is) {
+                self.advance(); // consume `is`
+                let rhs = self.parse_expr_bp(rbp)?;
+                let end = rhs.1.end;
+                let lhs_start = lhs.1.start;
+                lhs = (
+                    Expr::Is {
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    lhs_start..end,
+                );
+                continue;
             }
 
             let (op_tok, _) = self.advance()?;
@@ -4360,12 +6238,10 @@ impl<'src> Parser<'src> {
                 Expr::InterpolatedString(parts)
             }
             Token::RegexLiteral(s) => {
-                // Strip `re"` prefix and `"` suffix to get the pattern.
-                let pattern = s
-                    .strip_prefix("re\"")
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s);
-                let pattern = pattern.to_string();
+                // Normalise the token: strip delimiters and decode only the
+                // delimiter escape `\"`. Regex backslashes are passed through
+                // verbatim so `re"\s+"` reaches the engine as `\s+`.
+                let pattern = normalize_regex_literal(s);
                 self.advance();
                 Expr::RegexLiteral(pattern)
             }
@@ -4376,6 +6252,11 @@ impl<'src> Parser<'src> {
             Token::False => {
                 self.advance();
                 Expr::Literal(Literal::Bool(false))
+            }
+            Token::Label(label) => {
+                let name = (*label).to_string();
+                self.advance();
+                Expr::Identifier(name)
             }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
@@ -4417,7 +6298,31 @@ impl<'src> Parser<'src> {
                 self.advance();
 
                 // Handle path expressions like Vec::new, HashMap::new
+                // Optionally accept Rust-style turbofish on a path segment:
+                // `Type::<T, U>::method` — the `<...>` are stashed and surface
+                // as the call's `type_args` when the path is invoked with `(`.
+                let mut turbofish: Option<Vec<Spanned<TypeExpr>>> = None;
                 while self.eat(&Token::DoubleColon) {
+                    if self.peek() == Some(&Token::Less) {
+                        let saved = self.save_pos();
+                        self.advance(); // consume '<'
+                        if let Some(args) = self.parse_type_args() {
+                            if turbofish.is_some() {
+                                self.error(
+                                    "turbofish `::<...>` may appear at most once in a path"
+                                        .to_string(),
+                                );
+                            }
+                            turbofish = Some(args);
+                            // A turbofish must be followed by another `::ident`
+                            // segment or the call site `(`. If we don't see
+                            // `::` next we fall out of the loop and let the
+                            // surrounding logic (`(args)`) consume the call.
+                            continue;
+                        }
+                        self.restore_pos(saved);
+                        break;
+                    }
                     if let Some(segment) = self.expect_ident() {
                         name = format!("{name}::{segment}");
                     } else {
@@ -4425,45 +6330,34 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                // Desugar scope handle method calls: s.launch { ... }, s.spawn { ... }, s.cancel(), s.is_cancelled()
-                if self.scope_binding.as_deref() == Some(&name) && self.peek() == Some(&Token::Dot)
-                {
-                    let saved_pos = self.save_pos();
-                    self.advance(); // consume .
-
-                    // `spawn` is a keyword token, so handle it before the identifier match
-                    if self.peek() == Some(&Token::Spawn) {
-                        self.advance(); // consume "spawn"
-                        let body = self.parse_block()?;
-                        let end = self.peek_span().start;
-                        return Some((Expr::ScopeSpawn(body), start..end));
+                // If turbofish was present, the path must be invoked as a call.
+                // Build the `Expr::Call` here so the explicit type args reach the
+                // checker via `Call.type_args` exactly as for the bare-call form
+                // `Type::method<T>(args)`. The struct-init / generic-call paths
+                // below are skipped because turbofish is unambiguously a call.
+                if let Some(type_args) = turbofish {
+                    if self.peek() != Some(&Token::LeftParen) {
+                        self.error(
+                            "turbofish `::<...>` must be followed by a function call `(...)`"
+                                .to_string(),
+                        );
+                        return None;
                     }
-
-                    if let Some(Token::Identifier(method)) = self.peek() {
-                        let method = method.to_string();
-                        match method.as_str() {
-                            "launch" => {
-                                self.advance(); // consume "launch"
-                                let body = self.parse_block()?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeLaunch(body), start..end));
-                            }
-                            "cancel" => {
-                                self.advance(); // consume "cancel"
-                                self.expect(&Token::LeftParen)?;
-                                self.expect(&Token::RightParen)?;
-                                let end = self.peek_span().start;
-                                return Some((Expr::ScopeCancel, start..end));
-                            }
-
-                            _ => {
-                                // Not a scope method, restore and fall through
-                                self.restore_pos(saved_pos);
-                            }
-                        }
-                    } else {
-                        self.restore_pos(saved_pos);
-                    }
+                    self.advance(); // consume '('
+                    let args = self.parse_call_args()?;
+                    self.expect(&Token::RightParen)?;
+                    let end = self.peek_span().start;
+                    let func_span = start..end;
+                    let func = (Expr::Identifier(name), func_span.clone());
+                    return Some((
+                        Expr::Call {
+                            function: Box::new(func),
+                            type_args: Some(type_args),
+                            args,
+                            is_tail_call: false,
+                        },
+                        start..end,
+                    ));
                 }
 
                 // Check for struct initialization — including the explicit-type-arg form
@@ -4494,42 +6388,19 @@ impl<'src> Parser<'src> {
                 if explicit_type_args.is_some() || self.peek() == Some(&Token::LeftBrace) {
                     // Look ahead to disambiguate struct init vs block (only when no
                     // explicit type args; with type args we already know it's a struct).
-                    let is_struct_init = if explicit_type_args.is_some() {
-                        true
-                    } else {
-                        let saved_pos = self.save_pos();
-                        self.advance(); // consume {
-                        let probe = if self.peek() == Some(&Token::RightBrace) {
-                            // Empty struct literal: Foo {}
-                            true
-                        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
-                            self.advance();
-                            self.peek() == Some(&Token::Colon)
-                        } else {
-                            false
-                        };
-                        self.restore_pos(saved_pos);
-                        probe
-                    };
+                    // Uses the shared probe helper — identical disambiguation at every
+                    // call site including the dot-postfix struct-literal arm.
+                    let is_struct_init =
+                        explicit_type_args.is_some() || self.probe_struct_init_brace();
 
                     if is_struct_init {
                         self.advance(); // consume {
-                        let mut fields = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            let field_name = self.expect_ident()?;
-                            self.expect(&Token::Colon)?;
-                            let value = self.parse_expr()?;
-                            fields.push((field_name, value));
-
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightBrace)?;
+                        let (fields, base) = self.parse_struct_init_body()?;
                         Expr::StructInit {
                             name,
                             fields,
                             type_args: explicit_type_args,
+                            base,
                         }
                     } else {
                         Expr::Identifier(name)
@@ -4539,16 +6410,18 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::Less => {
-                // Speculative parse for generic lambda: <T>(x: T) => expr
+                // Speculative parse to detect old generic lambda: <T>(x: T) => expr.
+                // This form was removed in v0.5; type-parameterized closures are not
+                // supported. Detect the form and emit a typed migration diagnostic.
                 let saved_pos = self.save_pos();
                 self.advance(); // consume '<'
 
-                let is_generic_lambda = if let Some(_type_params) = self.parse_type_params() {
+                let is_old_generic_lambda = if let Some(_type_params) = self.parse_type_params() {
                     if self.peek() == Some(&Token::LeftParen) {
                         self.advance(); // consume '('
                         if self.try_parse_lambda_params().is_some() {
                             if self.expect(&Token::RightParen).is_some() {
-                                // Check for optional return type
+                                // Check for optional return type then `=>`
                                 if self.eat(&Token::Arrow) {
                                     self.parse_type().is_some()
                                         && self.peek() == Some(&Token::FatArrow)
@@ -4570,44 +6443,40 @@ impl<'src> Parser<'src> {
 
                 self.restore_pos(saved_pos);
 
-                if is_generic_lambda {
+                if is_old_generic_lambda {
+                    // Consume through the form for error recovery, then emit typed error.
                     self.advance(); // consume '<'
-                    let type_params = Some(self.parse_type_params()?);
-                    self.expect(&Token::LeftParen)?;
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move: false,
-                        type_params,
-                        params,
-                        return_type,
-                        body,
+                    self.parse_type_params();
+                    self.expect(&Token::LeftParen);
+                    self.try_parse_lambda_params();
+                    self.expect(&Token::RightParen);
+                    self.parse_opt_return_type();
+                    if self.eat(&Token::FatArrow) {
+                        self.parse_expr();
                     }
-                } else {
-                    // Not a generic lambda.
-                    // Could be a syntax error, or maybe valid if we support other <... syntax.
-                    // For now, report error as "expected expression" or similar, but since we are in parse_primary...
-                    // Actually, if we return None here, the caller might handle it.
-                    // But wait, parse_primary expects to consume something.
-                    // If we found '<' but it's not a generic lambda, it's likely an error.
-                    self.error("unexpected '<' at start of expression".to_string());
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: `<T>(params) => body` has been removed; \
+                         type-parameterized closures are not supported in v0.5"
+                            .to_string(),
+                        start..self.peek_span().start,
+                        "use `|params| body` — omit type parameters on closure expressions",
+                    );
                     return None;
                 }
+                self.error("unexpected '<' at start of expression".to_string());
+                return None;
             }
             Token::LeftParen => {
                 self.advance();
 
-                // Try parsing as lambda first
+                // Detect and reject old `(params) => body` parenthesized lambda syntax.
+                // This form was removed in v0.5; the current form is `|params| body`.
+                // Keep the detection here so we can surface a typed migration diagnostic
+                // rather than a cryptic parse error when `=>` is encountered later.
                 let saved_pos = self.save_pos();
-                let is_lambda = if self.try_parse_lambda_params().is_some() {
+                let is_old_paren_lambda = if self.try_parse_lambda_params().is_some() {
                     if self.expect(&Token::RightParen).is_some() {
-                        // Check for optional return type
+                        // Check for optional return type annotation then `=>`
                         if self.eat(&Token::Arrow) {
                             self.parse_type().is_some() && self.peek() == Some(&Token::FatArrow)
                         } else {
@@ -4621,23 +6490,22 @@ impl<'src> Parser<'src> {
                 };
                 self.restore_pos(saved_pos);
 
-                if is_lambda {
-                    let is_move = false;
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
-
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move,
-                        type_params: None,
-                        params,
-                        return_type,
-                        body,
+                if is_old_paren_lambda {
+                    // Consume through the entire form for error recovery continuity.
+                    self.try_parse_lambda_params();
+                    self.expect(&Token::RightParen);
+                    self.parse_opt_return_type();
+                    if self.eat(&Token::FatArrow) {
+                        self.parse_expr();
                     }
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: `(params) => body` has been removed; \
+                         use `|params| body` instead"
+                            .to_string(),
+                        start..self.peek_span().start,
+                        "replace `(params) => body` with `|params| body`",
+                    );
+                    return None;
                 } else if self.eat(&Token::RightParen) {
                     // Unit tuple
                     Expr::Tuple(Vec::new())
@@ -4689,6 +6557,7 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -4749,45 +6618,95 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
+            // actor [move] |params| [-> Ret] { body }
+            // Lambda actor literal (replaces `spawn (...) => ...`).
+            Token::Actor => {
+                self.advance();
+
+                let is_move = self.eat(&Token::Move);
+
+                if self.peek() != Some(&Token::Pipe) {
+                    self.error_with_hint(
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `|` to begin actor parameter list"
+                            .to_string(),
+                        "use `actor |params| { body }` to declare a lambda actor".to_string(),
+                    );
+                    return None;
+                }
+                self.advance(); // consume `|`
+
+                let params = self.try_parse_lambda_params().unwrap_or_default();
+
+                self.expect(&Token::Pipe)?;
+
+                let return_type = self.parse_opt_return_type()?;
+
+                // Lambda actor body must be a braced block; parse_block consumes the `{`.
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error_with_hint(
+                        "E_SPAWN_LAMBDA_SYNTAX_REMOVED: expected `{` to begin actor body"
+                            .to_string(),
+                        "use `actor |params| { body }` — the body must be a braced block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                let body_block = self.parse_block()?;
+                let body_end = self.peek_span().start;
+                let body = Box::new((Expr::Block(body_block), start..body_end));
+
+                return Some((
+                    Expr::SpawnLambdaActor {
+                        is_move,
+                        params,
+                        return_type,
+                        body,
+                    },
+                    start..self.peek_span().start,
+                ));
+            }
             Token::Spawn => {
                 self.advance();
 
-                // Check for optional `move` keyword before lambda actor
-                let is_move = self.eat(&Token::Move);
+                // Check whether the user wrote the legacy `spawn (params) => body` form.
+                // This form was removed in favour of `actor |params| { body }`.
+                // Consume an optional `move` keyword only to detect legacy syntax; it is not
+                // used in the regular `spawn ActorName(...)` form.
+                let _is_move_legacy = self.eat(&Token::Move);
 
-                // Check for lambda actor: spawn [move] (params) => body
                 if self.peek() == Some(&Token::LeftParen) {
                     let saved_pos = self.save_pos();
                     self.advance();
-                    let is_lambda_actor = self.try_parse_lambda_params().is_some() && {
+                    let is_legacy_lambda = self.try_parse_lambda_params().is_some() && {
                         self.expect(&Token::RightParen).is_some()
-                            && self.peek() == Some(&Token::FatArrow)
+                            && (self.peek() == Some(&Token::FatArrow)
+                                || self.peek() == Some(&Token::Arrow))
                     };
                     self.restore_pos(saved_pos);
 
-                    if is_lambda_actor {
-                        self.advance(); // consume (
-                        let params = self.try_parse_lambda_params()?;
-                        self.expect(&Token::RightParen)?;
-
-                        let return_type = self.parse_opt_return_type()?;
-
-                        self.expect(&Token::FatArrow)?;
-                        let body = Box::new(self.parse_expr()?);
-
-                        return Some((
-                            Expr::SpawnLambdaActor {
-                                is_move,
-                                params,
-                                return_type,
-                                body,
-                            },
+                    if is_legacy_lambda {
+                        // Consume through the entire legacy form so recovery can continue.
+                        self.advance(); // (
+                        self.try_parse_lambda_params();
+                        self.expect(&Token::RightParen);
+                        self.parse_opt_return_type();
+                        if self.eat(&Token::FatArrow) {
+                            self.parse_expr();
+                        }
+                        self.error_at_with_hint(
+                            "E_SPAWN_LAMBDA_SYNTAX_REMOVED: `spawn (...) => ...` has been removed; \
+                             use `actor |...| { ... }` instead (HEW-SPEC-2026 §4.x)"
+                                .to_string(),
                             start..self.peek_span().start,
-                        ));
+                            "replace `spawn (params) => body` with `actor |params| { body }`"
+                                .to_string(),
+                        );
+                        return None;
                     }
                 }
 
                 // Regular spawn: spawn ActorName(...) or spawn module.ActorName(...)
+                // or spawn ActorName<T>(...) with explicit turbofish type args.
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
                 let target = if self.eat(&Token::Dot) {
@@ -4803,6 +6722,17 @@ impl<'src> Parser<'src> {
                 } else {
                     Box::new((Expr::Identifier(name), start..name_end))
                 };
+
+                // Optional turbofish type-argument list `<T, U>` before `(`.
+                // A bare `<` here is unambiguous: spawn does not admit
+                // comparison in this position (the target is a name, not an
+                // expression), so we eagerly parse the angle-bracket list.
+                let type_args = if self.eat(&Token::Less) {
+                    self.parse_type_args().unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
                 let args = if self.eat(&Token::LeftParen) {
                     let mut args = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -4820,31 +6750,81 @@ impl<'src> Parser<'src> {
                     Vec::new()
                 };
 
-                Expr::Spawn { target, args }
+                Expr::Spawn {
+                    target,
+                    type_args,
+                    args,
+                }
             }
             Token::Move => {
                 self.advance();
-                if self.eat(&Token::LeftParen) {
-                    // Move lambda
-                    let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen)?;
+                if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
+                    self.parse_pipe_lambda(true, start)?
+                } else if self.peek() == Some(&Token::LeftParen) {
+                    // Old `move (params) => body` form — detect and diagnose.
+                    // Consume through the form for recovery, then emit a typed error.
+                    let saved_pos = self.save_pos();
+                    self.advance(); // consume '('
+                    let is_old_paren_lambda = self.try_parse_lambda_params().is_some()
+                        && self.expect(&Token::RightParen).is_some()
+                        && (self.peek() == Some(&Token::FatArrow)
+                            || self.peek() == Some(&Token::Arrow));
+                    self.restore_pos(saved_pos);
 
-                    let return_type = self.parse_opt_return_type()?;
-
-                    self.expect(&Token::FatArrow)?;
-                    let body = Box::new(self.parse_expr()?);
-
-                    Expr::Lambda {
-                        is_move: true,
-                        type_params: None,
-                        params,
-                        return_type,
-                        body,
+                    if is_old_paren_lambda {
+                        self.advance(); // consume '('
+                        self.try_parse_lambda_params();
+                        self.expect(&Token::RightParen);
+                        self.parse_opt_return_type();
+                        if self.eat(&Token::FatArrow) {
+                            self.parse_expr();
+                        }
+                        self.error_closure_pipe_syntax(
+                            "E_CLOSURE_PIPE_SYNTAX: `move (params) => body` has been removed; \
+                             use `move |params| expr` instead"
+                                .to_string(),
+                            start..self.peek_span().start,
+                            "replace `move (params) => body` with `move |params| expr`",
+                        );
+                        return None;
                     }
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
+                            .to_string(),
+                        self.peek_span(),
+                        "write `move |params| expr`",
+                    );
+                    return None;
                 } else {
-                    self.error("expected '(' after 'move'".to_string());
+                    self.error_closure_pipe_syntax(
+                        "E_CLOSURE_PIPE_SYNTAX: expected `|` after `move` to begin a closure"
+                            .to_string(),
+                        self.peek_span(),
+                        "write `move |params| expr`",
+                    );
                     return None;
                 }
+            }
+            // gen { yield ...; } — lazy generator block expression.
+            // Must be followed immediately by a braced block; `gen fn` (item-level
+            // generator functions) is parsed separately and does not reach here.
+            // Bare `gen` without a block emits a typed diagnostic.
+            Token::Gen if self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) => {
+                self.advance(); // consume `gen`
+                let body = self.parse_block()?;
+                Expr::GenBlock { body }
+            }
+            Token::Gen => {
+                self.advance(); // consume `gen`
+                let found = match self.peek() {
+                    Some(tok) => format!("`{tok}`"),
+                    None => "end of file".to_string(),
+                };
+                self.error_with_hint(
+                    format!("E_GEN_BLOCK_SYNTAX: `gen` must be followed by a block; found {found}"),
+                    "write `gen { yield expr; }` to create a generator block".to_string(),
+                );
+                return None;
             }
             Token::Return => {
                 self.advance();
@@ -4855,37 +6835,52 @@ impl<'src> Parser<'src> {
             }
             Token::Scope => {
                 self.advance();
-                // Reject old scope.method() syntax
+                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
                 if self.eat(&Token::Dot) {
                     self.error(
-                        "'scope.method()' syntax has been removed; use 'scope |s| { s.method() }' instead"
+                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
                             .to_string(),
                     );
                     return None;
                 }
-                // Parse optional binding: scope |s| { ... }
-                let binding = if self.eat(&Token::Pipe) {
-                    let name = self.expect_ident()?;
-                    self.expect(&Token::Pipe)?;
-                    Some(name)
-                } else {
-                    None
-                };
-                // Parse the scope body with the binding active
-                let prev_binding = self.scope_binding.take();
-                self.scope_binding.clone_from(&binding);
+                if self.peek() == Some(&Token::Pipe) {
+                    self.error(
+                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                self.scope_expr_depth += 1;
                 let body = self.parse_block()?;
-                self.scope_binding = prev_binding;
-                Expr::Scope { binding, body }
+                self.scope_expr_depth -= 1;
+                Expr::Scope { body }
             }
             Token::Fork => {
+                let fork_span = self.peek_span();
                 self.advance();
-                // Disambiguation: `fork { ... }` is always the block form.
-                // Child form cannot treat `{` as its first expression token.
+                // `fork` is now exclusively the child-start verb inside a scope block:
+                // `fork name = call(...);` or bare `fork call(...);`.
                 if self.peek() == Some(&Token::LeftBrace) {
-                    Expr::Fork {
-                        body: self.parse_block()?,
+                    if self.scope_expr_depth == 0 {
+                        self.error_at(
+                            "`fork { ... }` child-task blocks are only valid inside `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
                     }
+                    if self.fork_block_depth > 0 {
+                        self.error_at(
+                            "nested `fork { ... }` blocks are not a CT-2 surface; use an inner `scope { ... }`"
+                                .to_string(),
+                            fork_span,
+                        );
+                        return None;
+                    }
+                    self.fork_block_depth += 1;
+                    let body = self.parse_block()?;
+                    self.fork_block_depth -= 1;
+                    Expr::ForkBlock { body }
                 } else {
                     let binding = if self.fork_starts_child_binding() {
                         let name = self.expect_ident()?;
@@ -4901,6 +6896,26 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
+            Token::After if self.looks_like_scope_deadline() => {
+                let after_span = self.peek_span();
+                if self.scope_expr_depth == 0 {
+                    self.error_at(
+                        "`after(duration) { ... }` deadline clauses are only valid inside `scope { ... }`"
+                            .to_string(),
+                        after_span,
+                    );
+                    return None;
+                }
+                self.advance();
+                self.expect(&Token::LeftParen)?;
+                let duration = self.parse_expr()?;
+                self.expect(&Token::RightParen)?;
+                let body = self.parse_block()?;
+                Expr::ScopeDeadline {
+                    duration: Box::new(duration),
+                    body,
+                }
+            }
             Token::Try => {
                 self.error(
                     "'try'/'catch' blocks have been removed; use the '?' operator instead"
@@ -4910,7 +6925,14 @@ impl<'src> Parser<'src> {
             }
             Token::Unsafe => {
                 self.advance();
-                Expr::Unsafe(self.parse_block()?)
+                if self.peek() != Some(&Token::LeftBrace) {
+                    self.error(
+                        "expected `{` after `unsafe`; `unsafe` must be followed by a block"
+                            .to_string(),
+                    );
+                    return None;
+                }
+                Expr::UnsafeBlock(Box::new(self.parse_block()?))
             }
             Token::Select => {
                 self.advance();
@@ -4975,12 +6997,36 @@ impl<'src> Parser<'src> {
                 Expr::Yield(value)
             }
             Token::Cooperate => {
-                self.advance();
-                Expr::Cooperate
+                self.error(
+                    "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
+                        .to_string(),
+                );
+                return None;
             }
             Token::This => {
                 self.advance();
                 Expr::This
+            }
+            Token::Emit => {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
@@ -5002,6 +7048,68 @@ impl<'src> Parser<'src> {
         Some((expr, start..end))
     }
 
+    fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
+        let params = if self.eat(&Token::PipePipe) {
+            Vec::new()
+        } else {
+            self.expect(&Token::Pipe)?;
+            let params = self.try_parse_pipe_lambda_params().or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: malformed closure parameter list".to_string(),
+                    start..self.peek_span().start,
+                    "write parameters as `|name|` or `|name: Type|`",
+                );
+                None
+            })?;
+            self.expect(&Token::Pipe).or_else(|| {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: expected `|` to close closure parameters".to_string(),
+                    start..self.peek_span().start,
+                    "write `|params| expr`",
+                );
+                None
+            })?;
+            params
+        };
+
+        let return_type = self.parse_opt_return_type()?;
+        let body = if return_type.is_some() {
+            if self.peek() != Some(&Token::LeftBrace) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: typed pipe closures require a braced body".to_string(),
+                    self.peek_span(),
+                    "write `|params| -> Type { expr }`",
+                );
+                return None;
+            }
+            let body_start = self.peek_span().start;
+            let body_block = self.parse_block()?;
+            let body_end = self.peek_span().start;
+            Box::new((Expr::Block(body_block), body_start..body_end))
+        } else {
+            if matches!(
+                self.peek(),
+                Some(Token::Semicolon | Token::RightBrace) | None
+            ) {
+                self.error_closure_pipe_syntax(
+                    "E_CLOSURE_PIPE_SYNTAX: closure body is required".to_string(),
+                    self.peek_span(),
+                    "write `|| expr` or `|| { ... }`",
+                );
+                return None;
+            }
+            Box::new(self.parse_expr()?)
+        };
+
+        Some(Expr::Lambda {
+            is_move,
+            type_params: None,
+            params,
+            return_type,
+            body,
+        })
+    }
+
     /// Parse map literal entries after the opening `{` has already been consumed.
     /// Expects at least one `key: value` pair, followed by optional comma-separated pairs.
     fn parse_map_literal_entries(&mut self) -> Option<Expr> {
@@ -5021,6 +7129,28 @@ impl<'src> Parser<'src> {
         }
         self.expect(&Token::RightBrace)?;
         Some(Expr::MapLiteral { entries })
+    }
+
+    fn try_parse_pipe_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
+        let mut params = Vec::new();
+
+        while !self.at_end() && self.peek() != Some(&Token::Pipe) {
+            let name = self.expect_ident()?;
+
+            let ty = if self.eat(&Token::Colon) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+
+            params.push(LambdaParam { name, ty });
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+
+        Some(params)
     }
 
     fn try_parse_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
@@ -5045,6 +7175,10 @@ impl<'src> Parser<'src> {
         Some(params)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single dispatch over all postfix-dot syntactic forms; splitting fragments shared start/cursor state"
+    )]
     fn parse_dot_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume .
@@ -5077,6 +7211,29 @@ impl<'src> Parser<'src> {
             }
         }
 
+        if method.contains("::") {
+            if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
+                name.push('.');
+                name.push_str(&method);
+                if self.peek() == Some(&Token::LeftBrace) {
+                    self.advance(); // consume {
+                    let (fields, base) = self.parse_struct_init_fields()?;
+                    let end = self.peek_span().start;
+                    return Some((
+                        Expr::StructInit {
+                            name,
+                            fields,
+                            type_args: None,
+                            base,
+                        },
+                        start..end,
+                    ));
+                }
+                let end = self.peek_span().start;
+                return Some((Expr::Identifier(name), start..end));
+            }
+        }
+
         // Check for method call
         if self.peek() == Some(&Token::LeftParen) {
             self.advance();
@@ -5093,6 +7250,71 @@ impl<'src> Parser<'src> {
                 },
                 start..end,
             ))
+        } else if self.peek() == Some(&Token::LeftBrace) && method.contains("::") {
+            // Module-qualified struct literal: `module.Type::Variant { fields }`.
+            //
+            // Gate: `::` must have been consumed above — `method` carries the
+            // full `Type::Variant` path segment.  A plain field access like
+            // `obj.field { ... }` does NOT enter this arm (no `::` in field),
+            // preserving the existing parse error / block interpretation for that
+            // shape.
+            //
+            // The receiver (`lhs`) must be a bare `Ident` (single-level module
+            // alias).  Nested-module paths (`a.b.Type::Variant`) fall through to
+            // FieldAccess; that limit is deferred to v0.5.1.
+            //
+            // Disambiguate via the shared probe: `{ field: val }` → struct init;
+            // `{ stmt; }` or `{ expr }` → not a struct literal, fall through.
+            //
+            // Known parser-substrate gap (not introduced here): Hew has no
+            // no-struct-literal expression mode for `if`/`while` conditions, so
+            // `if m.E::V { x: 1 }` is ambiguous in the same way it would be in
+            // Rust without the brace-suppression mode.  That is a pre-existing
+            // condition; no fix in this slice.
+            if self.probe_struct_init_brace() {
+                // Build the qualified type name: `module.Type::Variant`.
+                // `lhs` is the module identifier; `method` is `Type::Variant`.
+                // Non-identifier receivers (e.g. chained `a.b.C::D { }`) fall
+                // through to FieldAccess — nested-module paths are out of scope
+                // for v0.5; the checker surfaces an error via the field-access
+                // path rather than a misleading struct-literal attempt.
+                let module_name = if let Expr::Identifier(n) = &lhs.0 {
+                    n.clone()
+                } else {
+                    let end = self.peek_span().start;
+                    return Some((
+                        Expr::FieldAccess {
+                            object: Box::new(lhs),
+                            field: method,
+                        },
+                        start..end,
+                    ));
+                };
+                let qualified_name = format!("{module_name}.{method}");
+                self.advance(); // consume {
+                let (fields, base) = self.parse_struct_init_body()?;
+                let end = self.peek_span().start;
+                Some((
+                    Expr::StructInit {
+                        name: qualified_name,
+                        fields,
+                        type_args: None,
+                        base,
+                    },
+                    start..end,
+                ))
+            } else {
+                // Brace begins a block, not a struct literal — fall through to
+                // FieldAccess.  The brace will be parsed as the next statement.
+                let end = self.peek_span().start;
+                Some((
+                    Expr::FieldAccess {
+                        object: Box::new(lhs),
+                        field: method,
+                    },
+                    start..end,
+                ))
+            }
         } else {
             // Field access (method == field when no :: was consumed; otherwise a
             // unit-variant or bare type-path reference — preserved as FieldAccess).
@@ -5104,6 +7326,49 @@ impl<'src> Parser<'src> {
                 },
                 start..end,
             ))
+        }
+    }
+
+    fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
+        let mut fields = Vec::new();
+        let mut base: Option<Box<Spanned<Expr>>> = None;
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                self.advance(); // consume `..`
+                let base_expr = self.parse_expr()?;
+                base = Some(Box::new(base_expr));
+                self.eat(&Token::Comma);
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.error(
+                        "functional-update `..base` must be the last item in the field list"
+                            .to_string(),
+                    );
+                }
+                break;
+            }
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        Some((fields, base))
+    }
+
+    fn dotted_expr_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(name) => Some(name.clone()),
+            Expr::FieldAccess { object, field } => {
+                let mut name = Self::dotted_expr_name(&object.0)?;
+                name.push('.');
+                name.push_str(field);
+                Some(name)
+            }
+            _ => None,
         }
     }
 
@@ -5181,7 +7446,108 @@ impl<'src> Parser<'src> {
         let start = lhs.1.start;
         self.advance(); // consume [
 
-        let index = self.parse_expr()?;
+        // C-3 range-slice support: detect the five range forms in index
+        // position and emit `Expr::Range` (with the inclusive flag) so the
+        // checker/HIR can route to slice lowering. Forms:
+        //   xs[..]      — both endpoints open
+        //   xs[..b]     — open start, closed end (also `..=b`)
+        //   xs[a..]     — closed start, open end
+        //   xs[a..b]    — both endpoints closed
+        //   xs[a..=b]   — closed start, inclusive end
+        // All other contents (e.g. `xs[i]`, `xs[f()]`) remain `Expr::Index`.
+
+        let bracket_start_span = self.peek_span();
+
+        // Form 1: leading `..` or `..=` — open start.
+        if matches!(self.peek(), Some(Token::DotDot | Token::DotDotEqual)) {
+            let inclusive = matches!(self.peek(), Some(Token::DotDotEqual));
+            let dotdot_span = self.peek_span();
+            self.advance(); // consume `..` or `..=`
+                            // After the `..`, either `]` (xs[..] / xs[..=] — the latter is
+                            // ill-formed but we accept it as `..` with a closed inclusive flag
+                            // and let the checker complain about the missing endpoint via
+                            // type inference) or an expression for the closed end.
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = dotdot_span.start..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: None,
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // Parse the start sub-expression with `min_bp = 5` — above the
+        // range precedence (3, 4) — so the Pratt loop does NOT fold a
+        // trailing `..` / `..=` into a binary range. We then inspect the
+        // next token to discriminate `xs[a]` (single-element index) from
+        // `xs[a..]` (open-end slice) and `xs[a..b]` / `xs[a..=b]` (closed
+        // slice). This lets `xs[a..]` succeed even though the normal
+        // Pratt loop would demand a RHS after `..` and bail.
+        let first = self.parse_expr_bp(5)?;
+
+        let (inclusive, has_range_op) = match self.peek() {
+            Some(Token::DotDot) => (false, true),
+            Some(Token::DotDotEqual) => (true, true),
+            _ => (false, false),
+        };
+
+        if has_range_op {
+            // `xs[a..]` / `xs[a..b]` / `xs[a..=b]`.
+            let range_start_pos = first.1.start;
+            self.advance(); // consume `..` or `..=`
+            let end_expr = if self.peek() == Some(&Token::RightBracket) {
+                None
+            } else {
+                // Parse the upper bound at full `parse_expr` precedence
+                // so nested expressions (`xs[a..b+1]`) work.
+                Some(Box::new(self.parse_expr()?))
+            };
+            self.expect(&Token::RightBracket)?;
+            let end_pos = self.peek_span().start;
+            let range_span = range_start_pos..end_pos;
+            let range_expr = (
+                Expr::Range {
+                    start: Some(Box::new(first)),
+                    end: end_expr,
+                    inclusive,
+                },
+                range_span,
+            );
+            return Some((
+                Expr::Index {
+                    object: Box::new(lhs),
+                    index: Box::new(range_expr),
+                },
+                start..end_pos,
+            ));
+        }
+
+        // No range operator after the start expression: this is a single-
+        // element index (`xs[i]`, `xs[a + b]`, etc.). `parse_expr_bp(5)`
+        // already absorbed every infix operator above range precedence,
+        // which is the right closure for single-element indexing — range
+        // operators in index position go through the branch above.
+        let index = first;
+        // Silence unused-binding warning: `bracket_start_span` is consulted
+        // only by the leading-`..` branch above.
+        let _ = bracket_start_span;
+
         self.expect(&Token::RightBracket)?;
         let end = self.peek_span().start;
 
@@ -5368,6 +7734,18 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Pattern::Literal(Literal::Bool(false))
             }
+            // Regex literal pattern: re"pattern" in a match arm.
+            // `captures` is empty here; the checker populates it from the
+            // regex engine's named-capture list after validating the pattern.
+            Some(Token::RegexLiteral(s)) => {
+                let s = *s;
+                let pattern = normalize_regex_literal(s);
+                self.advance();
+                Pattern::Regex {
+                    pattern,
+                    captures: vec![],
+                }
+            }
             // Contextual keywords used as identifiers in patterns
             Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
@@ -5422,10 +7800,7 @@ impl<'src> Parser<'src> {
 
     fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        // Accept either `<-` or `from` for select arms
-        if !self.eat(&Token::LeftArrow) {
-            self.expect(&Token::From)?;
-        }
+        self.expect(&Token::From)?;
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;
@@ -5437,6 +7812,90 @@ impl<'src> Parser<'src> {
             body,
         })
     }
+
+    // ── Struct-literal disambiguation helpers ──────────────────────────────
+
+    /// Speculatively probe whether the `{` at the current position begins a
+    /// struct literal rather than a block statement.
+    ///
+    /// Contract: caller must have peeked `Token::LeftBrace` but NOT yet
+    /// consumed it. This method saves, consumes `{`, inspects one token of
+    /// lookahead, then restores position — so the caller's position is
+    /// unchanged on return.
+    ///
+    /// Returns `true` when:
+    ///   - the brace is immediately followed by `}` (empty struct literal)
+    ///   - the brace is followed by `..` (functional-update-only form)
+    ///   - the brace is followed by `ident :` (named field)
+    ///
+    /// Returns `false` otherwise (block beginning with a statement, expression,
+    /// keyword, etc.).
+    fn probe_struct_init_brace(&mut self) -> bool {
+        let saved_pos = self.save_pos();
+        self.advance(); // consume {
+        let probe = if self.peek() == Some(&Token::RightBrace) {
+            // Empty struct literal: Foo {}
+            true
+        } else if self.peek() == Some(&Token::DotDot) {
+            // Functional-update-only form: `Foo { ..base }`.
+            true
+        } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
+            self.advance();
+            self.peek() == Some(&Token::Colon)
+        } else {
+            false
+        };
+        self.restore_pos(saved_pos);
+        probe
+    }
+
+    /// Parse the body of a struct literal after the opening `{` has been
+    /// consumed.  Handles named fields, an optional trailing comma, and the
+    /// functional-update `..base` tail.
+    ///
+    /// Returns `(fields, base)` where `fields` is a vec of `(name, expr)`
+    /// pairs and `base` is `Some(expr)` when a `..base` suffix was present.
+    ///
+    /// Returns `None` if parsing fails (error is recorded on `self`).
+    #[allow(
+        clippy::type_complexity,
+        reason = "return tuple encodes (fields, base) for struct literal body; extracting a named type would require a public struct in a private-helper context"
+    )]
+    fn parse_struct_init_body(
+        &mut self,
+    ) -> Option<(Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>)> {
+        let mut fields = Vec::new();
+        let mut base: Option<Box<Spanned<Expr>>> = None;
+
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::DotDot) {
+                // `..base_expr` — must be the last item in the list.
+                self.advance(); // consume `..`
+                let base_expr = self.parse_expr()?;
+                base = Some(Box::new(base_expr));
+                // Allow an optional trailing comma before `}`.
+                self.eat(&Token::Comma);
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.error(
+                        "functional-update `..base` must be the last item in the field list"
+                            .to_string(),
+                    );
+                }
+                break;
+            }
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            fields.push((field_name, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+
+        Some((fields, base))
+    }
 }
 
 // ── Precedence Functions ──
@@ -5447,16 +7906,14 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
     // Precedence follows Rust's ordering: bitwise ops bind tighter than
     // comparisons, which bind tighter than logical ops.
     match op {
-        // Send: lowest
-        Token::LeftArrow => Some((1, 2)), // <- (right-assoc)
         // Range
         Token::DotDot | Token::DotDotEqual => Some((3, 4)),
         // Logical OR
         Token::PipePipe => Some((5, 6)),
         // Logical AND
         Token::AmpAmp => Some((7, 8)),
-        // Equality
-        Token::EqualEqual | Token::NotEqual => Some((9, 10)),
+        // Equality and identity
+        Token::EqualEqual | Token::NotEqual | Token::Is => Some((9, 10)),
         // Relational
         Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((11, 12)),
         // Bitwise OR
@@ -5467,19 +7924,55 @@ fn infix_bp(op: &Token) -> Option<(u8, u8)> {
         Token::Ampersand => Some((17, 18)),
         // Shift
         Token::LessLess | Token::GreaterGreater => Some((19, 20)),
-        // Additive
-        Token::Plus | Token::Minus => Some((21, 22)),
-        // Multiplicative
-        Token::Star | Token::Slash | Token::Percent => Some((23, 24)),
+        // Additive: plain `+`/`-` and wrapping `&+`/`&-` share precedence 21.
+        Token::Plus | Token::Minus | Token::AmpPlus | Token::AmpMinus => Some((21, 22)),
+        // Multiplicative: plain `*`/`/`/`%` and wrapping `&*` share precedence 23.
+        Token::Star | Token::Slash | Token::Percent | Token::AmpStar => Some((23, 24)),
         _ => None,
     }
 }
 
 fn prefix_bp(op: &Token) -> Option<u8> {
     match op {
-        Token::Bang | Token::Minus | Token::Tilde | Token::Await => Some(25),
+        // `*expr` is a raw-pointer dereference.  v0.5 parses it only so
+        // the type checker can reject it deterministically — no codegen
+        // path is reached.  Same binding power as the other unary prefixes.
+        Token::Bang | Token::Minus | Token::Tilde | Token::Await | Token::Star => Some(25),
         _ => None,
     }
+}
+
+/// Right binding power of the contextual `clone <operand>` prefix.
+///
+/// Matches the other unary prefixes (`!`, `-`, `~`) so `clone a + b` parses as
+/// `(clone a) + b` and a postfix chain binds into the operand: `clone x.f()`
+/// clones the result of `x.f()`.
+const CLONE_PREFIX_BP: u8 = 25;
+
+/// Whether `tok` begins an operand for the contextual `clone` prefix.
+///
+/// Restricted to tokens that unambiguously start a fresh primary expression:
+/// any identifier or literal. Deliberately excludes `(`, `[`, `.`, `?`, and
+/// the infix/unary operator symbols so that `clone(args)` stays a call,
+/// `clone.field` / `clone[i]` stay identifier postfixes, and `clone - x` stays
+/// subtraction — `clone` remains a usable identifier in every position where
+/// it is followed by a continuation rather than a new operand.
+fn token_begins_clone_operand(tok: &Token) -> bool {
+    matches!(
+        tok,
+        Token::Identifier(_)
+            | Token::Integer(_)
+            | Token::Float(_)
+            | Token::StringLit(_)
+            | Token::CharLit(_)
+            | Token::RawString(_)
+            | Token::ByteStringLit(_)
+            | Token::InterpolatedString(_)
+            | Token::RegexLiteral(_)
+            | Token::Duration(_)
+            | Token::True
+            | Token::False
+    )
 }
 
 fn token_to_binop(token: &Token) -> Option<BinaryOp> {
@@ -5502,9 +7995,11 @@ fn token_to_binop(token: &Token) -> Option<BinaryOp> {
         Token::Caret => Some(BinaryOp::BitXor),
         Token::LessLess => Some(BinaryOp::Shl),
         Token::GreaterGreater => Some(BinaryOp::Shr),
-        Token::LeftArrow => Some(BinaryOp::Send),
         Token::DotDot => Some(BinaryOp::Range),
         Token::DotDotEqual => Some(BinaryOp::RangeInclusive),
+        Token::AmpPlus => Some(BinaryOp::WrappingAdd),
+        Token::AmpMinus => Some(BinaryOp::WrappingSub),
+        Token::AmpStar => Some(BinaryOp::WrappingMul),
         _ => None,
     }
 }
@@ -5532,6 +8027,28 @@ mod tests {
         let result = parse(source);
         assert!(result.errors.is_empty());
         assert_eq!(result.program.items.len(), 1);
+    }
+
+    /// Supervisor child declarations accept the module-qualified dotted type
+    /// (`child a: bank.Account`), carrying the qualified actor identity
+    /// verbatim; bare child types stay the root/local spelling.
+    #[test]
+    fn parse_supervisor_child_dotted_module_qualified_type() {
+        let source = "supervisor S {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   intensity: 1 within 60s;\n\
+                      \n\
+                      \x20   child a: bank.Account(n: 1);\n\
+                      \x20   child b: Local;\n\
+                      }\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Supervisor(sd) = &result.program.items[0].0 else {
+            panic!("expected supervisor, got {:?}", result.program.items[0].0);
+        };
+        assert_eq!(sd.children[0].actor_type, "bank.Account");
+        assert_eq!(sd.children[0].args.len(), 1);
+        assert_eq!(sd.children[1].actor_type, "Local");
     }
 
     #[test]
@@ -5579,12 +8096,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_record_named_fields_with_semicolon_emits_hint() {
+        let source = "record Point { x: i32; y: i32 }";
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        assert_eq!(
+            result.errors[0].message,
+            "expected `,` or `}` after record field, found `;`"
+        );
+        assert_eq!(
+            result.errors[0].hint.as_deref(),
+            Some("record fields use commas; write `field: Type,` instead of `field: Type;`")
+        );
+        assert_eq!(result.program.items.len(), 1);
+        let Item::Record(record) = &result.program.items[0].0 else {
+            panic!("expected recovered record item");
+        };
+        let RecordKind::Named(fields) = &record.kind else {
+            panic!("expected named record");
+        };
+        assert_eq!(fields.len(), 2);
+    }
+
+    #[test]
     fn parse_actor_decl() {
         let source =
-            "actor Counter { count: i32; receive fn increment() { self.count = self.count + 1; } }";
+            "actor Counter { var count: i32 = 0; receive fn increment() { count = count + 1; } }";
         let result = parse(source);
         assert!(result.errors.is_empty());
         assert_eq!(result.program.items.len(), 1);
+        if let Item::Actor(actor) = &result.program.items[0].0 {
+            assert_eq!(actor.fields.len(), 1);
+            assert_eq!(actor.fields[0].name, "count");
+            assert_eq!(actor.receive_fns.len(), 1);
+        } else {
+            panic!("expected actor item");
+        }
     }
 
     #[test]
@@ -5669,6 +8216,127 @@ mod tests {
         }
     }
 
+    /// Regression: `if` in tail position (the last and only item before `}`,
+    /// with no semicolon) must become the function's `trailing_expr`, not a
+    /// discarded `Stmt::If`.  The downstream HIR/MIR pipeline reads
+    /// `trailing_expr` as the return value; a `Stmt::If` leaves the return
+    /// slot uninitialised.
+    #[test]
+    fn if_in_tail_position_is_trailing_expr() {
+        let source = "fn f(n: i64) -> i64 { if n <= 1 { n } else { n + 1 } }";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        assert!(
+            func.body.stmts.is_empty(),
+            "stmts must be empty when `if` is the trailing expr; got {:?}",
+            func.body.stmts
+        );
+        assert!(
+            func.body.trailing_expr.is_some(),
+            "trailing_expr must be Some(Expr::If {{ .. }}) for a tail-position if"
+        );
+        assert!(
+            matches!(
+                func.body.trailing_expr.as_deref(),
+                Some((Expr::If { .. }, _))
+            ),
+            "trailing_expr must be Expr::If, got {:?}",
+            func.body.trailing_expr.as_deref().map(|(e, _)| e)
+        );
+    }
+
+    /// Regression: `match` in tail position must become `trailing_expr`, not
+    /// a discarded `Stmt::Match`.
+    #[test]
+    fn match_in_tail_position_is_trailing_expr() {
+        let source = "fn f(n: i64) -> i64 { match n { 0 => 0, _ => n } }";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        assert!(
+            func.body.stmts.is_empty(),
+            "stmts must be empty when `match` is the trailing expr; got {:?}",
+            func.body.stmts
+        );
+        assert!(
+            matches!(
+                func.body.trailing_expr.as_deref(),
+                Some((Expr::Match { .. }, _))
+            ),
+            "trailing_expr must be Expr::Match"
+        );
+    }
+
+    /// `if` followed by a semicolon must remain a statement, not a trailing
+    /// expression.  The semicolon suppresses tail-position promotion and
+    /// causes an "unnecessary semicolon" warning (block-expression forms do
+    /// not need `;`).
+    #[test]
+    fn if_with_semicolon_is_statement_not_trailing() {
+        let source = "fn main() { if true { 1 } else { 2 }; }";
+        let result = parse(source);
+        // The trailing `;` after a block-expression emits an "unnecessary
+        // semicolon" warning — that is expected and not a hard error.
+        let has_real_error = result.errors.iter().any(|e| e.severity == Severity::Error);
+        assert!(
+            !has_real_error,
+            "unexpected hard errors: {:?}",
+            result.errors
+        );
+        let Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        assert!(
+            func.body.trailing_expr.is_none(),
+            "semicoloned if must not become trailing_expr"
+        );
+        assert_eq!(
+            func.body.stmts.len(),
+            1,
+            "semicoloned if must produce one statement"
+        );
+    }
+
+    /// `if` as a non-tail statement (followed by more items) must remain a
+    /// statement, not a trailing expression.
+    #[test]
+    fn if_as_non_tail_statement_stays_statement() {
+        let source = "fn main() { if true { 1 } else { 2 } let x = 3; }";
+        let result = parse(source);
+        let has_real_error = result.errors.iter().any(|e| e.severity == Severity::Error);
+        assert!(
+            !has_real_error,
+            "unexpected hard errors: {:?}",
+            result.errors
+        );
+        let Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        // `if` not at tail position → Stmt::If stays in stmts
+        assert_eq!(
+            func.body.stmts.len(),
+            2,
+            "non-tail if followed by let must produce two statements"
+        );
+        assert!(
+            func.body.trailing_expr.is_none(),
+            "non-tail if must not become trailing_expr"
+        );
+    }
+
     #[test]
     fn parse_if_expression() {
         let source = "fn main() { let result = if x > 0 { x } else { -x }; }";
@@ -5690,7 +8358,7 @@ mod tests {
 
     #[test]
     fn parse_lambda() {
-        let source = "fn main() { let f = (x: i32) => x * 2; }";
+        let source = "fn main() { let f = |x: i32| x * 2; }";
         let result = parse(source);
         if !result.errors.is_empty() {
             for error in &result.errors {
@@ -5698,6 +8366,44 @@ mod tests {
             }
         }
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_pipe_closure_forms() {
+        for source in [
+            "fn main() { let f = |x| x + 1; }",
+            "fn main() { let f = |x: i32| x + 1; }",
+            "fn main() { let f = |x: i32| -> i32 { x + 1 }; }",
+            "fn main() { let f = || 42; }",
+            "fn main() { let f = move |x| x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.is_empty(),
+                "expected pipe closure to parse cleanly: {source}\nerrors: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn parse_pipe_closure_malformed_surfaces_are_explicit_errors() {
+        for source in [
+            "fn main() { let f = ||; }",
+            "fn main() { let f = |x| -> i32 x + 1; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|error| matches!(
+                    error.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && error
+                    .message
+                    .contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for {source}, got {:?}",
+                result.errors
+            );
+        }
     }
 
     #[test]
@@ -5791,6 +8497,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_context_reader_as_identifier_expression() {
+        let source = "fn main() -> u64 { @actor_id }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        let Some((Expr::Identifier(name), _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected context reader identifier tail");
+        };
+        assert_eq!(name, "@actor_id");
+    }
+
+    #[test]
     fn parse_labeled_loop() {
         let source = r"fn main() -> i32 {
             @top: loop {
@@ -5849,9 +8569,10 @@ mod tests {
 
     #[test]
     fn parse_async_fn_is_rejected() {
-        // Bare `async fn` has no semantics in Hew (no Task<T> to wrap, no checker rule).
-        // Async-ness comes from fork{} context (architecture §4.1, D2 ratification).
-        // Only `async gen fn` is accepted, as it produces a real Ty::async_generator.
+        // `async fn` has no meaning in Hew — async-ness comes from fork{} context
+        // (architecture §4.1, D2 ratification). Only `async gen fn` is accepted.
+        // The parser emits a generic "expected 'gen fn' after 'async'" error and
+        // returns None, so the item is absent from the parsed program.
         let source = "async fn fetch() -> i32 { 42 }";
         let result = parse(source);
         assert!(
@@ -5861,7 +8582,7 @@ mod tests {
         assert!(
             result.errors[0]
                 .message
-                .contains("Hew has no `async fn` keyword"),
+                .contains("expected 'gen fn' after 'async'"),
             "expected rejection diagnostic, got: {:?}",
             result.errors[0].message
         );
@@ -5904,8 +8625,11 @@ mod tests {
         let Item::Function(func) = &result.program.items[0].0 else {
             panic!("expected function item");
         };
-        let Stmt::Match { arms, .. } = &func.body.stmts[0].0 else {
-            panic!("expected match statement");
+        // A bare `match` as the last item in a block is a trailing expression (value-bearing
+        // position), not a `Stmt::Match`.  The block has no `;` after the match and no further
+        // items before `}`.
+        let Some((Expr::Match { arms, .. }, _)) = func.body.trailing_expr.as_deref() else {
+            panic!("expected trailing match expression");
         };
         let (Pattern::Literal(Literal::Integer { value, radix }), _) = &arms[0].pattern else {
             panic!("expected literal integer pattern");
@@ -5954,8 +8678,9 @@ mod tests {
             let Item::Function(func) = &result.program.items[0].0 else {
                 panic!("expected function for keyword '{kw}'");
             };
-            let Stmt::Match { arms, .. } = &func.body.stmts[0].0 else {
-                panic!("expected match for keyword '{kw}'");
+            // A bare `match` as the last item in a block is a trailing expression.
+            let Some((Expr::Match { arms, .. }, _)) = func.body.trailing_expr.as_deref() else {
+                panic!("expected trailing match expression for keyword '{kw}'");
             };
             let (Pattern::Identifier(name), _) = &arms[0].pattern else {
                 panic!(
@@ -6247,6 +8972,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_actor_on_crash_hook_attaches_to_method() {
+        // E1: `#[on(crash)]` parses on an actor method. Signature shape
+        // (params/return type) is owned by E2 — parser just attaches
+        // the attribute to the FnDecl.
+        let source = r"actor Worker {
+    #[on(crash)]
+    fn on_crash() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "crash");
+    }
+
+    #[test]
+    fn parse_actor_on_upgrade_hook_attaches_to_method() {
+        // E1: `#[on(upgrade)]` parses on an actor method. v0.5 emits a
+        // reserved-marker only; runtime invocation is deferred.
+        // WASM-TODO(#1817): wire `#[on(upgrade)]` to a live runtime
+        // invocation path (E3 of the failure-philosophy plan).
+        let source = r"actor Worker {
+    #[on(upgrade)]
+    fn on_upgrade() { }
+}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.methods.len(), 1);
+        assert_eq!(actor.methods[0].attributes.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].name, "on");
+        assert_eq!(actor.methods[0].attributes[0].args.len(), 1);
+        assert_eq!(actor.methods[0].attributes[0].args[0].as_str(), "upgrade");
+    }
+
+    #[test]
     fn parse_attribute_key_value_missing_value_emits_error_without_empty_fallback() {
         let source = r"
 #[meta(rename = , version = 2)]
@@ -6422,6 +9190,118 @@ fn demo() {}
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
+    /// Extract the initializer expression of the first `let` in the first
+    /// function body. Panics if the shape does not match — tests want a loud
+    /// failure when the AST drifts.
+    fn first_let_value(result: &ParseResult) -> &Expr {
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected first item to be a function");
+        };
+        let Stmt::Let { value, .. } = &f.body.stmts[0].0 else {
+            panic!("expected first statement to be a `let`");
+        };
+        &value.as_ref().expect("let initializer present").0
+    }
+
+    #[test]
+    fn parse_clone_prefix_expression() {
+        let source = "fn main() { let a = clone x; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Clone(operand) => {
+                assert!(
+                    matches!(&operand.0, Expr::Identifier(name) if name == "x"),
+                    "clone operand should be identifier `x`, got: {:?}",
+                    operand.0
+                );
+            }
+            other => panic!("expected Expr::Clone, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_prefix_takes_whole_postfix_chain() {
+        // `clone x.field` must clone the field access, not `(clone x).field`.
+        let source = "fn main() { let a = clone x.field; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Clone(operand) => assert!(
+                matches!(&operand.0, Expr::FieldAccess { field, .. } if field == "field"),
+                "clone operand should be the field access, got: {:?}",
+                operand.0
+            ),
+            other => panic!("expected Expr::Clone wrapping a field access, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_prefix_binds_below_binary() {
+        // `clone x + y` is `(clone x) + y`, matching other unary prefixes.
+        let source = "fn main() { let a = clone x + y; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Binary { left, op, .. } => {
+                assert_eq!(*op, BinaryOp::Add);
+                assert!(
+                    matches!(&left.0, Expr::Clone(_)),
+                    "left of `+` should be the clone, got: {:?}",
+                    left.0
+                );
+            }
+            other => panic!("expected Expr::Binary with a clone on the left, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_call_is_not_a_prefix() {
+        // `clone(x)` stays a call to a function named `clone`; the contextual
+        // prefix only triggers when an operand token (not `(`) follows.
+        let source = "fn main() { let a = clone(x); }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match first_let_value(&result) {
+            Expr::Call { function, .. } => assert!(
+                matches!(&function.0, Expr::Identifier(name) if name == "clone"),
+                "expected a call to `clone`, got: {:?}",
+                function.0
+            ),
+            other => panic!("expected Expr::Call, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_clone_as_identifier_still_works() {
+        // `clone` is not a reserved word: usable as a binding and in operator
+        // position when not followed by an operand token.
+        let source = "fn main() { let clone = 5; let y = clone + 1; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_ampersand_prefix_is_rejected() {
+        let source = "fn main() { let y = &x; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected a parse error for prefix `&`"
+        );
+        let err = &result.errors[0];
+        assert!(
+            err.message.contains("not a prefix operator"),
+            "message should explain `&` is not a prefix operator, got: {}",
+            err.message
+        );
+        assert!(
+            err.hint.as_deref().is_some_and(|h| h.contains("clone")),
+            "hint should point at `clone`, got: {:?}",
+            err.hint
+        );
+    }
+
     #[test]
     fn parse_comparison_chain() {
         let source = "fn main() -> bool { a < b && b > c || d == e && f != g }";
@@ -6443,18 +9323,18 @@ fn demo() {}
 
     #[test]
     fn parse_trait_declaration() {
-        let source = "trait Printable { fn print(val: Self); }";
+        let source = "trait Printable { fn print(self); }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]
-    fn parse_bare_self_is_error() {
-        let source = "trait Printable { fn print(self); }";
+    fn parse_bare_self_in_free_fn_is_error() {
+        let source = "fn print(self) {}";
         let result = parse(source);
         assert!(
             !result.errors.is_empty(),
-            "expected parse error for bare `self` parameter"
+            "expected parse error for bare `self` in free function"
         );
         assert!(
             result.errors[0]
@@ -6480,6 +9360,13 @@ fn demo() {}
             "error message should mention self is not a valid parameter name, got: {}",
             result.errors[0].message,
         );
+    }
+
+    #[test]
+    fn parse_impl_method_bare_self_receiver() {
+        let source = "type Foo { x: int } impl Foo { fn bar(self) -> int { self.x } }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]
@@ -6569,6 +9456,80 @@ fn demo() {}
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert_eq!(result.program.items.len(), 1);
+    }
+
+    // ── extern "rt" block tests ──────────────────────────────────────────
+
+    #[test]
+    fn extern_rt_block_empty() {
+        let result = parse("extern \"rt\" { }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert!(block.functions.is_empty());
+    }
+
+    #[test]
+    fn extern_rt_block_single_fn() {
+        let result = parse("extern \"rt\" { fn println(s: string); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.program.items.len(), 1);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[0].params.len(), 1);
+        assert_eq!(block.functions[0].params[0].name, "s");
+    }
+
+    #[test]
+    fn extern_rt_block_multiple_fns() {
+        let result = parse(
+            "extern \"rt\" { fn println(s: string); fn print(s: string); fn assert(cond: bool); }",
+        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "rt");
+        assert_eq!(block.functions.len(), 3);
+        assert_eq!(block.functions[0].name, "println");
+        assert_eq!(block.functions[1].name, "print");
+        assert_eq!(block.functions[2].name, "assert");
+    }
+
+    #[test]
+    fn extern_rt_block_fn_with_body_rejected() {
+        // Bodies are forbidden in extern blocks (any ABI): the parser expects `;`
+        // after the parameter list. A `{` in its place produces a parse error.
+        let result = parse("extern \"rt\" { fn println(s: string) { todo() } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("expected `;`")),
+            "expected a 'expected `;`' error, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_unknown_abi_accepted_at_parse_level() {
+        // The parser is ABI-agnostic; unknown ABI strings parse successfully.
+        // Rejection of unsupported ABIs is deferred to the type-checker.
+        let result = parse("extern \"xyz\" { fn foo(); }");
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.abi, "xyz");
+        assert_eq!(block.functions.len(), 1);
+        assert_eq!(block.functions[0].name, "foo");
     }
 
     #[test]
@@ -6767,36 +9728,103 @@ fn demo() {}
         }
     }
     #[test]
-    fn parse_generic_lambda() {
-        let source = "fn main() { let id = <T>(x: T) => x; }";
-        let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    fn parse_generic_lambda_removed_emits_typed_diagnostic() {
+        // Generic lambda `<T>(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic,
+        // not silently accept or produce a cryptic error.
+        for source in [
+            "fn main() { let id = <T>(x: T) => x; }",
+            "fn main() { let add = <T: Add>(x: T, y: T) => x + y; }",
+            "fn main() { let id = <T>(x: T) -> T => x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|e| matches!(
+                    e.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && e.message.contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for removed generic lambda: {source}\ngot: {:?}",
+                result.errors
+            );
+        }
+    }
 
+    #[test]
+    fn parse_paren_lambda_removed_emits_typed_diagnostic() {
+        // Parenthesized `(params) => body` was removed in v0.5.
+        // The parser must emit a typed E_CLOSURE_PIPE_SYNTAX diagnostic.
+        for source in [
+            "fn main() { let f = (x) => x; }",
+            "fn main() { let f = (x: i32) => x; }",
+            "fn main() { let f = (x: i32) -> i32 => x; }",
+            "fn main() { let f = move (x) => x; }",
+        ] {
+            let result = parse(source);
+            assert!(
+                result.errors.iter().any(|e| matches!(
+                    e.kind,
+                    ParseDiagnosticKind::ClosurePipeSyntax
+                ) && e.message.contains("E_CLOSURE_PIPE_SYNTAX")),
+                "expected typed E_CLOSURE_PIPE_SYNTAX for removed paren lambda: {source}\ngot: {:?}",
+                result.errors
+            );
+        }
+    }
+
+    #[test]
+    fn parse_gen_block_expression() {
+        // `gen { yield ...; }` in expression position.
+        let source = "fn main() { let g = gen { yield 1; yield 2; }; }";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "expected gen block to parse cleanly: {source}\nerrors: {:?}",
+            result.errors
+        );
         if let Item::Function(f) = &result.program.items[0].0 {
             if let Stmt::Let {
-                value: Some((Expr::Lambda { type_params, .. }, _)),
+                value: Some((Expr::GenBlock { .. }, _)),
                 ..
             } = &f.body.stmts[0].0
             {
-                let tps = type_params.as_ref().expect("expected type params");
-                assert_eq!(tps.len(), 1);
-                assert_eq!(tps[0].name, "T");
+                // Correct: let binding holds a GenBlock
             } else {
-                panic!("expected let with generic lambda");
+                panic!("expected let with GenBlock, got: {:?}", f.body.stmts[0].0);
             }
         } else {
-            panic!("expected function");
+            panic!("expected function item");
         }
+    }
 
-        // With bounds: <T: Add>(x: T, y: T) => x + y
-        let source = "fn main() { let add = <T: Add>(x: T, y: T) => x + y; }";
+    #[test]
+    fn parse_gen_block_empty_body() {
+        // Empty gen block is syntactically valid (checker will reject it without item type).
+        let source = "fn main() { let g = gen {}; }";
         let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "expected empty gen block to parse cleanly: {source}\nerrors: {:?}",
+            result.errors
+        );
+    }
 
-        // With explicit return type: <T>(x: T) -> T => x
-        let source = "fn main() { let id = <T>(x: T) -> T => x; }";
+    #[test]
+    fn parse_gen_without_block_emits_diagnostic() {
+        // `gen` without a following brace must emit a diagnostic.
+        let source = "fn main() { let g = gen 42; }";
         let result = parse(source);
-        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error for `gen` without block"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("E_GEN_BLOCK_SYNTAX")),
+            "expected E_GEN_BLOCK_SYNTAX diagnostic, got: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -6845,6 +9873,254 @@ struct Msg {
         assert_eq!(meta.field_number, 2);
         assert!(meta.is_optional);
         assert_eq!(meta.yaml_name.as_deref(), Some("added_name"));
+    }
+
+    /// `#[wire] enum E { A; B; C; }` — unit-only variants attach wire metadata
+    /// at the type level (version / naming-cases) and produce
+    /// `Item::TypeDecl { kind: Enum, wire: Some(_) }`.  Variants carry no
+    /// per-field tag numbers (variants are tagged by index, not `@N`).
+    #[test]
+    fn parse_wire_enum_unit_variants() {
+        let source = "\
+#[wire]
+enum Command {
+    Start;
+    Stop;
+    Pause;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Command");
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
+        assert!(wire.reserved_numbers.is_empty());
+        assert_eq!(decl.body.len(), 3);
+        for item in &decl.body {
+            match item {
+                TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
+                _ => panic!("expected variant, got {item:?}"),
+            }
+        }
+    }
+
+    /// `#[wire] enum E { V1 { x: i64 }; V2 { y: String } }` — struct-payload
+    /// variants parse through the shared enum-body helper; wire metadata at
+    /// the type level is attached by `parse_wire_enum`.
+    #[test]
+    fn parse_wire_enum_struct_payload_variants() {
+        let source = "\
+#[wire(version = 2, min_version = 1)]
+enum Packet {
+    V1 { x: i64 };
+    V2 { y: String, z: bool };
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert_eq!(wire.version, Some(2));
+        assert_eq!(wire.min_version, Some(1));
+        assert_eq!(decl.body.len(), 2);
+        let TypeBodyItem::Variant(v1) = &decl.body[0] else {
+            panic!("expected variant V1");
+        };
+        assert_eq!(v1.name, "V1");
+        assert!(matches!(v1.kind, VariantKind::Struct(ref fs) if fs.len() == 1));
+        let TypeBodyItem::Variant(v2) = &decl.body[1] else {
+            panic!("expected variant V2");
+        };
+        assert_eq!(v2.name, "V2");
+        assert!(matches!(v2.kind, VariantKind::Struct(ref fs) if fs.len() == 2));
+    }
+
+    /// `#[wire] enum E { A(i64); B(String, bool) }` — tuple-payload variants.
+    #[test]
+    fn parse_wire_enum_tuple_payload_variants() {
+        let source = "\
+#[wire]
+enum Op {
+    Push(i64);
+    Pair(String, bool);
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert!(wire.field_meta.is_empty());
+        assert_eq!(decl.body.len(), 2);
+        let TypeBodyItem::Variant(push) = &decl.body[0] else {
+            panic!("expected variant Push");
+        };
+        assert!(matches!(push.kind, VariantKind::Tuple(ref ts) if ts.len() == 1));
+        let TypeBodyItem::Variant(pair) = &decl.body[1] else {
+            panic!("expected variant Pair");
+        };
+        assert!(matches!(pair.kind, VariantKind::Tuple(ref ts) if ts.len() == 2));
+    }
+
+    /// `#[wire]` is exclusive with `#[resource]` / `#[linear]` on enums (same
+    /// rule as `#[wire] struct`).
+    #[test]
+    fn parse_wire_enum_rejects_resource_marker_combo() {
+        let source = "\
+#[wire]
+#[resource]
+enum Bad {
+    A;
+}
+";
+        let result = parse(source);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("E_TYPE_MARKER_CONFLICT")),
+            "expected E_TYPE_MARKER_CONFLICT, got {:?}",
+            result.errors
+        );
+    }
+
+    /// `#[wire] #[json("camelCase")] #[yaml("kebab-case")] enum E { … }` —
+    /// type-level naming attributes flow into `WireMetadata`.
+    #[test]
+    fn parse_wire_enum_preserves_naming_cases() {
+        let source = "\
+#[wire]
+#[json(\"camelCase\")]
+#[yaml(\"kebab-case\")]
+enum Command {
+    Start;
+    Stop;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
+        assert_eq!(wire.json_case, Some(NamingCase::CamelCase));
+        assert_eq!(wire.yaml_case, Some(NamingCase::KebabCase));
+    }
+
+    /// `pub #[wire] enum E { ... }` — the visibility-prefixed dispatch arm
+    /// (parser.rs `:1491`-area, inside the `Some(Token::Pub)` branch) must
+    /// route through `parse_wire_enum` and preserve `Visibility::Pub` on the
+    /// resulting `TypeDecl`.  Exercises the pub-prefixed arm specifically
+    /// (the existing wire-enum tests all hit the bare arm at `:1581`).
+    #[test]
+    fn parses_visibility_prefixed_wire_enum() {
+        let source = "\
+#[wire]
+pub enum Command {
+    Start;
+    Stop;
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Command");
+        assert_eq!(decl.visibility, Visibility::Pub);
+        let wire = decl
+            .wire
+            .as_ref()
+            .expect("expected wire metadata on pub enum");
+        assert!(wire.field_meta.is_empty());
+        assert!(wire.reserved_numbers.is_empty());
+        assert_eq!(decl.body.len(), 2);
+        for item in &decl.body {
+            match item {
+                TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
+                _ => panic!("expected variant, got {item:?}"),
+            }
+        }
+    }
+
+    /// `#[wire] enum X { A; B(i64); C { x: String, y: i32 } }` — a single
+    /// enum body mixing unit, tuple, and struct variant payloads.  Verifies
+    /// each variant kind parses correctly, source order is preserved, and
+    /// type-level wire metadata is attached.
+    #[test]
+    fn parses_mixed_variant_wire_enum() {
+        let source = "\
+#[wire]
+enum Mixed {
+    A;
+    B(i64);
+    C { x: String, y: i32 };
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        assert_eq!(decl.kind, TypeDeclKind::Enum);
+        assert_eq!(decl.name, "Mixed");
+        assert!(
+            decl.wire.is_some(),
+            "expected wire metadata on mixed-variant enum"
+        );
+        assert_eq!(decl.body.len(), 3, "expected 3 variants in source order");
+
+        // Variant 0: A — unit
+        let TypeBodyItem::Variant(a) = &decl.body[0] else {
+            panic!("expected variant A at index 0");
+        };
+        assert_eq!(a.name, "A");
+        assert!(
+            matches!(a.kind, VariantKind::Unit),
+            "variant A should be unit, got {:?}",
+            a.kind
+        );
+
+        // Variant 1: B(i64) — tuple
+        let TypeBodyItem::Variant(b) = &decl.body[1] else {
+            panic!("expected variant B at index 1");
+        };
+        assert_eq!(b.name, "B");
+        assert!(
+            matches!(b.kind, VariantKind::Tuple(ref ts) if ts.len() == 1),
+            "variant B should be tuple(1), got {:?}",
+            b.kind
+        );
+
+        // Variant 2: C { x: String, y: i32 } — struct
+        let TypeBodyItem::Variant(c) = &decl.body[2] else {
+            panic!("expected variant C at index 2");
+        };
+        assert_eq!(c.name, "C");
+        match &c.kind {
+            VariantKind::Struct(fields) => {
+                assert_eq!(fields.len(), 2, "variant C should have 2 fields");
+                assert_eq!(fields[0].0, "x");
+                assert_eq!(fields[1].0, "y");
+            }
+            other => panic!("variant C should be struct, got {other:?}"),
+        }
     }
 
     #[test]
@@ -6991,29 +10267,32 @@ wire type Msg {
     }
 
     #[test]
-    fn fork_keyword_emits_distinct_ast_variant() {
-        let expr = parse_let_expr("fork { 1 }");
+    fn scope_keyword_emits_scope_ast_variant() {
+        let expr = parse_let_expr("scope { 1 }");
         assert!(
-            matches!(expr, Expr::Fork { .. }),
-            "expected Fork, got {expr:?}"
+            matches!(expr, Expr::Scope { .. }),
+            "expected Scope, got {expr:?}"
         );
     }
 
     #[test]
-    fn parser_fork_block_disambiguates_from_child() {
-        let body = parse_main_body("let block = fork { 1 };\nfork child = run();\n");
+    fn parser_scope_block_distinct_from_fork_child() {
+        let body = parse_main_body("let block = scope { 1 };\nscope { fork child = run(); };\n");
         let Stmt::Let {
-            value: Some((Expr::Fork { .. }, _)),
+            value: Some((Expr::Scope { .. }, _)),
             ..
         } = &body.stmts[0].0
         else {
             panic!(
-                "expected let binding to use fork block: {:?}",
+                "expected let binding to use scope block: {:?}",
                 body.stmts[0]
             );
         };
-        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &body.stmts[1].0 else {
-            panic!("expected child fork expression: {:?}", body.stmts[1]);
+        let Stmt::Expression((Expr::Scope { body: inner }, _)) = &body.stmts[1].0 else {
+            panic!("expected outer scope block: {:?}", body.stmts[1]);
+        };
+        let Stmt::Expression((Expr::ForkChild { binding, .. }, _)) = &inner.stmts[0].0 else {
+            panic!("expected child fork expression: {:?}", inner.stmts[0]);
         };
         assert_eq!(binding.as_deref(), Some("child"));
     }
@@ -7047,10 +10326,10 @@ wire type Msg {
     }
 
     #[test]
-    fn parse_nested_fork_block_and_child() {
-        let expr = parse_let_expr("fork { fork run(); fork child = work(); child }");
-        let Expr::Fork { body } = expr else {
-            panic!("expected fork block");
+    fn parse_nested_scope_block_and_child() {
+        let expr = parse_let_expr("scope { fork run(); fork child = work(); child }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
         };
         assert_eq!(body.stmts.len(), 2, "expected two child statements");
         assert!(matches!(
@@ -7071,6 +10350,41 @@ wire type Msg {
             body.trailing_expr.as_deref(),
             Some((Expr::Identifier(name), _)) if name == "child"
         ));
+    }
+
+    #[test]
+    fn parse_scope_fork_block_after_deadline() {
+        let expr = parse_let_expr("scope { fork { long_op(); } after(5s) { } }");
+        let Expr::Scope { body } = expr else {
+            panic!("expected scope block");
+        };
+        assert_eq!(body.stmts.len(), 2, "expected fork block and deadline");
+        let Stmt::Expression((Expr::ForkBlock { body: fork_body }, _)) = &body.stmts[0].0 else {
+            panic!("expected fork block: {:?}", body.stmts[0]);
+        };
+        assert_eq!(fork_body.stmts.len(), 1);
+        let Stmt::Expression((Expr::ScopeDeadline { duration, body }, _)) = &body.stmts[1].0 else {
+            panic!("expected scope deadline: {:?}", body.stmts[1]);
+        };
+        assert!(
+            matches!(duration.0, Expr::Literal(Literal::Duration(5_000_000_000))),
+            "deadline duration should be parsed as 5s duration literal: {:?}",
+            duration.0
+        );
+        assert!(body.stmts.is_empty(), "deadline body should be empty");
+    }
+
+    #[test]
+    fn parse_unscoped_fork_block_rejects() {
+        let result = parse("fn main() { fork { long_op(); } }");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|err| err.message.contains("only valid inside `scope")),
+            "unscoped fork block must be rejected: {:?}",
+            result.errors
+        );
     }
 
     #[test]
@@ -7277,7 +10591,7 @@ wire type Msg {
     fn struct_init_explicit_single_type_arg_parses() {
         let src = r#"
             type Wrapper<T> { value: T }
-            fn main() { let w = Wrapper<String> { value: "hello" }; }
+            fn main() { let w = Wrapper<string> { value: "hello" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -7307,8 +10621,8 @@ wire type Msg {
         let args = type_args.as_ref().expect("type_args should be Some");
         assert_eq!(args.len(), 1, "expected one type arg");
         assert!(
-            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "String"),
-            "expected String type arg, got {:?}",
+            matches!(&args[0].0, TypeExpr::Named { name, .. } if name == "string"),
+            "expected string type arg, got {:?}",
             args[0].0
         );
     }
@@ -7346,7 +10660,7 @@ wire type Msg {
     fn struct_init_explicit_multi_type_arg_parses() {
         let src = r#"
             type Pair<A, B> { first: A, second: B }
-            fn main() { let p = Pair<int, String> { first: 1, second: "x" }; }
+            fn main() { let p = Pair<int, string> { first: 1, second: "x" }; }
         "#;
         let result = parse(src);
         assert!(
@@ -7375,8 +10689,8 @@ wire type Msg {
             "first type arg should be int"
         );
         assert!(
-            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "String"),
-            "second type arg should be String"
+            matches!(&args[1].0, TypeExpr::Named { name, .. } if name == "string"),
+            "second type arg should be string"
         );
     }
 
@@ -7590,6 +10904,689 @@ wire type Msg {
                 .all(|e| !e.message.contains("E_UNKNOWN_TYPE_MARKER")),
             "deprecated attr triggered unknown-marker diagnostic: {:?}",
             result.errors
+        );
+    }
+    // ── #[max_heap] attribute tests ──────────────────────────────────────────
+
+    #[test]
+    fn max_heap_attribute_bare_integer_bytes() {
+        let source = "#[max_heap(1024)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_kb_suffix() {
+        let source = "#[max_heap(2 kb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(2 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_mb_suffix() {
+        let source = "#[max_heap(1 mb)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(1024 * 1024));
+    }
+
+    #[test]
+    fn max_heap_attribute_b_suffix() {
+        let source = "#[max_heap(512 b)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(512));
+    }
+
+    #[test]
+    fn max_heap_attribute_zero_accepted_as_unbounded() {
+        // cap=0 means unbounded (same as the legacy default); accepted explicitly.
+        let source = "#[max_heap(0)] actor Demo {}";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.max_heap_bytes, Some(0));
+    }
+
+    #[test]
+    fn max_heap_attribute_gb_suffix_rejected() {
+        let source = "#[max_heap(1 gb)] actor Demo {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error for unsupported `gb` suffix"
+        );
+        assert!(
+            result.errors.iter().any(|e| e.message.contains("gb")),
+            "expected error mentioning `gb`, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_fn_rejected() {
+        let source = "#[max_heap(1024)] fn foo() {}";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn max_heap_attribute_on_type_rejected() {
+        let source = "#[max_heap(1 kb)] type Bar { x: i32; }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected error: #[max_heap] only allowed on actor declarations"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("max_heap") && e.message.contains("actor")),
+            "expected error mentioning max_heap and actor, got: {:?}",
+            result.errors
+        );
+    }
+    // ── is operator tests ──────────────────────────────────────────────
+
+    /// Helper: extract the trailing expression from the first statement of the
+    /// first function in the parse result.
+    fn first_fn_trailing(source: &str) -> Expr {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        f.body
+            .trailing_expr
+            .as_ref()
+            .expect("expected trailing expr")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn is_operator_simple_identifiers() {
+        let expr = first_fn_trailing("fn f() { x is y }");
+        assert!(
+            matches!(expr, Expr::Is { .. }),
+            "expected Expr::Is, got {expr:?}"
+        );
+        if let Expr::Is { lhs, rhs } = expr {
+            assert!(matches!(lhs.0, Expr::Identifier(ref s) if s == "x"));
+            assert!(matches!(rhs.0, Expr::Identifier(ref s) if s == "y"));
+        }
+    }
+
+    #[test]
+    fn is_operator_named_type_rhs() {
+        // Parser admits any expression on the rhs; checker rejects scalars (D-2).
+        let expr = first_fn_trailing("fn f() { value is Point }");
+        assert!(matches!(expr, Expr::Is { .. }));
+    }
+
+    #[test]
+    fn is_operator_scalar_rhs_parses_ok() {
+        // `x is int` — parser admits; checker rejects (slice D-2 / D-3 scope).
+        let result = parse("fn f() { let x = value is int; }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_tuple_rhs_parses_ok() {
+        // `x is (a, b)` — parser admits a tuple on the rhs; checker will reject later.
+        let result = parse("fn f() { let x = value is (a, b); }");
+        assert!(
+            result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn is_operator_chained_left_assoc() {
+        // `a is b is c` parses as `(a is b) is c` (left-assoc at equality BP).
+        let expr = first_fn_trailing("fn f() { a is b is c }");
+        // Outer must be Is; its lhs must also be Is.
+        let Expr::Is { lhs, .. } = expr else {
+            panic!("expected outer Expr::Is");
+        };
+        assert!(
+            matches!(lhs.0, Expr::Is { .. }),
+            "expected inner lhs to be Expr::Is (left-assoc), got {:?}",
+            lhs.0
+        );
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_binds_tighter_than_logical_and() {
+        // `a is b && c is d` should parse as `(a is b) && (c is d)`
+        let expr = first_fn_trailing("fn f() { a is b && c is d }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::And);
+        assert!(matches!(left.0, Expr::Is { .. }), "left should be Is");
+        assert!(matches!(right.0, Expr::Is { .. }), "right should be Is");
+    }
+
+    #[test]
+    fn is_operator_equality_precedence_with_eq() {
+        // `a is b == true` should parse as `(a is b) == true` (same precedence, left-to-right)
+        let expr = first_fn_trailing("fn f() { a is b == true }");
+        let Expr::Binary { left, op, right } = expr else {
+            panic!("expected Binary at top level");
+        };
+        assert_eq!(op, BinaryOp::Equal);
+        assert!(matches!(left.0, Expr::Is { .. }));
+        assert!(matches!(right.0, Expr::Literal(Literal::Bool(true))));
+    }
+
+    #[test]
+    fn is_keyword_reserved_not_identifier() {
+        // `is` must not parse as an identifier (it's a reserved keyword).
+        use hew_lexer::{lex, Token};
+        let toks: Vec<Token<'_>> = lex("is").into_iter().map(|(t, _)| t).collect();
+        assert_eq!(toks, vec![Token::Is]);
+        assert_ne!(toks[0], Token::Identifier("is"));
+    }
+    // ---------------------------------------------------------------------------
+    // Wrapping operator parsing
+    // ---------------------------------------------------------------------------
+
+    fn first_fn_expr(source: &str) -> Expr {
+        let r = parse(source);
+        assert!(r.errors.is_empty(), "parse errors: {:?}", r.errors);
+        let Item::Function(f) = &r.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        // FnDecl.body is a Block struct directly (not wrapped in Spanned<Expr>).
+        let body = &f.body;
+        if let Some(e) = &body.trailing_expr {
+            e.0.clone()
+        } else {
+            panic!("expected trailing expression in function body");
+        }
+    }
+
+    #[test]
+    fn wrapping_binary_ops_parse_correctly() {
+        // `a &+ b` should parse as Binary { op: WrappingAdd, .. }
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &+ b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &- b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingSub);
+
+        let expr = first_fn_expr("fn f(a: i64, b: i64) -> i64 { a &* b }");
+        let Expr::Binary { op, .. } = expr else {
+            panic!("expected Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingMul);
+    }
+
+    #[test]
+    fn wrapping_add_precedence_matches_plain_add() {
+        // `a &+ b * c` should parse as `a &+ (b * c)` — `*` binds tighter.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a &+ b * c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::WrappingAdd, "outer op must be &+");
+        // The right sub-expression must be `b * c` (plain multiply).
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::Multiply, "inner op must be *");
+    }
+
+    #[test]
+    fn wrapping_mul_precedence_matches_plain_mul() {
+        // `a + b &* c` should parse as `a + (b &* c)` — `&*` binds tighter than `+`.
+        let expr = first_fn_expr("fn f(a: i64, b: i64, c: i64) -> i64 { a + b &* c }");
+        let Expr::Binary { op, right, .. } = expr else {
+            panic!("expected outer Binary");
+        };
+        assert_eq!(op, BinaryOp::Add, "outer op must be +");
+        let Expr::Binary { op: inner_op, .. } = right.0 else {
+            panic!("expected inner Binary");
+        };
+        assert_eq!(inner_op, BinaryOp::WrappingMul, "inner op must be &*");
+    }
+
+    #[test]
+    fn wrapping_ops_parse_with_no_errors() {
+        for src in &[
+            "fn f(a: i64, b: i64) -> i64 { a &+ b }",
+            "fn f(a: i64, b: i64) -> i64 { a &- b }",
+            "fn f(a: i64, b: i64) -> i64 { a &* b }",
+        ] {
+            let r = parse(src);
+            assert!(
+                r.errors.is_empty(),
+                "parse errors for `{src}`: {:?}",
+                r.errors
+            );
+        }
+    }
+
+    // ── functional_update: `R { x: 5, ..base }` ───────────────────────────
+
+    #[test]
+    fn functional_update_basic_parses() {
+        // `Point { x: 1, ..old }` must parse as a StructInit with base = Some(old).
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { x: 1, ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 1, "one explicit field expected");
+        let base = base.as_ref().expect("base should be Some");
+        assert!(
+            matches!(&base.0, Expr::Identifier(name) if name == "old"),
+            "base should be Identifier 'old', got {:?}",
+            base.0
+        );
+    }
+
+    #[test]
+    fn functional_update_no_explicit_fields_parses() {
+        // `Point { ..old }` (zero explicit fields, only base) must also parse.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "functional update with no explicit fields must parse; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { fields, base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert_eq!(fields.len(), 0, "no explicit fields expected");
+        assert!(base.is_some(), "base should be Some");
+    }
+
+    #[test]
+    fn functional_update_mid_list_base_is_rejected() {
+        // `Point { ..base, x: 1 }` — base is not last; must produce a parse error.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(old: Point) { let p = Point { ..old, x: 1 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            !result.errors.is_empty(),
+            "functional-update base not at end must produce a parse error"
+        );
+    }
+
+    #[test]
+    fn functional_update_base_is_none_for_regular_struct_init() {
+        // A plain struct literal must have base = None.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f() { let p = Point { x: 1, y: 2 }; }
+        ";
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "plain struct init must parse without errors; got: {:?}",
+            result.errors
+        );
+        let Item::Function(f) = &result.program.items[1].0 else {
+            panic!("expected function");
+        };
+        let stmt = &f.body.stmts[0];
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &stmt.0
+        else {
+            panic!("expected let with value");
+        };
+        let Expr::StructInit { base, .. } = expr else {
+            panic!("expected StructInit, got {expr:?}");
+        };
+        assert!(base.is_none(), "plain struct init must have base = None");
+    }
+
+    #[test]
+    fn functional_update_double_base_is_rejected() {
+        // `R { ..a, ..b }` must be a parse error — only one base allowed.
+        let src = r"
+            record Point { x: int, y: int }
+            fn f(a: Point, b: Point) { let p = Point { ..a, ..b }; }
+        ";
+        let result = parse(src);
+        let has_expected_error = result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("must be the last item"));
+        assert!(
+            has_expected_error,
+            "double base `..a, ..b` must produce a 'must be the last item' error; got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn intrinsic_attribute_parsed_with_semicolon_body() {
+        // A function annotated with `#[intrinsic("key")]` and a `;` terminator
+        // must parse without errors and carry the intrinsic key in `FnDecl.intrinsic`.
+        let src = r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "#[intrinsic] with semicolon body must parse cleanly; got: {:?}",
+            result.errors
+        );
+        let (item, _) = result.program.items.first().expect("expected one item");
+        if let crate::ast::Item::Function(fd) = item {
+            assert_eq!(
+                fd.intrinsic.as_deref(),
+                Some("math.sqrt"),
+                "FnDecl.intrinsic must carry the catalog key"
+            );
+        } else {
+            panic!("expected Item::Function, got something else");
+        }
+    }
+
+    #[test]
+    fn intrinsic_attribute_key_is_none_for_normal_fns() {
+        // Regular functions must have `intrinsic == None`.
+        let src = r"pub fn add(a: i64, b: i64) -> i64 { a + b }";
+        let result = parse(src);
+        assert!(result.errors.is_empty());
+        let (item, _) = result.program.items.first().expect("expected one item");
+        if let crate::ast::Item::Function(fd) = item {
+            assert!(
+                fd.intrinsic.is_none(),
+                "normal fn must have intrinsic == None, got {:?}",
+                fd.intrinsic
+            );
+        } else {
+            panic!("expected Item::Function");
+        }
+    }
+
+    // --- #[extern_symbol] attribute --------------------------------------
+
+    #[test]
+    fn extern_symbol_attribute_on_extern_c_fn_is_captured() {
+        // The attribute must parse via the existing Attribute infrastructure
+        // and ride on `ExternFnDecl.attributes`. The template string is
+        // captured verbatim — `{T}` is a literal character sequence inside
+        // a `StringLit` and is not yet parsed as a placeholder (Stage 2).
+        let src = r#"
+            extern "C" {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn hew_vec_push(v: ptr, x: ptr);
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::ExternBlock(block) = &result.program.items[0].0 else {
+            panic!("expected ExternBlock");
+        };
+        assert_eq!(block.functions.len(), 1);
+        let extern_fn = &block.functions[0];
+        assert_eq!(extern_fn.name, "hew_vec_push");
+        assert_eq!(extern_fn.attributes.len(), 1, "must carry one attribute");
+        let attr = &extern_fn.attributes[0];
+        assert_eq!(attr.name, "extern_symbol");
+        assert_eq!(attr.args.len(), 1);
+        assert_eq!(attr.args[0].as_str(), "hew_vec_push_{T}");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_impl_method_is_captured() {
+        // The attribute must also flow through `parse_impl_decl`'s body loop
+        // onto inherent impl methods.
+        let src = r#"
+            impl<T> Vec<T> {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn push(self, x: T) {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
+            panic!("expected Impl");
+        };
+        assert_eq!(impl_decl.methods.len(), 1);
+        let method = &impl_decl.methods[0];
+        assert_eq!(method.name, "push");
+        assert_eq!(method.attributes.len(), 1);
+        assert_eq!(method.attributes[0].name, "extern_symbol");
+        assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_push_{T}");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_trait_impl_method_is_captured() {
+        let src = r#"
+            impl<T> SomeTrait for Vec<T> {
+                #[extern_symbol("hew_vec_join_str")]
+                fn join(self, sep: string) -> string {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result.errors.is_empty(),
+            "expected no parse errors, got: {:?}",
+            result.errors
+        );
+        let crate::ast::Item::Impl(impl_decl) = &result.program.items[0].0 else {
+            panic!("expected Impl");
+        };
+        assert!(impl_decl.trait_bound.is_some(), "must be a trait impl");
+        assert_eq!(impl_decl.methods.len(), 1);
+        let method = &impl_decl.methods[0];
+        assert_eq!(method.attributes.len(), 1);
+        assert_eq!(method.attributes[0].name, "extern_symbol");
+        assert_eq!(method.attributes[0].args[0].as_str(), "hew_vec_join_str");
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_free_fn_is_rejected() {
+        // Attachment rule: `#[extern_symbol]` is only valid on
+        // `fn` declarations inside `extern "C"` blocks or `impl` blocks.
+        // Placement on a free fn must surface as a parser diagnostic.
+        let src = r#"
+            #[extern_symbol("hew_foo")]
+            pub fn foo() {}
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_actor_is_rejected() {
+        let src = r#"
+            #[extern_symbol("hew_actor")]
+            actor MyActor {}
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_type_decl_method_is_rejected() {
+        // Methods declared inline in a type body are not `impl` methods —
+        // declare them in an `impl` block instead.
+        let src = r#"
+            type Foo {
+                x: i64,
+                #[extern_symbol("hew_foo_bar")]
+                fn bar(self) {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_actor_receive_fn_is_rejected() {
+        // Actor `receive fn` (and `receive gen fn`) declarations cannot bind
+        // to a runtime C-ABI symbol — extern_symbol is only valid in an
+        // `extern "C"` block or an `impl` block.
+        let src = r#"
+            actor MyActor {
+                #[extern_symbol("hew_actor_recv")]
+                receive fn ping() {}
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_on_trait_item_fn_is_rejected() {
+        // Trait items describe an abstract surface; the C-ABI binding belongs
+        // on the concrete `impl` method, not the trait declaration.
+        let src = r#"
+            trait Pushable<T> {
+                #[extern_symbol("hew_vec_push_{T}")]
+                fn push(self, value: T);
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("`#[extern_symbol]`")),
+            "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn extern_symbol_attribute_missing_string_arg_is_rejected() {
+        // `parse_attributes` enforces value-shape rules; a key-value form
+        // here surfaces an "invalid value" diagnostic. (Stage 2 owns
+        // semantic template-grammar validation; the parser only relies on the
+        // existing attribute syntax gate.)
+        let src = r#"
+            extern "C" {
+                #[extern_symbol(= 5)]
+                fn hew_x();
+            }
+        "#;
+        let result = parse(src);
+        assert!(
+            !result.errors.is_empty(),
+            "malformed `#[extern_symbol]` argument list must produce a parser error"
         );
     }
 } // mod tests

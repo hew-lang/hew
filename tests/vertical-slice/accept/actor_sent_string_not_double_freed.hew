@@ -1,0 +1,51 @@
+//! W5-011 P3 actor-context drop-safety proof — a heap-owning `string` moved
+//! into an actor mailbox must NOT be scope-dropped by the sending function,
+//! on ANY exit path (normal return, panic, or scope cancellation).
+//!
+//! The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
+//! spine), so the sent string is bit-aliased into the envelope. The fail-closed
+//! sole-owner derivation excludes it because the send surfaces its backing
+//! local as a terminator source operand (`Send`/`Ask` `value`, or
+//! `SpawnActor` `init_args`) — see `terminator_source_places` /
+//! `instr_source_places` in hew-mir/src/lower.rs. A regressed derivation that
+//! scope-dropped the sent string would free a buffer the live mailbox still
+//! owns: a use-after-free on the receiving side, or a double-free when the
+//! handler later releases it.
+//!
+//! Observable contract: the driver sends many heap strings into the actor and
+//! the program prints `done` and exits 0 with no abort. A double-free trips the
+//! runtime's `free_cstring` header-sentinel check (SIGABRT); a use-after-free
+//! trips Guard Malloc. A clean exit is the behavioural proof that the sender
+//! never reclaims a buffer it handed to the mailbox.
+
+actor Echoer {
+    var seen: i64;
+
+    init() {
+        seen = 0;
+    }
+
+    receive fn note(_label: string) {
+        seen = seen + 1;
+    }
+
+    receive fn count() -> i64 {
+        seen
+    }
+}
+
+fn main() -> i64 {
+    let e = spawn Echoer;
+    var i: i64 = 0;
+    while i < 1000 {
+        let s = string_concat("msg-", "payload");
+        e.note(s);
+        i = i + 1;
+    }
+    println("done");
+    let c = match await e.count() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    };
+    c * 0
+}

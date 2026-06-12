@@ -3,6 +3,7 @@
 //! Parses `.hew` files and extracts type information: function signatures,
 //! clean name mappings, handle types, and handle method mappings.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use hew_parser::ast::{
@@ -30,6 +31,10 @@ pub struct CFunction {
 pub struct WrapperFn {
     /// The Hew function name (e.g. `"parse"`).
     pub name: String,
+    /// Function type parameters.
+    pub type_params: Vec<String>,
+    /// Trait bounds keyed by type parameter name.
+    pub type_param_bounds: HashMap<String, Vec<String>>,
     /// Parameter types.
     pub params: Vec<Ty>,
     /// Return type.
@@ -186,6 +191,25 @@ fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
+/// Collect every extern (C-ABI) function name declared in the module's
+/// `extern` blocks. Used to decide whether a pub wrapper's inner callee is a
+/// real link-time C symbol (collapse permitted) or a same-module Hew helper
+/// (identity mapping required so the wrapper itself is compiled and callable).
+fn collect_extern_fn_names(program: &hew_parser::ast::Program) -> HashSet<String> {
+    program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::ExternBlock(block) = item {
+                Some(block.functions.iter().map(|f| f.name.clone()))
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect()
+}
+
 /// Extract all type information from a parsed `.hew` program.
 fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -> ModuleInfo {
     let mut info = ModuleInfo {
@@ -198,6 +222,16 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         drop_funcs: Vec::new(),
         unsupported_type_signatures: Vec::new(),
     };
+
+    // Pre-collect every extern (C-ABI) function name declared in the module.
+    // A pub wrapper may only be collapsed to its inner callee — the trivial
+    // pass-through optimisation in `clean_names` — when that callee is an extern
+    // C symbol that exists at link time. A wrapper forwarding to a same-module
+    // *Hew* helper (e.g. `pub fn encode(s) { encode_impl(s) }`) must instead map
+    // to itself so the wrapper is compiled and called by its qualified name;
+    // collapsing to the private helper's bare name yields an unresolvable callee
+    // at the importer's call site.
+    let extern_fn_names = collect_extern_fn_names(program);
 
     for (item, _span) in &program.items {
         match item {
@@ -230,32 +264,40 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             }
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 // Extract wrapper function's own signature
-                let (params, return_type) = wrapper_fn_sig(fn_decl, module_short);
+                let (type_params, type_param_bounds, params, return_type) =
+                    wrapper_fn_sig(fn_decl, module_short);
                 if signature_contains_error_type(&params, &return_type) {
                     info.unsupported_type_signatures
                         .push(format!("public function `{}`", fn_decl.name));
                 }
                 info.wrapper_fns.push(WrapperFn {
                     name: fn_decl.name.clone(),
+                    type_params,
+                    type_param_bounds,
                     params,
                     return_type,
                 });
 
-                // Clean name mapping: use the C function target only for
-                // trivial pass-through wrappers (same param count). Non-trivial
-                // wrappers (e.g. `setup()` calling `hew_log_set_level(2)`) use
-                // identity mapping so the wrapper Hew function is compiled and
-                // called instead.
-                let c_target =
-                    if let Some((target, call_arg_count)) = extract_call_target(&fn_decl.body) {
-                        if call_arg_count == fn_decl.params.len() {
-                            target
-                        } else {
-                            fn_decl.name.clone()
-                        }
+                // Clean name mapping: use the inner call target only for trivial
+                // pass-through wrappers that forward to an extern C symbol with
+                // the same arity. Non-trivial wrappers (different arg count, e.g.
+                // `setup()` calling `hew_log_set_level(2)`) AND wrappers that
+                // forward to a same-module Hew helper (e.g. `encode()` calling
+                // `encode_impl()`) use identity mapping so the wrapper Hew
+                // function is compiled and called by its qualified name. A Hew
+                // helper is private to the module: collapsing the public wrapper
+                // onto it produces a callee the importer cannot resolve.
+                let c_target = if let Some((target, call_arg_count)) =
+                    extract_call_target(&fn_decl.body)
+                {
+                    if call_arg_count == fn_decl.params.len() && extern_fn_names.contains(&target) {
+                        target
                     } else {
                         fn_decl.name.clone()
-                    };
+                    }
+                } else {
+                    fn_decl.name.clone()
+                };
                 info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {
@@ -308,19 +350,55 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
 
 /// Convert a wrapper `pub fn` declaration to type checker types.
 /// Mirrors `extern_fn_sig` but works on `FnDecl` params (`Param` not `ExternParam`).
-fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
+fn wrapper_fn_sig(
+    func: &FnDecl,
+    module_short: &str,
+) -> (Vec<String>, HashMap<String, Vec<String>>, Vec<Ty>, Ty) {
+    let (type_params, type_param_bounds) = wrapper_fn_type_params(func);
+    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
     let params: Vec<Ty> = func
         .params
         .iter()
-        .map(|p| type_expr_to_ty(&p.ty.0, module_short))
+        .map(|p| type_expr_to_ty_with_params(&p.ty.0, module_short, &type_param_names))
         .collect();
 
-    let ret = func
-        .return_type
-        .as_ref()
-        .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+    let ret = func.return_type.as_ref().map_or(Ty::Unit, |rt| {
+        type_expr_to_ty_with_params(&rt.0, module_short, &type_param_names)
+    });
 
-    (params, ret)
+    (type_params, type_param_bounds, params, ret)
+}
+
+fn wrapper_fn_type_params(func: &FnDecl) -> (Vec<String>, HashMap<String, Vec<String>>) {
+    let mut type_params = Vec::new();
+    let mut bounds = HashMap::new();
+    if let Some(params) = &func.type_params {
+        for param in params {
+            type_params.push(param.name.clone());
+            bounds.insert(
+                param.name.clone(),
+                param
+                    .bounds
+                    .iter()
+                    .map(|bound| bound.name.clone())
+                    .collect(),
+            );
+        }
+    }
+    let type_param_names: HashSet<String> = type_params.iter().cloned().collect();
+    if let Some(where_clause) = &func.where_clause {
+        for predicate in &where_clause.predicates {
+            if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                if type_args.as_ref().is_none_or(Vec::is_empty) && type_param_names.contains(name) {
+                    bounds
+                        .entry(name.clone())
+                        .or_insert_with(Vec::new)
+                        .extend(predicate.bounds.iter().map(|bound| bound.name.clone()));
+                }
+            }
+        }
+    }
+    (type_params, bounds)
 }
 
 /// Convert a Hew type expression to the type checker's `Ty`.
@@ -329,12 +407,24 @@ fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     reason = "type mapping covers all primitive and generic variants"
 )]
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
+    type_expr_to_ty_with_params(texpr, module_short, &HashSet::new())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "type mapping covers all primitive and generic variants"
+)]
+fn type_expr_to_ty_with_params(
+    texpr: &TypeExpr,
+    module_short: &str,
+    type_params: &HashSet<String>,
+) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
             // Primitive types never take type args; delegate entirely to the
-            // canonical alias table so aliases like `str`, `uint`, `float`,
-            // `Float`, `byte`, `Bool`, `Char`, `Bytes`, `Duration` are
-            // recognised instead of falling through to module-qualification.
+            // canonical primitive table so names like `string`, `bool`, `char`,
+            // `bytes`, `duration`, `isize`, `usize` are recognised instead of
+            // falling through to module-qualification.
             let has_args = type_args.as_ref().is_some_and(|a| !a.is_empty());
             if !has_args {
                 if let Some(prim) = Ty::from_name(name.as_str()) {
@@ -342,11 +432,25 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 }
             }
             match name.as_str() {
+                param
+                    if type_args.as_ref().is_none_or(Vec::is_empty)
+                        && type_params.contains(param) =>
+                {
+                    Ty::Named {
+                        builtin: None,
+                        name: param.to_string(),
+                        args: vec![],
+                    }
+                }
                 // Option<T> → Ty::option() helper
                 "Option" => {
                     if let Some(args) = type_args {
                         if let Some(first) = args.first() {
-                            return Ty::option(type_expr_to_ty(&first.0, module_short));
+                            return Ty::option(type_expr_to_ty_with_params(
+                                &first.0,
+                                module_short,
+                                type_params,
+                            ));
                         }
                     }
                     Ty::normalize_named("Option".to_string(), vec![])
@@ -356,8 +460,8 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                     if let Some(args) = type_args {
                         if args.len() >= 2 {
                             return Ty::result(
-                                type_expr_to_ty(&args[0].0, module_short),
-                                type_expr_to_ty(&args[1].0, module_short),
+                                type_expr_to_ty_with_params(&args[0].0, module_short, type_params),
+                                type_expr_to_ty_with_params(&args[1].0, module_short, type_params),
                             );
                         }
                     }
@@ -369,7 +473,9 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|a| {
                             a.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -382,7 +488,9 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
@@ -394,28 +502,39 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         .as_ref()
                         .map(|args| {
                             args.iter()
-                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .map(|(te, _)| {
+                                    type_expr_to_ty_with_params(te, module_short, type_params)
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
                 ),
             }
         }
-        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty(&inner.0, module_short)),
+        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty_with_params(
+            &inner.0,
+            module_short,
+            type_params,
+        )),
         TypeExpr::Result { ok, err } => Ty::result(
-            type_expr_to_ty(&ok.0, module_short),
-            type_expr_to_ty(&err.0, module_short),
+            type_expr_to_ty_with_params(&ok.0, module_short, type_params),
+            type_expr_to_ty_with_params(&err.0, module_short, type_params),
         ),
         TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()
-                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
                 .collect(),
         ),
-        TypeExpr::Array { element, size } => {
-            Ty::Array(Box::new(type_expr_to_ty(&element.0, module_short)), *size)
-        }
+        TypeExpr::Array { element, size } => Ty::Array(
+            Box::new(type_expr_to_ty_with_params(
+                &element.0,
+                module_short,
+                type_params,
+            )),
+            *size,
+        ),
         TypeExpr::Slice(_) | TypeExpr::Infer => Ty::Error,
         TypeExpr::Function {
             params,
@@ -423,16 +542,32 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
         } => Ty::Function {
             params: params
                 .iter()
-                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                .map(|(te, _)| type_expr_to_ty_with_params(te, module_short, type_params))
                 .collect(),
-            ret: Box::new(type_expr_to_ty(&return_type.0, module_short)),
+            ret: Box::new(type_expr_to_ty_with_params(
+                &return_type.0,
+                module_short,
+                type_params,
+            )),
         },
         TypeExpr::Pointer {
             is_mutable,
             pointee,
         } => Ty::Pointer {
             is_mutable: *is_mutable,
-            pointee: Box::new(type_expr_to_ty(&pointee.0, module_short)),
+            pointee: Box::new(type_expr_to_ty_with_params(
+                &pointee.0,
+                module_short,
+                type_params,
+            )),
+        },
+        // `&T` immutable borrow — first-class no-retain shared reference.
+        TypeExpr::Borrow(inner) => Ty::Borrow {
+            pointee: Box::new(type_expr_to_ty_with_params(
+                &inner.0,
+                module_short,
+                type_params,
+            )),
         },
         TypeExpr::TraitObject(bounds) => Ty::TraitObject {
             traits: bounds
@@ -440,6 +575,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 .map(|bound| crate::ty::TraitObjectBound {
                     trait_name: bound.name.clone(),
                     args: vec![],
+                    assoc_bindings: vec![],
                 })
                 .collect(),
         },
@@ -499,7 +635,8 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
             None
         }
         // Handle blocks or unsafe blocks that wrap a call
-        Expr::Block(block) | Expr::Unsafe(block) => extract_call_target(block),
+        Expr::Block(block) => extract_call_target(block),
+        Expr::UnsafeBlock(block) => extract_call_target(block),
         Expr::Cast { expr, .. } => call_target_from_expr(&expr.0),
         _ => None,
     }
@@ -1139,32 +1276,19 @@ mod tests {
         );
     }
 
-    /// Directly exercises `type_expr_to_ty` for every alias that was previously
-    /// missing from the partial local table and would have been mis-qualified.
+    /// Directly exercises `type_expr_to_ty` for canonical primitive names.
+    /// Retired aliases (str, float, Float, byte, Bool, Char, Bytes) must not
+    /// resolve — see `primitive_aliases_rejected` for the negative assertions.
     #[test]
-    fn primitive_aliases_delegate_to_from_name() {
+    fn primitive_canonicals_delegate_to_from_name() {
         use hew_parser::ast::TypeExpr;
 
         let module = "test";
         let cases: &[(&str, Ty)] = &[
-            // aliases present in Ty::from_name but absent from the old local table
-            ("str", Ty::String),
-            ("uint", Ty::U64),
-            ("usize", Ty::U64),
-            ("float", Ty::F64),
-            ("Float", Ty::F64),
-            ("byte", Ty::U8),
-            ("Bool", Ty::Bool),
-            ("Char", Ty::Char),
-            ("Bytes", Ty::Bytes),
-            ("Duration", Ty::Duration),
-            // canonical names that were already handled — must still work
+            // canonical names must still work
             ("string", Ty::String),
-            ("String", Ty::String),
             ("i64", Ty::I64),
-            ("int", Ty::I64),
-            ("Int", Ty::I64),
-            ("isize", Ty::I64),
+            ("isize", Ty::Isize),
             ("u64", Ty::U64),
             ("f64", Ty::F64),
             ("bool", Ty::Bool),
@@ -1173,38 +1297,38 @@ mod tests {
             ("duration", Ty::Duration),
         ];
 
-        for (alias, expected) in cases {
+        for (name, expected) in cases {
             let texpr = TypeExpr::Named {
-                name: alias.to_string(),
+                name: name.to_string(),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, module);
             assert_eq!(
                 got, *expected,
-                "alias `{alias}` should resolve to {expected:?}, got {got:?}"
+                "canonical `{name}` should resolve to {expected:?}, got {got:?}"
             );
         }
     }
 
-    /// Aliases must NOT be module-qualified: `str` → `Ty::String`, not
-    /// `Ty::Named("test.str")`.
+    /// Retired aliases must NOT resolve to primitive types; they fall through
+    /// to module-qualification (i.e. produce a Named type, not a primitive).
     #[test]
-    fn primitive_aliases_are_not_module_qualified() {
+    fn primitive_aliases_rejected() {
         use hew_parser::ast::TypeExpr;
 
-        let aliases = [
-            "str", "uint", "usize", "isize", "float", "Float", "byte", "Bool", "Char", "Bytes",
-            "Duration",
-        ];
-        for alias in aliases {
+        let retired = ["str", "float", "Float", "byte", "Bool", "Char", "Bytes"];
+        for alias in retired {
             let texpr = TypeExpr::Named {
                 name: alias.to_string(),
                 type_args: None,
             };
             let got = type_expr_to_ty(&texpr, "mymod");
             assert!(
-                !matches!(got, Ty::Named { .. }),
-                "alias `{alias}` must not become a Named type (was mis-qualified before fix), got {got:?}"
+                !matches!(
+                    got,
+                    Ty::String | Ty::F64 | Ty::U8 | Ty::Bool | Ty::Char | Ty::Bytes
+                ),
+                "retired alias `{alias}` must not resolve to a primitive type, got {got:?}"
             );
         }
     }

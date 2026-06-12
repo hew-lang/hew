@@ -45,6 +45,7 @@ pub fn build_signature_help(
     Some(SignatureHelpResult {
         signatures: vec![SignatureInfo {
             label,
+            documentation: sig.doc_comment.clone(),
             parameters: params,
         }],
         active_signature: Some(0),
@@ -183,6 +184,52 @@ mod tests {
     use hew_types::Ty;
     use std::collections::{HashMap, HashSet};
 
+    fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
+        TypeCheckOutput {
+            expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
+            assign_target_kinds: HashMap::new(),
+            assign_target_shapes: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
+            fn_sigs,
+            handle_bearing_structs: std::collections::HashSet::new(),
+            method_call_consumes_receiver: HashSet::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
+            stack_hints: Vec::new(),
+            actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
+            method_call_receiver_kinds: HashMap::new(),
+            lowering_facts: HashMap::new(),
+            method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
+        }
+    }
+
     fn make_tc_with_fn(
         name: &str,
         param_names: Vec<&str>,
@@ -197,25 +244,7 @@ mod tests {
         };
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(name.to_string(), sig);
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs,
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-        }
+        make_tc_with_fn_sigs(fn_sigs)
     }
 
     #[test]
@@ -291,7 +320,52 @@ mod tests {
         let source = "sum(";
         let tc = make_tc_with_fn("sum", vec!["value"], vec![Ty::I64], Ty::I64);
         let result = build_signature_help(source, &tc, source.len()).unwrap();
-        assert_eq!(result.signatures[0].label, "fn sum(value: int) -> int");
+        assert_eq!(result.signatures[0].label, "fn sum(value: i64) -> i64");
+    }
+
+    /// Signature help must label an `impl`-block method on a named type with
+    /// its full parameter list and return type. This is the analysis-layer
+    /// coverage the LSP relies on for imported stdlib method surfaces once the
+    /// module is inlined (e.g. regex `captures(input: string) -> CaptureMatches`).
+    #[test]
+    fn sig_help_labels_impl_block_method_with_return_type() {
+        let source = "\
+type Caps { count: i64; }
+type Matcher { id: i64; }
+trait MatcherMethods {
+    fn captures(self, input: string) -> Caps;
+}
+impl MatcherMethods for Matcher {
+    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+}
+fn probe(mat: Matcher, s: string) {
+    let c = mat.captures(s);
+}
+";
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        let tc = checker.check_program(&parse_result.program);
+        assert!(
+            !tc.errors
+                .iter()
+                .any(|e| e.severity == hew_types::error::Severity::Error),
+            "fixture must type-check cleanly: {:?}",
+            tc.errors
+        );
+        let call = source.find("mat.captures").expect("call present");
+        let paren = call + source[call..].find('(').unwrap() + 1;
+        let sh = build_signature_help(source, &tc, paren)
+            .expect("signature help should resolve the impl-block method");
+        assert_eq!(
+            sh.signatures[0].label, "fn captures(input: string) -> Caps",
+            "signature label should include the param list and return type",
+        );
     }
 
     #[test]
@@ -317,6 +391,7 @@ mod tests {
                 name: "ChannelModule".to_string(),
                 type_params: vec![],
                 fields: HashMap::new(),
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::from([(
                     "new".to_string(),
@@ -334,31 +409,60 @@ mod tests {
 
         let mut expr_types = HashMap::new();
         expr_types.insert(
-            SpanKey { start: 0, end: 7 },
+            SpanKey {
+                start: 0,
+                end: 7,
+                module_idx: 0,
+            },
             Ty::Named {
                 name: "ChannelModule".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
 
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs,
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs,
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -368,7 +472,7 @@ mod tests {
         );
         let sh = result.unwrap();
         assert_eq!(sh.active_parameter, Some(0));
-        assert_eq!(sh.signatures[0].label, "fn new(capacity: int)");
+        assert_eq!(sh.signatures[0].label, "fn new(capacity: i64)");
     }
 
     #[test]
@@ -393,6 +497,7 @@ mod tests {
                 name: "Widget".to_string(),
                 type_params: vec![],
                 fields: HashMap::new(),
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -402,31 +507,60 @@ mod tests {
 
         let mut expr_types = HashMap::new();
         expr_types.insert(
-            SpanKey { start: 0, end: 5 },
+            SpanKey {
+                start: 0,
+                end: 5,
+                module_idx: 0,
+            },
             Ty::Named {
                 name: "Widget".to_string(),
                 args: vec![],
+                builtin: None,
             },
         );
 
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs,
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs,
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -446,6 +580,46 @@ mod tests {
         assert!(
             result.is_none(),
             "method-call syntax without receiver typing must not fall back to unrelated top-level `foo`"
+        );
+    }
+
+    #[test]
+    fn sig_help_carries_doc_comment() {
+        // A function with a doc comment must surface that comment on the
+        // signature's `documentation` field.
+        let sig = FnSig {
+            param_names: vec!["x".to_string()],
+            params: vec![Ty::I32],
+            return_type: Ty::I32,
+            doc_comment: Some("Returns the square of x.".to_string()),
+            ..FnSig::default()
+        };
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert("square".to_string(), sig);
+        let tc = make_tc_with_fn_sigs(fn_sigs);
+        let source = "square(";
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some(), "expected signature help");
+        let sh = result.unwrap();
+        assert_eq!(
+            sh.signatures[0].documentation.as_deref(),
+            Some("Returns the square of x."),
+            "signature info should carry the doc comment; got: {:?}",
+            sh.signatures[0].documentation
+        );
+    }
+
+    #[test]
+    fn sig_help_without_doc_comment_has_none_documentation() {
+        // A function without a doc comment must yield `None` — not an empty string.
+        let source = "add(";
+        let tc = make_tc_with_fn("add", vec!["a", "b"], vec![Ty::I32, Ty::I32], Ty::I32);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some());
+        let sh = result.unwrap();
+        assert_eq!(
+            sh.signatures[0].documentation, None,
+            "function without doc comment must have None documentation in sig help"
         );
     }
 }

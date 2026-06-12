@@ -1,0 +1,96 @@
+//! Layout-backed Vec::clone tests (W3.003).
+//!
+//! Exercises bulk-copy clone on Vec<Point> (Copy record) and Vec<(i32, i32)>
+//! (Copy tuple). The checker rewrites `clone` to `hew_vec_clone_layout`;
+//! codegen synthesises the hidden HewTypeLayout* operand from the element
+//! type; the runtime memcpys all element bytes into a fresh allocation.
+//!
+//! Uses inline `if … { panic(…) }` assertions because the `hew test`
+//! extracted-function context does not yet support module-qualified
+//! `testing.*` calls (pre-existing MethodCallNoRewrite limitation; see
+//! deque_test.hew and vec_layout_remove.hew on v05-integration).
+
+type Point { x: i64, y: i64 }
+
+// ── record-element clone preserves contents ──────────────────────────────────
+
+#[test]
+fn test_clone_record_vec_copies_all_elements() {
+    let src: Vec<Point> = Vec::new();
+    src.push(Point { x: 10, y: 20 });
+    src.push(Point { x: 30, y: 40 });
+    src.push(Point { x: 50, y: 60 });
+
+    let dst = src.clone();
+
+    if dst.len() != 3 { panic(f"expected dst len 3, got {dst.len()}"); }
+
+    let a = dst.get(0);
+    if a.x != 10 { panic(f"expected dst[0].x=10, got {a.x}"); }
+    if a.y != 20 { panic(f"expected dst[0].y=20, got {a.y}"); }
+
+    let b = dst.get(1);
+    if b.x != 30 { panic(f"expected dst[1].x=30, got {b.x}"); }
+    if b.y != 40 { panic(f"expected dst[1].y=40, got {b.y}"); }
+
+    let c = dst.get(2);
+    if c.x != 50 { panic(f"expected dst[2].x=50, got {c.x}"); }
+    if c.y != 60 { panic(f"expected dst[2].y=60, got {c.y}"); }
+}
+
+// ── empty source clones to empty destination ─────────────────────────────────
+
+#[test]
+fn test_clone_empty_record_vec_is_empty() {
+    let src: Vec<Point> = Vec::new();
+    let dst = src.clone();
+    if dst.len() != 0 { panic(f"expected empty clone, got len {dst.len()}"); }
+}
+
+// ── clone is independent of the source (mutation does not leak) ──────────────
+
+#[test]
+fn test_clone_is_independent_of_source_after_set() {
+    let src: Vec<Point> = Vec::new();
+    src.push(Point { x: 1, y: 2 });
+    src.push(Point { x: 3, y: 4 });
+
+    let dst = src.clone();
+
+    // Mutate the source after cloning.
+    src.set(0, Point { x: 99, y: 99 });
+
+    // Source reflects the mutation.
+    let s0 = src.get(0);
+    if s0.x != 99 { panic(f"expected src[0].x=99 after set, got {s0.x}"); }
+
+    // Clone is unaffected.
+    let d0 = dst.get(0);
+    if d0.x != 1 { panic(f"expected dst[0].x=1 (unchanged), got {d0.x}"); }
+    if d0.y != 2 { panic(f"expected dst[0].y=2 (unchanged), got {d0.y}"); }
+}
+
+// Tuple-element coverage (`Vec<(i32, i32)>`) is covered at the typechecker
+// layer in `hew-types/tests/type_system_negative.rs::vec_clone_bitcopy_tuple_element_is_permitted`
+// and at the runtime layer through the layout-descriptor parameterised
+// `hew_vec_clone_layout` unit tests. The Hew front-end does not yet lower
+// tuple literal expressions in `let`/`push` positions (E_NOT_YET_IMPLEMENTED
+// in HIR lowering), so an end-to-end fixture cannot construct one.
+
+// ── pushing into the clone does not affect the source ────────────────────────
+
+#[test]
+fn test_clone_grows_independently_of_source() {
+    let src: Vec<Point> = Vec::new();
+    src.push(Point { x: 7, y: 8 });
+
+    let dst = src.clone();
+    dst.push(Point { x: 100, y: 200 });
+
+    if src.len() != 1 { panic(f"expected src len 1, got {src.len()}"); }
+    if dst.len() != 2 { panic(f"expected dst len 2, got {dst.len()}"); }
+
+    let extra = dst.get(1);
+    if extra.x != 100 { panic(f"expected dst[1].x=100, got {extra.x}"); }
+    if extra.y != 200 { panic(f"expected dst[1].y=200, got {extra.y}"); }
+}

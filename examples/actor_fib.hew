@@ -1,5 +1,8 @@
+//! Status: runnable
+//! Description: Fibonacci across actors - demonstrates deterministic fan-out with joins
+
 // Fibonacci across actors - demonstrates deterministic fan-out with joins
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -7,12 +10,12 @@ fn fib(n: int) -> int {
     }
 }
 
-fn print_result(worker_id: int, n: int, result: int) {
+fn print_result(worker_id: i64, n: i64, result: i64) {
     println(f"Worker {worker_id}: fib({n}) = {result}");
 }
 
 actor FibWorker {
-    receive fn compute(n: int) -> int {
+    receive fn compute(n: i64) -> i64 {
         fib(n)
     }
 }

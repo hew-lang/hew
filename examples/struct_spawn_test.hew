@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Struct instantiation and function test
+
 // Struct instantiation and function test
 type Point {
     x: i32;

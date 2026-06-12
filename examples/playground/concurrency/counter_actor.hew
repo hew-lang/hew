@@ -2,21 +2,24 @@
 //! @description A simple actor that counts messages
 
 actor Counter {
-    let count: int;
-
-    receive fn increment(n: int) -> int {
+    var count: i64;
+    receive fn increment(n: i64) -> i64 {
         count = count + n;
-        print("Count is now: ");
-        println(count);
+        println(f"Count is now: {count}");
         count
     }
 }
 
 fn main() {
-    let c = spawn Counter;
+    let c = spawn Counter(count: 0);
+    // Statement-position match is not yet sandbox-admitted, so the first
+    // two replies are awaited bare and the last is an expression match
+    // (-1 marks a failed ask).
     await c.increment(5);
     await c.increment(3);
-    let total = await c.increment(12);
-    print("Final total: ");
-    println(total);
+    let total = match await c.increment(12) {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    println(f"Final total: {total}");
 }

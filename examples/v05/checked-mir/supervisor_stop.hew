@@ -1,0 +1,26 @@
+// MIR-corpus fixture: supervisor bootstrap, child access, graceful stop.
+//
+// Pins the synthesised supervisor bootstrap body, the typed child
+// accessor (`hew_supervisor_child_get`), and the `supervisor_stop(sup)`
+// user-name bridge to `hew_supervisor_stop` (CallRuntimeAbi with
+// dest=None).
+actor Worker {
+    receive fn ping(_n: i64) {
+        _n;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: Worker;
+}
+
+fn main() -> i64 {
+    let sup = spawn AppSupervisor;
+    let w = sup.w1;
+    w.ping(1);
+    supervisor_stop(sup);
+    0
+}

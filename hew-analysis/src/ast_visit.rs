@@ -290,7 +290,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     .enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
                 for child in &supervisor.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
                     }
                 }
@@ -317,7 +317,11 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .leave_body(body_info, Self::context(Some(body_info)));
             }
-            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+            Item::Record(_) // TODO(A-3): no walkable bodies until checker support lands
+            | Item::Import(_)
+            | Item::ExternBlock(_)
+            | Item::Wire(_)
+            | Item::TypeAlias(_) => {}
         }
     }
 
@@ -358,7 +362,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
                 for child in &supervisor.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
                     }
                 }
@@ -663,6 +667,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&right.0, &right.1, body);
             }
             Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::PostfixTry(operand)
             | Expr::Yield(Some(operand)) => {
@@ -683,11 +688,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Block(block)
-            | Expr::Unsafe(block)
-            | Expr::ScopeLaunch(block)
-            | Expr::ScopeSpawn(block)
-            | Expr::Fork { body: block } => {
+            Expr::Block(block) => {
+                self.walk_block(block, body);
+            }
+            Expr::UnsafeBlock(block) => {
                 self.walk_block(block, body);
             }
             Expr::If {
@@ -735,22 +739,23 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_expr(&inner_body.0, &inner_body.1, body);
                 self.pop_scope();
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn { target, args, .. } => {
                 self.walk_expr(&target.0, &target.1, body);
                 for (_, value) in args {
                     self.walk_expr(&value.0, &value.1, body);
                 }
             }
-            Expr::Scope {
-                binding,
+            Expr::Scope { body: inner_body }
+            | Expr::ForkBlock { body: inner_body }
+            | Expr::GenBlock { body: inner_body } => {
+                self.walk_block(inner_body, body);
+            }
+            Expr::ScopeDeadline {
+                duration,
                 body: inner_body,
             } => {
-                let scope_binding = binding.as_deref().map(|binding| {
-                    binding_from_name(self.source, binding, span, BindingKind::Local)
-                });
-                self.push_scope(scope_binding.into_iter().collect());
+                self.walk_expr(&duration.0, &duration.1, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
             }
             Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
                 self.walk_expr(&expr.0, &expr.1, body);
@@ -776,14 +781,10 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&expr.0, &expr.1, body);
                 }
             }
-            Expr::StructInit { fields, .. } => {
+            Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
                 for (_, value) in fields {
                     self.walk_expr(&value.0, &value.1, body);
                 }
-            }
-            Expr::Send { target, message } => {
-                self.walk_expr(&target.0, &target.1, body);
-                self.walk_expr(&message.0, &message.1, body);
             }
             Expr::Select { arms, timeout } => {
                 for arm in arms {
@@ -813,14 +814,16 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&end.0, &end.1, body);
                 }
             }
+            Expr::Is { lhs, rhs } => {
+                self.walk_expr(&lhs.0, &lhs.1, body);
+                self.walk_expr(&rhs.0, &rhs.1, body);
+            }
             Expr::Literal(_)
             | Expr::This
-            | Expr::Cooperate
             | Expr::Yield(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_)
-            | Expr::ScopeCancel => {}
+            | Expr::ByteArrayLiteral(_) => {}
         }
     }
 
@@ -999,6 +1002,12 @@ fn collect_pattern_bindings<'ast>(
             collect_pattern_bindings(source, &left.0, &left.1, bindings);
             collect_pattern_bindings(source, &right.0, &right.1, bindings);
         }
+        // Regex captures are named bindings in scope for the arm body.
+        Pattern::Regex { captures, .. } => {
+            for name in captures {
+                bindings.push(binding_from_name(source, name, span, BindingKind::Local));
+            }
+        }
         Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }
@@ -1058,7 +1067,7 @@ mod tests {
 
     #[test]
     fn walk_parse_result_tracks_shadowing_order() {
-        let source = "fn main(x: int) { let y = x; let x = y; x + y }";
+        let source = "fn main(x: i64) { let y = x; let x = y; x + y }";
         let parse_result = hew_parser::parse(source);
         let mut visitor = RecordingVisitor::default();
         walk_parse_result(Some(source), &parse_result, &mut visitor);
@@ -1088,7 +1097,7 @@ mod tests {
 
     #[test]
     fn walk_named_body_limits_traversal_to_requested_body() {
-        let source = "actor Worker { receive fn handle(msg: int) { msg } fn helper() { ping() } }";
+        let source = "actor Worker { receive fn handle(msg: i64) { msg } fn helper() { ping() } }";
         let parse_result = hew_parser::parse(source);
         let item = &parse_result.program.items[0].0;
         let mut visitor = RecordingVisitor::default();
@@ -1102,7 +1111,7 @@ mod tests {
 
     #[test]
     fn params_to_bindings_marks_parameter_name_span() {
-        let source = "fn f(abc: int) { abc }";
+        let source = "fn f(abc: i64) { abc }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");
@@ -1116,7 +1125,7 @@ mod tests {
     #[test]
     fn lambda_params_to_bindings_use_non_zero_name_spans() {
         let source =
-            "fn main() { let first = (x: int) => x; let second = (y: int, z: int) => y + z; }";
+            "fn main() { let first = |x: i64| x; let second = |y: i64, z: i64| { y + z }; }";
         let parse_result = hew_parser::parse(source);
         let Item::Function(function) = &parse_result.program.items[0].0 else {
             panic!("expected function");
@@ -1140,7 +1149,7 @@ mod tests {
 
     #[test]
     fn visible_bindings_at_keeps_selected_body_isolated() {
-        let source = "fn first(a: int) { let b = a; b }\nfn second(c: int) { c }";
+        let source = "fn first(a: i64) { let b = a; b }\nfn second(c: i64) { c }";
         let parse_result = hew_parser::parse(source);
         let offset = source.find("b }").expect("b usage");
         let bindings = visible_bindings_at(source, &parse_result, offset);

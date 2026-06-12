@@ -7,7 +7,7 @@ use hew_types::error::TypeErrorKind;
 fn extern_call_requires_unsafe() {
     let source = r#"
 extern "C" {
-    fn abs(n: int) -> int;
+    fn abs(n: i64) -> i64;
 }
 
 fn main() {

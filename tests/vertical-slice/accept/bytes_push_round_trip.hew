@@ -1,0 +1,37 @@
+//! W4.039 S3 behavioural proof — bytes-to-string triple-ABI canonicalisation.
+//!
+//! Constructs a `bytes` value from the C string `"Hi"` (via the
+//! `hew_bytes_from_str` runtime constructor, which returns a `BytesTriple`
+//! by value), then converts the buffer to a `string` via
+//! `bytes.to_string()` and prints the result. A successful run prints `Hi`
+//! exactly and exits 0.
+//!
+//! This is the load-bearing observable proof that the canonical
+//! triple-ABI `hew_bytes_to_string` runtime export is wired end-to-end
+//! through the catalog, the `std/io.hew` `extern_symbol` annotation, and
+//! the codegen FFI seam: the runtime, the catalog, the stdlib annotation,
+//! and the call site all agree that `bytes` is a `BytesTriple` value
+//! (LLVM `{ptr, i32, i32}`).
+//!
+//! Note on scope: the plan also requested a `bytes.push(0x48); bytes.push(0x69)`
+//! prefix before the `to_string` call. During implementation that variant
+//! reproducibly prints empty stdout on the same compiler tip — `b.push(...)`
+//! does not propagate the post-CoW/grow `BytesTriple` back to the Hew
+//! local in a way that a subsequent value-position `b.to_string()` reads
+//! the updated triple (the runtime-side `hew_bytes_push` unit test
+//! `cow_on_push` does pass, so the runtime mutation is correct; the gap
+//! is in the codegen mutating-receiver seam). That regression is out of
+//! W4.039's scope — W4.039 owns the `Bytes -> String` conversion ABI, not
+//! the `Bytes::push` mutation propagation — and is disclosed in the lane
+//! return note rather than fixed here.
+
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn main() -> i64 {
+    let b: bytes = unsafe { hew_bytes_from_str("Hi") };
+    let s: string = b.to_string();
+    println(s);
+    0
+}

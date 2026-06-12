@@ -1,0 +1,14 @@
+// Accept: builtin (stdlib) Option<i64> with bare `Some` — NO user `enum Option<T>`.
+// Companion to stdlib_option_none. The Some payload drives the exit code (42):
+// `just()` returns `Some(42)` and the matched `Some(v)` arm yields `v`, so the
+// exit value derives from the round-tripped Option payload, not a literal.
+fn just() -> Option<i64> {
+    Some(42)
+}
+
+fn main() -> i64 {
+    match just() {
+        Some(v) => v,
+        None => 99,
+    }
+}

@@ -1,0 +1,370 @@
+//! Unicode character classification and UTF-8 string helpers.
+//!
+//! Provides codepoint-level predicates mirroring Go's `unicode` package, plus
+//! UTF-8-aware string helpers for counting and iterating Unicode codepoints.
+//!
+//! All classification functions operate on codepoint values (`i64`), not raw
+//! bytes. Codepoints are produced by `unicode.codepoint_at(s, i)` (the
+//! codepoint at position `i`) or by iterating `unicode.runes(s)`.
+//!
+//! The underlying `char_count_utf8` and `codepoint_at_utf8` methods are
+//! exposed on `string` by `std::string` (bound to `hew_string_char_count` and
+//! `hew_string_char_at_utf8` in hew-runtime).
+//!
+//! # Examples
+//!
+//! ```
+//! import std::text::unicode;
+//!
+//! fn main() {
+//!     // Char classification
+//!     let cp = unicode.codepoint_at("café", 3);   // 'é' = 233
+//!     println(unicode.is_lower(cp));              // true
+//!     println(unicode.is_upper(cp));              // false
+//!     println(unicode.to_upper(cp));              // 201 ('É')
+//!
+//!     // UTF-8 helpers
+//!     println(unicode.rune_count("café"));        // 4
+//!     let cps = unicode.runes("日本");
+//!     println(cps.len());                         // 2
+//! }
+//! ```
+
+extern "C" {
+    fn hew_unicode_is_upper(cp: i32) -> bool;
+    fn hew_unicode_is_lower(cp: i32) -> bool;
+    fn hew_unicode_is_space(cp: i32) -> bool;
+    fn hew_unicode_is_digit(cp: i32) -> bool;
+    fn hew_unicode_is_letter(cp: i32) -> bool;
+    fn hew_unicode_is_alnum(cp: i32) -> bool;
+    fn hew_unicode_to_upper(cp: i32) -> i32;
+    fn hew_unicode_to_lower(cp: i32) -> i32;
+}
+
+/// Return true when `cp` is a valid Unicode scalar value.
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_valid_rune(65)        // true  ('A')
+/// unicode.is_valid_rune(0x10FFFF)  // true  (highest scalar)
+/// unicode.is_valid_rune(0xD800)    // false (surrogate)
+/// unicode.is_valid_rune(-1)        // false
+/// ```
+pub fn is_valid_rune(cp: i64) -> bool {
+    match cp {
+        x if x < 0 => false,
+        x if x > 0x10FFFF => false,
+        x if x >= 0xD800 && x <= 0xDFFF => false,
+        _ => true,
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is an uppercase letter.
+///
+/// Follows Unicode general category Lu (Uppercase Letter).
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_upper(65)   // true  ('A')
+/// unicode.is_upper(97)   // false ('a')
+/// unicode.is_upper(201)  // true  ('É', U+00C9)
+/// ```
+pub fn is_upper(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_upper(cp as i32)
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is a lowercase letter.
+///
+/// Follows Unicode general category Ll (Lowercase Letter).
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_lower(97)   // true  ('a')
+/// unicode.is_lower(65)   // false ('A')
+/// unicode.is_lower(233)  // true  ('é', U+00E9)
+/// ```
+pub fn is_lower(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_lower(cp as i32)
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is a decimal digit (0-9).
+///
+/// Matches ASCII digits only (U+0030-U+0039). Arabic-Indic and other
+/// Unicode digit forms are not included.
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_digit(48)  // true  ('0')
+/// unicode.is_digit(57)  // true  ('9')
+/// unicode.is_digit(65)  // false ('A')
+/// ```
+pub fn is_digit(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_digit(cp as i32)
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is a whitespace character.
+///
+/// Matches Unicode White_Space property: ASCII spaces/tabs/newlines plus
+/// Unicode-specific whitespace codepoints (U+00A0 NO-BREAK SPACE, etc.).
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_space(32)  // true  (space)
+/// unicode.is_space(9)   // true  (\t)
+/// unicode.is_space(65)  // false ('A')
+/// ```
+pub fn is_space(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_space(cp as i32)
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is an alphabetic letter.
+///
+/// Matches Unicode Alphabetic property, which includes Latin, CJK, Arabic,
+/// Devanagari, and all other script letters.
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_letter(65)      // true  ('A')
+/// unicode.is_letter(0x65E5)  // true  ('日')
+/// unicode.is_letter(48)      // false ('0')
+/// ```
+pub fn is_letter(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_letter(cp as i32)
+    }
+}
+
+/// Test whether the Unicode codepoint `cp` is a letter or decimal digit.
+///
+/// Equivalent to `is_letter(cp) || is_digit(cp)`. Matches Unicode
+/// Alphabetic or Decimal_Number properties.
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_alnum(65)   // true  ('A')
+/// unicode.is_alnum(48)   // true  ('0')
+/// unicode.is_alnum(32)   // false (space)
+/// ```
+pub fn is_alnum(cp: i64) -> bool {
+    unsafe {
+        hew_unicode_is_alnum(cp as i32)
+    }
+}
+
+/// Test whether `cp` is punctuation.
+///
+/// # Examples
+///
+/// ```
+/// unicode.is_punct(33)      // true  ('!')
+/// unicode.is_punct(0x3002)  // true  (IDEOGRAPHIC FULL STOP)
+/// unicode.is_punct(65)      // false ('A')
+/// ```
+pub fn is_punct(cp: i64) -> bool {
+    match cp {
+        x if x >= 33 && x <= 47 => true,
+        x if x >= 58 && x <= 64 => true,
+        x if x >= 91 && x <= 96 => true,
+        x if x >= 123 && x <= 126 => true,
+        0xA1 => true,
+        0xA7 => true,
+        0xAB => true,
+        0xB6 => true,
+        0xB7 => true,
+        0xBB => true,
+        0xBF => true,
+        0x37E => true,
+        x if x >= 0x2010 && x <= 0x2027 => true,
+        x if x >= 0x2030 && x <= 0x205E => true,
+        x if x >= 0x3001 && x <= 0x303F => true,
+        x if x >= 0xFE10 && x <= 0xFE19 => true,
+        x if x >= 0xFE30 && x <= 0xFE4F => true,
+        x if x >= 0xFF01 && x <= 0xFF0F => true,
+        x if x >= 0xFF1A && x <= 0xFF20 => true,
+        x if x >= 0xFF3B && x <= 0xFF40 => true,
+        x if x >= 0xFF5B && x <= 0xFF65 => true,
+        _ => false,
+    }
+}
+
+/// Convert the Unicode codepoint `cp` to its uppercase equivalent.
+///
+/// Returns the first codepoint of the Unicode to-uppercase mapping. For
+/// codepoints with no uppercase form (digits, punctuation, already-uppercase
+/// letters), returns `cp` unchanged. Invalid codepoints are returned
+/// unchanged.
+///
+/// # Examples
+///
+/// ```
+/// unicode.to_upper(97)   // 65   ('a' -> 'A')
+/// unicode.to_upper(65)   // 65   ('A' unchanged)
+/// unicode.to_upper(233)  // 201  ('é' -> 'É')
+/// ```
+pub fn to_upper(cp: i64) -> i64 {
+    unsafe {
+        hew_unicode_to_upper(cp as i32) as i64
+    }
+}
+
+/// Convert the Unicode codepoint `cp` to its lowercase equivalent.
+///
+/// Returns the first codepoint of the Unicode to-lowercase mapping. For
+/// codepoints with no lowercase form, returns `cp` unchanged. Invalid
+/// codepoints are returned unchanged.
+///
+/// # Examples
+///
+/// ```
+/// unicode.to_lower(65)   // 97   ('A' -> 'a')
+/// unicode.to_lower(97)   // 97   ('a' unchanged)
+/// unicode.to_lower(201)  // 233  ('É' -> 'é')
+/// ```
+pub fn to_lower(cp: i64) -> i64 {
+    unsafe {
+        hew_unicode_to_lower(cp as i32) as i64
+    }
+}
+
+/// Convert `cp` to titlecase.
+///
+/// For scalar mappings currently exposed here, titlecase is the same
+/// single-codepoint mapping as uppercase.
+///
+/// # Examples
+///
+/// ```
+/// unicode.to_title(97)   // 65   ('a' -> 'A')
+/// unicode.to_title(233)  // 201  ('é' -> 'É')
+/// unicode.to_title(49)   // 49   ('1' unchanged)
+/// ```
+pub fn to_title(cp: i64) -> i64 {
+    to_upper(cp)
+}
+
+/// Return the Unicode codepoint at codepoint-index `i` in string `s`.
+///
+/// The index is a rune (codepoint) offset, not a byte offset. Returns -1 if
+/// `i` is out of bounds. O(n) in the number of codepoints up to `i`.
+///
+/// # Examples
+///
+/// ```
+/// unicode.codepoint_at("café", 3)  // 233 ('é', U+00E9)
+/// unicode.codepoint_at("ABC", 1)   // 66  ('B')
+/// unicode.codepoint_at("hi", 5)    // -1  (out of bounds)
+/// ```
+pub fn codepoint_at(s: string, i: i64) -> i64 {
+    s.codepoint_at_utf8(i)
+}
+
+/// Return the Unicode codepoint at codepoint-index `i`, or an error.
+///
+/// # Examples
+///
+/// ```
+/// unicode.try_codepoint_at("café", 3)  // Ok(233)
+/// unicode.try_codepoint_at("hi", 2)    // Err(...)
+/// ```
+pub fn try_codepoint_at(s: string, i: i64) -> Result<i64, string> {
+    let cp = codepoint_at(s, i);
+    match cp {
+        x if x < 0 => Err("unicode.try_codepoint_at: index out of bounds"),
+        _ => Ok(cp),
+    }
+}
+
+/// Return the number of Unicode codepoints (runes) in string `s`.
+///
+/// For ASCII strings this equals `s.len()`. For strings containing multi-byte
+/// UTF-8 sequences (accented letters, CJK, emoji), the rune count is strictly
+/// less than the byte length.
+///
+/// # Examples
+///
+/// ```
+/// unicode.rune_count("hello")  // 5
+/// unicode.rune_count("café")   // 4
+/// unicode.rune_count("日本語")  // 3
+/// unicode.rune_count("")       // 0
+/// ```
+pub fn rune_count(s: string) -> i64 {
+    s.char_count_utf8()
+}
+
+/// Return the number of UTF-8 bytes needed to encode `cp`, or -1 if invalid.
+///
+/// # Examples
+///
+/// ```
+/// unicode.rune_len(65)      // 1
+/// unicode.rune_len(233)     // 2
+/// unicode.rune_len(0x65E5)  // 3
+/// unicode.rune_len(-1)      // -1
+/// ```
+pub fn rune_len(cp: i64) -> i64 {
+    match try_rune_len(cp) {
+        Ok(n) => n,
+        Err(_) => -1,
+    }
+}
+
+/// Return the number of UTF-8 bytes needed to encode `cp`, or an error.
+///
+/// # Examples
+///
+/// ```
+/// unicode.try_rune_len(65)      // Ok(1)
+/// unicode.try_rune_len(0x1F642) // Ok(4)
+/// unicode.try_rune_len(-1)      // Err(...)
+/// ```
+pub fn try_rune_len(cp: i64) -> Result<i64, string> {
+    match cp {
+        x if !is_valid_rune(x) => Err("unicode.try_rune_len: invalid rune"),
+        x if x <= 0x7F => Ok(1),
+        x if x <= 0x7FF => Ok(2),
+        x if x <= 0xFFFF => Ok(3),
+        _ => Ok(4),
+    }
+}
+
+/// Return all Unicode codepoints in `s` as a `Vec<i64>`.
+///
+/// Each element is a Unicode scalar value (codepoint). The length of the
+/// returned vec equals `rune_count(s)`. Order matches the original string.
+///
+/// # Examples
+///
+/// ```
+/// let cps = unicode.runes("AB");
+/// // cps == [65, 66]
+///
+/// let cps2 = unicode.runes("日");
+/// // cps2.get(0) == 0x65E5
+///
+/// let empty = unicode.runes("");
+/// // empty.len() == 0
+/// ```
+pub fn runes(s: string) -> Vec<i64> {
+    let n = s.char_count_utf8();
+    let result: Vec<i64> = Vec::new();
+    for i in 0 .. n {
+        result.push(s.codepoint_at_utf8(i));
+    }
+    result
+}

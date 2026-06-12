@@ -1,0 +1,7 @@
+// Basic defer: the deferred expression is a no-op for return value.
+// The function returns 7; the defer body (0 + 0) executes at scope exit
+// but does not affect the result.
+fn main() -> i64 {
+    defer 0 + 0;
+    7
+}

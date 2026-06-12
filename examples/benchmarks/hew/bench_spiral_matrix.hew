@@ -1,6 +1,6 @@
-fn spiral_matrix(n: int) -> int {
+fn spiral_matrix(n: i64) -> i64 {
     let total = n * n;
-    let mat: Vec<int> = Vec::new();
+    let mat: Vec<i64> = Vec::new();
     for idx in 0 .. total {
         mat.push(0);
     }
@@ -48,7 +48,7 @@ fn spiral_matrix(n: int) -> int {
     return mat.get(0) + mat.get(total / 2) + mat.get(total - 1);
 }
 
-const ITERS: int = 50000;
+const ITERS: i64 = 50000;
 
 fn main() {
     let n = 20;

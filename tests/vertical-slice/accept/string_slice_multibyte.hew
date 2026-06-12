@@ -1,0 +1,13 @@
+// W3 collections-sugar S2: codepoint slice over multi-byte UTF-8.
+//
+// "héllo" has codepoint sequence: h, é, l, l, o (5 codepoints, 6 bytes).
+// s[1..2] = "é" (1 codepoint = 2 UTF-8 bytes when re-encoded)  → exit 2.
+//
+// Confirms hew_string_slice_codepoints walks codepoints (not bytes):
+// a byte-clamping slice would yield 1 byte (a UTF-8 lead byte) and
+// then either truncate or abort on invalid UTF-8.
+fn main() -> i64 {
+    let s: string = "héllo";
+    let slice: string = s[1..2];
+    slice.len()
+}

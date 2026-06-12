@@ -1,56 +1,238 @@
-//! Iterator-like utility functions for Vec.
+//! Iterator combinators for `Vec<T>` and any `Iterator` implementation.
 //!
-//! Pure Hew implementations of common functional-style operations.
-//! Generic traits and generic fns are supported, but `std/iter.hew` does not
-//! yet define an `Iterator` trait — these specialisations exist as a
-//! transitional shape until that trait lands. A tracking issue will be filed
-//! to drive the migration once the trait design is settled.
-//!
-//! ## Available operations
-//!
-//! | Function        | `Vec<int>`    | `Vec<String>` | `Vec<f64>`    |
-//! |-----------------|---------------|---------------|---------------|
-//! | map             | `map_int`     | `map_str`     | `map_f64`     |
-//! | filter          | `filter_int`  | `filter_str`  | `filter_f64`  |
-//! | fold            | `fold_int`    | `fold_str`    | `fold_f64`    |
-//! | any             | `any`         | `any_str`     | `any_f64`     |
-//! | all             | `all`         | `all_str`     | `all_f64`     |
-//! | sum             | `sum`         | —             | `sum_f64`     |
-//! | product         | `product`     | —             | `product_f64` |
-//! | take            | `take_int`    | `take_str`    | `take_f64`    |
-//! | skip            | `skip_int`    | `skip_str`    | `skip_f64`    |
-//! | count predicate | `count_int`   | `count_str`   | `count_f64`   |
-//!
-//! # Examples
+//! This module exposes the lazy `Iterator`-based combinator API (`Map`,
+//! `Filter`, `Take`, `Skip`, and the terminal helpers `fold`, `count`,
+//! `collect`). Each wrapper is a `pub type` record that itself implements
+//! the `Iterator` trait declared in `std/builtins.hew`, so adapters compose
+//! through chained constructor calls:
 //!
 //! ```
-//! import std::iter;
-//!
-//! fn main() {
-//!     let v: Vec<int> = Vec::new();
-//!     v.push(1);
-//!     v.push(2);
-//!     v.push(3);
-//!     println(iter.sum(v));                              // 6
-//!     println(iter.any(v, (x: int) => x > 2));          // true
-//!     println(iter.take_int(v, 2).len());               // 2
-//!     println(iter.count_int(v, (x: int) => x > 1));   // 2
-//! }
+//! let doubled_first_two = iter::take(iter::map(it, |x: i64| x * 2), 2);
 //! ```
+//!
+//! `Iterator::next` takes a mutable receiver (`fn next(var self) -> Option<Self::Item>`).
+//! Call sites write the returned `Self` state back into the caller binding; the
+//! for-loop desugar that will introduce and drive that binding lands in a later
+//! stage of the iteration-foundation lane.
+//!
+//! ## Lazy combinator surface
+//!
+//! | Wrapper       | Constructor          | Item projection                |
+//! |---------------|----------------------|--------------------------------|
+//! | `Map<I,A,B>`  | `map(it, f)`         | `B` from `fn(A) -> B`          |
+//! | `Filter<I,A>` | `filter(it, pred)`   | `A` (subset of inner)          |
+//! | `Take<I>`     | `take(it, n)`        | inner's `Item`                 |
+//! | `Skip<I>`     | `skip(it, n)`        | inner's `Item`                 |
+//!
+//! Terminal helpers (`fold`, `count`, `collect`) consume any `Iterator`.
+//!
+//! The legacy eager helpers below (`map_int`, `filter_str`, ...) are kept
+//! transiently while the `Vec<T>: IntoIterator` impl is being wired in a
+//! follow-on stage; once `Vec::into_iter` lands, callers migrate to
+//! `iter::map(v.into_iter(), ...)` and the eager table is retired in a
+//! single subtractive commit.
 
+// ---------------------------------------------------------------------------
+// Lazy combinator wrappers
+// ---------------------------------------------------------------------------
+/// Lazy map adapter: yields `f(x)` for each item produced by the inner
+/// iterator.
+///
+/// `A` is the inner `Item` type (carried in the type parameters so the
+/// closure's input projection is explicit); `B` is the produced `Item`.
+pub type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
+}
+
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
+    type Item = B;
+    fn next(it: Map<I, A, B>) -> Option<B> {
+
+        // DEFERRED — fail loud, not silent: returning `None` here would
+        // make Map look like an empty iterator to every caller.
+        //
+        // Q004 (separate lane, branch `feat/q004-checker-authority`
+        // commit 4c9667a8): the checker substitutes `Self::Item` from
+        // the where-clause `I: Iterator<Item = A>` projection in place
+        // of the impl's declared `type Item = B`, so the literal
+        // pump-through body (`match it.iter.next() { Some(x) =>
+        // Some((it.f)(x)), None => None }`) is rejected with
+        // "expected A, found B". Once Q004 lands and this branch is
+        // rebased, the body becomes the pump-through above.
+        panic("Map::next is unimplemented pending Q004 checker fix (Self::Item projection through where-clause `Iterator<Item = A>` currently resolves to A instead of the impl's declared `type Item = B`). See std/iter.hew Map<I,A,B> doc-comment and v06-followups.md (iterator-foundation lane, Map deferred body).");
+        None
+    }
+}
+
+/// Lazy filter adapter: yields only those items for which `pred` returns
+/// `true`. Inner `Item` and produced `Item` agree on `A`.
+pub type Filter<I, A> {
+    iter: I;
+    pred: fn(A) -> bool;
+}
+
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    fn next(it: Filter<I, A>) -> Option<A> {
+
+        // DEFERRED — fail loud, not silent. A correct `Filter::next` must
+        // pump `it.iter.next()` in a loop, returning `Some(x)` for the
+        // first `x` where `pred(x)` is true and `None` once the inner
+        // iterator is exhausted. Returning `None` on the first rejected
+        // item (a previous shape of this body) silently drops every
+        // non-matching prefix and makes the filter look empty.
+        //
+        // Under the mutable-receiver `fn next(var self)` shape, `self.iter`
+        // is moved on the first inner-`next()` call inside one invocation,
+        // so a multi-call loop cannot be written without either (a) a
+        // shared-state cell that survives the move, or (b) threading the
+        // residual inner iterator out through the return shape. Neither
+        // primitive exists on the substrate yet.
+        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Filter::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to skip rejected items under the current substrate. See std/iter.hew Filter<I,A> doc-comment and v06-followups.md (iterator-foundation lane).");
+        None
+    }
+}
+
+/// Lazy take adapter: yields at most `remaining` items from the inner
+/// iterator, then reports `None`.
+pub type Take<I> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
+    type Item = A;
+    fn next(it: Take<I>) -> Option<A> {
+
+        // DEFERRED — fail loud, not silent. A correct `Take::next` must
+        // decrement `remaining` each yield so the adapter actually caps
+        // the inner stream at `n` items. The previous body
+        // (`if remaining <= 0 { None } else { it.iter.next() }`) never
+        // decremented and let `Take` pass every inner item through
+        // forever.
+        //
+        // Q296=B (record-field mutation under a `var` binding) just landed
+        // at 5a1f3764, but it does not compose with the Q001-locked
+        // mutable-receiver `fn next(var self)` shape: `self` is threaded through every
+        // call, so any field-write to `self.remaining` is lost when the
+        // function returns. The remaining-counter has to be carried out
+        // through the return shape (or held in a shared cell); neither
+        // primitive exists yet.
+        // Tracked: var-self write-back, Q296=B (record-field mutation), Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Take::next is unimplemented: deferred iterator wrapper substrate cannot yet persist a decremented `remaining` across calls under the current substrate. See std/iter.hew Take<I> doc-comment and v06-followups.md (iterator-foundation lane).");
+        None
+    }
+}
+
+/// Lazy skip adapter: discards the first `remaining` items, then yields
+/// the rest of the inner iterator unchanged.
+pub type Skip<I> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
+    type Item = A;
+    fn next(it: Skip<I>) -> Option<A> {
+
+        // DEFERRED — fail loud, not silent. A correct `Skip::next` must
+        // consume `remaining` items from `it.iter` (looping on inner
+        // `next()` until either `remaining == 0` or the inner exhausts)
+        // before yielding. The previous body just forwarded `it.iter
+        // .next()` and ignored `remaining` entirely, so `Skip` had no
+        // observable effect.
+        //
+        // Same substrate gap as `Filter::next` and `Take::next`: the
+        // mutable-receiver `fn next(var self)` shape threads `self.iter` on
+        // the first inner call, so a multi-call skip loop is not
+        // expressible without a shared-state cell or a return-shape
+        // change.
+        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
+        panic("Skip::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to drop the skipped prefix under the current substrate. See std/iter.hew Skip<I> doc-comment and v06-followups.md (iterator-foundation lane).");
+        None
+    }
+}
+
+// ── lazy constructors ────────────────────────────────────────────────────
+/// Construct a lazy `Map` adapter over `it` applying `f` to each item.
+pub fn map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+    Map { iter: it, f: f }
+}
+
+/// Construct a lazy `Filter` adapter over `it` keeping items for which
+/// `pred` returns `true`.
+pub fn filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A> where I: Iterator<Item = A> {
+    Filter { iter: it, pred: pred }
+}
+
+/// Construct a lazy `Take` adapter that yields at most `n` items from
+/// `it`.
+pub fn take<I, A>(it: I, n: i64) -> Take<I> where I: Iterator<Item = A> {
+    Take { iter: it, remaining: n }
+}
+
+/// Construct a lazy `Skip` adapter that discards the first `n` items
+/// from `it`.
+pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
+    Skip { iter: it, remaining: n }
+}
+
+// ── terminal helpers ─────────────────────────────────────────────────────
+//
+// DEFERRED — fail loud, not silent. These bodies must not return a
+// trivial default (init / 0 / empty Vec): a silent default would let
+// every consumer's reduction look correct while never advancing the
+// iterator.
+//
+// Q004 (separate lane, branch `feat/q004-checker-authority` commit
+// 4c9667a8): the checker rejects an explicit pump-through body
+// (`match it.next() { Some(x) => f(acc, x), None => break }`) because
+// `<I as Iterator>::Item` is not unified with the bound projection
+// `A`. The signatures and where-bounds below are the locked surface;
+// real bodies land alongside the Q004 fix.
+/// Left-fold over `it`: walk every item applying `f(acc, item)` and
+/// return the accumulated value.
+pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
+    panic("iter::fold is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
+    init
+}
+
+/// Return the number of items produced by `it`.
+pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
+    panic("iter::count is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
+    0
+}
+
+/// Collect every item produced by `it` into a `Vec<A>`.
+pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
+    panic("iter::collect is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
+    Vec::new()
+}
+
+// ---------------------------------------------------------------------------
+// Eager Vec-specialised combinators (transitional)
+// ---------------------------------------------------------------------------
+//
+// These functions predate the `Iterator` trait surface and operate on
+// `Vec<T>` directly. They are retained for callers in `tests/hew/` and
+// downstream while `Vec<T>: IntoIterator` is being wired; once the lazy
+// API can drive a `Vec` end-to-end, this section is retired in a single
+// subtractive commit (Stage 3+ of the iteration-foundation lane).
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
-/// let doubled = iter.map_int(v, (x: int) => x * 2);
+/// let doubled = iter.map_int(v, |x: i64| x * 2);
 /// // doubled == [2, 4]
 /// ```
-pub fn map_int(v: Vec<int>, f: fn(int) -> int) -> Vec<int> {
-    let out: Vec<int> = Vec::new();
+pub fn map_int(v: Vec<i64>, f: fn(i64) -> i64) -> Vec<i64> {
+    let out: Vec<i64> = Vec::new();
     for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
@@ -62,15 +244,15 @@ pub fn map_int(v: Vec<int>, f: fn(int) -> int) -> Vec<int> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// let evens = iter.filter_int(v, (x: int) => x % 2 == 0);
+/// let evens = iter.filter_int(v, |x: i64| x % 2 == 0);
 /// // evens == [2]
 /// ```
-pub fn filter_int(v: Vec<int>, f: fn(int) -> bool) -> Vec<int> {
-    let out: Vec<int> = Vec::new();
+pub fn filter_int(v: Vec<i64>, f: fn(i64) -> bool) -> Vec<i64> {
+    let out: Vec<i64> = Vec::new();
     for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
@@ -85,14 +267,14 @@ pub fn filter_int(v: Vec<int>, f: fn(int) -> bool) -> Vec<int> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// let total = iter.fold_int(v, 0, (acc: int, x: int) => acc + x);
+/// let total = iter.fold_int(v, 0, |acc: i64, x: i64| acc + x);
 /// // total == 6
 /// ```
-pub fn fold_int(v: Vec<int>, init: int, f: fn(int, int) -> int) -> int {
+pub fn fold_int(v: Vec<i64>, init: i64, f: fn(i64, i64) -> i64) -> i64 {
     var acc = init;
     for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
@@ -105,14 +287,14 @@ pub fn fold_int(v: Vec<int>, init: int, f: fn(int, int) -> int) -> int {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// println(iter.any(v, (x: int) => x > 2));  // true
-/// println(iter.any(v, (x: int) => x > 9));  // false
+/// println(iter.any(v, |x: i64| x > 2));  // true
+/// println(iter.any(v, |x: i64| x > 9));  // false
 /// ```
-pub fn any(v: Vec<int>, f: fn(int) -> bool) -> bool {
+pub fn any(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
@@ -126,16 +308,16 @@ pub fn any(v: Vec<int>, f: fn(int) -> bool) -> bool {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
-/// println(iter.all(v, (x: int) => x > 0));  // true
-/// println(iter.all(v, (x: int) => x > 2));  // false
+/// println(iter.all(v, |x: i64| x > 0));  // true
+/// println(iter.all(v, |x: i64| x > 2));  // false
 /// ```
-pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
+pub fn all(v: Vec<i64>, f: fn(i64) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }
@@ -147,34 +329,34 @@ pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1);
 /// v.push(2);
 /// v.push(3);
 /// println(iter.sum(v));  // 6
 /// ```
-pub fn sum(v: Vec<int>) -> int {
-    var total: int = 0;
+pub fn sum(v: Vec<i64>) -> i64 {
+    var total: i64 = 0;
     for i in 0 .. v.len() {
         total = total + v.get(i);
     }
     total
 }
 
-// ── String helpers ────────────────────────────────────────────────────────
+// ── string helpers ────────────────────────────────────────────────────────
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("hello");
 /// v.push("world");
-/// let shouted = iter.map_str(v, (s: String) => s + "!");
+/// let shouted = iter.map_str(v, |s: string| s + "!");
 /// // shouted == ["hello!", "world!"]
 /// ```
-pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn map_str(v: Vec<string>, f: fn(string) -> string) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     for i in 0 .. v.len() {
         out.push(f(v.get(i)));
     }
@@ -186,15 +368,15 @@ pub fn map_str(v: Vec<String>, f: fn(String) -> String) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
 /// v.push("baz");
-/// let bs = iter.filter_str(v, (s: String) => s.starts_with("b"));
+/// let bs = iter.filter_str(v, |s: string| s.starts_with("b"));
 /// // bs == ["bar", "baz"]
 /// ```
-pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn filter_str(v: Vec<string>, f: fn(string) -> bool) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     for i in 0 .. v.len() {
         let val = v.get(i);
         if f(val) {
@@ -209,14 +391,14 @@ pub fn filter_str(v: Vec<String>, f: fn(String) -> bool) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a");
 /// v.push("b");
 /// v.push("c");
-/// let joined = iter.fold_str(v, "", (acc: String, s: String) => acc + s);
+/// let joined = iter.fold_str(v, "", |acc: string, s: string| acc + s);
 /// // joined == "abc"
 /// ```
-pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -> String {
+pub fn fold_str(v: Vec<string>, init: string, f: fn(string, string) -> string) -> string {
     var acc = init;
     for i in 0 .. v.len() {
         acc = f(acc, v.get(i));
@@ -229,13 +411,13 @@ pub fn fold_str(v: Vec<String>, init: String, f: fn(String, String) -> String) -
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.any_str(v, (s: String) => s == "bar"));  // true
-/// println(iter.any_str(v, (s: String) => s == "baz"));  // false
+/// println(iter.any_str(v, |s: string| s == "bar"));  // true
+/// println(iter.any_str(v, |s: string| s == "baz"));  // false
 /// ```
-pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+pub fn any_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             return true;
@@ -249,15 +431,15 @@ pub fn any_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo");
 /// v.push("bar");
-/// println(iter.all_str(v, (s: String) => s.len() == 3));  // true
-/// println(iter.all_str(v, (s: String) => s == "foo"));    // false
+/// println(iter.all_str(v, |s: string| s.len() == 3));  // true
+/// println(iter.all_str(v, |s: string| s == "foo"));    // false
 /// ```
-pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
+pub fn all_str(v: Vec<string>, f: fn(string) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }
@@ -273,7 +455,7 @@ pub fn all_str(v: Vec<String>, f: fn(String) -> bool) -> bool {
 /// let v: Vec<f64> = Vec::new();
 /// v.push(1.0);
 /// v.push(2.0);
-/// let doubled = iter.map_f64(v, (x: f64) => x * 2.0);
+/// let doubled = iter.map_f64(v, |x: f64| x * 2.0);
 /// // doubled == [2.0, 4.0]
 /// ```
 pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
@@ -293,7 +475,7 @@ pub fn map_f64(v: Vec<f64>, f: fn(f64) -> f64) -> Vec<f64> {
 /// v.push(1.0);
 /// v.push(2.5);
 /// v.push(3.0);
-/// let big = iter.filter_f64(v, (x: f64) => x > 2.0);
+/// let big = iter.filter_f64(v, |x: f64| x > 2.0);
 /// // big == [2.5, 3.0]
 /// ```
 pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
@@ -316,7 +498,7 @@ pub fn filter_f64(v: Vec<f64>, f: fn(f64) -> bool) -> Vec<f64> {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// let total = iter.fold_f64(v, 0.0, (acc: f64, x: f64) => acc + x);
+/// let total = iter.fold_f64(v, 0.0, |acc: f64, x: f64| acc + x);
 /// // total == 6.0
 /// ```
 pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
@@ -336,8 +518,8 @@ pub fn fold_f64(v: Vec<f64>, init: f64, f: fn(f64, f64) -> f64) -> f64 {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// println(iter.any_f64(v, (x: f64) => x > 2.5));  // true
-/// println(iter.any_f64(v, (x: f64) => x > 9.0));  // false
+/// println(iter.any_f64(v, |x: f64| x > 2.5));  // true
+/// println(iter.any_f64(v, |x: f64| x > 9.0));  // false
 /// ```
 pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
     for i in 0 .. v.len() {
@@ -357,12 +539,12 @@ pub fn any_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
 /// v.push(1.0);
 /// v.push(2.0);
 /// v.push(3.0);
-/// println(iter.all_f64(v, (x: f64) => x > 0.0));  // true
-/// println(iter.all_f64(v, (x: f64) => x > 2.0));  // false
+/// println(iter.all_f64(v, |x: f64| x > 0.0));  // true
+/// println(iter.all_f64(v, |x: f64| x > 2.0));  // false
 /// ```
 pub fn all_f64(v: Vec<f64>, f: fn(f64) -> bool) -> bool {
     for i in 0 .. v.len() {
-        if f(v.get(i)) == false {
+        if !f(v.get(i)) {
             return false;
         }
     }
@@ -388,20 +570,20 @@ pub fn sum_f64(v: Vec<f64>) -> f64 {
     total
 }
 
-// ── take / skip (int, String, f64) ────────────────────────────────────────
+// ── take / skip (i64, string, f64) ────────────────────────────────────────
 /// Return the first `n` elements of `v`. If `n` exceeds the length, the
 /// whole vector is returned.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(10); v.push(20); v.push(30);
 /// let t = iter.take_int(v, 2);
 /// // t == [10, 20]
 /// ```
-pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
-    let out: Vec<int> = Vec::new();
+pub fn take_int(v: Vec<i64>, n: i64) -> Vec<i64> {
+    let out: Vec<i64> = Vec::new();
     var limit = n;
     if n < 0 {
         limit = 0;
@@ -421,13 +603,13 @@ pub fn take_int(v: Vec<int>, n: int) -> Vec<int> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(10); v.push(20); v.push(30);
 /// let s = iter.skip_int(v, 1);
 /// // s == [20, 30]
 /// ```
-pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
-    let out: Vec<int> = Vec::new();
+pub fn skip_int(v: Vec<i64>, n: i64) -> Vec<i64> {
+    let out: Vec<i64> = Vec::new();
     var start = n;
     if n < 0 {
         start = 0;
@@ -446,12 +628,12 @@ pub fn skip_int(v: Vec<int>, n: int) -> Vec<int> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(1); v.push(2); v.push(3); v.push(4);
-/// println(iter.count_int(v, (x: int) => x % 2 == 0));  // 2
+/// println(iter.count_int(v, |x: i64| x % 2 == 0));  // 2
 /// ```
-pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
-    var n: int = 0;
+pub fn count_int(v: Vec<i64>, f: fn(i64) -> bool) -> i64 {
+    var n: i64 = 0;
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
@@ -466,13 +648,13 @@ pub fn count_int(v: Vec<int>, f: fn(int) -> bool) -> int {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a"); v.push("b"); v.push("c");
 /// let t = iter.take_str(v, 2);
 /// // t == ["a", "b"]
 /// ```
-pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn take_str(v: Vec<string>, n: i64) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     var limit = n;
     if n < 0 {
         limit = 0;
@@ -492,13 +674,13 @@ pub fn take_str(v: Vec<String>, n: int) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a"); v.push("b"); v.push("c");
 /// let s = iter.skip_str(v, 1);
 /// // s == ["b", "c"]
 /// ```
-pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
-    let out: Vec<String> = Vec::new();
+pub fn skip_str(v: Vec<string>, n: i64) -> Vec<string> {
+    let out: Vec<string> = Vec::new();
     var start = n;
     if n < 0 {
         start = 0;
@@ -517,12 +699,12 @@ pub fn skip_str(v: Vec<String>, n: int) -> Vec<String> {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("foo"); v.push("bar"); v.push("baz");
-/// println(iter.count_str(v, (s: String) => s.starts_with("b")));  // 2
+/// println(iter.count_str(v, |s: string| s.starts_with("b")));  // 2
 /// ```
-pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
-    var n: int = 0;
+pub fn count_str(v: Vec<string>, f: fn(string) -> bool) -> i64 {
+    var n: i64 = 0;
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
@@ -542,7 +724,7 @@ pub fn count_str(v: Vec<String>, f: fn(String) -> bool) -> int {
 /// let t = iter.take_f64(v, 2);
 /// // t == [1.0, 2.0]
 /// ```
-pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
+pub fn take_f64(v: Vec<f64>, n: i64) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
     var limit = n;
     if n < 0 {
@@ -568,7 +750,7 @@ pub fn take_f64(v: Vec<f64>, n: int) -> Vec<f64> {
 /// let s = iter.skip_f64(v, 1);
 /// // s == [2.0, 3.0]
 /// ```
-pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
+pub fn skip_f64(v: Vec<f64>, n: i64) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
     var start = n;
     if n < 0 {
@@ -590,10 +772,10 @@ pub fn skip_f64(v: Vec<f64>, n: int) -> Vec<f64> {
 /// ```
 /// let v: Vec<f64> = Vec::new();
 /// v.push(1.0); v.push(2.5); v.push(-1.0);
-/// println(iter.count_f64(v, (x: f64) => x > 0.0));  // 2
+/// println(iter.count_f64(v, |x: f64| x > 0.0));  // 2
 /// ```
-pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
-    var n: int = 0;
+pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> i64 {
+    var n: i64 = 0;
     for i in 0 .. v.len() {
         if f(v.get(i)) {
             n = n + 1;
@@ -602,19 +784,19 @@ pub fn count_f64(v: Vec<f64>, f: fn(f64) -> bool) -> int {
     n
 }
 
-// ── product (int, f64) ────────────────────────────────────────────────────
+// ── product (i64, f64) ────────────────────────────────────────────────────
 /// Return the product of all elements. Returns `1` for an empty vector
 /// (the multiplicative identity).
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<int> = Vec::new();
+/// let v: Vec<i64> = Vec::new();
 /// v.push(2); v.push(3); v.push(4);
 /// println(iter.product(v));  // 24
 /// ```
-pub fn product(v: Vec<int>) -> int {
-    var acc: int = 1;
+pub fn product(v: Vec<i64>) -> i64 {
+    var acc: i64 = 1;
     for i in 0 .. v.len() {
         acc = acc * v.get(i);
     }

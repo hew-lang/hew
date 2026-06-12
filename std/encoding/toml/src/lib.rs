@@ -112,60 +112,6 @@ pub unsafe extern "C" fn hew_toml_type(val: *const HewTomlValue) -> i32 {
     }
 }
 
-/// Get the string value from a TOML string value.
-///
-/// Returns a `malloc`-allocated NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null if `val` is null or not a string.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_is_bool(val: *const HewTomlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, toml::Value::Boolean(_)))
-}
-
-/// Returns 1 if `val` is a TOML integer, 0 otherwise (including null).
-///
-/// Matches the values that [`hew_toml_get_int`] can extract without coercion.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_is_int(val: *const HewTomlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, toml::Value::Integer(_)))
-}
-
-/// Returns 1 if `val` is a TOML float, 0 otherwise (including null).
-///
-/// TOML keeps float and integer types strictly separate, so only
-/// `toml::Value::Float` is accepted — unlike JSON/YAML, integer-valued TOML
-/// numbers are not coerced by [`hew_toml_get_float`].
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_is_float(val: *const HewTomlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewTomlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, toml::Value::Float(_)))
-}
-
 /// Returns a `malloc`-allocated NUL-terminated C string. The caller must
 /// free it with `libc::free`. Returns null if `val` is null or not a string.
 ///
@@ -706,8 +652,8 @@ mod tests {
         assert_eq!(result, "hew");
 
         // SAFETY: s was allocated with libc::malloc.
-        unsafe { libc::free(s.cast()) };
-        // SAFETY: field was allocated by this module.
+        unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test str_to_malloc)
+                                                    // SAFETY: field was allocated by this module.
         unsafe { hew_toml_free(field) };
         // SAFETY: root was allocated by this module.
         unsafe { hew_toml_free(root) };
@@ -862,7 +808,7 @@ mod tests {
 
         // SAFETY: s was allocated with libc::malloc; root by this module.
         unsafe {
-            libc::free(s.cast());
+            hew_cabi::cabi::free_cstring(s); // CSTRING-FREE: str-open (test str_to_malloc)
             hew_toml_free(root);
         }
     }
@@ -877,7 +823,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         s
     }
 

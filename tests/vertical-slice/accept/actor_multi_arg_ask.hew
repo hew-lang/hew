@@ -1,0 +1,28 @@
+// Declared-actor multi-arg ask through the packed-args anonymous-record
+// wire: `await actor.compute(3, 4)` packs both i64 args into one record,
+// the dispatch trampoline unpacks each at its field offset, and the reply
+// rides the existing single-value ask channel.
+actor Adder {
+    var calls: i64;
+    receive fn compute(a: i64, b: i64) -> i64 {
+        calls = calls + 1;
+        a + b
+    }
+    receive fn describe(prefix: string, n: i64) -> string {
+        f"{prefix}:{n + calls}"
+    }
+}
+
+fn main() {
+    let adder = spawn Adder(calls: 0);
+    let sum = await adder.compute(3, 4);
+    match sum {
+        Ok(v) => println(f"sum={v}"),
+        Err(_) => println("compute failed"),
+    }
+    let tag = await adder.describe("call", 41);
+    match tag {
+        Ok(t) => println(t),
+        Err(_) => println("describe failed"),
+    }
+}

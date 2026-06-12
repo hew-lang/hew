@@ -1,0 +1,2 @@
+actor Boom { receive fn explode() { panic("boom"); } on(crash) { println("crashed"); stop } }
+fn main() { let boom = spawn Boom; boom.explode(); }

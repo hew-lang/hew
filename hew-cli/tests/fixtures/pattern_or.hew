@@ -1,0 +1,22 @@
+// Acceptance fixture: or-pattern matching.
+// Matches multiple alternatives in a single arm.
+// Oracle: "small" for 1|2|3, "big" for anything else.
+fn classify(n: i64) -> string {
+    match n {
+        1 | 2 | 3 => "small",
+        _ => "big",
+    }
+}
+
+fn main() {
+    print(classify(1));
+    print("\n");
+    print(classify(2));
+    print("\n");
+    print(classify(3));
+    print("\n");
+    print(classify(4));
+    print("\n");
+    print(classify(0));
+    print("\n");
+}

@@ -1,0 +1,12 @@
+fn spawn_lambda_probe() -> i32 {
+    7
+}
+
+fn spawn_lambda_actor() -> i32 {
+    let worker = actor |msg: i32| {
+        spawn_lambda_probe();
+        msg
+    };
+    worker;
+    spawn_lambda_probe()
+}

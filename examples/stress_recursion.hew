@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: stress_recursion.hew - Deeply recursive fibonacci to test stack handling
+
 // stress_recursion.hew - Deeply recursive fibonacci to test stack handling
 // This program tests the compiler's ability to handle deep recursion
 // and proper stack management in generated code.

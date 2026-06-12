@@ -1,4 +1,4 @@
-# Hew `machine` Type Specification v0.1.0 (Draft)
+# Hew `machine` Surface Specification
 
 A `machine` is a **value type** that defines a closed set of named states, a closed set of named events, and transition rules mapping `(State, Event)` pairs to new states. It compiles to a tagged union with a generated `step()` function. Machines are not actors — they are data, like enums with per-state fields and compiler-checked transition logic.
 
@@ -9,9 +9,11 @@ A `machine` is a **value type** that defines a closed set of named states, a clo
 - **Composability** — machines embed in actors, structs, collections, and function parameters.
 - **Zero-cost** — compiles to an integer tag + union of structs. No allocations, no threads.
 
-**Changes in v0.1.0:**
-
-_Initial specification. Defines syntax, type system integration, generated API, exhaustiveness rules, transition semantics, wildcard transitions, events with data, and pattern matching._
+_This document specifies the machine surface: the `=>` routing
+arrow, `events {}` / `emits {}` vocabulary headers, the `reenter` keyword,
+optional `on E(payload):` head bindings, inline state `entry {}` / `exit {}`
+blocks, the `default { state }` unhandled-stays arm, depth-1 composite state
+blocks, exhaustiveness rules, and diagram-oriented structure._
 
 ---
 
@@ -20,23 +22,22 @@ _Initial specification. Defines syntax, type system integration, generated API, 
 A `machine` declaration introduces a new nominal type with three components:
 
 1. **States** — a closed set of named variants, each with optional per-state fields.
-2. **Events** — a closed set of named variants, each with optional payload fields.
-3. **Transitions** — rules mapping `(SourceState, Event)` → `TargetState`, with a body that constructs the target state value.
+2. **Events** — a closed set of named variants (declared in an `events {}` header), each with optional payload fields.
+3. **Transitions** — rules mapping `(SourceState, Event)` → `TargetState` (written with `=>`), with a body that constructs the target state value.
 
 A machine value is always in exactly one state. The only way to change state is via the generated `step()` method, which accepts an event and mutates the machine in place (like `Vec.push()`). It does not return a value.
 
-### §1.1 Non-goals (v0.1) — superseded notes
+### §1.1 Non-goals and feature notes
 
-> **v0.2.0 update:** Guard conditions (`when`) were listed as a non-goal in
-> the original v0.1 draft but are **implemented and shipping** in v0.2.0.
-> See §3.11.4 in `HEW-SPEC.md` and the `e2e_machine/machine_guard.hew` test
-> for the current behaviour.  The remaining items below are still non-goals.
+> Guard conditions (`when`), inline `entry {}` / `exit {}` hooks, and depth-1
+> composite (hierarchical) state blocks are all implemented. The list below
+> records the remaining non-goals.
 
-- No hierarchical/nested states.
-- ~~No guard conditions on transitions.~~ _(implemented — see note above)_
-- No entry/exit hooks.
-- No side effects in transition bodies (pure transformation only).
-- No `initial` keyword (the caller constructs the initial state explicitly).
+- No nesting deeper than depth-1 (a substate may not itself contain substates) — reserved for v0.6.
+- No side effects in transition bodies beyond `entry`/`exit`/`emit` (pure transformation otherwise).
+- No `initial` keyword for the *machine's* start state (the caller constructs it explicitly); `initial` IS used inside a composite block to mark a substate.
+- No union-source `A | B =>` shared events (write the rule per source or use a composite parent rule).
+- No Mealy `/ Output` syntax on transitions (use `emit` for outputs).
 
 ### §1.2 Relationship to enums
 
@@ -50,125 +51,162 @@ A `machine` is a strict superset of an `enum` at the type level — it defines a
 
 ```hew
 machine TcpState {
-    // States with optional per-state data
+    // Input-event vocabulary, declared up front.
+    events {
+        Connect;
+        SynAck;
+        Data { payload: string; }
+        Close;
+        Timeout;
+    }
+
+    // States with optional per-state data.
     state Closed;
-    state Listen { backlog: Int; }
-    state Established { local_seq: Int; remote_seq: Int; }
+    state Listen { backlog: i64; }
+    state Established { local_seq: i64; remote_seq: i64; }
     state FinWait;
     state TimeWait;
 
-    // Events with optional payload data
-    event Connect;
-    event SynAck;
-    event Data { payload: String; }
-    event Close;
-    event Timeout;
-
-    // Transitions: on EventName: SourceState -> TargetState { body }
-    on Connect: Closed -> Listen {
+    // Transitions: on EventName: SourceState => TargetState { body }
+    on Connect: Closed => Listen {
         Listen { backlog: 128 }
     }
 
-    on SynAck: Listen -> Established {
+    on SynAck: Listen => Established {
         Established { local_seq: 0, remote_seq: 0 }
     }
 
-    on Data: Established -> Established {
-        Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
+    on Data: Established => Established reenter {
+        Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
     }
 
-    on Close: Established -> FinWait {
+    on Close: Established => FinWait {
         FinWait
     }
 
-    on Timeout: TimeWait -> Closed {
+    on Timeout: TimeWait => Closed {
         Closed
     }
 
-    // Wildcard: handle event in all unhandled states
-    on Timeout: _ -> _ {
+    // Wildcard: handle event in all unhandled states.
+    on Timeout: _ => _ {
         state  // stay in current state (identity transition)
     }
 }
 ```
 
-### §2.2 States
+### §2.2 The `events {}` header
 
-A state declaration introduces a named variant of the machine type.
-
-```
-state Ident ;
-state Ident { FieldDecl { FieldDecl } } ;
-```
-
-- State names MUST be `PascalCase` identifiers, unique within the machine.
-- A machine MUST declare at least two states.
-- Fields within a state follow struct field syntax: `name: Type;`.
-- State fields are only accessible inside transition bodies where that state is the source.
-
-### §2.3 Events
-
-An event declaration introduces a named variant of the machine's event type.
+Every machine declares its input-event vocabulary in a single `events {}` block
+at the top of the body, before the states.
 
 ```
-event Ident ;
-event Ident { FieldDecl { FieldDecl } } ;
+events { EventDecl { EventDecl } }
+EventDecl = Ident ( ";" | "{" { FieldDecl } "}" [";"] )
 ```
 
 - Event names MUST be `PascalCase` identifiers, unique within the machine.
 - A machine MUST declare at least one event.
 - Fields within an event are payload data delivered to transition bodies.
 - The compiler generates a companion enum type `{MachineName}Event` for events.
+- `events` is a contextual keyword, valid only inside a machine body.
 
-### §2.4 Transitions
+### §2.3 The `emits {}` header (optional)
 
-A transition declaration maps a `(SourceState, Event)` pair to a `TargetState` and provides a body that constructs the target state value.
+An optional `emits {}` block declares the Mealy-output vocabulary — the events a
+transition body may produce via `emit`.
 
 ```
-on EventIdent : SourceIdent -> TargetIdent { Expr }
+emits { Ident ";" { Ident ";" } }
+```
+
+- Each entry names a declared event the machine may `emit`.
+- When the manifest is present, an `emit` of an event NOT listed is a compile error, keeping the output surface auditable.
+- `emits` is a contextual keyword, valid only inside a machine body.
+
+### §2.4 States
+
+A state declaration introduces a named variant of the machine type.
+
+```
+state Ident ;
+state Ident { { FieldDecl } [ "entry" Block ] [ "exit" Block ] } [";"]
+```
+
+- State names MUST be `PascalCase` identifiers, unique within the machine.
+- A machine MUST declare at least two states.
+- Fields within a state follow struct field syntax: `name: Type;`.
+- State fields are accessible as `self.field` inside transition bodies where that state is the source.
+- A state body may carry `entry {}` / `exit {}` lifecycle blocks (run on state change).
+
+### §2.5 Transitions
+
+A transition declaration maps a `(SourceState, Event)` pair to a `TargetState`
+and provides a body that constructs the target state value.
+
+```
+on EventIdent [ "(" Ident { "," Ident } ")" ] : SourcePat "=>" TargetPat
+   [ "reenter" ] [ "when" Expr ] TransitionBody
+SourcePat = Ident | "_"
+TargetPat = Ident | "_"
 ```
 
 - `EventIdent` MUST name a declared event.
-- `SourceIdent` MUST name a declared state, or `_` (wildcard source).
-- `TargetIdent` MUST name a declared state, or `_` (wildcard target, meaning same as source).
+- The optional `(field, …)` head binding names the event's payload fields so the body can use the bare names instead of `event.field`.
+- `SourcePat` MUST name a declared state, or `_` (wildcard source).
+- `TargetPat` MUST name a declared state, or `_` (wildcard target, meaning same as source).
+- `=>` (`Token::FatArrow`) is the state-routing arrow.
+- `reenter` opts a self-transition into Mealy re-entry (runs the source `exit` and target `entry` even though the state does not change).
 - The body is an expression that MUST evaluate to a value of the target state variant.
-- When `TargetIdent` is `_`, the body MUST evaluate to a value of the machine type (any variant).
+- When `TargetPat` is `_`, the body MUST evaluate to a value of the machine type (any variant).
 
 ---
 
 ## §3 Transition semantics
 
-### §3.1 The `state` binding
+### §3.1 The `self` and `state` bindings
 
-Inside a transition body, `state` is bound to the source state's data:
+Inside a transition body two implicit bindings are in scope:
 
-- If the source state has no fields, `state` is the unit-like state value.
-- If the source state has fields, `state.field_name` accesses each field.
-- `state` is consumed by the transition (move semantics). After the transition body executes, the old state no longer exists.
+- `self.field` — accesses a field of the **source state** (named source only; a
+  wildcard-source body has no single source state, so `self.field` is rejected
+  there). Available when the source state declares the field.
+- `state` — the whole current machine value, used for the wildcard-source
+  passthrough (`=> _ { state }`).
 
 ```hew
-// state.local_seq and state.remote_seq are accessible because
-// the source state is Established { local_seq: Int; remote_seq: Int; }
-on Data: Established -> Established {
-    Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
+// self.local_seq and self.remote_seq are accessible because the source
+// state is Established { local_seq: i64; remote_seq: i64; }
+on Data: Established => Established reenter {
+    Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
 }
 ```
 
 ### §3.2 Event payload access
 
-When an event carries payload fields, those fields are accessible by name in the transition body:
+When an event carries payload fields, those fields are accessible in the
+transition body either via `event.field` or via an `on E(field):` head binding:
 
 ```hew
-event Data { payload: String; }
+events {
+    Data { payload: string; }
+}
 
-on Data: Established -> Established {
-    // 'payload' is accessible directly from the event
+// Head binding: `payload` is named at the rule site.
+on Data(payload): Established => Established reenter {
     log(payload);
-    Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
+    Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
+}
+
+// Equivalent without the head binding, reading `event.payload` directly.
+on Data: Established => Established reenter {
+    log(event.payload);
+    Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
 }
 ```
 
-Event payload fields are bound as local immutable variables in the transition body. If an event field name conflicts with a state field name, the event field takes precedence and the state field is accessed via `state.field_name`.
+Both forms lower identically. The head binding is the recommended idiom because
+the names in scope are declared at the rule site.
 
 ### §3.3 Return value
 
@@ -180,30 +218,29 @@ The transition body MUST evaluate to a value of the machine type. Specifically:
 
 ### §3.4 Purity
 
-Transition bodies are **pure** — they compute a new state from the old state and event data. They MUST NOT:
+Transition bodies are **pure** by intent — they compute a new state from the old state and event data. They MUST NOT:
 
 - Perform I/O.
 - Access mutable external state.
 - Call `receive fn` methods on actors.
 - Spawn actors or tasks.
 
-_Implementation note: The compiler MAY enforce purity by restricting the set of callable functions in transition bodies to `pure fn` and built-in operators. For v0.1, the compiler SHOULD emit a warning (not an error) for impure calls, to allow incremental adoption._
+_Implementation note: `gen {}` blocks (suspension expressions) inside a transition body are compile errors (`E_GENBLOCK_IN_MACHINE_TRANSITION`). Full effect analysis for I/O calls and actor messages is not yet enforced; those restrictions are the language invariant, not the current compiler gate._
 
-### §3.5 No output values (Mealy restriction)
+### §3.5 Output values
 
-For v0.1, transitions produce **only** the new state — they do not produce output values. This is a Moore machine model. Side effects (sending messages, logging, I/O) happen in the actor or function that calls `step()`:
+Transitions produce a new state and may additionally emit named output events via `emit EventName { … }` statements (Mealy-style outputs), declared up front in the `emits {}` manifest (§2.3). Side effects unrelated to the machine — actor sends, I/O, logging — happen in the actor or function that calls `step()`:
 
 ```hew
 actor ConnectionManager {
     var tcp: TcpState = TcpState::Closed;
 
     receive fn handle(event: TcpStateEvent) {
-        let old = tcp;
         tcp.step(event);
 
-        // Side effects happen here, not in the machine
+        // Side effects happen here, not in the machine body
         match tcp {
-            TcpState::Established { .. } => println("Connection established"),
+            TcpState::Established { local_seq, remote_seq } => println("Connection established"),
             TcpState::Closed => println("Connection closed"),
             _ => {}
         }
@@ -211,7 +248,7 @@ actor ConnectionManager {
 }
 ```
 
-_Future versions MAY introduce Mealy semantics (`on Event: Source -> Target / Output`) where transitions can produce an output value alongside the new state._
+_A dedicated `/ Output` arrow syntax is a declined non-goal — `emit` covers Mealy outputs. Unit-event `emit` lowers; non-unit payload `emit` is not yet wired in codegen._
 
 ---
 
@@ -225,8 +262,9 @@ For a machine with _S_ states and _E_ events, there are _S × E_ cells in the ex
 
 A cell `(State, Event)` is **covered** if any of the following apply:
 
-1. An explicit transition `on Event: State -> Target { ... }` exists.
-2. A wildcard-source transition `on Event: _ -> _ { ... }` exists and no explicit transition for that `(State, Event)` exists.
+1. An explicit transition `on Event: State => Target { ... }` exists.
+2. A wildcard-source transition `on Event: _ => _ { ... }` exists and no explicit transition for that `(State, Event)` exists.
+3. A `default { state }` arm covers it (every otherwise-uncovered cell stays in the current state).
 
 Wildcard transitions act as defaults — they fill uncovered cells for a given event. An explicit transition always takes priority over a wildcard.
 
@@ -240,22 +278,24 @@ Wildcard transitions act as defaults — they fill uncovered cells for a given e
 
 ```hew
 machine Light {
+    events {
+        Toggle;
+        Dim;
+    }
+
     state Off;
     state On;
 
-    event Toggle;
-    event Dim;
-
-    on Toggle: Off -> On { On }
-    on Toggle: On -> Off { Off }
+    on Toggle: Off => On { On }
+    on Toggle: On => Off { Off }
     // ERROR: missing transitions for (Off, Dim) and (On, Dim)
 }
 ```
 
-Fix with a wildcard:
+Fix with a wildcard, or with a `default { state }` arm (§5.5):
 
 ```hew
-    on Dim: _ -> _ { state }  // ignore Dim in all states
+    on Dim: _ => _ { state }  // ignore Dim in all states
 ```
 
 ---
@@ -265,7 +305,7 @@ Fix with a wildcard:
 ### §5.1 Wildcard source (`_` as source state)
 
 ```hew
-on Timeout: _ -> _ { state }
+on Timeout: _ => _ { state }
 ```
 
 This transition applies to every state that does not have an explicit `on Timeout` transition. The body receives `state` as the current state (type: the machine type itself, not a specific variant). The body MUST return a value of the machine type.
@@ -275,7 +315,7 @@ This transition applies to every state that does not have an explicit `on Timeou
 When the target is `_`, it means "the resulting state is determined by the body". The compiler does not constrain the return type to a specific variant — any variant of the machine type is valid.
 
 ```hew
-on Reset: _ -> _ {
+on Reset: _ => _ {
     Closed  // always go to Closed, regardless of source
 }
 ```
@@ -283,7 +323,7 @@ on Reset: _ -> _ {
 ### §5.3 Wildcard source with concrete target
 
 ```hew
-on FatalError: _ -> Closed {
+on FatalError: _ => Closed {
     Closed
 }
 ```
@@ -295,8 +335,35 @@ This applies to all states without an explicit `on FatalError` transition, and t
 The expression `state` in a wildcard body returns the current state unchanged (identity transition). This is the canonical way to ignore an event:
 
 ```hew
-on Heartbeat: _ -> _ { state }
+on Heartbeat: _ => _ { state }
 ```
+
+### §5.5 The `default { state }` arm
+
+A `default { state }` clause at the end of the machine body declares that every
+unhandled `(state, event)` cell **stays in the current state**. It satisfies
+exhaustiveness for all otherwise-uncovered cells:
+
+```hew
+machine Tank {
+    events {
+        Fill;
+        Drain;
+    }
+
+    state Filling;
+    state Draining;
+
+    on Drain: Filling => Draining { Draining }
+
+    default { state }  // any other cell stays put
+}
+```
+
+`default` differs from a `_ => _ { state }` wildcard in that it applies after all
+explicit and wildcard rules, covering every remaining cell at once. A machine
+*without* `default` and without covering wildcards fails exhaustiveness at
+compile time (fail-closed).
 
 ---
 
@@ -326,7 +393,7 @@ The compiler generates a companion enum for events:
 enum TcpStateEvent {
     Connect;
     SynAck;
-    Data { payload: String; };
+    Data { payload: string; };
     Close;
     Timeout;
 }
@@ -340,25 +407,27 @@ Machines MAY be parameterized by type parameters:
 
 ```hew
 machine StateMachine<T> {
+    events {
+        Load { item: T; }
+        Clear;
+    }
+
     state Empty;
     state Loaded { data: T; }
 
-    event Load { item: T; }
-    event Clear;
-
-    on Load: Empty -> Loaded {
+    on Load(item): Empty => Loaded {
         Loaded { data: item }
     }
 
-    on Clear: Loaded -> Empty {
+    on Clear: Loaded => Empty {
         Empty
     }
 
-    on Load: Loaded -> Loaded {
+    on Load(item): Loaded => Loaded reenter {
         Loaded { data: item }
     }
 
-    on Clear: Empty -> Empty {
+    on Clear: Empty => Empty reenter {
         Empty
     }
 }
@@ -372,7 +441,7 @@ Machines MAY implement traits via `impl` blocks:
 
 ```hew
 impl Display for TcpState {
-    fn to_string(s: TcpState) -> String {
+    fn to_string(s: TcpState) -> string {
         s.state_name()
     }
 }
@@ -402,7 +471,7 @@ s.step(TcpStateEvent::Connect);
 
 _Implementation note: `step()` compiles to a nested switch on (tag, event_tag). The outer switch dispatches on the current state tag; the inner switch dispatches on the event tag. Each branch executes the corresponding transition body._
 
-### §7.2 `M.state_name() -> String`
+### §7.2 `M.state_name() -> string`
 
 Returns the name of the current state as a string, for debugging and logging.
 
@@ -453,7 +522,7 @@ let c = TcpState::Established { local_seq: 0, remote_seq: 0 };
 Within the machine's own transition bodies, the machine name qualifier is optional:
 
 ```hew
-on Connect: Closed -> Listen {
+on Connect: Closed => Listen {
     Listen { backlog: 128 }    // OK: unqualified inside machine body
 }
 ```
@@ -481,7 +550,7 @@ Within transition bodies, event constructors are not used (the event is destruct
 
 ### §8.1 Pipeline integration
 
-Machine declarations are parsed by the Rust frontend (`hew-parser`), type-checked by `hew-types`, serialized to MessagePack by `hew-serialize`, and lowered to MLIR by Hew's embedded C++ codegen (`hew-codegen`).
+Machine declarations are parsed by the Rust frontend (`hew-parser`), type-checked by `hew-types`, lowered through the Rust HIR/MIR ladder, and emitted through `hew-codegen-rs`'s direct Rust/Inkwell LLVM backend.
 
 ### §8.2 Representation
 
@@ -517,7 +586,7 @@ struct TcpStateEvent {
         // variant 0: Connect — no fields
         // variant 1: SynAck — no fields
         // variant 2: Data
-        struct { payload: String; } data;
+        struct { payload: string; } data;
         // variant 3: Close — no fields
         // variant 4: Timeout — no fields
     } data;
@@ -560,106 +629,126 @@ TcpState TcpState_step(TcpState self, TcpStateEvent event) {
 
 _Implementation note: The internal step function still returns the new machine value. The compiler handles the store-back at the call site, similar to how `Vec.push()` mutates through the binding._
 
-### §8.5 MessagePack schema
+### §8.5 AST serialisation shape
 
-The machine declaration serializes to MessagePack as:
+The machine AST node serialises via `serde_json` (not MessagePack). The `Item`
+enum uses an untagged outer wrapper, so the JSON shape is:
 
-```
+```json
 {
-  "kind": "machine",
-  "name": "TcpState",
-  "type_params": [],
-  "states": [
-    { "name": "Closed", "fields": [] },
-    { "name": "Listen", "fields": [{ "name": "backlog", "type": "Int" }] },
-    ...
-  ],
-  "events": [
-    { "name": "Connect", "fields": [] },
-    { "name": "Data", "fields": [{ "name": "payload", "type": "String" }] },
-    ...
-  ],
-  "transitions": [
-    { "event": "Connect", "source": "Closed", "target": "Listen", "body": <Expr> },
-    { "event": "Timeout", "source": "_", "target": "_", "body": <Expr> },
-    ...
-  ]
+  "Machine": {
+    "name": "TcpState",
+    "type_params": [],
+    "states": [
+      { "name": "Closed", "fields": [] },
+      { "name": "Listen", "fields": [{ "name": "backlog", "type": "i64" }] }
+    ],
+    "events": [
+      { "name": "Connect", "fields": [] },
+      { "name": "Data", "fields": [{ "name": "payload", "type": "string" }] }
+    ],
+    "transitions": [
+      { "event": "Connect", "source": "Closed", "target": "Listen", "body": "…" },
+      { "event": "Timeout", "source": "_", "target": "_", "body": "…" }
+    ]
+  }
 }
 ```
+
+The outer key is `"Machine"` (the variant name), not `"kind"`. This is an
+illustrative pseudo-schema — the exact field set follows the `ast::Machine`
+struct definition.
 
 ---
 
 ## §9 Complete example: Circuit Breaker
 
+The machine itself compiles and is verified against the Hew compiler. The actor
+usage snippet shows the intended integration pattern; embedding a machine type as
+an actor field is a known in-progress MIR limitation (`ActorStateCloneClassificationFailed`
+for user-defined record types used as actor state).
+
 ```hew
 machine CircuitBreaker {
-    state Closed { failures: Int; }
-    state Open { expires_at: Int; }
-    state HalfOpen { successes: Int; }
+    events {
+        Success;
+        Failure { timestamp: i64; }
+        Tick { now: i64; }
+    }
 
-    event Success;
-    event Failure { timestamp: Int; }
-    event Tick { now: Int; }
+    state Closed { failures: i64; }
+    state Open { expires_at: i64; }
+    state HalfOpen { successes: i64; }
 
     // --- Success transitions ---
-    on Success: Closed -> Closed {
+    on Success: Closed => Closed reenter {
         Closed { failures: 0 }
     }
 
-    on Success: HalfOpen -> HalfOpen {
-        if state.successes + 1 >= 3 {
+    // HalfOpen success: use wildcard target to avoid `state` in a conditional branch.
+    // Three consecutive successes recover to Closed; fewer increment the counter.
+    on Success: HalfOpen => _ {
+        if self.successes + 1 >= 3 {
             Closed { failures: 0 }
         } else {
-            HalfOpen { successes: state.successes + 1 }
+            HalfOpen { successes: self.successes + 1 }
         }
     }
 
-    on Success: Open -> Open {
+    on Success: Open => Open reenter {
         state  // ignored while open
     }
 
     // --- Failure transitions ---
-    on Failure: Closed -> Closed {
-        if state.failures + 1 >= 5 {
+    // Closed failure: use wildcard target for the conditional open/stay branch.
+    on Failure(timestamp): Closed => _ {
+        if self.failures + 1 >= 5 {
             Open { expires_at: timestamp + 10000 }
         } else {
-            Closed { failures: state.failures + 1 }
+            Closed { failures: self.failures + 1 }
         }
     }
 
-    on Failure: HalfOpen -> Open {
+    on Failure(timestamp): HalfOpen => Open {
         Open { expires_at: timestamp + 10000 }
     }
 
-    on Failure: Open -> Open {
+    on Failure: Open => Open reenter {
         state  // already open
     }
 
     // --- Tick transitions ---
-    on Tick: Open -> Open {
-        if now >= state.expires_at {
+    // Open tick: use wildcard target to avoid `state` in a conditional else-branch.
+    on Tick(now): Open => _ {
+        if now >= self.expires_at {
             HalfOpen { successes: 0 }
         } else {
-            state
+            Open { expires_at: self.expires_at }
         }
     }
 
-    on Tick: _ -> _ {
+    on Tick: _ => _ {
         state  // no-op in Closed and HalfOpen
     }
 }
 ```
 
-Usage in an actor:
+> **Note on `=> _` vs `=> X reenter { state }`:** `state` is valid as the sole
+> expression of a `reenter` body (unconditional stay). It is not yet valid as a
+> branch of an if/else inside a `reenter` body. Use `=> _` (wildcard target) for
+> transitions whose body conditionally returns different variants.
+
+Usage in an actor (pattern illustration — actor embedding of machine types is a
+current MIR limitation, not yet fully lowered):
 
 ```hew
 actor ApiGateway {
     var breaker: CircuitBreaker = CircuitBreaker::Closed { failures: 0 };
 
-    receive fn call(req: Request) -> Result<Response, String> {
+    receive fn call(req: Request) -> Result<Response, string> {
         // Check circuit state
         match breaker {
-            CircuitBreaker::Open { .. } => {
+            CircuitBreaker::Open { expires_at } => {
                 return Err("circuit open");
             },
             _ => {}
@@ -683,31 +772,26 @@ actor ApiGateway {
 }
 ```
 
-Testing:
+Testing (verified to compile and pass `hew check`):
 
 ```hew
-test "circuit opens after 5 failures" {
+fn main() {
+    // Test: circuit opens after 5 failures
     var breaker = CircuitBreaker::Closed { failures: 0 };
-
-    // 5 failures should open the circuit
     for i in 0..5 {
         breaker.step(CircuitBreakerEvent::Failure { timestamp: i * 1000 });
     }
-
     match breaker {
-        CircuitBreaker::Open { .. } => assert(true),
+        CircuitBreaker::Open { expires_at } => assert(expires_at > 0),
         _ => assert(false),
     }
-}
 
-test "half-open recovers after 3 successes" {
-    var breaker = CircuitBreaker::HalfOpen { successes: 0 };
-
-    for _ in 0..3 {
-        breaker.step(CircuitBreakerEvent::Success);
+    // Test: half-open recovers after 3 successes
+    var b2 = CircuitBreaker::HalfOpen { successes: 0 };
+    for i in 0..3 {
+        b2.step(CircuitBreakerEvent::Success);
     }
-
-    match breaker {
+    match b2 {
         CircuitBreaker::Closed { failures } => assert(failures == 0),
         _ => assert(false),
     }
@@ -718,45 +802,87 @@ test "half-open recovers after 3 successes" {
 
 ## §10 EBNF grammar
 
-The following productions extend the Hew grammar (§10 of HEW-SPEC.md).
+The following productions extend the Hew grammar (§10 of HEW-SPEC-2026.md).
 
 ```ebnf
 (* Machine declarations — added to Item production *)
 Item           = ... | MachineDecl ;
 
-MachineDecl    = "machine" Ident TypeParams? "{"
-                   { StateDecl | EventDecl | TransitionDecl }
+MachineDecl    = "machine" Ident TypeParams? WhereClause? "{"
+                   EventsHeader
+                   [ EmitsHeader ]
+                   { StateDecl }
+                   { TransitionDecl }
+                   [ DefaultArm ]
                  "}" ;
 
-StateDecl      = "state" Ident ( "{" { StructFieldDecl } "}" )? ";" ;
+EventsHeader   = "events" "{" { EventDecl } "}" ;
 
-EventDecl      = "event" Ident ( "{" { StructFieldDecl } "}" )? ";" ;
+EventDecl      = Ident ( ";" | "{" { StructFieldDecl } "}" ";"? ) ;
 
-TransitionDecl = "on" Ident ":" TransitionSource "->" TransitionTarget Block ;
+EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
 
-TransitionSource = Ident | "_" ;
+StateDecl      = "state" Ident ( "{"
+                   { StructFieldDecl }
+                   [ "entry" Block ]
+                   [ "exit"  Block ]
+                   { CompositeMember }       (* depth-1 composite only *)
+                   { TransitionDecl }        (* parent-level rules *)
+                 "}" )? ";"? ;
+
+CompositeMember = [ "initial" ] StateDecl ;  (* exactly one "initial" required *)
+
+TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
+                 TransitionSource "=>" TransitionTarget
+                 [ "reenter" ] [ "when" Expr ] TransitionBody ;
+
+DefaultArm     = "default" "{" Body "}" ;
+                 (* Body is a brace-balanced expression; `state` is canonical,
+                    `self` is also accepted by the parser *)
+
+TransitionSource = Ident | "_" ;            (* dotted Composite.Leaf strips to Leaf *)
 
 TransitionTarget = Ident | "_" ;
+
+TransitionBody = ";" | "{" FieldInits "}" | Block ;
 ```
 
-Where `StructFieldDecl`, `TypeParams`, `Block`, and `Ident` are as defined in the base Hew grammar.
+`events`, `emits`, `reenter`, and `initial` are contextual keywords valid only
+inside a machine body; they do not reserve global identifiers. Where
+`StructFieldDecl`, `TypeParams`, `WhereClause`, `Block`, `Expr`, and `Ident` are
+as defined in the base Hew grammar.
+
+A `state` whose body contains substate declarations (`CompositeMember`) is a
+**depth-1 composite**. It desugars entirely at the parser/AST level to the flat
+state and transition lists: members become flat states, a parent-level
+`on E: _ => T` expands to one concrete-source transition per member, and
+composite `entry`/`exit` hooks splice into boundary-crossing transition bodies
+(Harel ordering). A substate that itself contains substates (depth > 1) is
+rejected with a v0.6 diagnostic.
 
 ---
 
 ## §11 Future work
 
-The following features are explicitly deferred to future versions:
+The following features are explicitly deferred to future editions:
 
-1. **Mealy outputs** — transitions producing output values alongside new state: `on Event: S1 -> S2 / OutputType { ... }`.
-2. **Hierarchical states** — states containing sub-machines.
-3. **Entry/exit hooks** — `enter S1 { ... }`, `exit S1 { ... }`.
-4. **History states** — returning to a previously active sub-state.
+1. **Depth > 1 nesting** — composites containing composites. Depth-1 composite
+   state blocks are supported; deeper nesting (depth > 1) is reserved for a
+   future edition.
+2. **History states** — returning to a previously active sub-state. `history`
+   may be reserved as a contextual keyword but is not yet lowered.
+3. **Composite-scoped auto-fill** — auto-synthesised identity fill for uncovered
+   intra-composite cells (use the `_ => _ { state }` one-liner in the interim).
+4. **Union-source `A | B =>`** shared events — write the rule per source or use a
+   composite parent rule.
 5. **Timeout events** — compiler-generated events triggered by elapsed time.
 
-Guard conditions are shipping in v0.2.0 (see §1.1 and §3.11.4 of `HEW-SPEC.md`).
-Visualization is also shipping via the CLI: `hew machine diagram` emits Mermaid
-by default and `hew machine diagram --dot` emits Graphviz DOT from machine
-source declarations.
+Guard conditions (`when`), inline state `entry {}` / `exit {}` blocks, the
+`default { state }` arm, depth-1 composite states, and the `=>` / `events {}` /
+`emits {}` / `reenter` / head-binding surface are implemented. Visualization
+is available via the CLI: `hew machine diagram` emits Mermaid by default,
+`--format graphviz` emits Graphviz DOT, and `--format json` emits a tooling
+schema — all three render depth-1 composite nesting.
 
 ---
 
@@ -765,5 +891,5 @@ source declarations.
 - [1] Pony Language Tutorial — [tutorial.ponylang.io](https://tutorial.ponylang.io)
 - [2] Erlang Supervision Principles — [erlang.org](https://www.erlang.org/doc/design_principles/sup_princ.html)
 - [3] Statecharts — David Harel, 1987
-- [4] Hew Language Specification (audited for v0.2.0) — `docs/specs/HEW-SPEC.md`
+- [4] Hew Language Specification (edition 2026) — `docs/specs/HEW-SPEC-2026.md`
 - [5] RFC: First-Class State Machines in Hew — `examples/machine-design.md`

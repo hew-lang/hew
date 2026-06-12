@@ -1,0 +1,37 @@
+// Accept fixture (NEW-7): `await stream.recv() | after d` — the deadline elapses
+// before any frame is sent, so the suspending recv resolves to `Err(TimeoutError)`.
+//
+// The Sink is held but no frame is ever written. Under HEW_WORKERS=1 the stream
+// recv parks worker-free; the `after 60ms` deadline timer cancels the in-flight
+// recv and resumes the actor with a typed `Err`. The process never hangs.
+//
+// Exit-code contract: Err(_) arm → 7.
+import std::stream;
+
+actor Pipeline {
+    receive fn run() -> i64 {
+        let (sink, input) = stream.pipe(8);
+        // `sink` stays in scope (never written / closed) so stream recv parks until
+        // the deadline fires. Explicitly close after the await to satisfy drop
+        // analysis (auto-drop would also close, but this makes the intent clear).
+        let frame: Result<Option<string>, TimeoutError> = await input.recv() | after 60ms;
+        sink.close();
+        match frame {
+            Ok(inner) => {
+                match inner {
+                    Some(_s) => 1,
+                    None => -1,
+                }
+            },
+            Err(_) => 7,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let p = spawn Pipeline;
+    match await p.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

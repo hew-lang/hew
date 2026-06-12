@@ -4,9 +4,8 @@
 //! the type checker. Types are structural and support substitution for
 //! type inference variables.
 
-use crate::builtin_names::{
-    builtin_named_type, canonical_builtin_named_type_name, BuiltinNamedType,
-};
+use crate::builtin_names::BuiltinNamedType;
+use crate::builtin_type::{lookup_builtin_type, BuiltinType};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -17,6 +16,60 @@ pub struct TypeVar(pub u32);
 
 /// Counter for generating fresh type variables.
 static NEXT_TYPE_VAR: AtomicU32 = AtomicU32::new(0);
+
+fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<BuiltinNamedType> {
+    match builtin {
+        Some(BuiltinType::Sender) => Some(BuiltinNamedType::Sender),
+        Some(BuiltinType::Receiver) => Some(BuiltinNamedType::Receiver),
+        Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
+        Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
+        Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
+        Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
+        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
+        Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
+        Some(
+            BuiltinType::Option
+            | BuiltinType::Result
+            | BuiltinType::Vec
+            | BuiltinType::HashMap
+            | BuiltinType::HashSet
+            | BuiltinType::ActorRef
+            | BuiltinType::Actor
+            | BuiltinType::Task
+            | BuiltinType::StreamPair
+            | BuiltinType::Generator
+            | BuiltinType::AsyncGenerator
+            | BuiltinType::Range
+            | BuiltinType::Rc
+            | BuiltinType::Pid
+            | BuiltinType::HewActor
+            | BuiltinType::HewDuplex
+            | BuiltinType::HewSendHalf
+            | BuiltinType::HewRecvHalf
+            | BuiltinType::BoxedActor
+            | BuiltinType::ActorState
+            | BuiltinType::MachineState
+            | BuiltinType::SendHalf
+            | BuiltinType::RecvHalf
+            | BuiltinType::LambdaActorHandle
+            | BuiltinType::CrashInfo
+            | BuiltinType::CrashAction
+            | BuiltinType::SendError
+            | BuiltinType::AskError
+            | BuiltinType::RecvError
+            | BuiltinType::LinkError
+            | BuiltinType::MonitorRef
+            | BuiltinType::NarrowError
+            | BuiltinType::CloseError
+            | BuiltinType::Iterator
+            | BuiltinType::Unit
+            | BuiltinType::Duration
+            | BuiltinType::Trap
+            | BuiltinType::TimeoutError,
+        )
+        | None => None,
+    }
+}
 
 impl TypeVar {
     /// Create a fresh, globally unique type variable.
@@ -44,6 +97,11 @@ pub struct TraitObjectBound {
     pub trait_name: String,
     /// Type arguments
     pub args: Vec<Ty>,
+    /// Associated-type bindings projected on this trait object bound.
+    ///
+    /// Stored sorted by associated-type name at type-resolution boundaries so
+    /// equality, hashing, display, and vtable-key construction are canonical.
+    pub assoc_bindings: Vec<(String, Ty)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +131,12 @@ pub enum Ty {
     U32,
     /// 64-bit unsigned integer
     U64,
+    /// Platform-sized signed integer: 32-bit on WASM32, 64-bit on native.
+    /// Distinct from `i64` (which is always fixed 64-bit).
+    Isize,
+    /// Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native.
+    /// Distinct from `u64` (which is always fixed 64-bit).
+    Usize,
     /// 32-bit floating point
     F32,
     /// 64-bit floating point
@@ -89,6 +153,8 @@ pub enum Ty {
     String,
     /// Ref-counted byte buffer
     Bytes,
+    /// Ref-counted cancellation token handle
+    CancellationToken,
     /// Duration in nanoseconds (distinct from i64)
     Duration,
     /// Unit type (void)
@@ -114,6 +180,9 @@ pub enum Ty {
         name: String,
         /// Generic type arguments
         args: Vec<Ty>,
+        /// Compiler-known builtin discriminator, when this name comes from a
+        /// canonical builtin source rather than user-defined source.
+        builtin: Option<BuiltinType>,
     },
 
     /// Function type: `fn(T1, T2) -> R`
@@ -142,6 +211,17 @@ pub enum Ty {
         pointee: Box<Ty>,
     },
 
+    /// Immutable borrow `&T` — a first-class, no-retain shared reference to a
+    /// value owned elsewhere. Distinct from `Pointer { is_mutable: false }`:
+    /// a borrow is non-owning, never retained on copy (the M-COW retain-skip
+    /// opt-out), classified `View` for drop purposes, and carries
+    /// borrow-specific send/return-escape semantics. `&mut`/`&var` are rejected
+    /// at parse today, so a borrow is always immutable.
+    Borrow {
+        /// Borrowed (pointee) type
+        pointee: Box<Ty>,
+    },
+
     /// Trait object: `dyn Trait` or `dyn (Trait1 + Trait2)`
     TraitObject {
         /// Trait bounds
@@ -156,6 +236,32 @@ pub enum Ty {
     ///
     /// Display: `<task<T>>` (angle brackets signal compiler-internal origin).
     Task(Box<Ty>),
+
+    /// Deferred associated-type projection: `T::Bar` where `T` is a generic
+    /// type parameter with a trait bound that declares `type Bar`.
+    ///
+    /// Produced by the resolver when it sees `T::Bar` in a type expression and
+    /// `T` is a known type parameter whose bounds include a trait declaring
+    /// `Bar`. The variant carries the trait name (disambiguating when `T` has
+    /// multiple bounds) plus the assoc-type name. Substitution collapses this
+    /// to the impl's binding once `base` becomes concrete (see
+    /// `Checker::project_assoc_types`).
+    ///
+    /// Display: `<base>::<assoc>` (e.g. `I::Item`).
+    ///
+    /// Strings are boxed to keep the variant under the `result_large_err`
+    /// clippy threshold (Ty appears as both arms of `UnifyError::Mismatch`).
+    AssocType {
+        /// Carrier of the type parameter (`Ty::Named { name: "I", args: [] }`
+        /// at registration time; may become a concrete `Ty` after
+        /// monomorphisation substitutes the type-arg).
+        base: Box<Ty>,
+        /// Trait that declares the associated type. Required for
+        /// disambiguation when `base` has multiple bounds.
+        trait_name: Box<str>,
+        /// Associated type name (e.g. `"Item"`).
+        assoc_name: Box<str>,
+    },
 
     /// Error recovery — a type that unifies with anything
     Error,
@@ -179,6 +285,10 @@ impl Substitution {
     /// # Errors
     /// Returns an occurs-check error when the resolved mapping would introduce
     /// an infinite type or substitution cycle.
+    #[allow(
+        clippy::result_large_err,
+        reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
+    )]
     pub fn insert(&mut self, var: TypeVar, ty: &Ty) -> Result<(), crate::unify::UnifyError> {
         let resolved = ty.apply_subst(self);
         if resolved.contains_var(var) {
@@ -255,18 +365,20 @@ pub const PRIMITIVE_ALIASES: &[(&str, &[&str])] = &[
     ("i8", &["i8"]),
     ("i16", &["i16"]),
     ("i32", &["i32"]),
-    ("i64", &["i64", "int", "Int", "isize"]),
-    ("u8", &["u8", "byte"]),
+    ("i64", &["i64"]),
+    ("u8", &["u8"]),
     ("u16", &["u16"]),
     ("u32", &["u32"]),
-    ("u64", &["u64", "uint", "usize"]),
+    ("u64", &["u64"]),
+    ("isize", &["isize"]),
+    ("usize", &["usize"]),
     ("f32", &["f32"]),
-    ("f64", &["f64", "float", "Float"]),
-    ("bool", &["bool", "Bool"]),
-    ("char", &["char", "Char"]),
-    ("string", &["string", "String", "str"]),
-    ("bytes", &["bytes", "Bytes"]),
-    ("duration", &["duration", "Duration"]),
+    ("f64", &["f64"]),
+    ("bool", &["bool"]),
+    ("char", &["char"]),
+    ("string", &["string"]),
+    ("bytes", &["bytes"]),
+    ("duration", &["duration"]),
     // Unit's type-system spelling is `()`, while wirecodec also accepts `unit`.
     ("()", &["()"]),
     // Not in wirecodec: Never has no wire representation.
@@ -334,6 +446,8 @@ impl Ty {
             "u16" => Ty::U16,
             "u32" => Ty::U32,
             "u64" => Ty::U64,
+            "isize" => Ty::Isize,
+            "usize" => Ty::Usize,
             "f32" => Ty::F32,
             "f64" => Ty::F64,
             "bool" => Ty::Bool,
@@ -373,6 +487,8 @@ impl Ty {
             Ty::U16 => "u16",
             Ty::U32 => "u32",
             Ty::U64 => "u64",
+            Ty::Isize => "isize",
+            Ty::Usize => "usize",
             Ty::F32 => "f32",
             Ty::F64 => "f64",
             Ty::Bool => "bool",
@@ -410,14 +526,17 @@ impl Ty {
             Ty::U16 => write!(f, "u16"),
             Ty::U32 => write!(f, "u32"),
             Ty::U64 => write!(f, "u64"),
+            Ty::Isize => write!(f, "isize"),
+            Ty::Usize => write!(f, "usize"),
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "{f64_name}"),
             Ty::IntLiteral => write!(f, "<int literal>"),
             Ty::FloatLiteral => write!(f, "<float literal>"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
-            Ty::String => write!(f, "String"),
+            Ty::String => write!(f, "string"),
             Ty::Bytes => write!(f, "bytes"),
+            Ty::CancellationToken => write!(f, "CancellationToken"),
             Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
@@ -442,7 +561,7 @@ impl Ty {
                 elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 write!(f, "{name}")?;
                 if !args.is_empty() {
                     write!(f, "<")?;
@@ -478,18 +597,32 @@ impl Ty {
                 }
                 pointee.fmt_with_numeric_names(f, i64_name, f64_name)
             }
+            Ty::Borrow { pointee } => {
+                write!(f, "&")?;
+                pointee.fmt_with_numeric_names(f, i64_name, f64_name)
+            }
             Ty::TraitObject { traits } => {
                 write!(f, "dyn ")?;
                 if traits.len() == 1 {
                     let bound = &traits[0];
                     write!(f, "{}", bound.trait_name)?;
-                    if !bound.args.is_empty() {
+                    if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                         write!(f, "<")?;
-                        for (i, arg) in bound.args.iter().enumerate() {
-                            if i > 0 {
+                        let mut needs_comma = false;
+                        for arg in &bound.args {
+                            if needs_comma {
                                 write!(f, ", ")?;
                             }
                             arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
+                        }
+                        for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                            if needs_comma {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{assoc_name} = ")?;
+                            assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                            needs_comma = true;
                         }
                         write!(f, ">")?;
                     }
@@ -500,13 +633,23 @@ impl Ty {
                             write!(f, " + ")?;
                         }
                         write!(f, "{}", bound.trait_name)?;
-                        if !bound.args.is_empty() {
+                        if !bound.args.is_empty() || !bound.assoc_bindings.is_empty() {
                             write!(f, "<")?;
-                            for (j, arg) in bound.args.iter().enumerate() {
-                                if j > 0 {
+                            let mut needs_comma = false;
+                            for arg in &bound.args {
+                                if needs_comma {
                                     write!(f, ", ")?;
                                 }
                                 arg.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
+                            }
+                            for (assoc_name, assoc_ty) in &bound.assoc_bindings {
+                                if needs_comma {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{assoc_name} = ")?;
+                                assoc_ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                                needs_comma = true;
                             }
                             write!(f, ">")?;
                         }
@@ -520,30 +663,19 @@ impl Ty {
                 inner.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, ">>")
             }
+            Ty::AssocType {
+                base, assoc_name, ..
+            } => {
+                base.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, "::{assoc_name}")
+            }
             Ty::Error => write!(f, "<error>"),
         }
     }
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
-        if let Some(canonical) = canonical_builtin_named_type_name(name) {
-            return Some(canonical);
-        }
-        Some(match name {
-            "Option" => "Option",
-            "Result" => "Result",
-            "Vec" => "Vec",
-            "HashMap" => "HashMap",
-            "ActorRef" => "ActorRef",
-            "Actor" => "Actor",
-            "Task" => "Task",
-            "StreamPair" => "StreamPair",
-            "Generator" => "Generator",
-            "AsyncGenerator" => "AsyncGenerator",
-            "Range" => "Range",
-            "Rc" => "Rc",
-            _ => return None,
-        })
+        lookup_builtin_type(name).map(BuiltinType::canonical_name)
     }
 
     #[must_use]
@@ -620,10 +752,15 @@ impl Ty {
                     || captures.iter().any(Ty::has_inference_var)
             }
             Ty::Pointer { pointee, .. } => pointee.has_inference_var(),
-            Ty::TraitObject { traits } => traits
-                .iter()
-                .any(|bound| bound.args.iter().any(Ty::has_inference_var)),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(Ty::has_inference_var)
+                    || bound
+                        .assoc_bindings
+                        .iter()
+                        .any(|(_, ty)| ty.has_inference_var())
+            }),
             Ty::Task(inner) => inner.has_inference_var(),
+            Ty::AssocType { base, .. } => base.has_inference_var(),
             _ => false,
         }
     }
@@ -633,79 +770,201 @@ impl Ty {
     /// Construct `Option<inner>`.
     #[must_use]
     pub fn option(inner: Ty) -> Ty {
-        Self::normalize_named("Option".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Option, vec![inner])
     }
 
     /// Construct `Result<ok, err>`.
     #[must_use]
     pub fn result(ok: Ty, err: Ty) -> Ty {
-        Self::normalize_named("Result".to_string(), vec![ok, err])
+        Self::builtin_named(BuiltinType::Result, vec![ok, err])
     }
 
     /// Construct `ActorRef<inner>`.
     #[must_use]
     pub fn actor_ref(inner: Ty) -> Ty {
-        Self::normalize_named("ActorRef".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::ActorRef, vec![inner])
+    }
+
+    /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
+    #[must_use]
+    pub fn local_pid(inner: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::LocalPid, vec![inner])
+    }
+
+    /// Construct `RemotePid<inner>` — actor pid on a remote node.
+    #[must_use]
+    pub fn remote_pid(inner: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::RemotePid, vec![inner])
     }
 
     /// Construct `Sender<inner>`.
     #[must_use]
     pub fn sender(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Sender.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Sender, vec![inner])
     }
 
     /// Construct `Receiver<inner>`.
     #[must_use]
     pub fn receiver(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Receiver.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Receiver, vec![inner])
     }
 
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Stream.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Stream, vec![inner])
     }
 
     /// Construct `Sink<inner>`.
     #[must_use]
     pub fn sink(inner: Ty) -> Ty {
-        Self::normalize_named(
-            BuiltinNamedType::Sink.canonical_name().to_string(),
-            vec![inner],
-        )
+        Self::builtin_named(BuiltinType::Sink, vec![inner])
+    }
+
+    /// Construct `Duplex<S, R>` — bidirectional lambda-actor handle.
+    ///
+    /// `S` is the send direction (message type); `R` is the receive direction
+    /// (reply type, or `()` for tell-shaped actors).  Send iff both S and R are Send.
+    #[must_use]
+    pub fn duplex(send: Ty, reply: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::Duplex, vec![send, reply])
+    }
+
+    /// Extract `(S, R)` from `Duplex<S, R>`, or `None` if not a Duplex.
+    #[must_use]
+    pub fn as_duplex(&self) -> Option<(&Ty, &Ty)> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
+    }
+
+    /// Construct `SendError` — error type for tell-shaped lambda-actor calls.
+    #[must_use]
+    pub fn send_error() -> Ty {
+        Self::builtin_named(BuiltinType::SendError, vec![])
+    }
+
+    /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
+    #[must_use]
+    pub fn ask_error() -> Ty {
+        Self::builtin_named(BuiltinType::AskError, vec![])
+    }
+
+    /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
+    /// and `await stream.recv() | after d`.  A unit enum with one variant
+    /// (`Timeout`) distinguishing deadline expiry from a closed channel
+    /// (`Ok(None)`).
+    #[must_use]
+    pub fn timeout_error() -> Ty {
+        Self::builtin_named(BuiltinType::TimeoutError, vec![])
+    }
+
+    /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
+    #[must_use]
+    pub fn recv_error() -> Ty {
+        Self::builtin_named(BuiltinType::RecvError, vec![])
+    }
+
+    /// Construct `LinkError` — error type for `link(handle)` calls.
+    ///
+    /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
+    /// `std/link_monitor.hew` and wired in codegen slice B3. At the checker
+    /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    #[must_use]
+    pub fn link_error() -> Ty {
+        Self::builtin_named(BuiltinType::LinkError, vec![])
+    }
+
+    /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
+    ///
+    /// The struct is declared in `std/link_monitor.hew` and registered via
+    /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
+    /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
+    #[must_use]
+    pub fn monitor_ref() -> Ty {
+        Self::builtin_named(BuiltinType::MonitorRef, vec![])
+    }
+
+    /// Construct `NarrowError` — error type returned by `.try_to_<W>()` width-conversion
+    /// methods when the source value does not fit in the target integer width.
+    #[must_use]
+    pub fn narrow_error() -> Ty {
+        Self::builtin_named(BuiltinType::NarrowError, vec![])
+    }
+
+    /// Return the fixed bit-width of this integer type, or `None` for
+    /// platform-sized types (`isize`/`usize`) whose width is target-dependent.
+    ///
+    /// Used by the width-conversion method family to determine admissibility of
+    /// infallible `.to_<W>()`: only fixed-width, same-sign, strictly-wider pairs
+    /// are permitted without a fallible wrapper.
+    #[must_use]
+    pub fn integer_bit_width(&self) -> Option<u8> {
+        match self {
+            Ty::I8 | Ty::U8 => Some(8),
+            Ty::I16 | Ty::U16 => Some(16),
+            Ty::I32 | Ty::U32 => Some(32),
+            Ty::I64 | Ty::U64 => Some(64),
+            // isize/usize and non-integer types have no fixed width.
+            _ => None,
+        }
+    }
+
+    /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
+    ///
+    /// Distinct from the process-resource `CloseError` registered by the
+    /// `Closable` trait (`registration.rs`); this variant names the duplex
+    /// close-failure (double-close / already-closed) at the type-checker
+    /// surface.  The two share a name by design; slice 6 (stdlib) will
+    /// unify them under a single `CloseError` enum.
+    #[must_use]
+    pub fn duplex_close_error() -> Ty {
+        Self::builtin_named(BuiltinType::CloseError, vec![])
+    }
+
+    /// Construct `SendHalf<S>` — send-direction half of a split `Duplex<S, R>`.
+    ///
+    /// Returned by `Duplex<S, R>::send_half()`; consumes the source handle.
+    #[must_use]
+    pub fn send_half(s: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::SendHalf, vec![s])
+    }
+
+    /// Construct `RecvHalf<R>` — receive-direction half of a split `Duplex<S, R>`.
+    ///
+    /// Returned by `Duplex<S, R>::recv_half()`; consumes the source handle.
+    #[must_use]
+    pub fn recv_half(r: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::RecvHalf, vec![r])
     }
 
     /// Construct `Generator<yields, returns>`.
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {
-        Self::normalize_named("Generator".to_string(), vec![yields, returns])
+        Self::builtin_named(BuiltinType::Generator, vec![yields, returns])
     }
 
     /// Construct `AsyncGenerator<yields>`.
     #[must_use]
     pub fn async_generator(yields: Ty) -> Ty {
-        Self::normalize_named("AsyncGenerator".to_string(), vec![yields])
+        Self::builtin_named(BuiltinType::AsyncGenerator, vec![yields])
     }
 
     /// Construct `Range<inner>`.
     #[must_use]
     pub fn range(inner: Ty) -> Ty {
-        Self::normalize_named("Range".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Range, vec![inner])
     }
 
     /// Construct `Rc<inner>`.
     #[must_use]
     pub fn rc(inner: Ty) -> Ty {
-        Self::normalize_named("Rc".to_string(), vec![inner])
+        Self::builtin_named(BuiltinType::Rc, vec![inner])
     }
 
     // -- Accessor helpers: match on Named patterns --
@@ -714,7 +973,11 @@ impl Ty {
     #[must_use]
     pub fn as_option(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "Option" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -723,9 +986,11 @@ impl Ty {
     #[must_use]
     pub fn as_result(&self) -> Option<(&Ty, &Ty)> {
         match self {
-            Ty::Named { name, args } if name == "Result" && args.len() == 2 => {
-                Some((&args[0], &args[1]))
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -734,17 +999,56 @@ impl Ty {
     #[must_use]
     pub fn as_actor_ref(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorRef),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
 
-    /// If this is an actor handle (`ActorRef<T>` or `Actor<T>`), return `Some(&T)`.
+    /// If this is `LocalPid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_local_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::LocalPid),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `RemotePid<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_remote_pid(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is a local actor handle (`ActorRef<T>`, `Actor<T>`, or `LocalPid<T>`), return `Some(&T)`.
+    ///
+    /// `LocalPid<T>` is the default spawn-return type. `ActorRef<T>` remains
+    /// recognized for legacy local references. `RemotePid<T>` is intentionally
+    /// excluded — it is a distinct type that does not participate in the local
+    /// supervisor graph.
     #[must_use]
     pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args }
-                if (name == "ActorRef" || name == "Actor") && args.len() == 1 =>
+            Ty::Named {
+                builtin: Some(builtin),
+                args,
+                ..
+            } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
+                && args.len() == 1 =>
             {
                 Some(&args[0])
             }
@@ -754,25 +1058,13 @@ impl Ty {
 
     fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args }
-                if builtin_named_type(name) == Some(kind) && args.len() == 1 =>
+            Ty::Named { builtin, args, .. }
+                if builtin_named_type_from_builtin(*builtin) == Some(kind) && args.len() == 1 =>
             {
                 Some(&args[0])
             }
             _ => None,
         }
-    }
-
-    /// If this is `Sender<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_sender(&self) -> Option<&Ty> {
-        self.as_single_arg_builtin_named(BuiltinNamedType::Sender)
-    }
-
-    /// If this is `Receiver<T>`, return `Some(&T)`.
-    #[must_use]
-    pub fn as_receiver(&self) -> Option<&Ty> {
-        self.as_single_arg_builtin_named(BuiltinNamedType::Receiver)
     }
 
     /// If this is `Stream<T>`, return `Some(&T)`.
@@ -791,9 +1083,11 @@ impl Ty {
     #[must_use]
     pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {
         match self {
-            Ty::Named { name, args } if name == "Generator" && args.len() == 2 => {
-                Some((&args[0], &args[1]))
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Generator),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
         }
     }
@@ -802,9 +1096,11 @@ impl Ty {
     #[must_use]
     pub fn as_async_generator(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "AsyncGenerator" && args.len() == 1 => {
-                Some(&args[0])
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::AsyncGenerator),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -813,32 +1109,50 @@ impl Ty {
     #[must_use]
     pub fn as_range(&self) -> Option<&Ty> {
         match self {
-            Ty::Named { name, args } if name == "Range" && args.len() == 1 => Some(&args[0]),
+            Ty::Named {
+                builtin: Some(BuiltinType::Range),
+                args,
+                ..
+            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
 
-    /// Check if this is a Stream type.
-    #[must_use]
-    pub fn is_stream(&self) -> bool {
-        self.as_stream().is_some()
-    }
-
-    /// Check if this is a Sink type.
-    #[must_use]
-    pub fn is_sink(&self) -> bool {
-        self.as_sink().is_some()
-    }
-
     /// Canonicalize known named builtins to their shared spelling before
     /// constructing `Ty::Named`.
+    #[must_use]
+    pub fn named(name: impl Into<String>, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: name.into(),
+            args,
+            builtin: None,
+        }
+    }
+
+    #[must_use]
+    pub fn builtin_named(kind: BuiltinType, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: kind.canonical_name().to_string(),
+            args,
+            builtin: Some(kind),
+        }
+    }
+
     #[must_use]
     pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
         let name = match Self::canonical_named_builtin(&name) {
             Some(canonical) if canonical != name => canonical.to_string(),
             _ => name,
         };
-        Ty::Named { name, args }
+        let builtin = lookup_builtin_type(&name);
+        if builtin == Some(BuiltinType::CancellationToken) && args.is_empty() {
+            return Ty::CancellationToken;
+        }
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        }
     }
 
     /// Check if this is a numeric type (integer or float).
@@ -901,6 +1215,8 @@ impl Ty {
                 | Ty::U16
                 | Ty::U32
                 | Ty::U64
+                | Ty::Isize
+                | Ty::Usize
                 | Ty::IntLiteral
         )
     }
@@ -918,7 +1234,7 @@ impl Ty {
     /// Check if this is an unsigned integer type.
     #[must_use]
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64)
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize)
     }
 
     /// Check if this is a floating-point type.
@@ -998,8 +1314,13 @@ impl Ty {
                 Ty::Array(Box::new(elem.apply_subst_inner(subst, visited)), *size)
             }
             Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst_inner(subst, visited))),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|arg| arg.apply_subst_inner(subst, visited))
@@ -1044,12 +1365,35 @@ impl Ty {
                             .iter()
                             .map(|arg| arg.apply_subst_inner(subst, visited))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.apply_subst_inner(subst, visited)))
+                            .collect(),
                     })
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.apply_subst_inner(subst, visited)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
+    }
+
+    /// Public counterpart to `map_children`: apply `f` to each child type
+    /// and reconstruct the composite. Intended for cross-module walkers
+    /// (e.g. the checker's projection-collapse) that need structural
+    /// recursion without re-implementing every variant.
+    #[must_use]
+    pub fn map_children_pub(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+        self.map_children(f)
     }
 
     /// Apply a function to each child type, reconstructing the composite.
@@ -1059,8 +1403,13 @@ impl Ty {
             Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args.iter().map(f).collect(),
             },
             Ty::Function { params, ret } => Ty::Function {
@@ -1083,16 +1432,33 @@ impl Ty {
                 is_mutable: *is_mutable,
                 pointee: Box::new(f(pointee)),
             },
+            Ty::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(f(pointee)),
+            },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(f).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), f(ty)))
+                            .collect(),
                     })
                     .collect(),
             },
             Ty::Task(inner) => Ty::Task(Box::new(f(inner))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(f(base)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -1109,9 +1475,12 @@ impl Ty {
                 ret,
                 captures,
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
-            Ty::Pointer { pointee, .. } => f(pointee),
-            Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
+            Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => f(pointee),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                bound.args.iter().any(f) || bound.assoc_bindings.iter().any(|(_, ty)| f(ty))
+            }),
             Ty::Task(inner) => f(inner),
+            Ty::AssocType { base, .. } => f(base),
             _ => false,
         }
     }
@@ -1121,11 +1490,16 @@ impl Ty {
     #[must_use]
     pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
         match self {
-            Ty::Named { name, args } if args.is_empty() && name == param_name => {
+            Ty::Named { name, args, .. } if args.is_empty() && name == param_name => {
                 replacement.clone()
             }
-            Ty::Named { name, args } => Ty::Named {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args
                     .iter()
                     .map(|a| a.substitute_named_param(param_name, replacement))
@@ -1173,6 +1547,9 @@ impl Ty {
                 is_mutable: *is_mutable,
                 pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
             },
+            Ty::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
+            },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
                     .iter()
@@ -1183,6 +1560,16 @@ impl Ty {
                             .iter()
                             .map(|arg| arg.substitute_named_param(param_name, replacement))
                             .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (
+                                    name.clone(),
+                                    ty.substitute_named_param(param_name, replacement),
+                                )
+                            })
+                            .collect(),
                     })
                     .collect(),
             },
@@ -1192,6 +1579,125 @@ impl Ty {
             Ty::Task(inner) => Ty::Task(Box::new(
                 inner.substitute_named_param(param_name, replacement),
             )),
+            // AssocType { base: T, trait, name }: when `T` is the type param
+            // being substituted, recurse into `base` so a later projection-
+            // collapse pass can resolve the assoc binding from the impl.
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.substitute_named_param(param_name, replacement)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
+            _ => self.clone(),
+        }
+    }
+
+    /// Substitute all named type parameters simultaneously in a single structural
+    /// traversal. Unlike chaining [`substitute_named_param`] calls sequentially,
+    /// this never re-substitutes the result of one replacement into another —
+    /// so a swap map like `{"A": B, "B": A}` correctly yields `Pair<B,A>` rather
+    /// than aliasing both params back to `A`.
+    ///
+    /// Every `Ty::Named` leaf with empty args is looked up in `map` exactly once.
+    /// If found, the replacement is returned as-is (no further substitution into
+    /// the replacement). Composites recurse structurally.
+    #[must_use]
+    pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
+        match self {
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if let Some(replacement) = map.get(name.as_str()) {
+                    replacement.clone()
+                } else {
+                    self.clone()
+                }
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ty::Named {
+                name: name.clone(),
+                builtin: *builtin,
+                args: args
+                    .iter()
+                    .map(|a| a.substitute_named_params_parallel(map))
+                    .collect(),
+            },
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| e.substitute_named_params_parallel(map))
+                    .collect(),
+            ),
+            Ty::Array(inner, n) => {
+                Ty::Array(Box::new(inner.substitute_named_params_parallel(map)), *n)
+            }
+            Ty::Slice(inner) => Ty::Slice(Box::new(inner.substitute_named_params_parallel(map))),
+            Ty::Function { params, ret } => Ty::Function {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_params_parallel(map))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_params_parallel(map)),
+            },
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => Ty::Closure {
+                params: params
+                    .iter()
+                    .map(|p| p.substitute_named_params_parallel(map))
+                    .collect(),
+                ret: Box::new(ret.substitute_named_params_parallel(map)),
+                captures: captures
+                    .iter()
+                    .map(|c| c.substitute_named_params_parallel(map))
+                    .collect(),
+            },
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
+            },
+            Ty::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
+            },
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| arg.substitute_named_params_parallel(map))
+                            .collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| {
+                                (name.clone(), ty.substitute_named_params_parallel(map))
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            Ty::Task(inner) => Ty::Task(Box::new(inner.substitute_named_params_parallel(map))),
+            Ty::AssocType {
+                base,
+                trait_name,
+                assoc_name,
+            } => Ty::AssocType {
+                base: Box::new(base.substitute_named_params_parallel(map)),
+                trait_name: trait_name.clone(),
+                assoc_name: assoc_name.clone(),
+            },
             _ => self.clone(),
         }
     }
@@ -1209,8 +1715,7 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let materialized = self.0.materialize_literal_defaults();
-        materialized.fmt_with_numeric_names(f, "int", "float")
+        self.0.materialize_literal_defaults().fmt(f)
     }
 }
 
@@ -1267,11 +1772,13 @@ mod tests {
     fn test_substitute_named_param() {
         let ty = Ty::Function {
             params: vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
             ret: Box::new(Ty::Tuple(vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -1286,6 +1793,72 @@ mod tests {
             Ty::Function {
                 params: vec![Ty::String],
                 ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
+            }
+        );
+    }
+
+    #[test]
+    fn test_borrow_contains_var_recurses_through_pointee() {
+        // Guards the type-inference-boundary invariant: an unresolved `Ty::Var`
+        // inside `&T` must be detected by the occurs/contains check, not skipped.
+        TypeVar::reset();
+        let v = TypeVar::fresh();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Var(v)),
+        };
+        assert!(borrow.contains_var(v));
+
+        let concrete_borrow = Ty::Borrow {
+            pointee: Box::new(Ty::String),
+        };
+        assert!(!concrete_borrow.contains_var(v));
+    }
+
+    #[test]
+    fn test_borrow_substitute_named_param_recurses_through_pointee() {
+        // `&T` with `T := string` must become `&string`.
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Named {
+                builtin: None,
+                name: "T".to_string(),
+                args: vec![],
+            }),
+        };
+
+        let substituted = borrow.substitute_named_param("T", &Ty::String);
+
+        assert_eq!(
+            substituted,
+            Ty::Borrow {
+                pointee: Box::new(Ty::String),
+            }
+        );
+    }
+
+    #[test]
+    fn test_borrow_substitute_recurses_through_nested_pointee() {
+        // `map_children` (via `substitute`) must recurse through a borrow into a
+        // nested generic pointee: `&Vec<$v>` with `$v := i32` becomes `&Vec<i32>`.
+        TypeVar::reset();
+        let v = TypeVar::fresh();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::Named {
+                builtin: None,
+                name: "Vec".to_string(),
+                args: vec![Ty::Var(v)],
+            }),
+        };
+
+        let result = borrow.substitute(v, &Ty::I32);
+
+        assert_eq!(
+            result,
+            Ty::Borrow {
+                pointee: Box::new(Ty::Named {
+                    builtin: None,
+                    name: "Vec".to_string(),
+                    args: vec![Ty::I32],
+                }),
             }
         );
     }
@@ -1315,12 +1888,13 @@ mod tests {
                     ret: Box::new(Ty::String),
                 }
             ),
-            "fn(i32, bool) -> String"
+            "fn(i32, bool) -> string"
         );
         assert_eq!(
             format!(
                 "{}",
                 Ty::Named {
+                    builtin: None,
                     name: "Vec".to_string(),
                     args: vec![Ty::I32],
                 }
@@ -1330,15 +1904,15 @@ mod tests {
     }
 
     #[test]
-    fn test_user_facing_display_preserves_numeric_aliases() {
-        assert_eq!(Ty::I64.user_facing().to_string(), "int");
-        assert_eq!(Ty::F64.user_facing().to_string(), "float");
+    fn test_user_facing_display_uses_explicit_widths() {
+        assert_eq!(Ty::I64.user_facing().to_string(), "i64");
+        assert_eq!(Ty::F64.user_facing().to_string(), "f64");
     }
 
     #[test]
     fn test_user_facing_display_materializes_literal_kinds() {
-        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "int");
-        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "float");
+        assert_eq!(Ty::IntLiteral.user_facing().to_string(), "i64");
+        assert_eq!(Ty::FloatLiteral.user_facing().to_string(), "f64");
     }
 
     #[test]
@@ -1352,6 +1926,7 @@ mod tests {
         let ty = Ty::Function {
             params: vec![
                 Ty::Named {
+                    builtin: None,
                     name: "Vec".to_string(),
                     args: vec![Ty::I64],
                 },
@@ -1360,6 +1935,7 @@ mod tests {
             ret: Box::new(Ty::result(
                 Ty::I64,
                 Ty::Named {
+                    builtin: None,
                     name: "HashMap".to_string(),
                     args: vec![Ty::String, Ty::I64],
                 },
@@ -1368,11 +1944,11 @@ mod tests {
 
         assert_eq!(
             ty.user_facing().to_string(),
-            "fn(Vec<int>, (bool, int)) -> Result<int, HashMap<String, int>>"
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<string, i64>>"
         );
         assert_eq!(
             ty.to_string(),
-            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<String, i64>>"
+            "fn(Vec<i64>, (bool, i64)) -> Result<i64, HashMap<string, i64>>"
         );
     }
 
@@ -1406,6 +1982,7 @@ mod tests {
         let ty = Ty::Tuple(vec![
             Ty::IntLiteral,
             Ty::Named {
+                builtin: None,
                 name: "Option".to_string(),
                 args: vec![Ty::FloatLiteral],
             },
@@ -1415,6 +1992,7 @@ mod tests {
             Ty::Tuple(vec![
                 Ty::I64,
                 Ty::Named {
+                    builtin: None,
                     name: "Option".to_string(),
                     args: vec![Ty::F64],
                 },
@@ -1431,7 +2009,7 @@ mod tests {
     fn test_display_result() {
         assert_eq!(
             format!("{}", Ty::result(Ty::I32, Ty::String)),
-            "Result<i32, String>"
+            "Result<i32, string>"
         );
     }
 
@@ -1439,7 +2017,7 @@ mod tests {
     fn test_display_tuple() {
         assert_eq!(
             format!("{}", Ty::Tuple(vec![Ty::I32, Ty::Bool, Ty::String])),
-            "(i32, bool, String)"
+            "(i32, bool, string)"
         );
     }
 
@@ -1463,6 +2041,7 @@ mod tests {
         TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])],
         };
@@ -1470,6 +2049,7 @@ mod tests {
         assert_eq!(
             result,
             Ty::Named {
+                builtin: None,
                 name: "Vec".to_string(),
                 args: vec![Ty::Tuple(vec![Ty::String, Ty::Bool])],
             }
@@ -1553,5 +2133,90 @@ mod tests {
             Ty::Tuple(vec![Ty::Var(v1)]).apply_subst(&subst),
             Ty::Tuple(vec![Ty::Error])
         );
+    }
+
+    // --- substitute_named_params_parallel ---
+
+    fn named(n: &str) -> Ty {
+        Ty::Named {
+            builtin: None,
+            name: n.to_string(),
+            args: vec![],
+        }
+    }
+
+    fn named_with_args(n: &str, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            builtin: None,
+            name: n.to_string(),
+            args,
+        }
+    }
+
+    #[test]
+    fn swap_map_parallel_does_not_alias_params() {
+        // Regression: sequential substitution of {A→i32, B→string} on
+        // Named("Pair", [A, B]) produces Pair<i32, string> after first pass and
+        // then, if A→i32 was already applied, the second pass over B→string
+        // leaves B unchanged — or worse: a swap map {A→B, B→A} aliases both
+        // params back to the same type.
+        //
+        // Parallel substitution must replace all leaves in one pass, so
+        // Pair<A, B> under {A→B, B→A} becomes Pair<B, A>, not Pair<A, A>.
+        let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
+        let swap_map: HashMap<String, Ty> =
+            [("A".to_string(), named("B")), ("B".to_string(), named("A"))]
+                .into_iter()
+                .collect();
+
+        let result = pair_a_b.substitute_named_params_parallel(&swap_map);
+
+        assert_eq!(
+            result,
+            named_with_args("Pair", vec![named("B"), named("A")]),
+            "swap map must produce Pair<B,A>, not Pair<A,A>"
+        );
+    }
+
+    #[test]
+    fn parallel_substitution_with_concrete_types_is_identical_to_sequential() {
+        // When no param in the map is also a replacement target for another
+        // param (i.e. no permutation), parallel and sequential results are the same.
+        let pair_a_b = named_with_args("Pair", vec![named("A"), named("B")]);
+        let map: HashMap<String, Ty> = [("A".to_string(), Ty::I64), ("B".to_string(), Ty::String)]
+            .into_iter()
+            .collect();
+
+        let result = pair_a_b.substitute_named_params_parallel(&map);
+
+        assert_eq!(result, named_with_args("Pair", vec![Ty::I64, Ty::String]),);
+    }
+
+    #[test]
+    fn parallel_substitution_leaves_unmentioned_params_intact() {
+        // Params not in the map pass through unchanged.
+        let ty = named_with_args("Triple", vec![named("X"), named("Y"), named("Z")]);
+        let map: HashMap<String, Ty> = [("X".to_string(), Ty::Bool)].into_iter().collect();
+
+        let result = ty.substitute_named_params_parallel(&map);
+
+        assert_eq!(
+            result,
+            named_with_args("Triple", vec![Ty::Bool, named("Y"), named("Z")]),
+        );
+    }
+
+    #[test]
+    fn parallel_substitution_does_not_recurse_into_replacements() {
+        // If A→B and the replacement B is itself a named param, the result
+        // must stay as B — not chain through a further lookup for B.
+        let ty = named("A");
+        let map: HashMap<String, Ty> = [("A".to_string(), named("B")), ("B".to_string(), Ty::I64)]
+            .into_iter()
+            .collect();
+
+        // Parallel: A → lookup("A") = B, done. Sequential would then apply B→i64.
+        let result = ty.substitute_named_params_parallel(&map);
+        assert_eq!(result, named("B"), "parallel must not chain through B→i64");
     }
 }

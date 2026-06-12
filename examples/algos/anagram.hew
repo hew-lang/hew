@@ -1,5 +1,5 @@
 // Anagram check using letter frequency counting
-fn is_anagram(a: String, b: String) -> bool {
+fn is_anagram(a: string, b: string) -> bool {
     if a.len() != b.len() {
         return false;
     }

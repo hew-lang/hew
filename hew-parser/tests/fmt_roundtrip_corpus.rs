@@ -24,7 +24,6 @@ const CORPUS_ROOTS: &[&str] = &[
     "tests",
     "examples",
     "std",
-    "hew-codegen/tests/examples",
     "hew-lsp/tests",
     "hew-parser/tests",
     "hew-cli/tests",
@@ -33,7 +32,9 @@ const CORPUS_ROOTS: &[&str] = &[
 
 /// Minimum corpus size. If the walk produces fewer than this many files, the
 /// test fails — catches accidental root deletion or misrouted relative paths.
-const MIN_CORPUS_FILES: usize = 1000;
+/// The threshold was lowered from 1000 to 400 when the C++ codegen subtree
+/// (which contributed ~600 example .hew files) was retired.
+const MIN_CORPUS_FILES: usize = 400;
 
 /// Hard cap on the known-fails allowlist. If this is exceeded, the list has
 /// become a bug-drawer instead of a tracked exemption set; fail the test.

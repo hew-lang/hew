@@ -1,0 +1,108 @@
+//! FFI fixture package mirroring the ecosystem `hew::db::sqlite` shape:
+//! an actor whose asks reply with i32 / i64 / string / record values, and a
+//! record handle whose trait methods are thin extern wrappers consuming the
+//! opaque `Result` handle. The record is deliberately named `Result` —
+//! shadowing the prelude's generic enum — so importers exercise the
+//! shadow-resolution and enum-registry seeding paths.
+
+/// A fixture result set. A zero handle is an error result.
+/// Must be freed exactly once with `free()`.
+type Result {
+    handle: i64;
+}
+
+trait ResultMethods {
+    /// Number of rows; -1 for an error result.
+    fn rows(self) -> i32;
+
+    /// Cell value at the given row; empty string out of range.
+    fn get(self, row: i32) -> string;
+
+    /// Aggregate over the result set; -1 for an error result.
+    fn total(self) -> i64;
+
+    /// Release the result set. Single-release contract.
+    fn free(self);
+
+    /// Length helper whose body calls a runtime builtin with no extern
+    /// declaration — stays skip-listed at the import boundary.
+    fn echo_len(self, s: string) -> i64;
+
+    /// Calls the skip-listed sibling above — must be skip-listed
+    /// transitively, or importing this module fails at the callable gate.
+    fn echo_tag(self, s: string) -> i64;
+}
+
+impl ResultMethods for Result {
+    fn rows(self) -> i32 {
+        unsafe {
+            hew_testffi_result_rows(self)
+        }
+    }
+    fn get(self, row: i32) -> string {
+        unsafe {
+            hew_testffi_result_get(self, row)
+        }
+    }
+    fn total(self) -> i64 {
+        unsafe {
+            hew_testffi_result_total(self)
+        }
+    }
+    fn free(self) {
+        unsafe {
+            hew_testffi_result_free(self);
+        }
+    }
+    fn echo_len(self, s: string) -> i64 {
+        len(s)
+    }
+    fn echo_tag(self, s: string) -> i64 {
+        self.echo_len(s)
+    }
+}
+
+/// Fixture actor: every ask replies through the native library.
+pub actor Db {
+    let seed: i64;
+
+    // Ask returning i32.
+    receive fn count32() -> i32 {
+        unsafe {
+            hew_testffi_count32(seed)
+        }
+    }
+
+    // Ask returning i64.
+    receive fn count64() -> i64 {
+        unsafe {
+            hew_testffi_count64(seed)
+        }
+    }
+
+    // Ask returning an owned string.
+    receive fn name() -> string {
+        unsafe {
+            hew_testffi_name(seed)
+        }
+    }
+
+    // Ask returning the imported record handle.
+    receive fn query(rows: i32) -> Result {
+        unsafe {
+            hew_testffi_query(seed, rows)
+        }
+    }
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+extern "C" {
+    fn hew_testffi_count32(seed: i64) -> i32;
+    fn hew_testffi_count64(seed: i64) -> i64;
+    fn hew_testffi_name(seed: i64) -> string;
+    fn hew_testffi_query(seed: i64, rows: i32) -> Result;
+    fn hew_testffi_result_rows(result: Result) -> i32;
+    fn hew_testffi_result_get(result: Result, row: i32) -> string;
+    fn hew_testffi_result_total(result: Result) -> i64;
+    fn hew_testffi_result_free(result: Result);
+}

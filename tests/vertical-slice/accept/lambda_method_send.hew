@@ -1,0 +1,12 @@
+// Accept fixture: `.send()` on a lambda-actor handle delivers the message.
+// Lambda-actor handles are `Duplex<Msg, Reply>` underneath; `.send(msg)` on a
+// `LambdaActorHandle` routes to the lambda-actor ABI (`hew_lambda_actor_send`),
+// the same runtime path as the canonical call-syntax `handle(msg)`.  Both
+// surfaces coexist per Q30=(a).  Statement context is fire-and-forget: the
+// i32 send status is unused and the actor receives 42 and prints it.
+fn main() {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    printer.send(42);
+}

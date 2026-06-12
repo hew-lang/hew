@@ -17,7 +17,7 @@
 //   - suggests restructure: either don't hold the read across yield, or don't
 //     mutate, or clone before yielding
 
-fn conflicting_yield_use(mut_buf: Vec<int>) -> generator int {
+fn conflicting_yield_use(mut_buf: Vec<i64>) -> generator i64 {
     var buffer = mut_buf;
 
     // buffer is read across this yield: the frame holds a read of buffer.

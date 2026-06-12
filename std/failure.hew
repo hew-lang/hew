@@ -1,0 +1,113 @@
+//! Failure-philosophy stdlib types for lifecycle hooks.
+//!
+//! `#[on(crash)]` is live in v0.5 as of `373b95ea`.
+//! `#[on(upgrade)]` is reserved for v0.6; hot-upgrade invocation and state
+//! migration are explicitly deferred, so v0.5 programs must not treat it as
+//! an available hook.
+//!
+//! Import `std::failure` to name `CrashInfo` or `CrashAction` explicitly
+//! in a `#[on(crash)]` hook's signature.  Both types are also pre-bound
+//! in the inline-test checker (no `std` search path required) via
+//! `register_builtin_failure_surface` so isolated fixtures can pin the
+//! hook signature without importing.
+//!
+//! ## `CrashInfo` is i64-tag only for v0.5
+//!
+//! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
+//! `Closure` types as struct fields (S9 in the spine-widening registry).
+//! WHEN: replace `code` with a richer payload after the spine-widening
+//! lane (Q20 (c) of the failure-philosophy plan) lands.
+//! WHAT: the real shape grows a string field carrying the panic message
+//! and a stack-pointer-style cursor for trampoline diagnostics.  Until
+//! then, `code` is an opaque integer discriminator the runtime sets per
+//! crash class (arena exhaustion, link-cascade, explicit panic, …).
+
+/// Diagnostic payload passed to `#[on(crash)]` hooks.
+///
+/// The integer `code` discriminates crash classes; the v0.5 runtime sets
+/// it before invoking `on_crash`.  Hooks may match on `code` to decide a
+/// `CrashAction`, but the canonical reading is "any non-zero code is a
+/// real fault — the hook's job is to choose between Restart, Escalate,
+/// and Kill".  See `JOURNEY.md` for the per-code assignment plan.
+pub type CrashInfo {
+    code: i64;
+}
+
+/// Advisory return value of a `#[on(crash)]` hook.
+///
+/// v0.5 honours each child's `restart_policy`; the crash handler is
+/// side-effects-only in this edition and the returned variant is ignored.
+/// The variants remain in the public type so the hook ABI can be spelled as
+/// `(CrashInfo) -> CrashAction`; using this return value as a supervisor
+/// control surface is deferred to v0.6 with the Cluster 2 composite-return
+/// spine.
+///
+/// - `Restart`: v0.6 control intent to re-spawn the actor under the same
+///   supervisor.
+/// - `Escalate`: v0.6 control intent to propagate the failure to the
+///   supervisor's supervisor instead of restarting locally.
+/// - `Kill`: v0.6 control intent to terminate the actor permanently.
+pub enum CrashAction {
+    Restart;
+    Escalate;
+    Kill;
+}
+
+/// Identity + class of a crash that propagated to a linked actor.
+///
+/// Delivered (in a future v0.5.x / v0.6 lane) to a linked-actor exit
+/// hook when an actor this one is linked to crashes.  Carries the
+/// crashed actor's identity and the class of crash — nothing else.
+///
+/// WHY (shape): the linked actor must not gain access to the crashed
+/// actor's `CrashInfo` payload (signal number, fault address); cross-
+/// actor visibility into another actor's fault details would couple
+/// linked actors to each other's failure internals.  Identity + class
+/// is sufficient for supervisor-style decisions ("the upstream link
+/// died, drop this work item and re-establish").
+///
+/// WHEN: the runtime substrate is already in place
+/// (`hew-runtime/src/link.rs::propagate_exit_to_links` enqueues
+/// `SYS_MSG_EXIT` in the linked actor's mailbox at the crashed actor's
+/// teardown phase, before any supervisor restart decision).  The user-
+/// facing hook attribute that surfaces this delivery is reserved for a
+/// future lane; this type is the stable name that lane will use.
+///
+/// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
+/// crashed actor's id as a raw `u64`.  Future widening to a typed
+/// `LocalPid<A>` requires the linked actor to know A's static type — a
+/// generics-and-trait-bound enhancement deferred until the spine
+/// supports it.
+pub type CrashNotification {
+    /// Numeric identity of the actor that crashed.  Raw `u64` rather
+    /// than `LocalPid<A>` because the linked actor does not in general
+    /// know the crashed actor's static type at the hook site.
+    actor_id: u64;
+    /// Class of the originating crash.  Mirrors the runtime
+    /// `ExitReason` discriminator the supervisor receives.
+    kind: CrashKind;
+}
+
+/// Class of a crash propagated to a linked actor.
+///
+/// Mirrors the runtime `ExitReason` discriminator
+/// (`hew-runtime/src/internal/types.rs::ExitReason`) at the integer-tag
+/// level.  Adding a variant here requires a matching variant on the
+/// runtime side; the converse is not true — the runtime may carry
+/// reason discriminators that are not surfaced to linked actors when
+/// the conservative-default tenet says they should remain private to
+/// the crashed actor and its supervisor.
+///
+/// v0.5 enumerates only the classes the runtime currently distinguishes
+/// at the link-cascade boundary.  Future v0.5.x / v0.6 expansions are
+/// additive.
+pub enum CrashKind {
+    /// Generic crash from `panic(...)`, `hew_panic()`, or an
+    /// unclassified trap (SEGV / BUS / FPE / ILL / TRAP).
+    Crashed;
+    /// Per-actor arena cap exceeded.
+    HeapExceeded;
+    /// A duplex / mailbox partition was observed on a recv path the
+    /// crashed actor was awaiting.
+    PartitionDetected;
+}

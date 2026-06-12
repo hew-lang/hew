@@ -1,0 +1,8 @@
+fn side() -> i64 {
+    return 7;
+}
+
+fn main() -> i64 {
+    let _ = side();
+    return 0;
+}

@@ -7,4 +7,6 @@ pub mod module;
 pub mod parser;
 pub mod tail_call;
 
-pub use parser::{parse, ParseDiagnosticKind, ParseError, ParseResult, Severity};
+pub use parser::{
+    parse, parse_duration_ns, ParseDiagnosticKind, ParseError, ParseResult, Severity,
+};

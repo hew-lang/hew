@@ -1,0 +1,51 @@
+// Accept fixture (NEW-6d): `await ln.accept() | after d` — a client connects
+// before the long deadline, so the suspending accept resolves to
+// `Ok(Connection)` and the deadline timer is cancelled without a spurious
+// timeout.
+//
+// Run under HEW_WORKERS=1: Acceptor creates a fresh listener on port 0, sends
+// a fire-and-forget to Connector with the port, then parks worker-free on the
+// accept slot. Connector delays 100 ms and connects; the reactor resumes
+// Acceptor with Ok(conn) -> return 42 to main -> exit 42.
+//
+// Exit-code contract: accept-before-deadline Ok(conn) -> 42; timeout Err -> 7;
+// no actor exit -> main fallback 99.
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Connector {
+    receive fn go(port: i32) {
+        sleep_ms(100);
+        let _c = net.connect(f"127.0.0.1:{port}");
+        sleep_ms(300);
+    }
+}
+
+actor Acceptor {
+    let connector: LocalPid<Connector>;
+    receive fn run() -> i64 {
+        let ln = net.listen("127.0.0.1:0");
+        let port = unsafe {
+            hew_tcp_listener_local_port(ln)
+        };
+        connector.go(port);
+        let code = match await ln.accept() | after 5s {
+            Ok(_conn) => 42,
+            Err(_e) => 7,
+        };
+        code
+    }
+}
+
+fn main() {
+    let connector = spawn Connector;
+    let acceptor = spawn Acceptor(connector: connector);
+    let code_result = await acceptor.run();
+    match code_result {
+        Ok(code) => exit(code),
+        Err(_) => exit(99),
+    }
+}

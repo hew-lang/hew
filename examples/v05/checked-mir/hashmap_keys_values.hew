@@ -1,0 +1,15 @@
+// MIR-corpus fixture: HashMap key/value projection ops.
+//
+// Pins `hew_hashmap_keys_layout` and `hew_hashmap_values_layout` — the
+// projection entries ride the `Terminator::Call` route with their typed
+// `RuntimeCallFamily` carried on the call, and the codegen layout-fact
+// walker classifies them by family.
+fn main() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("alice", 10);
+    m.insert("bob", 20);
+    let ks = m.keys();
+    let vs = m.values();
+    println(ks.len());
+    println(vs.len());
+}

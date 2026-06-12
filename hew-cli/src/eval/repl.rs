@@ -2,12 +2,21 @@
 
 use super::classify::{self, InputCompleteness, InputKind, ReplCommand};
 use super::session::{Session, SessionCounts, SyntheticDiagnosticView};
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_secs(30);
+// The hang-guard exists to catch genuinely hung programs (e.g. an infinite
+// loop that never terminates).  Under parallel test load the Hew compiler
+// itself can take >30 s just to compile, so 30 s is too tight — it fires on
+// load-induced compile jitter rather than real hangs.  120 s gives generous
+// headroom even on a loaded CI runner while still catching a process that is
+// truly stuck.
+const DEFAULT_EVAL_TIMEOUT: Duration = Duration::from_mins(5);
+const TYPE_QUERY_NO_INFO: &str = "could not determine type: no type information for expression";
+const TYPE_QUERY_MARKER: &str = "__repl_type_query = ";
 
 /// Result of evaluating a single input in the REPL.
 #[derive(Debug)]
@@ -79,6 +88,21 @@ impl fmt::Display for LoadFileError {
     }
 }
 
+fn load_file_error_from_cli(error: CliEvalError) -> LoadFileError {
+    match error {
+        CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
+        CliEvalError::Message(message) => LoadFileError::Message(message),
+        CliEvalError::RuntimeFailure {
+            stdout,
+            stderr,
+            exit_code,
+        } => {
+            emit_runtime_failure_output(&stdout, &stderr);
+            LoadFileError::Message(format!("program exited with status {exit_code}"))
+        }
+    }
+}
+
 struct CheckedProgram {
     kind: InputKind,
     program: hew_parser::ast::Program,
@@ -99,6 +123,17 @@ enum EvalCheckFailure {
     },
 }
 
+enum TypeQueryFailure {
+    Check(EvalCheckFailure),
+    Frontend(hew_compile::FrontendFailure),
+    NoTypeInfo,
+}
+
+enum ExpressionEvalPlan {
+    Compile { auto_print: bool },
+    Display(String),
+}
+
 enum CompiledEvalError {
     DiagnosticsRendered,
     Message(String),
@@ -107,17 +142,6 @@ enum CompiledEvalError {
         stderr: String,
         exit_code: i32,
     },
-}
-
-impl From<crate::compile::CompileFromSourceError> for CompiledEvalError {
-    fn from(error: crate::compile::CompileFromSourceError) -> Self {
-        match error {
-            crate::compile::CompileFromSourceError::DiagnosticsRendered => {
-                Self::DiagnosticsRendered
-            }
-            crate::compile::CompileFromSourceError::Message(message) => Self::Message(message),
-        }
-    }
 }
 
 pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
@@ -152,11 +176,66 @@ fn typecheck_program(
     checker.check_program(program)
 }
 
+pub(crate) fn find_type_query_expr_type(
+    source: &str,
+    expr_types: &HashMap<hew_types::check::SpanKey, hew_types::Ty>,
+) -> Option<hew_types::Ty> {
+    let marker_pos = source.find(TYPE_QUERY_MARKER)?;
+    let expr_start = marker_pos + TYPE_QUERY_MARKER.len();
+    let expr_end = source[expr_start..]
+        .rfind(";\n}")
+        .map_or(source.len(), |pos| expr_start + pos);
+
+    let mut best_ty = None;
+    let mut best_span_len = 0usize;
+    for (span, ty) in expr_types {
+        if span.start >= expr_start && span.end <= expr_end {
+            let span_len = span.end.saturating_sub(span.start);
+            if best_ty.is_none() || span_len > best_span_len {
+                best_ty = Some(ty.clone());
+                best_span_len = span_len;
+            }
+        }
+    }
+
+    best_ty
+}
+
+fn generator_description(ty: &hew_types::Ty) -> Option<String> {
+    let (yield_ty, return_ty) = ty.as_generator()?;
+    Some(format!(
+        "<generator yielding {}, returning {}>",
+        yield_ty.user_facing(),
+        return_ty.user_facing()
+    ))
+}
+
+/// Whether any parse diagnostic is a hard error.
+///
+/// The parser reports warnings (e.g. "unnecessary semicolon") in the same
+/// list as errors; only error-severity diagnostics may abort evaluation.
+/// Treating a warning as fatal exits 1 with nothing but warning text on
+/// stderr — the silent-failure defect this guards against.
+fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
+    errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error)
+}
+
 fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
     program
         .items
         .iter()
         .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
+}
+
+fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
+    program.items.iter().any(|(item, _)| {
+        matches!(
+            item,
+            hew_parser::ast::Item::Function(function) if function.name == "main"
+        )
+    })
 }
 
 fn render_eval_parse_diagnostics(
@@ -205,6 +284,56 @@ fn render_eval_type_diagnostics(
             &original,
             module_source_map,
         );
+    }
+}
+
+fn type_query_failure_messages(error: TypeQueryFailure) -> Vec<String> {
+    match error {
+        TypeQueryFailure::Check(EvalCheckFailure::Parse { errors, .. }) => {
+            errors.into_iter().map(|error| error.message).collect()
+        }
+        TypeQueryFailure::Check(EvalCheckFailure::Type { errors, .. }) => {
+            errors.into_iter().map(|error| error.message).collect()
+        }
+        TypeQueryFailure::Frontend(failure) => vec![failure.message],
+        TypeQueryFailure::NoTypeInfo => vec![TYPE_QUERY_NO_INFO.to_string()],
+    }
+}
+
+fn render_type_query_failure(input_name: &str, error: TypeQueryFailure) -> CliEvalError {
+    match error {
+        TypeQueryFailure::Check(EvalCheckFailure::Parse {
+            source,
+            diagnostic_view,
+            errors,
+        }) => {
+            render_eval_parse_diagnostics(&source, input_name, diagnostic_view.as_ref(), &errors);
+            CliEvalError::DiagnosticsRendered
+        }
+        TypeQueryFailure::Check(EvalCheckFailure::Type {
+            source,
+            diagnostic_view,
+            errors,
+            module_source_map,
+        }) => {
+            render_eval_type_diagnostics(
+                &source,
+                input_name,
+                diagnostic_view.as_ref(),
+                &errors,
+                &module_source_map,
+            );
+            CliEvalError::DiagnosticsRendered
+        }
+        TypeQueryFailure::Frontend(failure) => {
+            if failure.diagnostics.is_empty() {
+                CliEvalError::Message(failure.message)
+            } else {
+                crate::compile::render_frontend_diagnostics(&failure.diagnostics);
+                CliEvalError::DiagnosticsRendered
+            }
+        }
+        TypeQueryFailure::NoTypeInfo => CliEvalError::Message(TYPE_QUERY_NO_INFO.to_string()),
     }
 }
 
@@ -391,6 +520,11 @@ impl ReplSession {
         self.jit_mode = mode;
     }
 
+    #[cfg(test)]
+    pub(crate) fn add_binding_for_test(&mut self, source: &str) {
+        self.session.add_binding(source);
+    }
+
     fn is_wasm_target(&self) -> bool {
         self.eval_target.as_deref().is_some_and(|t| {
             crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
@@ -422,29 +556,52 @@ impl ReplSession {
             return self.handle_command(cmd);
         }
 
-        // Build the synthetic program.
-        let checked_program = match self.prepare_program(trimmed, kind) {
-            Ok(program) => program,
-            Err(EvalCheckFailure::Parse { errors, .. }) => {
-                return EvalResult {
-                    output: String::new(),
-                    had_errors: true,
-                    errors: errors.into_iter().map(|error| error.message).collect(),
-                };
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, "<repl>") {
+                Ok(ExpressionEvalPlan::Display(output)) => {
+                    return EvalResult {
+                        output,
+                        had_errors: false,
+                        errors: Vec::new(),
+                    };
+                }
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
+                Err(error) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: type_query_failure_messages(error),
+                    };
+                }
             }
-            Err(EvalCheckFailure::Type { errors, .. }) => {
-                return EvalResult {
-                    output: String::new(),
-                    had_errors: true,
-                    errors: errors.into_iter().map(|error| error.message).collect(),
-                };
-            }
+        } else {
+            true
         };
 
-        // Compile and execute in-process.  Import resolution and typecheck are
-        // re-run inside compile_from_source_checked with correct stage ordering
-        // (resolve imports BEFORE typecheck) so that stdlib type metadata is
-        // available to the enrichment and codegen passes.
+        // Build the synthetic program.
+        let checked_program =
+            match self.prepare_program(trimmed, "<repl>", kind, auto_print_expressions) {
+                Ok(program) => program,
+                Err(EvalCheckFailure::Parse { errors, .. }) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: errors.into_iter().map(|error| error.message).collect(),
+                    };
+                }
+                Err(EvalCheckFailure::Type { errors, .. }) => {
+                    return EvalResult {
+                        output: String::new(),
+                        had_errors: true,
+                        errors: errors.into_iter().map(|error| error.message).collect(),
+                    };
+                }
+            };
+
+        // Compile and execute in-process. Import resolution and typecheck are
+        // re-run inside the v0.5 HIR/MIR/codegen-rs path with correct stage
+        // ordering (resolve imports BEFORE typecheck) so that stdlib type
+        // metadata is available to lowering and codegen.
         match run_eval_compiled(
             checked_program.program,
             &checked_program.source,
@@ -503,37 +660,48 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
-        let checked_program = match self.prepare_program(trimmed, kind) {
-            Ok(program) => program,
-            Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view,
-                errors,
-            }) => {
-                render_eval_parse_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                );
-                return Err(CliEvalError::DiagnosticsRendered);
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, input_name) {
+                Ok(ExpressionEvalPlan::Display(output)) => return Ok(output),
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
+                Err(error) => return Err(render_type_query_failure(input_name, error)),
             }
-            Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view,
-                errors,
-                module_source_map,
-            }) => {
-                render_eval_type_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                    &module_source_map,
-                );
-                return Err(CliEvalError::DiagnosticsRendered);
-            }
+        } else {
+            true
         };
+
+        let checked_program =
+            match self.prepare_program(trimmed, input_name, kind, auto_print_expressions) {
+                Ok(program) => program,
+                Err(EvalCheckFailure::Parse {
+                    source,
+                    diagnostic_view,
+                    errors,
+                }) => {
+                    render_eval_parse_diagnostics(
+                        &source,
+                        input_name,
+                        diagnostic_view.as_ref(),
+                        &errors,
+                    );
+                    return Err(CliEvalError::DiagnosticsRendered);
+                }
+                Err(EvalCheckFailure::Type {
+                    source,
+                    diagnostic_view,
+                    errors,
+                    module_source_map,
+                }) => {
+                    render_eval_type_diagnostics(
+                        &source,
+                        input_name,
+                        diagnostic_view.as_ref(),
+                        &errors,
+                        &module_source_map,
+                    );
+                    return Err(CliEvalError::DiagnosticsRendered);
+                }
+            };
 
         match run_eval_compiled(
             checked_program.program,
@@ -579,7 +747,21 @@ impl ReplSession {
             return self.handle_cli_command(cmd, input_name);
         }
 
-        let synthetic_program = self.session.build_program_with_kind(trimmed, kind.clone());
+        let auto_print_expressions = if matches!(kind, InputKind::Expression) {
+            match self.expression_eval_plan(trimmed, source_label) {
+                Ok(ExpressionEvalPlan::Display(output)) => return Ok(output),
+                Ok(ExpressionEvalPlan::Compile { auto_print }) => auto_print,
+                Err(error) => return Err(render_type_query_failure(input_name, error)),
+            }
+        } else {
+            true
+        };
+
+        let synthetic_program = self.session.build_program_with_kind_and_auto_print(
+            trimmed,
+            kind.clone(),
+            auto_print_expressions,
+        );
         let parse_result = hew_parser::parse(&synthetic_program.source);
         if !parse_result.errors.is_empty() {
             render_eval_parse_diagnostics(
@@ -588,7 +770,11 @@ impl ReplSession {
                 synthetic_program.diagnostic_view.as_ref(),
                 &parse_result.errors,
             );
-            return Err(CliEvalError::DiagnosticsRendered);
+            // Warning-only parse results (e.g. an unnecessary semicolon) are
+            // rendered above but must not abort evaluation.
+            if parse_errors_are_fatal(&parse_result.errors) {
+                return Err(CliEvalError::DiagnosticsRendered);
+            }
         }
 
         if matches!(kind, InputKind::Expression | InputKind::Statement)
@@ -644,77 +830,103 @@ impl ReplSession {
     pub fn type_of(&mut self, expr: &str) -> Result<String, Vec<String>> {
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(ty),
-            Err(EvalCheckFailure::Parse { errors, .. }) => {
-                Err(errors.into_iter().map(|error| error.message).collect())
-            }
-            Err(EvalCheckFailure::Type { errors, .. }) => {
-                Err(errors.into_iter().map(|error| error.message).collect())
-            }
+            Err(error) => Err(type_query_failure_messages(error)),
         }
     }
 
-    fn type_of_checked(&mut self, expr: &str) -> Result<String, EvalCheckFailure> {
-        let source = self.session.build_type_query(expr);
-        let parse_result = hew_parser::parse(&source);
-        if !parse_result.errors.is_empty() {
-            return Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view: None,
+    fn type_of_checked(&mut self, expr: &str) -> Result<String, TypeQueryFailure> {
+        self.type_of_checked_with_source(expr, "<repl>")
+    }
+
+    fn type_of_checked_with_source(
+        &mut self,
+        expr: &str,
+        source_label: &str,
+    ) -> Result<String, TypeQueryFailure> {
+        Ok(self
+            .type_of_ty_checked(expr, source_label)?
+            .user_facing()
+            .to_string())
+    }
+
+    fn type_of_ty_checked(
+        &mut self,
+        expr: &str,
+        source_label: &str,
+    ) -> Result<hew_types::Ty, TypeQueryFailure> {
+        let synthetic_program = self.session.build_type_query_program(expr);
+        let diagnostic_view = synthetic_program.diagnostic_view.clone();
+        let parse_result = hew_parser::parse(&synthetic_program.source);
+        // Warning-only parse results must not fail the type probe; the
+        // expression's actual evaluation surfaces any warnings.
+        if parse_errors_are_fatal(&parse_result.errors) {
+            return Err(TypeQueryFailure::Check(EvalCheckFailure::Parse {
+                source: synthetic_program.source,
+                diagnostic_view,
                 errors: parse_result.errors,
-            });
+            }));
         }
 
-        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
+        let (tco, module_source_map) = if program_has_imports(&parse_result.program) {
+            let options = hew_compile::FrontendOptions {
+                enable_wasm_target: self.is_wasm_target(),
+                project_dir: self.project_dir.clone(),
+                ..hew_compile::FrontendOptions::default()
+            };
+            let state = hew_compile::run_program_frontend_to_typecheck(
+                parse_result.program,
+                &synthetic_program.source,
+                source_label,
+                &options,
+            )
+            .map_err(TypeQueryFailure::Frontend)?;
+            let tco = state
+                .typecheck_result
+                .tco
+                .ok_or(TypeQueryFailure::NoTypeInfo)?;
+            let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
+            (tco, module_source_map)
+        } else {
+            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
+            let module_source_map =
+                crate::diagnostic::build_module_source_map(&parse_result.program);
+            (tco, module_source_map)
+        };
+
+        let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);
         if !tco.errors.is_empty() {
-            return Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view: None,
+            if query_ty.is_none()
+                && tco
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == hew_types::error::TypeErrorKind::InferenceFailed)
+            {
+                return Err(TypeQueryFailure::NoTypeInfo);
+            }
+            return Err(TypeQueryFailure::Check(EvalCheckFailure::Type {
+                source: synthetic_program.source,
+                diagnostic_view,
                 errors: tco.errors,
                 module_source_map: Box::new(module_source_map),
-            });
+            }));
         }
 
-        // Find the type of `__repl_type_query` in the fn_sigs or expr_types.
-        // We look for the expression type of the RHS of the let binding.
-        // The query variable name won't be in fn_sigs, so search expr_types
-        // for the expression at the right byte offset.
-        // As a simpler approach, look for the binding in the source and find
-        // the expression type at that span.
-        if let Some(sig) = tco.fn_sigs.get("main") {
-            // Search through expr_types for any expression spanning the
-            // query expression area.
-            let query_marker = "__repl_type_query = ";
-            if let Some(marker_pos) = source.find(query_marker) {
-                let expr_start = marker_pos + query_marker.len();
-                let expr_end = source[expr_start..]
-                    .find(';')
-                    .map_or(source.len(), |p| expr_start + p);
+        query_ty.ok_or(TypeQueryFailure::NoTypeInfo)
+    }
 
-                // Find the best matching span in expr_types.
-                let mut best_ty = None;
-                let mut best_span_len = usize::MAX;
-                for (span, ty) in &tco.expr_types {
-                    if span.start >= expr_start && span.end <= expr_end {
-                        let span_len = span.end - span.start;
-                        // Pick the widest span that covers the whole expression.
-                        if best_ty.is_none() || span_len > best_span_len {
-                            best_ty = Some(ty.clone());
-                            best_span_len = span_len;
-                        }
-                    }
-                }
-
-                if let Some(ty) = best_ty {
-                    return Ok(ty.user_facing().to_string());
-                }
-            }
-
-            // Fallback: check the return type of main.
-            let _ = sig;
+    fn expression_eval_plan(
+        &mut self,
+        expr: &str,
+        source_label: &str,
+    ) -> Result<ExpressionEvalPlan, TypeQueryFailure> {
+        let ty = self.type_of_ty_checked(expr, source_label)?;
+        if let Some(description) = generator_description(&ty) {
+            return Ok(ExpressionEvalPlan::Display(format!("{description}\n")));
         }
 
-        Ok("unknown".to_string())
+        Ok(ExpressionEvalPlan::Compile {
+            auto_print: !matches!(ty, hew_types::Ty::Unit | hew_types::Ty::Never),
+        })
     }
 
     fn eval_type_command_cli(
@@ -728,36 +940,9 @@ impl ReplSession {
             ));
         }
 
-        match self.type_of_checked(expr) {
+        match self.type_of_checked_with_source(expr, input_name) {
             Ok(ty) => Ok(format!("{ty}\n")),
-            Err(EvalCheckFailure::Parse {
-                source,
-                diagnostic_view,
-                errors,
-            }) => {
-                render_eval_parse_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                );
-                Err(CliEvalError::DiagnosticsRendered)
-            }
-            Err(EvalCheckFailure::Type {
-                source,
-                diagnostic_view,
-                errors,
-                module_source_map,
-            }) => {
-                render_eval_type_diagnostics(
-                    &source,
-                    input_name,
-                    diagnostic_view.as_ref(),
-                    &errors,
-                    &module_source_map,
-                );
-                Err(CliEvalError::DiagnosticsRendered)
-            }
+            Err(error) => Err(render_type_query_failure(input_name, error)),
         }
     }
 
@@ -771,20 +956,7 @@ impl ReplSession {
             .map_err(|e| LoadFileError::Message(format!("cannot read '{path}': {e}")))?;
         let before = self.session.counts();
 
-        let output =
-            self.eval_source_file_cli(&source, path, path)
-                .map_err(|error| match error {
-                    CliEvalError::DiagnosticsRendered => LoadFileError::DiagnosticsRendered,
-                    CliEvalError::Message(message) => LoadFileError::Message(message),
-                    CliEvalError::RuntimeFailure {
-                        stdout,
-                        stderr,
-                        exit_code,
-                    } => {
-                        emit_runtime_failure_output(&stdout, &stderr);
-                        LoadFileError::Message(format!("program exited with status {exit_code}"))
-                    }
-                })?;
+        let output = self.load_file_output_cli(&source, path)?;
 
         if !output.is_empty() {
             print!("{output}");
@@ -792,6 +964,18 @@ impl ReplSession {
 
         let added = session_count_delta(before, self.session.counts());
         Ok(format!("Loaded {path} ({})", describe_load_result(added)))
+    }
+
+    fn load_file_output_cli(&mut self, source: &str, path: &str) -> Result<String, LoadFileError> {
+        let parse_result = hew_parser::parse(source);
+        if parse_result.errors.is_empty() && program_defines_main(&parse_result.program) {
+            return self
+                .eval_parsed_source_file_cli(parse_result.program, source, path)
+                .map_err(load_file_error_from_cli);
+        }
+
+        self.eval_source_file_cli(source, path, path)
+            .map_err(load_file_error_from_cli)
     }
 
     /// Reset the session.
@@ -912,18 +1096,33 @@ impl ReplSession {
     fn prepare_program(
         &self,
         input: &str,
+        input_name: &str,
         kind: InputKind,
+        auto_print_expressions: bool,
     ) -> Result<CheckedProgram, EvalCheckFailure> {
-        let synthetic_program = self.session.build_program_with_kind(input, kind.clone());
+        let synthetic_program = self.session.build_program_with_kind_and_auto_print(
+            input,
+            kind.clone(),
+            auto_print_expressions,
+        );
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
         let parse_result = hew_parser::parse(&synthetic_program.source);
-        if !parse_result.errors.is_empty() {
+        if parse_errors_are_fatal(&parse_result.errors) {
             return Err(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
                 diagnostic_view,
                 errors: parse_result.errors,
             });
+        }
+        if !parse_result.errors.is_empty() {
+            // Warning-only parse results are surfaced but do not abort.
+            render_eval_parse_diagnostics(
+                &synthetic_program.source,
+                input_name,
+                diagnostic_view.as_ref(),
+                &parse_result.errors,
+            );
         }
 
         let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
@@ -950,6 +1149,36 @@ impl ReplSession {
             InputKind::Item => self.session.add_item(input),
             InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
             InputKind::Expression | InputKind::Command(_) => {}
+        }
+    }
+
+    fn eval_parsed_source_file_cli(
+        &mut self,
+        program: hew_parser::ast::Program,
+        source: &str,
+        source_label: &str,
+    ) -> Result<String, CliEvalError> {
+        match run_eval_compiled(
+            program,
+            source,
+            source_label,
+            self.execution_timeout,
+            self.project_dir.clone(),
+            self.eval_target.as_deref(),
+            self.jit_mode,
+        ) {
+            Ok(output) => Ok(output),
+            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
+            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
+            Err(CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }) => Err(CliEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+            }),
         }
     }
 
@@ -1085,7 +1314,7 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
 ///
 /// Import resolution and typecheck are performed here (not by the caller)
 /// so that the codegen pipeline sees stdlib type information in the same order
-/// as the normal `compile()` path.  The REPL's fast in-process typecheck is
+/// as the frontend-to-codegen path.  The REPL's fast in-process typecheck is
 /// kept for user-facing error reporting only; this function runs the full
 /// correctly-ordered pipeline for codegen.
 fn run_inprocess_compiled(
@@ -1101,22 +1330,18 @@ fn run_inprocess_compiled(
 
     let bin_name = format!("eval_bin{}", crate::platform::exe_suffix());
     let bin_path = tmp_dir.path().join(bin_name);
-    let bin_path_str = bin_path
-        .to_str()
-        .ok_or_else(|| CompiledEvalError::Message("temp binary path is not valid UTF-8".into()))?;
-
-    crate::compile::compile_from_source_checked(
+    crate::compile_native_from_program(
         program,
         source,
         source_label,
-        bin_path_str,
+        &bin_path,
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(CompiledEvalError::from)?;
+    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::process::run_binary_with_timeout(&bin_path, timeout) {
         Ok(crate::process::BinaryRunOutcome::Success { stdout }) => {
@@ -1143,10 +1368,9 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess | Auto)`, compiles via the frontend
-/// pipeline and executes in-process through LLJIT — no temp dir, no subprocess.
-/// `Auto` today always selects the `Inprocess` path; future work (#1227 counter)
-/// may downgrade it to `Worker` when crash-survivability warrants it.
+/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the `ORCv2`
+/// gap guard — no temp dir, no subprocess, and no LLJIT invocation.
+/// `Worker` and `None` route through the AOT/WASM paths.
 /// When `target` resolves to a WASM target, routes through wasmtime.
 /// Otherwise falls through to the existing native `run_inprocess_compiled`
 /// AOT+spawn path.
@@ -1159,8 +1383,8 @@ fn run_eval_compiled(
     target: Option<&str>,
     jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
-    // JIT in-process path — no temp dir, no subprocess.
-    // `Auto` resolves to `Inprocess` today; `Worker` and `None` fall through to
+    // JIT in-process path — no temp dir, no subprocess. `Auto` resolves to the
+    // same fail-closed guard as `Inprocess`; `Worker` and `None` fall through to
     // the AOT+spawn path below.
     if matches!(
         jit_mode,
@@ -1180,36 +1404,17 @@ fn run_eval_compiled(
     }
 }
 
-/// Compile and execute a single cell via LLJIT in the current process.
+/// Fail closed for the unavailable in-process JIT path.
 ///
-/// Runs the frontend pipeline (parse → typecheck → msgpack serialisation)
-/// and hands the result to `crate::jit::run_jit`, which invokes the C++
-/// `HewJitSession` wrapper.
-///
-/// Output from `print`/`println` goes directly to the parent's stdout fd
-/// and is not captured; this function returns `Ok(String::new())` on
-/// success.
-///
-/// SHIM: stdout is not captured.  WHY: the synchronous per-cell model
-/// writes directly to the parent fd — the M1 warm-path does not need
-/// capture.  WHEN obsolete: when #1227 adds output redirection.
+/// The Rust-codegen `ORCv2` bridge is not implemented yet. Keep this helper as a
+/// narrow adapter, but do not compile or execute here.
 fn run_inprocess_jit(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    project_dir: Option<PathBuf>,
+    _program: hew_parser::ast::Program,
+    _source: &str,
+    _source_label: &str,
+    _project_dir: Option<PathBuf>,
 ) -> Result<String, CompiledEvalError> {
-    let options = crate::compile::CompileOptions {
-        project_dir,
-        // JIT always targets the host native triple — no cross-compilation.
-        target: None,
-        ..crate::compile::CompileOptions::default()
-    };
-
-    let msgpack_data = crate::compile::frontend_to_msgpack(program, source, source_label, &options)
-        .map_err(CompiledEvalError::from)?;
-
-    match crate::jit::run_jit(&msgpack_data) {
+    match crate::jit::run_jit(&[]) {
         Ok(_exit_code) => {
             // JIT output went directly to stdout; return empty to avoid
             // double-printing in emit_eval_output.
@@ -1223,19 +1428,6 @@ fn run_inprocess_jit(
                 exit_code: 1,
             })
         }
-        Err(crate::jit::JitError::PanicCaught(msg)) => {
-            // A Rust panic propagated out of JIT-emitted code and was caught
-            // by the catch_unwind seam in run_jit.  Surface it as a runtime
-            // failure so the REPL can recover and continue.
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout: String::new(),
-                stderr: format!("JIT panic: {msg}"),
-                exit_code: 1,
-            })
-        }
-        Err(crate::jit::JitError::SessionCreateFailed(msg)) => Err(CompiledEvalError::Message(
-            format!("JIT session failed to initialise: {msg}"),
-        )),
     }
 }
 
@@ -1252,22 +1444,18 @@ fn run_wasm_eval_compiled(
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
 
     let module_path = tmp_dir.path().join("eval_module.wasm");
-    let module_path_str = module_path
-        .to_str()
-        .ok_or_else(|| CompiledEvalError::Message("temp module path is not valid UTF-8".into()))?;
-
-    crate::compile::compile_from_source_checked(
+    crate::compile_native_from_program(
         program,
         source,
         source_label,
-        module_path_str,
+        &module_path,
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
             ..crate::compile::CompileOptions::default()
         },
     )
-    .map_err(CompiledEvalError::from)?;
+    .map_err(|()| CompiledEvalError::DiagnosticsRendered)?;
 
     match crate::wasi_runner::run_module_captured(&module_path, timeout) {
         Ok(crate::wasi_runner::WasiCapturedOutcome::Success { stdout }) => Ok(stdout),
@@ -1573,11 +1761,11 @@ mod tests {
                 eprintln!("REPL integration tests skipped: probe parse failed");
                 return false;
             }
-            let ok = crate::compile::compile_from_source_checked(
+            let ok = crate::compile_native_from_program(
                 parse_result.program,
                 source,
                 "<repl-probe>",
-                bin_path.to_str().unwrap_or("probe"),
+                &bin_path,
                 &crate::compile::CompileOptions::default(),
             )
             .is_ok();
@@ -1591,8 +1779,6 @@ mod tests {
         })
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_arithmetic() {
         if !require_toolchain() {
@@ -1604,8 +1790,6 @@ mod tests {
         assert_eq!(result.output, "3\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_binding_persists() {
         if !require_toolchain() {
@@ -1619,8 +1803,6 @@ mod tests {
         assert_eq!(r2.output, "43\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_function_persists() {
         if !require_toolchain() {
@@ -1634,8 +1816,6 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_doc_commented_function_persists() {
         if !require_toolchain() {
@@ -1649,13 +1829,10 @@ mod tests {
         assert_eq!(r2.output, "42\n");
     }
 
-    /// Regression test: regex literals must produce valid MLIR via the
-    /// in-process codegen path.  The old implementation passed a stale `tco`
-    /// (computed before import resolution) to `enrich_program_ast`, causing a
-    /// call-site / declaration type mismatch for `hew_regex_new` in the
-    /// generated MLIR.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    /// Regression test: regex literals must lower through the v0.5 native
+    /// eval path. The old implementation passed a stale `tco` (computed before
+    /// import resolution), causing call-site / declaration type mismatches for
+    /// runtime-backed helpers such as `hew_regex_new`.
     #[test]
     fn eval_regex_literal() {
         if !require_toolchain() {
@@ -1667,8 +1844,6 @@ mod tests {
         assert_eq!(result.output, "true\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_clear_resets() {
         if !require_toolchain() {
@@ -1708,8 +1883,6 @@ mod tests {
         assert!(result.errors[0].contains("Unknown command"));
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_one_expression() {
         if !require_toolchain() {
@@ -1719,8 +1892,6 @@ mod tests {
         assert_eq!(result.unwrap(), "6\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_timeout_is_reported() {
         if !require_toolchain() {
@@ -1745,8 +1916,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_runtime_failure_still_surfaces_stderr() {
         if !require_toolchain() {
@@ -1825,12 +1994,12 @@ mod tests {
         let root_diagnostic = hew_types::TypeError::new(
             hew_types::error::TypeErrorKind::InvalidOperation,
             12..19,
-            "cannot apply `+` to `int` and `String`",
+            "cannot apply `+` to `i64` and `String`",
         );
         let dep_diagnostic = hew_types::TypeError::new(
             hew_types::error::TypeErrorKind::ReturnTypeMismatch,
             0..4,
-            "return type mismatch: expected `int`, found `bool`",
+            "return type mismatch: expected `i64`, found `bool`",
         )
         .with_source_module("dep");
 
@@ -1853,8 +2022,6 @@ mod tests {
         );
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_file_multiline() {
         if !require_toolchain() {
@@ -1871,8 +2038,6 @@ mod tests {
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_file_balanced_incomplete_expression() {
         if !require_toolchain() {
@@ -1950,8 +2115,6 @@ mod tests {
 
     /// `eval_file` anchored to a real path resolves local `src/` imports that
     /// would fail when `project_dir` defaults to an unrelated cwd.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn eval_file_resolves_local_src_import() {
         if !require_toolchain() {
@@ -1994,8 +2157,6 @@ mod tests {
 
     /// `ReplSession::for_path` carries the project directory so that
     /// `eval_source_file_cli` resolves imports relative to that project.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn repl_session_for_path_carries_project_dir() {
         if !require_toolchain() {
@@ -2059,12 +2220,12 @@ mod tests {
             "parse errors: {:?}",
             parse_result.errors
         );
-        // compile_program must not error; previously it would ignore project_dir.
+        // check_program must not error; previously it would ignore project_dir.
         // With the fix, manifest_deps is loaded from the temp dir.
-        let result = hew_compile::compile_program(parse_result.program, source, "<test>", &options);
+        let result = hew_compile::check_program(parse_result.program, source, "<test>", &options);
         assert!(
             result.is_ok(),
-            "compile_program with project_dir failed: {result:?}"
+            "check_program with project_dir failed: {result:?}"
         );
     }
 
@@ -2102,11 +2263,11 @@ mod tests {
                 eprintln!("WASI eval tests skipped: probe parse failed");
                 return false;
             }
-            let compiled = crate::compile::compile_from_source_checked(
+            let compiled = crate::compile_native_from_program(
                 parse_result.program,
                 source,
                 "<wasi-probe>",
-                wasm_path.to_str().unwrap_or("probe.wasm"),
+                &wasm_path,
                 &crate::compile::CompileOptions {
                     target: Some("wasm32-wasi".to_owned()),
                     ..crate::compile::CompileOptions::default()
@@ -2140,8 +2301,6 @@ mod tests {
 
     // ── WASI inline expression ───────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn wasi_eval_arithmetic() {
         if !require_wasi_toolchain() {
@@ -2151,8 +2310,6 @@ mod tests {
         assert_eq!(result.unwrap(), "3\n");
     }
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn wasi_eval_string_output() {
         if !require_wasi_toolchain() {
@@ -2193,8 +2350,6 @@ mod tests {
 
     // ── WASI file eval ───────────────────────────────────────────────────────
 
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn wasi_eval_file_function_and_call() {
         if !require_wasi_toolchain() {
@@ -2216,46 +2371,13 @@ mod tests {
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
 
-    // ── JIT crash-survivability seam (#1227) ─────────────────────────────────
-
-    /// Verifies that a `JitError::PanicCaught` from the `catch_unwind` seam is
-    /// converted to `CompiledEvalError::RuntimeFailure` with an appropriate
-    /// stderr message.  This exercises the error-mapping arm added in #1227
-    /// without requiring the embedded LLJIT backend.
-    ///
-    /// The `catch_unwind` wrapper in `run_jit` can only catch panics in profiles
-    /// with `panic = "unwind"` (test builds); in dev/release the process aborts.
-    /// This test proves the mapping arm compiles and routes correctly.
-    #[test]
-    fn jit_panic_caught_surfaces_as_runtime_failure() {
-        // Directly construct the error variant and verify the match arm in
-        // run_inprocess_jit maps it to the right CompiledEvalError shape.
-        // We reach the arm by checking the Display impl and error shape.
-        let err = crate::jit::JitError::PanicCaught("test panic payload".to_owned());
-        let display = format!("{err}");
-        assert!(
-            display.contains("JIT trampoline caught a panic"),
-            "unexpected display: {display}"
-        );
-        assert!(
-            display.contains("test panic payload"),
-            "message not in display: {display}"
-        );
-    }
-
     /// `JitMode::Auto` routes to the same execution path as `JitMode::Inprocess`.
-    /// Without the embedded backend both return an explicit error from the JIT
-    /// stub rather than reaching actual execution, so we verify they produce the
-    /// same success/error shape.
+    /// Both return an explicit fail-closed error from the retired JIT guard
+    /// rather than reaching actual execution, so we verify they produce the same
+    /// success/error shape.
     ///
-    /// Previously gated `#[ignore]` (issue #1523) because the `extern "C"`
-    /// declarations for `hew_jit_session_eval_msgpack` and siblings were not
-    /// cfg-gated, causing a Linux SIGSEGV when codegen was absent.  The fix
-    /// (#1523) placed those declarations inside `#[cfg(hew_embedded_codegen)]`
-    /// and added an explicit no-backend stub in `crate::jit` that returns
-    /// `Err(JitError::ExecFailed(...))`.  The `#[ignore]` is therefore removed.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+    /// Kept unignored because it proves the unavailable path is deterministic
+    /// without restoring the user-facing `hew eval` command.
     #[test]
     fn jit_auto_and_inprocess_produce_same_error_shape_without_backend() {
         // A minimal valid Hew program: a function definition.
@@ -2267,9 +2389,9 @@ mod tests {
             parse_result.errors
         );
 
-        // Without the embedded codegen backend, run_inprocess_jit returns an
-        // ExecFailed (the stub always does). Both Auto and Inprocess reach the
-        // same code path, so they produce identical error shapes.
+        // The retired in-process JIT guard always returns an explicit error.
+        // Both Auto and Inprocess reach the same code path, so they produce
+        // identical error shapes.
         let auto_result = run_eval_compiled(
             parse_result.program.clone(),
             source,
@@ -2289,35 +2411,26 @@ mod tests {
             Some(crate::args::JitMode::Inprocess),
         );
 
-        // In a no-backend build the stub always returns an error; in a backend
-        // build both paths succeed (or both fail for the same reason).  Either
-        // way the shapes must be identical.
+        // The retired in-process JIT path always fails closed.
         assert_eq!(
             auto_result.is_err(),
             inprocess_result.is_err(),
             "Auto and Inprocess should produce the same success/error shape"
         );
 
-        // Stronger no-backend invariant: both must be errors — the stub never
-        // returns Ok because there is no JIT engine to run the program.
-        #[cfg(not(hew_embedded_codegen))]
-        {
-            assert!(
-                auto_result.is_err(),
-                "Auto mode without codegen backend must return an error, not Ok"
-            );
-            assert!(
-                inprocess_result.is_err(),
-                "Inprocess mode without codegen backend must return an error, not Ok"
-            );
-        }
+        assert!(
+            auto_result.is_err(),
+            "Auto mode must return an error while in-process JIT is retired"
+        );
+        assert!(
+            inprocess_result.is_err(),
+            "Inprocess mode must return an error while in-process JIT is retired"
+        );
     }
 
     /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),
     /// producing the same output as when `--jit` is absent.
     /// Skipped when the native toolchain is unavailable.
-    // Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-    #[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
     #[test]
     fn jit_worker_mode_produces_same_result_as_no_jit_flag() {
         if !require_toolchain() {

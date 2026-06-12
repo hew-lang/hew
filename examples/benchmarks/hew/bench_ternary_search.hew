@@ -1,6 +1,6 @@
 // Benchmark: Ternary Search
 // Divides search space into three parts instead of two.
-fn ternary_search(v: Vec<int>, target: int) -> int {
+fn ternary_search(v: Vec<i64>, target: i64) -> i64 {
     var lo = 0;
     var hi = v.len() - 1;
     while lo <= hi {
@@ -29,10 +29,10 @@ fn ternary_search(v: Vec<int>, target: int) -> int {
     return 0 - 1;
 }
 
-const ITERS: int = 1000000;
+const ITERS: i64 = 1000000;
 
 fn main() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. 10000 {
         v.push(i);
     }

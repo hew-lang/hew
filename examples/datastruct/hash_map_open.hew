@@ -1,6 +1,6 @@
 // Hash Map with Open Addressing
 // Two parallel Vecs: keys and values. EMPTY key = -1.
-fn hash(key: int, capacity: int) -> int {
+fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -9,8 +9,8 @@ fn hash(key: int, capacity: int) -> int {
     }
 }
 
-fn make_keys(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_keys(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -18,15 +18,15 @@ fn make_keys(capacity: int) -> Vec<int> {
     v
 }
 
-fn make_vals(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_vals(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. capacity {
         v.push(0);
     }
     v
 }
 
-fn map_insert(keys: Vec<int>, vals: Vec<int>, key: int, value: int) -> bool {
+fn map_insert(keys: Vec<i64>, vals: Vec<i64>, key: i64, value: i64) -> bool {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -48,7 +48,7 @@ fn map_insert(keys: Vec<int>, vals: Vec<int>, key: int, value: int) -> bool {
     false
 }
 
-fn map_get(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
+fn map_get(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     let NOT_FOUND = 0 - 999;
@@ -68,7 +68,7 @@ fn map_get(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
     NOT_FOUND
 }
 
-fn map_contains_key(keys: Vec<int>, key: int) -> bool {
+fn map_contains_key(keys: Vec<i64>, key: i64) -> bool {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -87,7 +87,7 @@ fn map_contains_key(keys: Vec<int>, key: int) -> bool {
     false
 }
 
-fn map_remove(keys: Vec<int>, vals: Vec<int>, key: int) -> bool {
+fn map_remove(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> bool {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -109,7 +109,7 @@ fn map_remove(keys: Vec<int>, vals: Vec<int>, key: int) -> bool {
     false
 }
 
-fn map_size(keys: Vec<int>) -> int {
+fn map_size(keys: Vec<i64>) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;

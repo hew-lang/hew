@@ -71,6 +71,8 @@ fn canonical_string_bare_named() {
     let ty = ResolvedTy::Named {
         name: "Point".into(),
         args: vec![],
+        builtin: None,
+        is_opaque: false,
     };
     assert_eq!(ty.canonical_string(), "Point");
 }
@@ -80,6 +82,8 @@ fn canonical_string_generic_named() {
     let ty = ResolvedTy::Named {
         name: "Pair".into(),
         args: vec![ResolvedTy::I64, ResolvedTy::String],
+        builtin: None,
+        is_opaque: false,
     };
     assert_eq!(ty.canonical_string(), "Pair<i64,string>");
 }
@@ -89,10 +93,14 @@ fn canonical_string_nested_generic() {
     let inner = ResolvedTy::Named {
         name: "Option".into(),
         args: vec![ResolvedTy::String],
+        builtin: None,
+        is_opaque: false,
     };
     let outer = ResolvedTy::Named {
         name: "Vec".into(),
         args: vec![inner],
+        builtin: None,
+        is_opaque: false,
     };
     assert_eq!(outer.canonical_string(), "Vec<Option<string>>");
 }
@@ -149,6 +157,7 @@ fn canonical_string_trait_object_single_bound() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.canonical_string(), "dyn(Iterator)");
@@ -161,10 +170,12 @@ fn canonical_string_trait_object_multiple_bounds() {
             ResolvedTraitBound {
                 trait_name: "Send".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
             ResolvedTraitBound {
                 trait_name: "Sync".into(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -177,6 +188,7 @@ fn canonical_string_trait_object_with_type_arg() {
         traits: vec![ResolvedTraitBound {
             trait_name: "Iterator".into(),
             args: vec![ResolvedTy::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.canonical_string(), "dyn(Iterator<i32>)");
@@ -187,6 +199,8 @@ fn canonical_string_is_deterministic() {
     let ty = ResolvedTy::Named {
         name: "Pair".into(),
         args: vec![ResolvedTy::I64, ResolvedTy::String],
+        builtin: None,
+        is_opaque: false,
     };
     assert_eq!(ty.canonical_string(), ty.canonical_string());
 }
@@ -226,6 +240,8 @@ fn is_native_wire_false_for_non_native_types() {
         ResolvedTy::Named {
             name: "Point".into(),
             args: vec![],
+            builtin: None,
+            is_opaque: false,
         },
         ResolvedTy::Function {
             params: vec![],
@@ -250,6 +266,7 @@ fn is_native_wire_false_for_non_native_types() {
 #[test]
 fn strict_generic_args_accepts_matching_arity() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Pair".into(),
         args: vec![Ty::I64, Ty::String],
     };
@@ -259,6 +276,8 @@ fn strict_generic_args_accepts_matching_arity() {
         Ok(ResolvedTy::Named {
             name: "Pair".into(),
             args: vec![ResolvedTy::I64, ResolvedTy::String],
+            builtin: None,
+            is_opaque: false,
         })
     );
 }
@@ -266,6 +285,7 @@ fn strict_generic_args_accepts_matching_arity() {
 #[test]
 fn strict_generic_args_rejects_too_few_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Pair".into(),
         args: vec![],
     };
@@ -282,6 +302,7 @@ fn strict_generic_args_rejects_too_few_args() {
 #[test]
 fn strict_generic_args_rejects_too_many_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "Box".into(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -312,6 +333,7 @@ fn strict_generic_args_passes_through_non_named_types() {
 fn strict_generic_args_propagates_boundary_errors_from_args() {
     let var = TypeVar::fresh();
     let ty = Ty::Named {
+        builtin: None,
         name: "Box".into(),
         args: vec![Ty::Var(var)],
     };

@@ -25,16 +25,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Compile a .hew file to an executable.
-    Build(BuildArgs),
-    /// Run the local v0.5 IR ladder and print a pre-MLIR Hew-IR textual proof.
-    CompileV05(CompileV05Args),
+    /// Compile a .hew file through the v0.5 IR ladder.
+    Compile(CompileArgs),
     /// Compile and run a .hew file.
     Run(RunArgs),
     /// Build with debug info and launch under gdb/lldb.
     Debug(DebugArgs),
     /// Parse and typecheck only.
     Check(CheckArgs),
+    /// Compile a .hew file to a native binary on disk (like `go build`).
+    Build(BuildArgs),
     /// Generate documentation.
     Doc(DocArgs),
     /// Interactive REPL or evaluate expression.
@@ -57,14 +57,45 @@ pub enum Command {
     Completions(CompletionsArgs),
     /// Print version info.
     Version,
+    /// Launch the TUI actor observer (`hew-observe`).
+    ///
+    /// Forwards all arguments to `hew-observe`. Requires the `hew-observe`
+    /// binary to be available in the same directory as `hew` or on PATH.
+    ///
+    /// Examples:
+    ///   hew observe --demo
+    ///   hew observe --addr localhost:6060
+    ///   hew observe --list
+    Observe(ObserveArgs),
+    /// Start the Hew Language Server (`hew-lsp`).
+    ///
+    /// Forwards all arguments to `hew-lsp`. Requires the `hew-lsp`
+    /// binary to be available in the same directory as `hew` or on PATH.
+    /// Communicates via stdin/stdout using the Language Server Protocol.
+    ///
+    /// Examples:
+    ///   hew lsp
+    ///   hew lsp --version
+    Lsp(LspArgs),
+    /// Manage packages and dependencies (delegates to the bundled package manager).
+    ///
+    /// Forwards all arguments to the package manager. Requires its binary to be
+    /// in the same directory as `hew` or on PATH.
+    ///
+    /// Examples:
+    ///   hew package init
+    ///   hew package add `hew::db::sqlite`
+    ///   hew package install
+    ///   hew package build
+    Package(PackageArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct CompileV05Args {
+pub struct CompileArgs {
     /// Input .hew file.
     pub input: PathBuf,
     /// Directory to write `<name>.ll`, `<name>.o`, `<name>.wasm.o`, and
-    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-v05-out`.
+    /// `<name>.wasm` artefacts into. Default: `.tmp/compile-out`.
     #[arg(long = "emit-dir", value_name = "DIR")]
     pub emit_dir: Option<PathBuf>,
     /// Emit a textual MIR dump and exit (no LLVM emission).
@@ -74,9 +105,33 @@ pub struct CompileV05Args {
     /// spot-checking the front-half lowering during development.
     #[arg(long = "dump-mir", value_name = "STAGE", value_parser = ["raw", "checked", "elab"])]
     pub dump_mir: Option<String>,
-    /// Skip the wasm emit + wasm-ld link step. Native object still emits.
-    #[arg(long = "no-wasm")]
-    pub no_wasm: bool,
+    /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic output format
+// ---------------------------------------------------------------------------
+
+/// Output format for compiler diagnostics on `check`, `run`, and `compile`.
+///
+/// `text` is the human-readable Rust/Elm-style rendering with source context
+/// and `^^^` underlines. `json` emits a machine-readable JSON array of
+/// structured diagnostics on stdout — one object per diagnostic with a stable
+/// `code`, `severity`, `file`, `span`, `message`, `notes`, and machine-checked
+/// `fixes`. The JSON shape mirrors the LSP diagnostic substrate so agentic
+/// tooling can apply fixes without re-parsing prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum DiagnosticFormat {
+    /// Human-readable diagnostics with source context (default).
+    #[default]
+    Text,
+    /// Machine-readable JSON array of structured diagnostics on stdout.
+    Json,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,104 +149,27 @@ pub struct CommonBuildArgs {
     /// Override package search directory (default: .adze/packages/).
     #[arg(long, value_name = "DIR")]
     pub pkg_path: Option<PathBuf>,
+    /// Override project directory for manifest and package resolution.
+    #[arg(long, value_name = "DIR")]
+    pub project_dir: Option<PathBuf>,
 }
 
 impl CommonBuildArgs {
     /// Build a base [`crate::compile::CompileOptions`] from the common flags.
     ///
-    /// Per-command fields (`target`, `extra_libs`, `debug`, `codegen_mode`)
-    /// are left at their defaults; callers override with struct-update syntax:
+    /// Per-command fields such as `target` are left at their defaults; callers
+    /// override with struct-update syntax:
     ///
     /// ```ignore
-    /// crate::compile::CompileOptions {
-    ///     debug: self.debug,
-    ///     ..self.common.base_compile_options()
-    /// }
+    /// crate::compile::CompileOptions { target: self.target.clone(), ..self.common.base_compile_options() }
     /// ```
     pub fn base_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             no_typecheck: self.no_typecheck,
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),
+            project_dir: self.project_dir.clone(),
             ..Default::default()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Build
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Args)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "emit flags are mutually exclusive via clap group, not independent bools"
-)]
-pub struct BuildArgs {
-    /// Input .hew file.
-    pub input: PathBuf,
-    /// Output path. Defaults to `<input stem><target suffix>`.
-    #[arg(short = 'o', value_name = "FILE")]
-    pub output: Option<PathBuf>,
-    /// Build with debug info (no optimization, no stripping).
-    #[arg(long, short = 'g')]
-    pub debug: bool,
-    /// Pass an extra library or linker argument to the native link step.
-    #[arg(long = "link-lib", value_name = "PATH")]
-    pub link_libs: Vec<String>,
-    /// Target triple.
-    #[arg(long, value_name = "TRIPLE")]
-    pub target: Option<String>,
-    /// Emit enriched AST as JSON.
-    #[arg(long, group = "emit_mode")]
-    pub emit_ast: bool,
-    /// Emit full codegen IR as JSON (same as msgpack, for debugging).
-    #[arg(long, group = "emit_mode")]
-    pub emit_json: bool,
-    /// Emit full codegen IR as msgpack.
-    #[arg(long, group = "emit_mode")]
-    pub emit_msgpack: bool,
-    /// Emit MLIR instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_mlir: bool,
-    /// Emit LLVM IR instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_llvm: bool,
-    /// Emit object code instead of linking.
-    #[arg(long, group = "emit_mode")]
-    pub emit_obj: bool,
-    #[command(flatten)]
-    pub common: CommonBuildArgs,
-}
-
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
-impl BuildArgs {
-    pub fn codegen_mode(&self) -> crate::compile::CodegenMode {
-        use crate::compile::CodegenMode;
-        if self.emit_ast {
-            CodegenMode::EmitAst
-        } else if self.emit_json {
-            CodegenMode::EmitJson
-        } else if self.emit_msgpack {
-            CodegenMode::EmitMsgpack
-        } else if self.emit_mlir {
-            CodegenMode::EmitMlir
-        } else if self.emit_llvm {
-            CodegenMode::EmitLlvm
-        } else if self.emit_obj {
-            CodegenMode::EmitObj
-        } else {
-            CodegenMode::LinkExecutable
-        }
-    }
-
-    pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        crate::compile::CompileOptions {
-            codegen_mode: self.codegen_mode(),
-            target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: self.debug,
-            ..self.common.base_compile_options()
         }
     }
 }
@@ -234,18 +212,18 @@ pub struct RunArgs {
     /// early phases; never affects exit code or program output.
     #[arg(long = "show-stack-hints")]
     pub show_stack_hints: bool,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
     /// Arguments to pass to the compiled program (after --).
     #[arg(last = true)]
     pub program_args: Vec<String>,
 }
 
-#[allow(dead_code, reason = "dormant during v0.5 cutover")]
 impl RunArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: self.debug,
             ..self.common.base_compile_options()
         }
     }
@@ -279,8 +257,6 @@ impl DebugArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
         crate::compile::CompileOptions {
             target: self.target.clone(),
-            extra_libs: self.link_libs.clone(),
-            debug: true,
             ..self.common.base_compile_options()
         }
     }
@@ -301,6 +277,9 @@ pub struct CheckArgs {
     /// (the legacy path). Default off; opt-in for Phase α.
     #[arg(long)]
     pub explain_cow: bool,
+    /// Target triple.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,
     /// Surface diagnostic-only stack-allocation hints from the type checker.
@@ -310,11 +289,61 @@ pub struct CheckArgs {
     /// side resolves to a heap allocation class. Never affects exit code.
     #[arg(long = "show-stack-hints")]
     pub show_stack_hints: bool,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
 }
 
 impl CheckArgs {
     pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
-        self.common.base_compile_options()
+        crate::compile::CompileOptions {
+            target: self.target.clone(),
+            ..self.common.base_compile_options()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    /// Input .hew file.
+    pub input: PathBuf,
+    /// Output binary path. Default: `./<stem>` (no extension on Unix targets,
+    /// `.exe` on Windows targets). Ignored with `--emit-obj`.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub output: Option<PathBuf>,
+    /// Target triple. Omit for host native; e.g. `arm64-apple-darwin`,
+    /// `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-gnu`,
+    /// `wasm32-unknown-unknown`.
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+    /// Emit a relocatable object file instead of a linked binary, written to
+    /// `<cwd>/<stem><.o|.obj>`. Required for foreign-OS targets that cannot be
+    /// linked on this host.
+    #[arg(long = "emit-obj")]
+    pub emit_obj: bool,
+    /// Build with debug info (no optimization, no stripping).
+    #[arg(long, short = 'g')]
+    pub debug: bool,
+    /// Pass an extra library or linker argument to the native link step.
+    #[arg(long = "link-lib", value_name = "PATH")]
+    pub link_libs: Vec<String>,
+    #[command(flatten)]
+    pub common: CommonBuildArgs,
+    /// Diagnostic output format: `text` (default) or `json`.
+    #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
+    pub format: DiagnosticFormat,
+}
+
+impl BuildArgs {
+    pub fn to_compile_options(&self) -> crate::compile::CompileOptions {
+        crate::compile::CompileOptions {
+            target: self.target.clone(),
+            ..self.common.base_compile_options()
+        }
     }
 }
 
@@ -512,13 +541,36 @@ pub enum MachineSubcommand {
     List(MachineListArgs),
 }
 
+/// Output format for `hew machine diagram`.
+#[derive(Debug, Clone, PartialEq, ValueEnum)]
+pub enum MachineFormat {
+    /// Mermaid `stateDiagram-v2` (default).
+    Mermaid,
+    /// Graphviz DOT.
+    Graphviz,
+    /// Graphviz DOT (alias for `graphviz`).
+    Dot,
+    /// Stable JSON schema for tooling.
+    Json,
+}
+
 #[derive(Debug, Args)]
 pub struct MachineDiagramArgs {
     /// Input .hew file.
     pub input: PathBuf,
-    /// Output Graphviz DOT format instead of Mermaid.
-    #[arg(long)]
+    /// Output Graphviz DOT format instead of Mermaid (shorthand for `--format graphviz`).
+    #[arg(long, conflicts_with = "format")]
     pub dot: bool,
+    /// Output format. Default: mermaid.
+    #[arg(long, value_enum)]
+    pub format: Option<MachineFormat>,
+    /// Only render the named machine (useful for multi-machine files).
+    #[arg(long = "machine", value_name = "NAME")]
+    pub machine_name: Option<String>,
+    /// Skip HIR static checks before rendering. Checks run by default and fail
+    /// closed on invalid machine declarations.
+    #[arg(long = "no-check", action = clap::ArgAction::SetFalse)]
+    pub check: bool,
 }
 
 #[derive(Debug, Args)]
@@ -601,4 +653,39 @@ pub struct PlaygroundVerifyArgs {
     /// Per-example execution timeout (`500ms`, `30s`, `1m`; bare integers mean seconds).
     #[arg(long, default_value = "30", value_name = "DURATION")]
     pub timeout: String,
+}
+
+// ---------------------------------------------------------------------------
+// Observe
+// ---------------------------------------------------------------------------
+
+/// Arguments forwarded verbatim to `hew-observe`.
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+pub struct ObserveArgs {
+    /// Arguments passed through to `hew-observe`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
+/// Arguments forwarded verbatim to the bundled package manager.
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+pub struct PackageArgs {
+    /// Subcommand + arguments for the package manager (e.g. `install`, `build`, `add <pkg>`).
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Lsp
+// ---------------------------------------------------------------------------
+
+/// Arguments forwarded verbatim to `hew-lsp`.
+#[derive(Debug, Args)]
+#[command(disable_help_flag = true)]
+pub struct LspArgs {
+    /// Arguments passed through to `hew-lsp`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }

@@ -1,8 +1,8 @@
-// Circular Buffer - Fixed-size ring buffer using Vec<int>
+// Circular Buffer - Fixed-size ring buffer using Vec<i64>
 // Layout: [capacity, head, tail, count, data...]
 // Data starts at index 4
-fn cb_new(capacity: int) -> Vec<int> {
-    let buf: Vec<int> = Vec::new();
+fn cb_new(capacity: i64) -> Vec<i64> {
+    let buf: Vec<i64> = Vec::new();
     buf.push(capacity); // index 0: capacity
     buf.push(0); // index 1: head
     buf.push(0); // index 2: tail
@@ -14,15 +14,15 @@ fn cb_new(capacity: int) -> Vec<int> {
     buf
 }
 
-fn cb_capacity(buf: Vec<int>) -> int {
+fn cb_capacity(buf: Vec<i64>) -> i64 {
     buf.get(0)
 }
 
-fn cb_count(buf: Vec<int>) -> int {
+fn cb_count(buf: Vec<i64>) -> i64 {
     buf.get(3)
 }
 
-fn cb_is_empty(buf: Vec<int>) -> int {
+fn cb_is_empty(buf: Vec<i64>) -> i64 {
     if buf.get(3) == 0 {
         1
     } else {
@@ -30,7 +30,7 @@ fn cb_is_empty(buf: Vec<int>) -> int {
     }
 }
 
-fn cb_is_full(buf: Vec<int>) -> int {
+fn cb_is_full(buf: Vec<i64>) -> i64 {
     if buf.get(3) == buf.get(0) {
         1
     } else {
@@ -38,7 +38,7 @@ fn cb_is_full(buf: Vec<int>) -> int {
     }
 }
 
-fn cb_push(buf: Vec<int>, val: int) -> int {
+fn cb_push(buf: Vec<i64>, val: i64) -> i64 {
     let cap = buf.get(0);
     let count = buf.get(3);
     if count == cap {
@@ -53,7 +53,7 @@ fn cb_push(buf: Vec<int>, val: int) -> int {
     }
 }
 
-fn cb_pop(buf: Vec<int>) -> int {
+fn cb_pop(buf: Vec<i64>) -> i64 {
     let head = buf.get(1);
     let cap = buf.get(0);
     let count = buf.get(3);
@@ -64,12 +64,12 @@ fn cb_pop(buf: Vec<int>) -> int {
     val
 }
 
-fn cb_peek(buf: Vec<int>) -> int {
+fn cb_peek(buf: Vec<i64>) -> i64 {
     let head = buf.get(1);
     buf.get(4 + head)
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

@@ -1,0 +1,35 @@
+// Reject fixture: fork_with_args — `fork`-spawned callee takes arguments.
+//
+// The structured-concurrency scope currently supports only no-argument functions
+// returning unit.  Attempting to spawn a callee that takes arguments (here i64)
+// fails closed in HIR lowering with a targeted TaskSpawnSignatureUnsupported
+// diagnostic before MIR/codegen see the unsupported task shape.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-hir/src/lower.rs task-spawn signature gate
+//
+// When S5 widens fork to accept argument-bearing callees this fixture moves to
+// accept/.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_HIR
+//   - "spawned call must have zero arguments"
+fn unit_with_arg(x: i64) {}
+
+actor _Worker {
+    receive fn run() -> i64 {
+        scope {
+            unit_with_arg(42);
+        };
+        0
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn _Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

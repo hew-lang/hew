@@ -1,7 +1,7 @@
-// Sieve of Eratosthenes - find primes up to N using Vec<int> with 0/1 flags
-fn sieve(n: int) -> Vec<int> {
+// Sieve of Eratosthenes - find primes up to N using Vec<i64> with 0/1 flags
+fn sieve(n: i64) -> Vec<i64> {
     // is_prime[i] = 1 means i is prime, 0 means not
-    let is_prime: Vec<int> = Vec::new();
+    let is_prime: Vec<i64> = Vec::new();
     var i = 0;
     while i <= n {
         if i < 2 {
@@ -26,7 +26,7 @@ fn sieve(n: int) -> Vec<int> {
     is_prime
 }
 
-fn count_primes(flags: Vec<int>) -> int {
+fn count_primes(flags: Vec<i64>) -> i64 {
     var count = 0;
     for i in 0 .. flags.len() {
         if flags.get(i) == 1 {
@@ -36,7 +36,7 @@ fn count_primes(flags: Vec<int>) -> int {
     count
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

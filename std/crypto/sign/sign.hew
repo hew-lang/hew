@@ -1,0 +1,81 @@
+//! Ed25519 asymmetric signing and verification.
+//!
+//! Provides key-pair generation, message signing, and signature verification
+//! using Ed25519 (RFC 8032).
+//!
+//! Keys are raw byte buffers:
+//!
+//! - **Private key** (`keypair.private_key`): 83 bytes — an Ed25519 PKCS#8 v2
+//!   document accepted by `sign`.
+//! - **Public key** (`keypair.public_key`): 32 bytes — the raw Curve25519
+//!   public point accepted by `verify`.
+//! - **Signature**: 64 bytes — the raw Ed25519 signature (r ‖ s).
+//!
+//! # Examples
+//!
+//! ```
+//! import std::crypto::sign;
+//!
+//! fn main() {
+//!     let kp = sign.keypair();
+//!     let message: bytes = bytes::new();
+//!     message.push(104); message.push(101); message.push(119); // "hew"
+//!     let sig = sign.sign(message, kp.private_key);
+//!     let ok = sign.verify(message, sig, kp.public_key);
+//!     println(ok);
+//! }
+//! ```
+
+/// An Ed25519 key pair.
+///
+/// `private_key` is an 83-byte PKCS#8 v2 document; pass it to `sign`.
+/// `public_key` is the 32-byte raw public point; pass it to `verify`.
+pub type Ed25519KeyPair {
+    private_key: bytes;
+    public_key: bytes;
+}
+
+/// Generate a fresh Ed25519 key pair.
+///
+/// Returns an `Ed25519KeyPair` with the 83-byte PKCS#8 private-key document
+/// and the 32-byte public key.  Both are freshly allocated `bytes` values
+/// owned by the caller.
+pub fn keypair() -> Ed25519KeyPair {
+    let private_key = unsafe {
+        hew_ed25519_generate_pkcs8_hew()
+    };
+    let public_key = unsafe {
+        hew_ed25519_public_key_from_pkcs8_hew(private_key)
+    };
+    Ed25519KeyPair { private_key: private_key, public_key: public_key }
+}
+
+/// Sign `message` with `private_key` (an 83-byte PKCS#8 Ed25519 document).
+///
+/// Returns the 64-byte signature as `bytes`.
+/// Panics if `private_key` is not a valid 83-byte Ed25519 PKCS#8 document.
+pub fn sign(message: bytes, private_key: bytes) -> bytes {
+    unsafe {
+        hew_ed25519_sign_hew(message, private_key)
+    }
+}
+
+/// Verify that `signature` is a valid Ed25519 signature over `message`
+/// under `public_key` (32 bytes).
+///
+/// Returns `true` if the signature is valid, `false` otherwise.
+/// Any malformed input (wrong key length, wrong signature length, bit-flip)
+/// returns `false` — never panics.
+pub fn verify(message: bytes, signature: bytes, public_key: bytes) -> bool {
+    unsafe {
+        hew_ed25519_verify_hew(message, signature, public_key)
+    } == 1
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────────
+extern "C" {
+    fn hew_ed25519_generate_pkcs8_hew() -> bytes;
+    fn hew_ed25519_public_key_from_pkcs8_hew(pkcs8: bytes) -> bytes;
+    fn hew_ed25519_sign_hew(message: bytes, private_key: bytes) -> bytes;
+    fn hew_ed25519_verify_hew(message: bytes, signature: bytes, public_key: bytes) -> i32;
+}

@@ -1,17 +1,17 @@
-// Persistent (Immutable) Stack using linked list nodes in Vec<int>
-// Each node: [value, next_node_index] stored in a flat Vec<int>
+// Persistent (Immutable) Stack using linked list nodes in Vec<i64>
+// Each node: [value, next_node_index] stored in a flat Vec<i64>
 // next_node_index = -1 means end of stack
 // Push creates a new version (new head), old versions remain accessible.
 
-// Node storage: pairs of [value, next] in a Vec<int>
+// Node storage: pairs of [value, next] in a Vec<i64>
 // Node i is at positions i*2 and i*2+1
-fn ps_new() -> int {
+fn ps_new() -> i64 {
     // Empty stack is represented by -1 (no head node)
     0 - 1
 }
 
 // Push value onto stack version 'head', return new version (new head index)
-fn ps_push(store: Vec<int>, head: int, value: int) -> int {
+fn ps_push(store: Vec<i64>, head: i64, value: i64) -> i64 {
     let idx = store.len() / 2;
     store.push(value);
     store.push(head);
@@ -19,7 +19,7 @@ fn ps_push(store: Vec<int>, head: int, value: int) -> int {
 }
 
 // Peek at top value of stack version 'head'
-fn ps_peek(store: Vec<int>, head: int) -> int {
+fn ps_peek(store: Vec<i64>, head: i64) -> i64 {
     if head < 0 {
         return 0 - 1;
     }
@@ -27,7 +27,7 @@ fn ps_peek(store: Vec<int>, head: int) -> int {
 }
 
 // Pop from stack version 'head', return new head (previous version)
-fn ps_pop(store: Vec<int>, head: int) -> int {
+fn ps_pop(store: Vec<i64>, head: i64) -> i64 {
     if head < 0 {
         return 0 - 1;
     }
@@ -35,12 +35,12 @@ fn ps_pop(store: Vec<int>, head: int) -> int {
 }
 
 // Check if stack version is empty
-fn ps_is_empty(head: int) -> bool {
+fn ps_is_empty(head: i64) -> bool {
     head < 0
 }
 
 // Get size of stack version
-fn ps_size(store: Vec<int>, head: int) -> int {
+fn ps_size(store: Vec<i64>, head: i64) -> i64 {
     var count = 0;
     var curr = head;
     while curr >= 0 {
@@ -51,8 +51,8 @@ fn ps_size(store: Vec<int>, head: int) -> int {
 }
 
 // Collect stack elements into a Vec (top to bottom order)
-fn ps_collect(store: Vec<int>, head: int) -> Vec<int> {
-    let result: Vec<int> = Vec::new();
+fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
+    let result: Vec<i64> = Vec::new();
     var curr = head;
     while curr >= 0 {
         result.push(store.get(curr * 2));
@@ -64,7 +64,7 @@ fn ps_collect(store: Vec<int>, head: int) -> Vec<int> {
 fn main() {
     var passed = 0;
     var failed = 0;
-    let store: Vec<int> = Vec::new();
+    let store: Vec<i64> = Vec::new();
     // v0 = empty stack
     let v0 = ps_new();
     // Test 1: Empty stack

@@ -1,0 +1,26 @@
+// Generic enum constructed inside a generic fn body and matched inside another
+// generic fn body. Proves the enum half of the post-function-mono layout
+// discovery: `Holder<i64>`'s tagged-union layout is registered only after
+// `wrap` / `unwrap_or` are substituted at i64.
+enum Holder<T> {
+    Present(T);
+    Absent;
+}
+
+fn wrap<T>(x: T) -> Holder<T> {
+    Holder::Present(x)
+}
+
+fn unwrap_or<T>(h: Holder<T>, fallback: T) -> T {
+    match h {
+        Holder::Present(v) => v,
+        Holder::Absent => fallback,
+    }
+}
+
+fn main() {
+    let present = wrap(99);
+    println(unwrap_or(present, 0));
+    let absent: Holder<i64> = Holder::Absent;
+    println(unwrap_or(absent, 42));
+}

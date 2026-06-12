@@ -1,0 +1,29 @@
+// Generic record INSTANTIATION carrying an owned (computed-heap) string field,
+// dropped at scope exit on every loop iteration. The generic-instantiation twin
+// of `user_record_string_field`: each iteration constructs a `Pair<i64, string>`
+// whose `second` field owns a freshly-allocated string, then drops it. A
+// double-free SIGSEGVs and a missed drop leaks; 100k iterations surface either.
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn emit_pair(print_it: bool) -> i64 {
+    let first = "Ada";
+    let last = "Lovelace";
+    let full = first + " " + last;
+    let pair = Pair { first: 1, second: full };
+    if print_it {
+        println(pair.second);
+    }
+    pair.first
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        emit_pair(i == 0);
+        i = i + 1;
+    }
+    0
+}

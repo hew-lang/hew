@@ -1,0 +1,13 @@
+extern "C" {
+    fn raw_number() -> i64;
+}
+
+fn extern_unsafe_probe() -> i64 {
+    unsafe {
+        raw_number()
+    }
+}
+
+fn extern_unsafe_use() -> i64 {
+    extern_unsafe_probe()
+}

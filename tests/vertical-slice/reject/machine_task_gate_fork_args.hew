@@ -1,0 +1,28 @@
+// Reject fixture: a `fork child = worker(42)` inside a machine state entry
+// block must fail before codegen. The current end-to-end compiler stops at the
+// checker-level parser-only gate for `fork name = expr;`; HIR unit coverage
+// pins the lower-level Item::Machine task-gate walker directly.
+fn worker(x: i64) {}
+
+machine M {
+    events {
+        Tick;
+    }
+
+    state Idle {
+        entry {
+            scope {
+                fork child = worker(42);
+            }
+        }
+    }
+    state Done;
+
+    on Tick: Idle => Done {
+        Done
+    }
+
+    default { state }
+}
+
+fn main() {}

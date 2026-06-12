@@ -20,10 +20,10 @@
 
 @resource
 struct FileHandle {
-    fd: int,
+    fd: i64,
 }
 
-fn file_size(f: FileHandle) -> int {
+fn file_size(f: FileHandle) -> i64 {
     // Immutable read — does not consume f.
     f.fd   // placeholder: real impl would call fstat
 }

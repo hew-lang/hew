@@ -28,7 +28,7 @@ grammar Hew;
 //  meaningful in specific syntactic positions and are not reserved.
 //
 //  Hard keywords (NOT valid as identifiers — omitted from this rule):
-//    receive, default
+//    receive, default, cooperate
 // ----------------------------------------------------------------
 
 ident
@@ -66,6 +66,7 @@ item
       ( constDecl
       | typeDecl
       | typeAliasDecl
+      | recordDecl
       | traitDecl
       | fnDecl
       | asyncFnDecl
@@ -148,6 +149,27 @@ typeDecl
 
 typeAliasDecl
     : 'type' ident '=' type_ ';'
+    ;
+
+recordDecl
+    : 'record' ident typeParams? whereClause? recordBody
+    ;
+
+recordBody
+    : recordNamedBody
+    | recordTupleBody
+    ;
+
+recordNamedBody
+    : '{' recordFieldDecl ( ',' recordFieldDecl )* ','? '}'
+    ;
+
+recordFieldDecl
+    : ident ':' type_
+    ;
+
+recordTupleBody
+    : '(' type_ ( ',' type_ )* ','? ')' ';'
     ;
 
 wireDecl
@@ -271,7 +293,7 @@ traitSuper
     ;
 
 traitItem
-    : 'pure'? fnSig ( ';' | block )            // Required or default method
+    : fnSig ( ';' | block )                    // Required or default method
     | associatedType
     ;
 
@@ -297,7 +319,7 @@ implDecl
     ;
 
 implBodyItem
-    : 'pure'? fnDecl
+    : fnDecl
     | 'type' ident '=' type_ ';'                    // Associated type impl
     ;
 
@@ -352,11 +374,11 @@ coalesceFallback
     ;
 
 receiveFnDecl
-    : attribute* 'pure'? 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : attribute* 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 receiveGenFnDecl
-    : attribute* 'pure'? 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : attribute* 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 // ----------------------------------------------------------------
@@ -372,24 +394,18 @@ supervisorBody
     ;
 
 supervisorField
-    : ident ':' supervisorFieldValue ( ',' | ';' )?
-    ;
-
-supervisorFieldValue
-    : ident                                     // strategy: one_for_one
-    | INT_LIT                                   // max_restarts: 5
-    | DURATION_LIT                              // window: 10s
-    | '[' ident ( ',' ident )* ']'              // children: [Worker, Logger]
+    : 'strategy' ':' ident ( ',' | ';' )?                       // strategy: one_for_one
+    | 'intensity' ':' INT_LIT 'within' DURATION_LIT ( ',' | ';' )? // intensity: 5 within 60s
     ;
 
 childSpec
-    : 'child' ident ':' ident ( '(' args ')' )? ( 'permanent' | 'transient' | 'temporary' )? ( ',' | ';' )?
+    : ( 'child' | 'pool' ) ident ':' ident ( '(' args ')' )? childClause* ( ',' | ';' )?
     ;
 
-restartSpec
-    : 'restart' '(' ( 'permanent' | 'transient' | 'temporary' ) ')'
-      ( 'budget' '(' INT_LIT ',' DURATION_LIT ')' )?
-      ( 'strategy' '(' ( 'one_for_one' | 'one_for_all' | 'rest_for_one' ) ')' )?
+childClause
+    : 'restart' ':' ( 'permanent' | 'transient' | 'temporary' )
+    | 'shutdown' ':' ( DURATION_LIT | 'brutal_kill' | 'infinity' )
+    | 'wired_to' ':' '{' ( ident ( ':' ident )? ','? )* '}'
     ;
 
 // ----------------------------------------------------------------
@@ -397,30 +413,35 @@ restartSpec
 // ----------------------------------------------------------------
 
 machineDecl
-    : 'machine' ident '{' machineItem* '}'
+    : 'machine' ident typeParams? '{' eventsHeader emitsHeader? stateDecl* transitionDecl* defaultArm? '}'
     ;
 
-machineItem
-    : machineState
-    | machineEvent
-    | machineTransition
-    | machineDefault
+eventsHeader
+    : 'events' '{' eventDecl* '}'
     ;
 
-machineState
-    : 'state' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+eventDecl
+    : ident ( ';' | '{' ( ident ':' type_ ( ';' | ',' )? )* '}' ';'? )
     ;
 
-machineEvent
-    : 'event' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+emitsHeader
+    : 'emits' '{' ( ident ';' )* '}'
     ;
 
-machineTransition
-    : 'on' ident ':' statePattern '->' statePattern ( 'when' expr )? ( block | '{' fieldInitList '}' | ';' )
+stateDecl
+    : 'state' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* ( 'entry' block )? ( 'exit' block )? compositeMember* '}' )? ';'?
     ;
 
-machineDefault
-    : 'default' ( block | ';' )
+compositeMember
+    : 'initial'? stateDecl
+    ;
+
+transitionDecl
+    : 'on' ident ( '(' ident ( ',' ident )* ')' )? ':' statePattern '=>' statePattern 'reenter'? ( 'when' expr )? ( block | '{' fieldInitList '}' | ';' )
+    ;
+
+defaultArm
+    : 'default' '{' 'state' '}'
     ;
 
 statePattern
@@ -453,19 +474,19 @@ externParam
 // ----------------------------------------------------------------
 
 fnDecl
-    : 'pure'? 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 asyncFnDecl
-    : 'pure'? 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 genFnDecl
-    : 'pure'? 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 asyncGenFnDecl
-    : 'pure'? 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 params
@@ -506,8 +527,11 @@ stmt
     | exprStmt
     | unsafeBlock
     | block                                 // Standalone block: { ... }
-    | forkExpr                              // fork { ... } or fork child without trailing ;
+    | scopeExpr                             // scope { ... } structured-concurrency block
+    | forkChild                             // fork [name '='] expr — only valid inside scope
     ;
+// Note: scopeDeadline (`after(d) { ... }`) is valid only as a statement inside
+// a scopeExpr body.  It appears in stmt as an exprStmt wrapping a scopeDeadline.
 
 letStmt
     : 'let' pattern ( ':' type_ )? ( '=' expr )? ';'
@@ -597,16 +621,11 @@ unsafeBlock
 
 expr
     : unsafeExpr
-    | sendExpr
+    | timeoutExpr
     ;
 
 unsafeExpr
     : 'unsafe' block
-    ;
-
-// Send:  actor <- message
-sendExpr
-    : timeoutExpr ( '<-' expr )?
     ;
 
 // Timeout combinator:  expr | after duration
@@ -627,8 +646,10 @@ andExpr
     ;
 
 eqExpr
-    : relExpr ( ( '==' | '!=' ) relExpr )*
+    : relExpr ( ( '==' | '!=' | 'is' ) relExpr )*
     ;
+// `is` tests structural type membership: `val is TypeName`.  It has the
+// same Pratt precedence as `==` and `!=` (parser pratt table: Token::Is => (9, 10)).
 
 relExpr
     : bitOrExpr ( ( '<' | '<=' | '>' | '>=' ) bitOrExpr )*
@@ -661,7 +682,19 @@ mulExpr
 
 unaryExpr
     : ( '!' | '-' | '~' | 'await' ) unaryExpr
+    | cloneExpr
     | postfixExpr
+    ;
+
+// `clone <operand>` duplicates the value at the same binding power as other
+// unary prefixes (parser CLONE_PREFIX_BP = 25).  `clone` is contextual: it
+// acts as a prefix only when the next token begins an operand (identifier or
+// literal); otherwise it stays a plain identifier.  Examples:
+//   clone x          — duplicate identifier
+//   clone a + b      — parsed as (clone a) + b
+//   x.clone()        — method call, clone is NOT the prefix here
+cloneExpr
+    : 'clone' unaryExpr
     ;
 
 postfixExpr
@@ -687,8 +720,8 @@ primary
     | spawn
     | selectExpr
     | joinExpr
-    | forkExpr                              // fork { ... } block or fork [name '='] expr child
-    | cooperateExpr
+    | scopeExpr                             // scope { ... } structured-concurrency block
+    | forkChild                             // fork [name '='] expr — only valid inside scope
     | yieldExpr
     ;
 
@@ -737,11 +770,14 @@ arg
     ;
 
 // ----------------------------------------------------------------
-//  Closures  — arrow syntax only (v0.6.0: pipe syntax |x| removed)
+//  Closures
 // ----------------------------------------------------------------
 
 lambda
-    : 'move'? typeParams? '(' lambdaParams? ')' retType? '=>' ( expr | block )
+    : 'move'? '|' lambdaParams? '|' expr
+    | 'move'? '||' expr
+    | 'move'? '|' lambdaParams? '|' retType block
+    | typeParams '(' lambdaParams? ')' retType? '=>' ( expr | block )
     ;
 
 lambdaParams
@@ -777,7 +813,7 @@ selectExpr
     ;
 
 selectArm
-    : pattern ( '<-' | 'from' ) expr '=>' expr ','?
+    : pattern 'from' expr '=>' expr ','?
     ;
 
 timeoutArm
@@ -792,29 +828,35 @@ joinExpr
 //  Structured concurrency
 // ----------------------------------------------------------------
 
-// `fork` is dual-use. The block opens a structured-concurrency region;
-// the child form (`fork name = expr` or bare `fork expr`) spawns a
-// sibling task within an open block. Both share the keyword; the
-// disambiguator is the token following `fork`. The two forms are
-// folded into a single production here so the keyword is matched
-// only once.
+// Structured concurrency uses three distinct productions:
+//   scopeExpr     — `scope { ... }` opens the lexical lifetime boundary
+//   scopeDeadline — `after(d) { ... }` inside a scope body sets a cancellation deadline
+//   forkChild     — `fork name = expr` or `fork expr` spawns a sibling task
 //
-// Notes:
-//   - `fork name = expr` and bare `fork expr` are only legal dynamically
-//     inside a `fork` block; outside one, the checker emits
-//     `ForkOutsideForkBlock`.
-//   - Earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
-//     s.cancel() }`; that surface was subsumed by `fork` (HEW-SPEC §4.9
-//     historical note).
-forkExpr
-    : 'fork' block                          // block form: fork { ... }
-    | 'fork' ident '=' expr                 // child binding: fork name = expr
-    | 'fork' expr                           // bare child:   fork expr
+// `fork` and `after` outside a `scope` body are parse errors.  The checker
+// additionally emits `ForkOutsideScopeBlock` for contextual violations.
+//
+// Historical note: earlier drafts exposed `scope |s| { s.launch { } / s.spawn { } /
+// s.cancel() }`; that entire surface was removed in the 2026 edition
+// (HEW-SPEC §4.9 historical note).
+scopeExpr
+    : 'scope' block                         // structured-concurrency block
     ;
 
-cooperateExpr
-    : 'cooperate'
+// Deadline clause — only valid as a statement inside a scopeExpr body.
+// `after(duration) { ... }` cancels remaining child tasks after the duration
+// elapses.  Parser: Token::After + looks_like_scope_deadline() → Expr::ScopeDeadline.
+scopeDeadline
+    : 'after' '(' expr ')' block
     ;
+
+forkChild
+    : 'fork' ident '=' expr                 // child binding: fork name = expr
+    | 'fork' expr                           // bare child:    fork expr
+    ;
+
+// `cooperate` is a reserved compiler-internal safepoint token. It is injected
+// by the compiler and is not a source-level expression.
 
 yieldExpr
     : 'yield' expr?                             // yield with optional value
@@ -838,8 +880,8 @@ type_
     | '[' type_ ';' INT_LIT ']'             // Fixed-size array: [i32; 256]
     | '[' type_ ']'                         // Slice: [i32]
     | 'fn' '(' typeList? ')' retType?       // Function type
-    | '*' 'var' type_                       // Mutable raw pointer
-    | '*' type_                             // Immutable raw pointer
+    | '*' 'mut' type_                       // Mutable raw pointer
+    | '*' 'const' type_                     // Immutable raw pointer
     | 'dyn' traitBound                      // Trait object (single trait + optional type args)
     | 'dyn' '(' traitBounds ')'             // Multi-trait object: dyn (Trait1 + Trait2)
     | '_'                                   // Inferred type
@@ -923,7 +965,6 @@ patternField
 HASH_LBRACKET : '#[' ;
 ARROW         : '->' ;
 FAT_ARROW     : '=>' ;
-SEND          : '<-' ;
 DOTDOT        : '..' ;
 DOTDOTEQ      : '..=' ;
 SHL           : '<<' ;
@@ -1017,6 +1058,10 @@ fragment ESC_SEQ
 // ----------------------------------------------------------------
 //  Identifiers  (must come after all keyword-like tokens)
 // ----------------------------------------------------------------
+
+COOPERATE
+    : 'cooperate'
+    ;
 
 IDENT
     : [a-zA-Z_] [a-zA-Z0-9_]*

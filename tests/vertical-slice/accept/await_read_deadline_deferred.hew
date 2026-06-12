@@ -1,0 +1,48 @@
+// Accept fixture (NEW-6c): `await conn.read() | after d` — deadline elapses
+// before the peer writes, so the suspending read resolves to
+// `Err(IoError::TimedOut(_))`.
+//
+// Run under `HEW_WORKERS=1`: the reader parks worker-free on the read slot, the
+// main thread keeps the accepted peer silent, and the deadline timer resumes the
+// parked actor. A blocking read would strand the lone worker and hang.
+//
+// Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42; wrong
+// IoError variant -> 8; no actor exit -> main fallback 99.
+import std::fs;
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Reader {
+    let port: i32;
+
+    receive fn go() {
+        sleep_ms(100);
+        let conn = net.connect(f"127.0.0.1:{port}");
+        let code = match await conn.read() | after 60ms {
+            Ok(_body) => 42,
+            Err(e) => {
+                match e {
+                    IoError::TimedOut(_code) => 7,
+                    _ => 8,
+                }
+            },
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(port: port);
+    reader.go();
+    let client = listener.accept();
+    sleep_ms(500);
+    let _ = client.close();
+    exit(99);
+}

@@ -1,0 +1,30 @@
+// Reject fixture: q004_trait_impl_sig_wrong_param.
+//
+// Impl method swaps a non-receiver parameter's declared type, diverging from
+// the trait's declared parameter type after substitution. Q004 emits
+// TraitImplSignatureMismatch with `parameter` detail at the impl method span.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - TraitImplSignatureMismatch
+//   - "parameter"
+
+pub trait Indexer {
+    type Output;
+    fn at(self, key: i32) -> Self::Output;
+}
+
+pub type Bag {
+    val: i64;
+}
+
+impl Indexer for Bag {
+    type Output = i64;
+    fn at(b: Bag, key: string) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    0
+}

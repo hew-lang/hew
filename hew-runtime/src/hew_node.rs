@@ -2,6 +2,10 @@
 //!
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::{PoisonSafe, PoisonSafeRw};
 use crate::util::{CondvarExt, MutexExt};
@@ -9,7 +13,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
@@ -17,17 +23,109 @@ use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
+use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
 const NODE_STATE_STARTING: u8 = 0;
-const NODE_STATE_RUNNING: u8 = 1;
+/// Node is started and serving traffic. `pub(crate)` so the SWIM driver only
+/// drives a fully-running node.
+pub(crate) const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
 const _: () = assert!(
     std::mem::size_of::<usize>() >= std::mem::size_of::<u64>(),
     "Hew requires 64-bit target for actor ID encoding"
 );
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransportSelection {
+    Tcp,
+    #[cfg(feature = "quic")]
+    Quic,
+    #[cfg(feature = "quic")]
+    QuicMesh,
+}
+
+fn normalize_transport_name(name: &str) -> Result<&'static str, String> {
+    if name.eq_ignore_ascii_case("tcp") {
+        return Ok("tcp");
+    }
+    if name.eq_ignore_ascii_case("quic") {
+        #[cfg(feature = "quic")]
+        {
+            return Ok("quic");
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            return Err("transport 'quic' requires the hew-runtime quic feature".into());
+        }
+    }
+    if name.eq_ignore_ascii_case("quic-mesh") {
+        #[cfg(feature = "quic")]
+        {
+            return Ok("quic-mesh");
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            return Err("transport 'quic-mesh' requires the hew-runtime quic feature".into());
+        }
+    }
+    Err(format!(
+        "unknown transport '{name}'; supported values: tcp, quic, quic-mesh"
+    ))
+}
+
+/// Read an optional `u32` SWIM-timing override from the environment.
+///
+/// Returns `None` if the variable is unset or does not parse as a non-zero
+/// `u32`, so a malformed value falls back to the compiled default rather than
+/// silently disabling failure detection.
+fn swim_timing_env_u32(key: &str) -> Option<u32> {
+    let raw = crate::env::ENV_LOCK.read_access(|()| std::env::var(key).ok())?;
+    raw.parse::<u32>().ok().filter(|v| *v > 0)
+}
+
+/// Build the cluster config for `local_node_id`, applying any SWIM-timing
+/// overrides from the environment.
+///
+/// `HEW_SWIM_PROTOCOL_PERIOD_MS`, `HEW_SWIM_PING_TIMEOUT_MS`, and
+/// `HEW_SWIM_SUSPECT_TIMEOUT_MS` tune the failure detector's cadence and
+/// thresholds — an operator knob for deployments with non-default network
+/// characteristics, and the mechanism tests use to drive detection on a short
+/// horizon. Each falls back to the [`ClusterConfig`] default when unset.
+fn cluster_config_from_env(local_node_id: u16) -> ClusterConfig {
+    let mut cfg = ClusterConfig {
+        local_node_id,
+        ..ClusterConfig::default()
+    };
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_PROTOCOL_PERIOD_MS") {
+        cfg.protocol_period_ms = v;
+    }
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_PING_TIMEOUT_MS") {
+        cfg.ping_timeout_ms = v;
+    }
+    if let Some(v) = swim_timing_env_u32("HEW_SWIM_SUSPECT_TIMEOUT_MS") {
+        cfg.suspect_timeout_ms = v;
+    }
+    cfg
+}
+
+fn transport_selection_from_env() -> Result<TransportSelection, String> {
+    let value = crate::env::ENV_LOCK.read_access(|()| std::env::var("HEW_TRANSPORT").ok());
+    let Some(value) = value else {
+        return Ok(TransportSelection::Tcp);
+    };
+
+    match normalize_transport_name(&value)? {
+        "tcp" => Ok(TransportSelection::Tcp),
+        #[cfg(feature = "quic")]
+        "quic" => Ok(TransportSelection::Quic),
+        #[cfg(feature = "quic")]
+        "quic-mesh" => Ok(TransportSelection::QuicMesh),
+        _ => unreachable!("normalize_transport_name returns only supported transport keys"),
+    }
+}
 
 /// Global reference to the active node for remote message routing.
 ///
@@ -266,8 +364,15 @@ impl ConnectionKey {
 
 struct PendingReply {
     connection: ConnectionKey,
+    request_id: u64,
     outcome: Mutex<Option<ReplyOutcome>>,
     cond: Condvar,
+    /// When non-null, the remote ask was issued by a SUSPENDABLE caller (NEW-5):
+    /// the caller's coroutine has parked (or is about to park) on this reply and
+    /// the readiness source must RESUME it through the scheduler rather than
+    /// signal `cond`. Null for a blocking (condvar) caller. Set once at
+    /// registration; read on completion to pick the wake path.
+    parked_caller: AtomicPtr<crate::actor::HewActor>,
 }
 
 /// Process-global reply routing table for correlating remote ask/reply pairs.
@@ -288,13 +393,21 @@ impl ReplyRoutingTable {
         }
     }
 
-    /// Allocate a new request ID and register a pending reply slot.
-    fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
+    /// Allocate a new request ID and register a pending reply slot, recording
+    /// the optional parked caller (NEW-5). A non-null `parked_caller` routes the
+    /// completion wake through `scheduler::enqueue_resume` instead of the condvar.
+    fn register_with_caller(
+        &self,
+        connection: ConnectionKey,
+        parked_caller: *mut crate::actor::HewActor,
+    ) -> (u64, Arc<PendingReply>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let entry = Arc::new(PendingReply {
             connection,
+            request_id: id,
             outcome: Mutex::new(None),
             cond: Condvar::new(),
+            parked_caller: AtomicPtr::new(parked_caller),
         });
         let mut map = self
             .pending
@@ -302,6 +415,21 @@ impl ReplyRoutingTable {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(id, Arc::clone(&entry));
         (id, entry)
+    }
+
+    /// Allocate a new request ID and register a blocking (condvar) pending reply.
+    fn register(&self, connection: ConnectionKey) -> (u64, Arc<PendingReply>) {
+        self.register_with_caller(connection, ptr::null_mut())
+    }
+
+    /// Allocate a new request ID and register a SUSPENDED (NEW-5) pending reply
+    /// whose completion resumes `parked_caller`'s coroutine.
+    fn register_parked(
+        &self,
+        connection: ConnectionKey,
+        parked_caller: *mut crate::actor::HewActor,
+    ) -> (u64, Arc<PendingReply>) {
+        self.register_with_caller(connection, parked_caller)
     }
 
     /// Complete a pending reply by depositing the payload and signalling
@@ -326,29 +454,51 @@ impl ReplyRoutingTable {
             map.remove(&request_id)
         };
         if let Some(pending) = entry {
-            let mut guard = pending
-                .outcome
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *guard = Some(outcome);
-            pending.cond.notify_one();
+            Self::complete_pending(&pending, outcome);
             true
         } else {
             false
         }
     }
 
-    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
+    /// Deposit `outcome` into `pending` and wake the waiter. A blocking caller
+    /// is signalled via the condvar; a SUSPENDED caller (NEW-5,
+    /// `parked_caller` non-null) is RESUMED through the scheduler's single
+    /// readiness-resume edge (`enqueue_resume`) — the same edge the reactor /
+    /// channels / reply slot feed. The outcome lock is released BEFORE the wake
+    /// so the resumed coroutine can drain it without contending on this lock.
+    fn complete_pending(pending: &PendingReply, outcome: ReplyOutcome) {
         let mut guard = pending
             .outcome
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(ReplyOutcome {
-            status: ReplyStatus::Failed,
-            data: Vec::new(),
-            ask_error,
-        });
-        pending.cond.notify_one();
+        *guard = Some(outcome);
+        drop(guard);
+
+        let caller = pending.parked_caller.load(Ordering::Acquire);
+        if caller.is_null() {
+            pending.cond.notify_one();
+        } else {
+            // SAFETY: `caller` is the actor whose coroutine parked on this
+            // request. `enqueue_resume` re-confirms liveness against the live
+            // registry under lock and drops the wake for an actor already torn
+            // down, so a stale pointer from an abandoned ask is never
+            // dereferenced. `cont` is null: the parked continuation handle the
+            // suspend edge published is resumed in place (every readiness source
+            // passes null here).
+            unsafe { crate::scheduler::enqueue_resume(caller, ptr::null_mut()) };
+        }
+    }
+
+    fn fail_pending_with_reason(pending: &PendingReply, ask_error: AskError) {
+        Self::complete_pending(
+            pending,
+            ReplyOutcome {
+                status: ReplyStatus::Failed,
+                data: Vec::new(),
+                ask_error,
+            },
+        );
     }
 
     fn fail_pending(pending: &PendingReply) {
@@ -411,13 +561,14 @@ impl ReplyRoutingTable {
         }
     }
 
-    /// Remove a pending entry (used on timeout to prevent leaks).
-    fn remove(&self, request_id: u64) {
+    /// Remove a pending entry (used on timeout / coroutine abandonment to
+    /// prevent leaks). Returns the removed entry, if any.
+    fn remove(&self, request_id: u64) -> Option<Arc<PendingReply>> {
         let mut map = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.remove(&request_id);
+        map.remove(&request_id)
     }
 }
 
@@ -448,6 +599,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::MailboxFull as i32 => Some(AskError::MailboxFull),
         x if x == AskError::OrphanedAsk as i32 => Some(AskError::OrphanedAsk),
         x if x == AskError::NoRunnableWork as i32 => Some(AskError::NoRunnableWork),
+        x if x == AskError::DecodeFailure as i32 => Some(AskError::DecodeFailure),
         _ => None,
     }
 }
@@ -460,6 +612,15 @@ enum AskRejectionReasonCode {
     MailboxFull = AskError::MailboxFull as u8,
     OrphanedAsk = AskError::OrphanedAsk as u8,
     NoRunnableWork = AskError::NoRunnableWork as u8,
+    DecodeFailure = AskError::DecodeFailure as u8,
+}
+
+/// Errors returned by [`AskRejectionReasonCode::decode`].
+#[derive(Debug, PartialEq)]
+enum AskRejectionDecodeError {
+    /// The payload's first byte is not a recognised rejection-reason code.
+    /// Decoders MUST reject rather than silently substitute a default reason.
+    UnknownAskRejectionReason { code: u8 },
 }
 
 impl AskRejectionReasonCode {
@@ -470,24 +631,27 @@ impl AskRejectionReasonCode {
             AskError::MailboxFull => Self::MailboxFull,
             AskError::OrphanedAsk => Self::OrphanedAsk,
             AskError::NoRunnableWork => Self::NoRunnableWork,
+            AskError::DecodeFailure => Self::DecodeFailure,
             _ => return None,
         };
         Some(code as u8)
     }
 
-    fn decode(reason_payload: &[u8]) -> AskError {
+    fn decode(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
         match reason_payload.first().copied() {
-            Some(x) if x == Self::WorkerAtCapacity as u8 => AskError::WorkerAtCapacity,
-            Some(x) if x == Self::ActorStopped as u8 => AskError::ActorStopped,
-            Some(x) if x == Self::MailboxFull as u8 => AskError::MailboxFull,
-            Some(x) if x == Self::OrphanedAsk as u8 => AskError::OrphanedAsk,
-            Some(x) if x == Self::NoRunnableWork as u8 => AskError::NoRunnableWork,
-            _ => AskError::WorkerAtCapacity,
+            None => Ok(AskError::WorkerAtCapacity), // empty payload: legacy peer
+            Some(x) if x == Self::WorkerAtCapacity as u8 => Ok(AskError::WorkerAtCapacity),
+            Some(x) if x == Self::ActorStopped as u8 => Ok(AskError::ActorStopped),
+            Some(x) if x == Self::MailboxFull as u8 => Ok(AskError::MailboxFull),
+            Some(x) if x == Self::OrphanedAsk as u8 => Ok(AskError::OrphanedAsk),
+            Some(x) if x == Self::NoRunnableWork as u8 => Ok(AskError::NoRunnableWork),
+            Some(x) if x == Self::DecodeFailure as u8 => Ok(AskError::DecodeFailure),
+            Some(code) => Err(AskRejectionDecodeError::UnknownAskRejectionReason { code }),
         }
     }
 }
 
-fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
+fn decode_rejection_reason(reason_payload: &[u8]) -> Result<AskError, AskRejectionDecodeError> {
     AskRejectionReasonCode::decode(reason_payload)
 }
 
@@ -497,7 +661,12 @@ fn decode_rejection_reason(reason_payload: &[u8]) -> AskError {
 /// (one with [`HEW_REPLY_REJECT_MSG_TYPE`] in the `msg_type` field).
 /// Empty payloads from older peers still default to `WorkerAtCapacity`.
 pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool {
-    REPLY_TABLE.fail(request_id, decode_rejection_reason(reason_payload))
+    // On unknown codes, leave the pending ask unresolved (it will timeout)
+    // rather than fabricating a misleading AskError.
+    match decode_rejection_reason(reason_payload) {
+        Ok(reason) => REPLY_TABLE.fail(request_id, reason),
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
@@ -517,6 +686,17 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
         } else {
             ptr::null_mut()
         };
+    }
+
+    // The reply payload arrives from a remote (possibly malicious or corrupt)
+    // peer, while the caller's generated code reads exactly `reply_size` bytes
+    // (the static size of the expected `Reply` type). A peer-supplied payload
+    // whose length differs from `reply_size` must fail closed — a shorter
+    // payload would otherwise be read past its allocation (heap over-read), and
+    // a longer one silently truncated. The call site maps null to
+    // `AskError::PayloadSizeMismatch`.
+    if reply_data.len() != reply_size {
+        return ptr::null_mut();
     }
 
     // SAFETY: malloc for reply buffer.
@@ -627,7 +807,7 @@ where
     let mut map = registry.remote_names.lock_or_recover();
     let names: Vec<String> = map
         .iter()
-        .filter(|(_, actor_pid)| predicate(**actor_pid))
+        .filter(|(_, actor_id)| predicate(**actor_id))
         .map(|(name, _)| name.clone())
         .collect();
     for name in &names {
@@ -657,8 +837,8 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     }
     // SAFETY: registry belongs to `node` for the node lifetime.
     let registry = unsafe { &*node.registry };
-    let names = take_registry_names_if(registry, |actor_pid| {
-        crate::pid::hew_pid_node(actor_pid) == node.node_id
+    let names = take_registry_names_if(registry, |actor_id| {
+        crate::pid::hew_pid_node(actor_id) == node.node_id
     });
     // Node shutdown is the decommission path; remote peers prune their cached
     // names when they observe the corresponding left/dead membership event.
@@ -820,11 +1000,55 @@ unsafe extern "C" fn node_inbound_router(
             );
         });
     } else {
-        // Fire-and-forget message — route to local actor.
-        // SAFETY: hew_actor_send_by_id deep-copies payload and validates actor presence.
-        let _ = unsafe {
-            crate::actor::hew_actor_send_by_id(target_actor_id, msg_type, data.cast(), size)
-        };
+        // Fire-and-forget message — reconstruct the value into THIS node's
+        // address space before delivering it to the local mailbox. The inbound
+        // `data` is the serialized wire form; feeding it raw to the mailbox would
+        // make the actor handler dereference sender-side heap pointers and crash.
+        //
+        // Fail closed: if no codec is registered for `msg_type`, or the decode
+        // reports failure, drop the message rather than deliver garbage. An empty
+        // payload (size == 0) is a genuine zero-field message and bypasses decode.
+        if size == 0 {
+            // SAFETY: zero-length payload; mailbox handles null+0.
+            let _ = unsafe {
+                crate::actor::hew_actor_send_by_id(
+                    target_actor_id,
+                    msg_type,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+        } else {
+            // SAFETY: data is valid for `size` bytes (reader_loop contract).
+            let (value, struct_size) =
+                unsafe { crate::xnode_serial::decode_payload(msg_type, data.cast_const(), size) };
+            if value.is_null() {
+                // No codec or decode failure — drop the message fail-closed.
+                set_last_error(format!(
+                    "cross-node tell dropped: no codec or decode failure for msg_type={msg_type}"
+                ));
+            } else {
+                // The reconstructed value lives in a malloc'd buffer of
+                // `struct_size` bytes (the in-memory struct size, NOT the wire
+                // length). hew_actor_send_by_id deep-copies `struct_size` bytes
+                // into the mailbox, MOVING the owned heap fields (strings/bytes)
+                // into the mailbox copy — exactly the move semantics of a local
+                // send where the caller's stack value is byte-copied. We then
+                // free the reconstructed struct SHELL only (not its fields, now
+                // owned by the mailbox copy).
+                // SAFETY: value is a valid reconstructed struct for msg_type.
+                let _ = unsafe {
+                    crate::actor::hew_actor_send_by_id(
+                        target_actor_id,
+                        msg_type,
+                        value,
+                        struct_size,
+                    )
+                };
+                // SAFETY: value came from decode_payload (libc::malloc).
+                unsafe { libc::free(value) };
+            }
+        }
     }
 }
 
@@ -843,18 +1067,55 @@ fn handle_inbound_ask(
     conn_mgr: SendConnMgr,
     shutdown_started: Arc<AtomicBool>,
 ) {
-    // Perform a local blocking ask against the target actor.
-    let reply_ptr = {
-        let data_ptr = if payload.is_empty() {
-            std::ptr::null_mut()
-        } else {
-            payload.as_ptr().cast_mut().cast::<c_void>()
+    // Reconstruct the request value into THIS node's address space before the
+    // local ask — the inbound `payload` is the serialized wire form, not the
+    // in-memory struct. Feeding it raw to the handler would dereference
+    // sender-side heap pointers and crash. A zero-length payload is a genuine
+    // zero-field request and bypasses decode.
+    let decoded_request: Option<(*mut c_void, usize)> = if payload.is_empty() {
+        None
+    } else {
+        // SAFETY: payload is a valid slice for payload.len() bytes.
+        let (value, struct_size) = unsafe {
+            crate::xnode_serial::decode_payload(msg_type, payload.as_ptr(), payload.len())
         };
-        // SAFETY: data_ptr is valid for payload.len() bytes.
-        unsafe {
-            crate::actor::hew_actor_ask_by_id(target_actor_id, msg_type, data_ptr, payload.len())
+        if value.is_null() {
+            // No codec or decode failure — fail closed: send a rejection (if the
+            // peer understands it) and do not deliver garbage to the handler.
+            // SAFETY: conn_mgr is live for the duration of the inbound ask handler.
+            let peer_flags = unsafe {
+                connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
+            };
+            if connection::supports_ask_rejection(peer_flags) {
+                send_rejection_reply(
+                    source_node_id,
+                    request_id,
+                    AskError::DecodeFailure,
+                    conn_mgr.0,
+                    shutdown_started.as_ref(),
+                );
+            }
+            return;
         }
+        Some((value, struct_size))
     };
+
+    // Perform a local blocking ask against the target actor with the
+    // reconstructed request value.
+    let reply_ptr = {
+        let (data_ptr, data_len) = match decoded_request {
+            Some((value, struct_size)) => (value, struct_size),
+            None => (std::ptr::null_mut(), 0),
+        };
+        // SAFETY: data_ptr is valid for data_len bytes (reconstructed struct).
+        unsafe { crate::actor::hew_actor_ask_by_id(target_actor_id, msg_type, data_ptr, data_len) }
+    };
+    // Free the reconstructed request shell now the ask copied it into the mailbox
+    // (owned fields moved into the mailbox copy, matching local-send semantics).
+    if let Some((value, _)) = decoded_request {
+        // SAFETY: value came from decode_payload (libc::malloc).
+        unsafe { libc::free(value) };
+    }
 
     // Build the reply payload from the returned data.
     let reply_data: Vec<u8> = if reply_ptr.is_null() {
@@ -880,18 +1141,52 @@ fn handle_inbound_ask(
         }
         Vec::new()
     } else {
-        // The reply is a malloc'd buffer. We need to determine its size.
-        // hew_actor_ask returns a pointer to the reply value, but the
-        // reply_channel stores the size internally. We pass the raw
-        // pointer through; the size was recorded alongside it.
-        // SAFETY: reply_ptr came from hew_reply which malloc'd size bytes.
+        // `reply_ptr` points to the in-memory reply VALUE (a struct that may
+        // contain heap pointers). Serialize its CONTENTS for transport rather
+        // than shipping the raw struct bytes — the originating node reconstructs
+        // the value into its own address space. The reply codec is keyed by the
+        // request `msg_type` (a handler's reply type maps 1:1 to its msg_type).
+        // SAFETY: reply_ptr came from hew_reply which malloc'd the reply struct.
         let size = unsafe { crate::actor::hew_reply_data_size(reply_ptr) };
         if size > 0 {
-            // SAFETY: reply_ptr is valid for `size` bytes as returned by hew_reply_data_size.
-            let slice = unsafe { std::slice::from_raw_parts(reply_ptr.cast::<u8>(), size) };
-            let v = slice.to_vec();
-            // SAFETY: reply_ptr was malloc'd by hew_reply.
+            let mut out_len: usize = 0;
+            // SAFETY: reply_ptr is a valid reply value for msg_type; out_len valid.
+            let bytes =
+                unsafe { crate::xnode_serial::encode_reply(msg_type, reply_ptr, &raw mut out_len) };
+            // SAFETY: reply_ptr was malloc'd by hew_reply; free after encoding.
+            // NOTE (robustness gap): `reply_ptr` is a flat memcpy of the actor's
+            // reply value.  If the reply type has owned string/bytes fields, their
+            // heap allocations are bit-copied into this buffer.  `encode_reply`
+            // serialises the contents but does not drop the field pointers, so
+            // `libc::free(reply_ptr)` frees the flat shell only — a bounded leak
+            // per reply with owned fields.  Fixing this requires a drop-thunk
+            // registry entry (parallel to the serialize thunk).  Tracked for the
+            // drop-thunk registry lane; not fixed here because the actor's own
+            // lifecycle already holds references to the same heap objects.
             unsafe { libc::free(reply_ptr) };
+            if bytes.is_null() {
+                // No reply codec registered — fail closed: send a rejection so
+                // the originating ask fails with a typed error instead of timing
+                // out on raw/absent bytes.
+                // SAFETY: conn_mgr is live for the duration of the inbound ask.
+                let peer_flags = unsafe {
+                    connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
+                };
+                if connection::supports_ask_rejection(peer_flags) {
+                    send_rejection_reply(
+                        source_node_id,
+                        request_id,
+                        AskError::EncodeFailed,
+                        conn_mgr.0,
+                        shutdown_started.as_ref(),
+                    );
+                }
+                return;
+            }
+            // SAFETY: bytes is valid for out_len bytes (from encode_reply).
+            let v = unsafe { std::slice::from_raw_parts(bytes, out_len) }.to_vec();
+            // SAFETY: bytes came from encode_reply (libc::malloc).
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
             v
         } else {
             // SAFETY: reply_ptr was malloc'd by hew_reply.
@@ -943,37 +1238,33 @@ fn send_rejection_reply(
             return;
         }
 
-        let mut reason_payload = [AskRejectionReasonCode::encode(reason)
+        let reason_payload = [AskRejectionReasonCode::encode(reason)
             .expect("remote ask rejection reason must use a supported rejection-reason code")];
         // Encode the rejection envelope: request_id identifies the pending ask;
         // source_node_id = 0 marks it as a reply; msg_type = HEW_REPLY_REJECT_MSG_TYPE
         // distinguishes it from a normal (possibly void) success reply.
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: 0,
-            source_actor_id: 0,
-            msg_type: HEW_REPLY_REJECT_MSG_TYPE,
-            payload_size: 1,
-            payload: reason_payload.as_mut_ptr(),
-            request_id,
-            source_node_id: 0,
+        // SAFETY: `reason_payload` is a stack byte array valid for its length.
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                0,
+                0,
+                HEW_REPLY_REJECT_MSG_TYPE,
+                reason_payload.as_ptr(),
+                reason_payload.len(),
+                request_id,
+                0,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("send_rejection_reply: {err}"));
+                return;
+            }
         };
-        // SAFETY: zeroed is valid for HewWireBuf.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            return;
-        }
-        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
         unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
         };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
     });
 }
 
@@ -1021,40 +1312,32 @@ fn send_reply_envelope(
 
         // Encode the reply envelope with request_id set and source_node_id = 0
         // to mark it as a reply (not a new request).
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "reply payload size bounded by wire buffer limits"
-        )]
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: 0,
-            source_actor_id: 0,
-            msg_type: 0,
-            payload_size: reply_data.len() as u32,
-            payload: reply_data.as_ptr().cast_mut(),
-            request_id,
-            source_node_id: 0,
+        // SAFETY: `reply_data.as_ptr()` is valid for `reply_data.len()` bytes.
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                0,
+                0,
+                0,
+                reply_data.as_ptr(),
+                reply_data.len(),
+                request_id,
+                0,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("send_reply_envelope: {err}"));
+                return;
+            }
         };
-        // SAFETY: zeroed is valid for HewWireBuf.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            return;
-        }
 
         // Send via conn_mgr so noise encryption is applied when the connection
         // is encrypted. This replaces the former raw transport send which would
         // send unencrypted data over an encrypted connection.
-        // SAFETY: conn_mgr and conn_id are valid; wire_buf is initialised.
+        // SAFETY: conn_mgr and conn_id are valid; bytes is CBOR encoded.
         unsafe {
-            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, wire_buf.data, wire_buf.len)
+            connection::hew_connmgr_send_preencoded(conn_mgr, conn_id, bytes.as_ptr(), bytes.len())
         };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
     });
 }
 
@@ -1062,7 +1345,7 @@ fn send_reply_envelope(
 /// from a remote peer. Updates the node's `remote_names` map.
 extern "C" fn node_registry_gossip_callback(
     name: *const c_char,
-    actor_pid: u64,
+    actor_id: u64,
     is_add: bool,
     user_data: *mut c_void,
 ) {
@@ -1078,7 +1361,29 @@ extern "C" fn node_registry_gossip_callback(
         .into_owned();
     let mut map = registry.remote_names.lock_or_recover();
     if is_add {
-        map.insert(key, actor_pid);
+        // Fail-closed registration-string boundary (gossip side): an inbound
+        // ADD for a name that is already mapped to a DIFFERENT actor is a
+        // cluster-wide ambiguity — two distinct actors (possibly two distinct
+        // qualified actor types) chose the same registration string. Keep the
+        // existing mapping and RECORD the refusal rather than silently
+        // re-pointing routing at whichever gossip arrived last. Qualified
+        // registration keys on the gossip wire (a CDDL/CBOR RegistryEvent
+        // change) are the tracked full fix.
+        match map.get(&key) {
+            Some(existing) if *existing != actor_id => {
+                set_last_error(format!(
+                    "registry gossip: name `{key}` is already registered to \
+                     actor {existing}; refusing gossiped re-registration to \
+                     actor {actor_id} — registration strings carry no \
+                     actor-type qualifier on the wire, so the conflict cannot \
+                     be disambiguated (qualified registration keys are a \
+                     tracked follow-up)"
+                ));
+            }
+            _ => {
+                map.insert(key, actor_id);
+            }
+        }
     } else {
         map.remove(&key);
     }
@@ -1210,8 +1515,8 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
 
     // SAFETY: user_data is a *mut HewRegistry installed during hew_node_start.
     let registry = unsafe { &*(user_data.cast::<HewRegistry>()) };
-    let _ = take_registry_names_if(registry, |actor_pid| {
-        crate::pid::hew_pid_node(actor_pid) == node_id
+    let _ = take_registry_names_if(registry, |actor_id| {
+        crate::pid::hew_pid_node(actor_id) == node_id
     });
 }
 
@@ -1287,7 +1592,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let mut created_conn_mgr = false;
     let mut joined_cluster = false;
     macro_rules! fail_start {
-        ($msg:literal) => {{
+        ($msg:expr) => {{
             // SAFETY: pointers belong to this node; flags track what was created in this start call.
             unsafe {
                 cleanup_start_failure(
@@ -1306,24 +1611,26 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.transport.is_null() {
-        // Check HEW_TRANSPORT env var for transport selection.
-        // SAFETY: ENV_LOCK synchronises access to the process-global environ array.
-        #[cfg(feature = "quic")]
-        let use_quic = crate::env::ENV_LOCK.read_access(|()| {
-            std::env::var("HEW_TRANSPORT").is_ok_and(|v| v.eq_ignore_ascii_case("quic"))
-        });
-        #[cfg(not(feature = "quic"))]
-        let use_quic = false;
+        let selection = match transport_selection_from_env() {
+            Ok(selection) => selection,
+            Err(err) => fail_start!(format!("hew_node_start: {err}")),
+        };
 
-        if use_quic {
+        match selection {
+            TransportSelection::Tcp => {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { transport::hew_transport_tcp_new() };
+            }
             #[cfg(feature = "quic")]
-            {
+            TransportSelection::Quic => {
                 // SAFETY: constructor returns owned transport pointer or null.
                 node.transport = unsafe { crate::quic_transport::hew_transport_quic_new() };
             }
-        } else {
-            // SAFETY: constructor returns owned transport pointer or null.
-            node.transport = unsafe { transport::hew_transport_tcp_new() };
+            #[cfg(feature = "quic")]
+            TransportSelection::QuicMesh => {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+            }
         }
         if node.transport.is_null() {
             fail_start!("hew_node_start: failed to create transport");
@@ -1349,10 +1656,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.cluster.is_null() {
-        let cfg = ClusterConfig {
-            local_node_id: node.node_id,
-            ..ClusterConfig::default()
-        };
+        let cfg = cluster_config_from_env(node.node_id);
         // SAFETY: config pointer is valid for this call.
         node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
         if node.cluster.is_null() {
@@ -1437,6 +1741,19 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     // Start the profiler with distributed runtime context if HEW_PPROF is set.
     crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
 
+    // Drive the SWIM failure detector: a periodic ticker that calls
+    // hew_cluster_tick every protocol period, issuing PING/PING_REQ probes and
+    // escalating ALIVE→SUSPECT→DEAD. Without it, failure detection is inert.
+    // The ticker is stopped and joined in hew_node_stop before the cluster /
+    // conn_mgr it touches are freed (see the teardown ordering below).
+    // SAFETY: node is RUNNING with a live cluster + conn_mgr at this point.
+    if !unsafe { crate::swim_driver::start_swim_driver(ptr::from_mut(node)) } {
+        // A failed ticker spawn is not fatal to the node (gossip + the
+        // connection-event SUSPECT path still work), but it means active
+        // failure detection is degraded. Record it; do not fail the start.
+        set_last_error("hew_node_start: SWIM failure-detector ticker failed to start");
+    }
+
     0
 }
 
@@ -1490,6 +1807,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
                 let _ = handle.join();
             }
         }
+
+        // Stop and JOIN the SWIM ticker before freeing the cluster / conn_mgr
+        // it dereferences each period. The join is the lifetime barrier: once
+        // it returns, the ticker thread has fully exited and cannot race the
+        // teardown of node resources below (LESSONS: cleanup-all-exits, the
+        // reactor's ticker-joined-before-free ordering).
+        // SAFETY: node pointer is used only as the driver registry key.
+        unsafe { crate::swim_driver::stop_swim_driver(ptr::from_mut(node)) };
 
         // Shutdown profiler threads before freeing node resources they might access.
         crate::profiler::shutdown();
@@ -1628,6 +1953,42 @@ pub unsafe extern "C" fn hew_node_register(
         return -1;
     }
 
+    // SAFETY: name was checked non-null and is a valid C string by caller contract.
+    let key = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
+    let reg = unsafe { &*node.registry };
+
+    // Fail-closed registration-string boundary: the user-chosen string is the
+    // cluster-wide routing key, and it carries NO actor-type qualifier on the
+    // wire — two DISTINCT actors (possibly two distinct qualified actor
+    // types, e.g. `bank.Account` and `store.Account`) registering the same
+    // string would silently re-point cluster routing. Refuse the second
+    // registration with a recorded diagnostic instead of clobbering the
+    // mapping. Re-registering the SAME actor under its existing name is
+    // idempotent. Full fix — qualified registration keys on the gossip wire
+    // (a CDDL/CBOR RegistryEvent change) — is a tracked follow-up; this
+    // boundary only refuses the ambiguity, it cannot disambiguate it.
+    {
+        let map = reg.remote_names.lock_or_recover();
+        if let Some(existing) = map.get(&key).copied() {
+            if existing != actor {
+                drop(map);
+                set_last_error(format!(
+                    "hew_node_register: name `{key}` is already registered to \
+                     actor {existing}; refusing to re-point it to actor {actor} \
+                     — registration strings are cluster-wide routing keys and \
+                     carry no actor-type qualifier, so the conflict cannot be \
+                     disambiguated (qualified registration keys on the gossip \
+                     wire are a tracked follow-up). Unregister the existing \
+                     name first or choose a distinct string"
+                ));
+                return -1;
+            }
+        }
+    }
+
     // SAFETY: registry API expects a stable C string pointer.
     let rc =
         unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) };
@@ -1635,19 +1996,21 @@ pub unsafe extern "C" fn hew_node_register(
         return -1;
     }
 
-    // SAFETY: name was checked non-null and is a valid C string by caller contract.
-    let key = unsafe { CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned();
-    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
-    let reg = unsafe { &*node.registry };
-    let mut map = reg.remote_names.lock_or_recover();
-    map.insert(key.clone(), actor);
+    {
+        let mut map = reg.remote_names.lock_or_recover();
+        map.insert(key.clone(), actor);
+    }
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe { cluster::hew_cluster_registry_add(node.cluster, name, actor) };
+    }
+    if !node.conn_mgr.is_null() {
+        // SAFETY: connection manager pointer is valid while the node is alive.
+        unsafe {
+            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, actor, true);
+        }
     }
 
     0
@@ -1680,13 +2043,21 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let mut map = reg.remote_names.lock_or_recover();
-    map.remove(&key);
+    {
+        let mut map = reg.remote_names.lock_or_recover();
+        map.remove(&key);
+    }
 
     // Propagate removal to cluster gossip.
     if !node.cluster.is_null() {
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe { cluster::hew_cluster_registry_remove(node.cluster, name) };
+    }
+    if !node.conn_mgr.is_null() {
+        // SAFETY: connection manager pointer is valid while the node is alive.
+        unsafe {
+            connection::hew_connmgr_broadcast_registry_gossip(node.conn_mgr, &key, 0, false);
+        }
     }
 
     0
@@ -1768,17 +2139,73 @@ pub unsafe extern "C" fn hew_node_send(
         return -1;
     }
 
-    // SAFETY: conn_mgr and conn_id were validated above.
-    unsafe {
+    // Serialize the payload before it leaves this address space. `payload` is the
+    // raw in-memory value (a struct that may contain heap pointers); shipping it
+    // verbatim would make the receiver dereference stale pointers and crash. The
+    // codec for `msg_type` encodes the value's CONTENTS into transport-safe bytes.
+    //
+    // Fail closed: a non-empty payload with no registered codec must NOT be sent
+    // raw — refuse the send (the caller surfaces a SendError). A genuinely empty
+    // payload (payload_len == 0) needs no serialization.
+    let serialized: Option<(*mut u8, usize)> = if payload_len > 0 {
+        let mut out_len: usize = 0;
+        // SAFETY: payload points to a valid value of the message type; out_len valid.
+        let bytes = unsafe {
+            crate::xnode_serial::encode_payload(
+                msg_type,
+                payload.cast::<std::ffi::c_void>(),
+                &raw mut out_len,
+            )
+        };
+        if bytes.is_null() {
+            set_last_error(format!(
+                "cross-node send rejected: no serialization codec registered for \
+                 msg_type={msg_type}; the payload cannot cross the node boundary safely"
+            ));
+            return -1;
+        }
+        Some((bytes, out_len))
+    } else {
+        None
+    };
+
+    // Gate the send through the cross-node validator: the bytes are now genuinely
+    // serialized, so the payload class is truthful.
+    if crate::mailbox_envelope::validate_cross_node_send_params(
+        crate::mailbox_envelope::MailboxPayloadClass::SerializedCrossNode as u8,
+        crate::mailbox_envelope::CANCEL_TOKEN_NONE,
+    )
+    .is_none()
+    {
+        if let Some((bytes, _)) = serialized {
+            // SAFETY: bytes came from encode_payload (libc::malloc).
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+        }
+        return -1;
+    }
+
+    let (send_ptr, send_len) = match serialized {
+        Some((bytes, len)) => (bytes, len),
+        None => (std::ptr::null_mut(), 0),
+    };
+    // SAFETY: conn_mgr and conn_id were validated above; send_ptr/send_len are the
+    // serialized bytes (or null/0 for an empty payload).
+    let rc = unsafe {
         connection::hew_connmgr_send(
             node.conn_mgr,
             conn_id,
             target_pid,
             msg_type,
-            payload.cast_mut(),
-            payload_len,
+            send_ptr,
+            send_len,
         )
+    };
+    if let Some((bytes, _)) = serialized {
+        // hew_connmgr_send copies the bytes into its envelope; free our copy.
+        // SAFETY: bytes came from encode_payload (libc::malloc).
+        unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
     }
+    rc
 }
 
 /// Connect to a remote node and register routing for its node ID.
@@ -1865,8 +2292,83 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 // interface for the compiler-generated code. Each corresponds to a
 // `Node::*` builtin in the Hew language.
 
-/// Counter for auto-assigning node IDs.
-static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+/// Per-process offset for auto-assigning node IDs within the same process.
+///
+/// When a process calls `Node::start` more than once, each call gets a
+/// distinct offset added to the process base.
+static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Per-process base node ID, initialised once from the OS process ID.
+///
+/// # Shim note
+///
+/// WHY: The original counter started every process at 1, so every OS process
+/// produced `node_id` == 1, causing `hew_pid_is_local` to misclassify remote
+/// actors as local and bypass TCP routing. Seeding from the OS PID makes
+/// distinct processes get distinct node IDs for the v0.5 two-process case.
+///
+/// WHEN obsolete: when a proper collision-free node-ID assignment scheme is
+/// implemented — either a coordinator-assigned ID exchanged during the
+/// connection handshake, or a wider (> u16) node-ID space. The birthday
+/// bound on u16 is ~180 processes for a 50 % collision probability.
+///
+/// WHAT the real solution looks like: the connecting node sends no ID; the
+/// accepting node assigns a unique u32/u64 scope ID during the handshake,
+/// which both sides then embed in all PIDs for that session.
+static PROCESS_NODE_BASE: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Derive a non-zero u16 node-ID base from the OS process ID.
+///
+/// Uses a FNV-1a–style fold to spread the PID bits across the full u16
+/// range, then forces non-zero (0 is reserved for "local/standalone" in
+/// the PID encoding).
+fn process_node_id_base() -> u16 {
+    *PROCESS_NODE_BASE.get_or_init(|| {
+        let pid = std::process::id(); // u32 OS PID
+                                      // FNV-1a 32-bit fold into 16 bits.
+        let h = (2_166_136_261u32)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid >> 8)
+            .wrapping_mul(16_777_619)
+            .wrapping_add(pid >> 16);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "XOR of two u16-range halves of a u32 always fits in u16"
+        )]
+        let folded = ((h >> 16) ^ (h & 0xFFFF)) as u16;
+        // Ensure non-zero (0 is "local" in the PID encoding).
+        if folded == 0 {
+            1
+        } else {
+            folded
+        }
+    })
+}
+
+/// Map `(base, offset)` to a node ID in `1..=65535`, never landing on the `0`
+/// local/standalone sentinel.
+///
+/// A bare `base.wrapping_add(offset)` can wrap a second `Node::start` to `0`
+/// when `base == 65535` (offset 1). `hew_pid_is_local` always treats node-id `0`
+/// as local, so a node that landed on `0` would silently misclassify every
+/// remote actor as local and bypass routing. Mapping through the
+/// `1..=65535` ring (`1 + ((base - 1 + offset) mod 65535)`) keeps the result a
+/// valid non-zero ID for any base/offset, including the wrap case.
+fn next_local_node_id(base: u16, offset: u16) -> u16 {
+    // Work in u32 to avoid intermediate u16 wrap; the ring has 65535 slots
+    // (1..=65535). `base` is already guaranteed non-zero by
+    // `process_node_id_base`, so `base - 1` is in `0..=65534`.
+    let ring = 65_535u32;
+    let zero_based = (u32::from(base) - 1 + u32::from(offset)) % ring;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "zero_based is in 0..65535 so 1 + zero_based fits in u16 (max 65535)"
+    )]
+    let id = (1 + zero_based) as u16;
+    id
+}
 
 /// `Node::start(addr)` — Create and start a node, binding to `addr`.
 ///
@@ -1879,7 +2381,10 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         set_last_error("Node::start: address is null");
         return -1;
     }
-    let node_id = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // Each call within the same process adds a small offset to the process
+    // base so multiple Node::start calls don't collide with each other.
+    let offset = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let node_id = next_local_node_id(process_node_id_base(), offset);
     // SAFETY: addr was null-checked above and is a valid C string.
     let node = unsafe { hew_node_new(node_id, addr) };
     if node.is_null() {
@@ -1960,7 +2465,7 @@ pub unsafe extern "C" fn hew_node_api_register(
         return -1;
     }
     // SAFETY: actor was null-checked above and is a valid HewActor pointer.
-    let actor_id = unsafe { (*actor).pid };
+    let actor_id = unsafe { (*actor).id };
     CURRENT_NODE.read_access(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
@@ -1969,6 +2474,58 @@ pub unsafe extern "C" fn hew_node_api_register(
         }
         // SAFETY: node, name, and actor_id are validated above.
         unsafe { hew_node_register(node, name, actor_id) }
+    })
+}
+
+/// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
+///
+/// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a bare `u64` PID
+/// at this ABI boundary rather than a `*mut HewActor` pointer. The caller
+/// extracts the PID via `hew_actor_pid` before passing it here.
+///
+/// Returns 0 on success, -1 on any of the fail-closed conditions:
+/// - `name` is null
+/// - `pid` is 0 (sentinel for an invalid actor)
+/// - The actor is not found in the live-actor table
+/// - No node has been started (`hew_node_api_start` not yet called)
+/// - Internal name-string allocation fails
+///
+/// On failure, the last error is set via `set_last_error` so callers can
+/// retrieve a diagnostic string.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string that remains live for
+/// the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: u64) -> c_int {
+    if name.is_null() {
+        set_last_error("Node::register: name pointer is null");
+        return -1;
+    }
+    if pid == 0 {
+        set_last_error("Node::register: pid is zero (invalid actor)");
+        return -1;
+    }
+    // Verify the actor is currently live in the actor table before attempting
+    // to register it.  This prevents dangling registrations after an actor
+    // stops between spawn and register.
+    let is_live = crate::lifetime::live_actors::get_actor_ptr_by_id(pid).is_some();
+    if !is_live {
+        set_last_error(format!(
+            "Node::register: actor with pid {pid} not found in live-actor table"
+        ));
+        return -1;
+    }
+    CURRENT_NODE.read_access(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            set_last_error("Node::register: no active node (call Node::start first)");
+            return -1;
+        }
+        // SAFETY: node is non-null; name is non-null and caller guarantees a
+        // valid C string; pid was validated above.
+        unsafe { hew_node_register(node, name, pid) }
     })
 }
 
@@ -1992,9 +2549,44 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     })
 }
 
+/// `RemotePid::from_raw(node_id, serial) -> u64`
+///
+/// Constructs a `RemotePid<T>` PID value from a raw `(node_id, serial)` pair.
+/// `RemotePid<T>` is encoded identically to `LocalPid<T>`: a packed `u64`
+/// produced by `hew_pid_make(node_id as u16, serial)`.
+///
+/// Returns `0` (the null-PID sentinel) and sets the last error string when
+/// either validation constraint fails:
+/// - `node_id` must be non-zero (a zero `node_id` would alias the local node,
+///   which is always node 0 in the current encoding scheme).
+/// - `node_id` must not exceed `u16::MAX` (the packed encoding constraint).
+#[no_mangle]
+pub extern "C" fn hew_remote_pid_from_raw(node_id: u64, serial: u64) -> u64 {
+    if node_id == 0 {
+        set_last_error(
+            "RemotePid::from_raw: node_id must be non-zero \
+             (use LocalPid for local actors)",
+        );
+        return 0;
+    }
+    if node_id > u64::from(u16::MAX) {
+        set_last_error(format!(
+            "RemotePid::from_raw: node_id {node_id} exceeds u16::MAX ({})",
+            u16::MAX
+        ));
+        return 0;
+    }
+    // SAFETY: node_id <= u16::MAX is verified above; truncation cannot occur.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "node_id <= u16::MAX is verified by the guard above"
+    )]
+    crate::pid::hew_pid_make(node_id as u16, serial)
+}
+
 /// `Node::set_transport(name)` — Set the transport type before starting.
 ///
-/// Supported values: `"tcp"` (default), `"quic"`.
+/// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.
 /// Must be called before `Node::start`.
 ///
 /// # Safety
@@ -2006,37 +2598,212 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
         return -1;
     };
-    match s {
-        "tcp" => {
+    match normalize_transport_name(s) {
+        Ok(normalized) => {
             // SAFETY: ENV_LOCK synchronises access to the process-global environ
             // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "tcp") });
+            crate::env::ENV_LOCK
+                .access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", normalized) });
             0
         }
-        "quic" => {
-            // SAFETY: ENV_LOCK synchronises access to the process-global environ
-            // array; set_var is safe under exclusive write access.
-            crate::env::ENV_LOCK.access(|()| unsafe { std::env::set_var("HEW_TRANSPORT", "quic") });
-            0
-        }
-        _ => {
-            set_last_error(format!("Node::set_transport: unknown transport '{s}'"));
+        Err(err) => {
+            set_last_error(format!("Node::set_transport: {err}"));
             -1
         }
     }
 }
 
-/// Default timeout for remote ask operations (5 seconds).
-#[cfg(not(test))]
-const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
-
-/// Short timeout for test isolation.
-#[cfg(test)]
-const REMOTE_ASK_TIMEOUT_MS: u64 = 250;
-
 enum RemoteAskSetupResult {
     Ok((u64, Arc<PendingReply>)),
     Error(AskError),
+}
+
+/// Set up an outbound remote ask: serialize the request, register a pending
+/// reply slot (recording `parked_caller` for the NEW-5 suspendable path when
+/// non-null), and send the ask envelope over the mesh. Returns the
+/// `(request_id, pending)` pair on a successful submit, or a typed [`AskError`]
+/// on any setup failure. The blocking and suspendable entry points share this
+/// single submit state machine.
+///
+/// # Safety
+///
+/// - `pid` must be a valid remote actor PID.
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+/// - `parked_caller`, if non-null, must be the live actor whose continuation is
+///   about to park on the reply.
+fn setup_remote_ask(
+    pid: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    parked_caller: *mut crate::actor::HewActor,
+) -> RemoteAskSetupResult {
+    CURRENT_NODE.read_access(|guard| {
+        let node_ptr = *guard as *mut HewNode;
+        if node_ptr.is_null() {
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
+        }
+        // SAFETY: read lock pins CURRENT_NODE.
+        let node = unsafe { &*node_ptr };
+        if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
+            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
+        }
+
+        // Look up the connection for the target node via the routing table.
+        // SAFETY: routing_table is valid while node is running.
+        let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
+        if conn_id < 0 {
+            return RemoteAskSetupResult::Error(AskError::RoutingFailed);
+        }
+
+        // Serialize the request value before it leaves this address space —
+        // `data`/`size` is the raw in-memory struct (which may hold heap
+        // pointers). The codec for `msg_type` encodes its CONTENTS; the receiver
+        // reconstructs the value. Fail closed if no codec is registered for a
+        // non-empty payload.
+        let serialized_req: Option<(*mut u8, usize)> = if size > 0 {
+            let mut out_len: usize = 0;
+            // SAFETY: data is a valid value of the message type; out_len valid.
+            let bytes = unsafe {
+                crate::xnode_serial::encode_payload(msg_type, data.cast_const(), &raw mut out_len)
+            };
+            if bytes.is_null() {
+                return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+            }
+            Some((bytes, out_len))
+        } else {
+            None
+        };
+        let (req_ptr, req_len) = match serialized_req {
+            Some((bytes, len)) => (bytes.cast_const(), len),
+            None => (std::ptr::null(), 0),
+        };
+
+        // Register a pending reply slot. A suspendable caller (NEW-5) records
+        // its actor so the completion resumes the parked coroutine instead of
+        // signalling the condvar.
+        let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
+        let (request_id, pending) = if parked_caller.is_null() {
+            REPLY_TABLE.register(connection)
+        } else {
+            REPLY_TABLE.register_parked(connection, parked_caller)
+        };
+
+        // Encode the ask envelope with request_id and source_node_id over the
+        // SERIALIZED request bytes.
+        // SAFETY: req_ptr is valid for req_len bytes (or null when req_len == 0).
+        let bytes = match unsafe {
+            encode_envelope_frame_from_raw_parts(
+                pid,
+                0,
+                msg_type,
+                req_ptr,
+                req_len,
+                request_id,
+                node.node_id,
+            )
+        } {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                set_last_error(format!("hew_node_api_ask: {err}"));
+                REPLY_TABLE.remove(request_id);
+                if let Some((b, _)) = serialized_req {
+                    // SAFETY: b came from encode_payload (libc::malloc).
+                    unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
+                }
+                return RemoteAskSetupResult::Error(AskError::EncodeFailed);
+            }
+        };
+        // The envelope copied the request bytes; free our serialized copy.
+        if let Some((b, _)) = serialized_req {
+            // SAFETY: b came from encode_payload (libc::malloc).
+            unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
+        }
+
+        // Send the encoded envelope through the connection manager so noise
+        // encryption is applied when the connection is encrypted.
+        // SAFETY: conn_mgr is valid while node is running; bytes is CBOR encoded.
+        let send_ok = unsafe {
+            connection::hew_connmgr_send_preencoded(
+                node.conn_mgr,
+                conn_id,
+                bytes.as_ptr(),
+                bytes.len(),
+            ) == 0
+        };
+
+        if !send_ok {
+            REPLY_TABLE.remove(request_id);
+            return RemoteAskSetupResult::Error(AskError::SendFailed);
+        }
+
+        RemoteAskSetupResult::Ok((request_id, pending))
+    })
+}
+
+/// Spawn a detached timer that fails the pending ask `request_id` with
+/// [`AskError::Timeout`] after `timeout_ms`. Used by the SUSPENDABLE path
+/// (NEW-5), which cannot block a worker on the reply condvar. If the real reply
+/// (or a peer-drop failure) lands first it removes the entry, so this later
+/// `fail` is a no-op. Returns `Err` if the timer thread could not be spawned.
+fn spawn_remote_ask_timeout(request_id: u64, timeout_ms: u64) -> Result<(), AskError> {
+    thread::Builder::new()
+        .name("hew-remote-ask-timeout".to_string())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(timeout_ms));
+            REPLY_TABLE.fail(request_id, AskError::Timeout);
+        })
+        .map(|_| ())
+        .map_err(|_| AskError::SendFailed)
+}
+
+/// Materialise a completed [`ReplyOutcome`] into the codegen-visible reply
+/// pointer / null-failure sentinel. Shared by the blocking and suspendable
+/// finish paths. Records the exact [`AskError`] in the node ask-error slot on
+/// failure.
+fn finish_remote_ask_outcome(
+    msg_type: i32,
+    reply_size: usize,
+    reply: &ReplyOutcome,
+) -> *mut c_void {
+    if reply.status == ReplyStatus::Failed {
+        return ask_null(reply.ask_error);
+    }
+    // Void ask (reply_size == 0) or empty reply: return the void sentinel /
+    // null exactly as before — there is no value to reconstruct.
+    if reply_size == 0 || reply.data.is_empty() {
+        let result = remote_reply_data_to_ptr(&reply.data, reply_size);
+        return if result.is_null() {
+            ask_null(AskError::PayloadSizeMismatch)
+        } else {
+            LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
+            result
+        };
+    }
+    // Non-void reply: `reply.data` holds the SERIALIZED reply bytes. Reconstruct
+    // the reply VALUE into this node's address space using the reply codec
+    // (keyed by the request `msg_type`). codegen's ask terminator then memcpy-
+    // loads the reconstructed struct into the reply dest — `reply_size` matches
+    // the reconstructed struct size.
+    // SAFETY: reply.data is a valid slice for its length.
+    let (value, struct_size) = unsafe {
+        crate::xnode_serial::decode_reply(msg_type, reply.data.as_ptr(), reply.data.len())
+    };
+    if value.is_null() {
+        // No reply codec or decode failure — fail closed with a typed error.
+        return ask_null(AskError::DecodeFailure);
+    }
+    if struct_size != reply_size {
+        // The reconstructed struct size must match the codegen reply slot. A
+        // mismatch is a codec/layout drift — fail closed rather than hand the
+        // caller a wrong-sized buffer.
+        // SAFETY: value came from decode_reply (libc::malloc).
+        unsafe { libc::free(value) };
+        return ask_null(AskError::PayloadSizeMismatch);
+    }
+    LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
+    value
 }
 
 /// Perform a blocking ask against a PID, handling local and remote actors.
@@ -2058,15 +2825,12 @@ enum RemoteAskSetupResult {
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[no_mangle]
-#[expect(
-    clippy::too_many_lines,
-    reason = "hew_node_api_ask is a complex remote RPC entrypoint with setup + wait stages"
-)]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
+    timeout_ms: u64,
     reply_size: usize,
 ) -> *mut c_void {
     let target_node_id = crate::pid::hew_pid_node(pid);
@@ -2086,85 +2850,14 @@ pub unsafe extern "C" fn hew_node_api_ask(
         return result;
     }
 
-    // Remote path: send message over mesh with request_id, wait for reply.
-    let result = CURRENT_NODE.read_access(|guard| {
-        let node_ptr = *guard as *mut HewNode;
-        if node_ptr.is_null() {
-            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
-        }
-        // SAFETY: read lock pins CURRENT_NODE.
-        let node = unsafe { &*node_ptr };
-        if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
-            return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
-        }
-
-        // Look up the connection for the target node via the routing table.
-        // SAFETY: routing_table is valid while node is running.
-        let conn_id = unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
-        if conn_id < 0 {
-            return RemoteAskSetupResult::Error(AskError::RoutingFailed);
-        }
-
-        // Register a pending reply slot.
-        let (request_id, pending) =
-            REPLY_TABLE.register(ConnectionKey::new(node.conn_mgr.cast_const(), conn_id));
-
-        // Encode the ask envelope with request_id and source_node_id.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "payload size bounded by wire buffer limits"
-        )]
-        let env = crate::wire::HewWireEnvelope {
-            target_actor_id: pid,
-            source_actor_id: 0,
-            msg_type,
-            payload_size: size as u32,
-            payload: data.cast::<u8>(),
-            request_id,
-            source_node_id: node.node_id,
-        };
-        // SAFETY: HewWireBuf is a plain-old-data struct; zeroing is valid initialisation.
-        let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
-        // SAFETY: wire_buf is a valid stack allocation.
-        unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
-        // SAFETY: wire_buf and env are valid stack locals.
-        if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0
-        {
-            // SAFETY: wire_buf was initialised above.
-            unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-            REPLY_TABLE.remove(request_id);
-            return RemoteAskSetupResult::Error(AskError::EncodeFailed);
-        }
-
-        // Send the encoded envelope through the connection manager so noise
-        // encryption is applied when the connection is encrypted.
-        // SAFETY: conn_mgr is valid while node is running; wire_buf is valid.
-        let send_ok = unsafe {
-            connection::hew_connmgr_send_preencoded(
-                node.conn_mgr,
-                conn_id,
-                wire_buf.data,
-                wire_buf.len,
-            ) == 0
-        };
-        // SAFETY: wire_buf was initialised above.
-        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
-
-        if !send_ok {
-            REPLY_TABLE.remove(request_id);
-            return RemoteAskSetupResult::Error(AskError::SendFailed);
-        }
-
-        RemoteAskSetupResult::Ok((request_id, pending))
-    });
-    let (request_id, pending) = match result {
+    // Remote path: send message over mesh with request_id, block on the reply.
+    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, ptr::null_mut()) {
         RemoteAskSetupResult::Ok(pair) => pair,
         RemoteAskSetupResult::Error(e) => return ask_null(e),
     };
 
-    // Block until the reply arrives or the timeout elapses.
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_millis(REMOTE_ASK_TIMEOUT_MS);
+    // Block until the reply arrives or the caller-supplied timeout elapses.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     let mut outcome_guard = pending
         .outcome
         .lock()
@@ -2192,23 +2885,229 @@ pub unsafe extern "C" fn hew_node_api_ask(
         ask_error: AskError::ConnectionDropped,
     });
     drop(outcome_guard);
-    if reply.status == ReplyStatus::Failed {
-        return ask_null(reply.ask_error);
+    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+}
+
+/// Start a non-blocking remote ask for a SUSPENDABLE caller (NEW-5).
+///
+/// Serializes + submits the ask exactly as the blocking path, registers the
+/// parked caller so the wire reply / peer-drop RESUMES the coroutine through
+/// `scheduler::enqueue_resume`, and arms a detached timeout. Returns an opaque
+/// pending-reply handle on a successful submit; the caller MUST hand it to
+/// [`hew_node_api_ask_finish`] after resume or to [`hew_node_api_ask_cancel`]
+/// on coroutine abandonment (`coro.destroy`). On setup failure returns null and
+/// records the exact [`AskError`] in the node ask-error slot.
+///
+/// Targets that resolve to the local node are rejected ([`AskError::RoutingFailed`]):
+/// codegen only flips the wire (remote) ask to the suspendable terminator.
+///
+/// # Safety
+///
+/// - `pid` must be a valid remote actor PID.
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+/// - `caller_actor` must be the live actor whose continuation is about to park.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_async(
+    pid: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+    timeout_ms: u64,
+    caller_actor: *mut crate::actor::HewActor,
+) -> *mut c_void {
+    let target_node_id = crate::pid::hew_pid_node(pid);
+    let local_node_id = crate::pid::hew_pid_local_node();
+    if target_node_id == 0 || target_node_id == local_node_id {
+        return ask_null(AskError::RoutingFailed);
     }
-    let result = remote_reply_data_to_ptr(&reply.data, reply_size);
-    if result.is_null() {
-        // Non-void ask received an empty or wrong-size payload from the remote actor.
-        ask_null(AskError::PayloadSizeMismatch)
-    } else {
-        LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
-        result
+    if caller_actor.is_null() {
+        return ask_null(AskError::NoRunnableWork);
     }
+
+    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, caller_actor) {
+        RemoteAskSetupResult::Ok(pair) => pair,
+        RemoteAskSetupResult::Error(e) => return ask_null(e),
+    };
+
+    if let Err(e) = spawn_remote_ask_timeout(request_id, timeout_ms) {
+        REPLY_TABLE.remove(request_id);
+        return ask_null(e);
+    }
+
+    // Transfer one owning ref to the caller; reclaimed in finish/cancel.
+    Arc::into_raw(pending).cast::<c_void>().cast_mut()
+}
+
+/// Drain the reply deposited for a SUSPENDED remote ask after the coroutine
+/// resumes. Consumes the handle returned by [`hew_node_api_ask_async`] and
+/// materialises the outcome exactly as the blocking finish path. A handle whose
+/// outcome is still empty (no reply, no failure) fails closed with
+/// [`AskError::ConnectionDropped`] rather than fabricating a value.
+///
+/// # Safety
+///
+/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async`]
+/// that has not already been finished or cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_finish(
+    pending_handle: *mut c_void,
+    msg_type: i32,
+    reply_size: usize,
+) -> *mut c_void {
+    if pending_handle.is_null() {
+        return ask_null(AskError::ConnectionDropped);
+    }
+    // SAFETY: caller transfers back the creator reference returned by
+    // `hew_node_api_ask_async`; this consumes it exactly once.
+    let pending = unsafe { Arc::from_raw(pending_handle.cast::<PendingReply>()) };
+    let reply = {
+        let mut outcome_guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        outcome_guard.take().unwrap_or(ReplyOutcome {
+            status: ReplyStatus::Failed,
+            data: Vec::new(),
+            ask_error: AskError::ConnectionDropped,
+        })
+    };
+    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+}
+
+/// Abandon a SUSPENDED remote ask whose coroutine frame is being destroyed
+/// (the `coro.destroy` cleanup edge). Consumes the handle returned by
+/// [`hew_node_api_ask_async`] and removes any still-pending entry so a late
+/// reply finds nothing and is dropped. The parked-caller wake is independently
+/// fail-safe: `enqueue_resume` drops a wake to an already-freed caller.
+///
+/// # Safety
+///
+/// `pending_handle` must be a handle returned by [`hew_node_api_ask_async`]
+/// that has not already been finished or cancelled.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask_cancel(pending_handle: *mut c_void) {
+    if pending_handle.is_null() {
+        return;
+    }
+    // SAFETY: caller transfers back the creator reference returned by
+    // `hew_node_api_ask_async`; this consumes it exactly once.
+    let pending = unsafe { Arc::from_raw(pending_handle.cast::<PendingReply>()) };
+    REPLY_TABLE.remove(pending.request_id);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::process::{Child, Command, Output, Stdio};
+    use std::time::{Duration, Instant};
+
+    const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+    // ── Test-only u32 codec ──────────────────────────────────────────────
+    //
+    // The two-process remote-send/ask tests transmit a controlled `u32` rather
+    // than a Hew-compiled struct, so no codegen-emitted codec exists for their
+    // `TWO_PROCESS_REGISTRY_MSG_TYPE`. The cross-node send path now requires a
+    // registered codec (fail-closed: no raw-byte escape). These thunks provide
+    // the trivial u32 serialize/deserialize the tests need, matching the codec
+    // ABI exactly (ser: (value_ptr, out_len) -> bytes; deser: (data, len,
+    // out_struct_size) -> value). They register for the request AND, for asks,
+    // the reply (both sides of an echo are u32).
+
+    unsafe extern "C" fn test_u32_serialize(
+        value_ptr: *const std::ffi::c_void,
+        out_len: *mut usize,
+    ) -> *mut u8 {
+        // SAFETY: value_ptr points to a live u32 from the test.
+        let v = unsafe { *value_ptr.cast::<u32>() };
+        let buf = crate::xnode_serial::hew_ser_buf_new();
+        // SAFETY: buf is a fresh live SerBuf handle.
+        unsafe { crate::xnode_serial::hew_ser_push_u64(buf, u64::from(v)) };
+        // SAFETY: buf is consumed by finish; out_len is a valid pointer.
+        unsafe { crate::xnode_serial::hew_ser_finish(buf, out_len) }
+    }
+
+    unsafe extern "C" fn test_u32_deserialize(
+        data: *const u8,
+        len: usize,
+        out_struct_size: *mut usize,
+    ) -> *mut std::ffi::c_void {
+        // SAFETY: data is valid for len bytes.
+        let reader = unsafe { crate::xnode_serial::hew_de_reader_new(data, len) };
+        // SAFETY: reader is a live handle.
+        let v64 = unsafe { crate::xnode_serial::hew_de_read_u64(reader) };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "test payload is always a u32 round-tripped through the u64 primitive"
+        )]
+        let v = v64 as u32;
+        // SAFETY: reader is a live handle.
+        let failed = unsafe { crate::xnode_serial::hew_de_failed(reader) };
+        // SAFETY: reader is a live handle.
+        unsafe { crate::xnode_serial::hew_de_reader_free(reader) };
+        if failed != 0 {
+            if !out_struct_size.is_null() {
+                // SAFETY: out_struct_size validated non-null.
+                unsafe { *out_struct_size = 0 };
+            }
+            return std::ptr::null_mut();
+        }
+        // SAFETY: malloc a u32-sized value the caller owns via libc::free.
+        let dst = unsafe { libc::malloc(std::mem::size_of::<u32>()) }.cast::<u32>();
+        if dst.is_null() {
+            return std::ptr::null_mut();
+        }
+        // SAFETY: dst is a valid u32 allocation.
+        unsafe { *dst = v };
+        if !out_struct_size.is_null() {
+            // SAFETY: out_struct_size validated non-null.
+            unsafe { *out_struct_size = std::mem::size_of::<u32>() };
+        }
+        dst.cast::<std::ffi::c_void>()
+    }
+
+    /// Register the test u32 codec for `msg_type` as both the request and reply
+    /// codec, so the two-process send/ask paths can serialize their controlled
+    /// payloads. Idempotent across helper processes (each registers in its own
+    /// process).
+    fn register_test_u32_codec(msg_type: i32) {
+        // SAFETY: the thunks match the codec ABI.
+        unsafe {
+            crate::xnode_serial::hew_xnode_register_codec(
+                msg_type,
+                test_u32_serialize,
+                test_u32_deserialize,
+            );
+            crate::xnode_serial::hew_xnode_register_reply_codec(
+                msg_type,
+                test_u32_serialize,
+                test_u32_deserialize,
+            );
+        }
+    }
+
+    #[test]
+    fn next_local_node_id_never_yields_zero_sentinel() {
+        // The 0 node-id is the local/standalone sentinel; a node that landed on
+        // it would misclassify every remote actor as local. Verify the mapping
+        // skips 0 across the full base range and accumulating offsets.
+        for base in [1u16, 2, 100, 65_534, 65_535] {
+            for offset in 0u16..4 {
+                assert_ne!(
+                    next_local_node_id(base, offset),
+                    0,
+                    "base={base} offset={offset} mapped onto the 0 sentinel",
+                );
+            }
+        }
+        // The bare-wrapping_add hazard: base 65535 + offset 1 wrapped to 0.
+        assert_ne!(next_local_node_id(65_535, 1), 0);
+        // Distinct offsets from the same base stay distinct within the ring.
+        assert_ne!(next_local_node_id(100, 0), next_local_node_id(100, 1));
+        // base==1, offset==0 maps to itself (the common single-node case).
+        assert_eq!(next_local_node_id(1, 0), 1);
+    }
 
     struct ResetCurrentNode(usize);
 
@@ -2254,7 +3153,7 @@ mod tests {
             rc,
             0,
             "hew_node_start({node_id}) failed: {:?}",
-            hew_cabi::sink::take_last_error()
+            crate::stream_error::take_last_error()
         );
         // SAFETY: the node was started successfully and uses the default TCP transport in these tests.
         let port =
@@ -2263,12 +3162,743 @@ mod tests {
         (node, port)
     }
 
-    unsafe extern "C" fn noop_dispatch(
+    const TWO_PROCESS_REGISTRY_SERVER_NODE: u16 = 620;
+    const TWO_PROCESS_REGISTRY_CLIENT_NODE: u16 = 621;
+    const TWO_PROCESS_REGISTRY_MSG_TYPE: i32 = 123;
+    const TWO_PROCESS_REGISTRY_NAME: &str = "two-process-registry-worker";
+    const TWO_PROCESS_ASK_ECHO_NAME: &str = "two-process-ask-echo-worker";
+    const TWO_PROCESS_ASK_TIMEOUT_NAME: &str = "two-process-ask-timeout-worker";
+    const TWO_PROCESS_HELPER_ENV: &str = "HEW_REGISTRY_GOSSIP_HELPER";
+    const TWO_PROCESS_READY_FILE_ENV: &str = "HEW_REGISTRY_GOSSIP_READY_FILE";
+    const TWO_PROCESS_SERVER_PORT_ENV: &str = "HEW_REGISTRY_GOSSIP_SERVER_PORT";
+
+    static TWO_PROCESS_REGISTRY_DELIVERY: (Mutex<bool>, Condvar) =
+        (Mutex::new(false), Condvar::new());
+    static TWO_PROCESS_ASK_OBSERVED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+    struct ManagedChild {
+        name: &'static str,
+        child: Option<Child>,
+    }
+
+    impl ManagedChild {
+        fn new(name: &'static str, child: Child) -> Self {
+            Self {
+                name,
+                child: Some(child),
+            }
+        }
+
+        fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+            self.child
+                .as_mut()
+                .expect("child already waited")
+                .try_wait()
+                .expect("child try_wait failed")
+        }
+
+        fn wait_output(&mut self, timeout: Duration) -> Output {
+            let child = self.child.take().expect("child already waited");
+            wait_child_output(self.name, child, timeout)
+        }
+    }
+
+    impl Drop for ManagedChild {
+        fn drop(&mut self) {
+            let Some(mut child) = self.child.take() else {
+                return;
+            };
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+
+    fn wait_child_output(name: &str, mut child: Child, timeout: Duration) -> Output {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if child.try_wait().expect("child try_wait failed").is_some() {
+                return child.wait_with_output().expect("child output failed");
+            }
+            if Instant::now() >= deadline {
+                let pid = child.id();
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("timed-out child output");
+                panic!(
+                    "{name} helper process {pid} timed out\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn assert_child_success(name: &str, output: &Output) {
+        assert!(
+            output.status.success(),
+            "{name} helper failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn spawn_registry_gossip_helper(
+        helper_name: &'static str,
+        role: &'static str,
+        envs: &[(&str, String)],
+    ) -> ManagedChild {
+        let mut command = Command::new(std::env::current_exe().expect("current test binary"));
+        command
+            .args(["--exact", helper_name, "--nocapture"])
+            .env("RUST_TEST_THREADS", "1")
+            .env(TWO_PROCESS_HELPER_ENV, role)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        ManagedChild::new(role, command.spawn().expect("spawn helper process"))
+    }
+
+    fn wait_for_ready_port(
+        ready_file: &std::path::Path,
+        server: &mut ManagedChild,
+        timeout: Duration,
+    ) -> u16 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(text) = std::fs::read_to_string(ready_file) {
+                if let Ok(port) = text.trim().parse::<u16>() {
+                    return port;
+                }
+            }
+            if server.try_wait().is_some() {
+                let output = server.wait_output(Duration::from_secs(1));
+                panic!(
+                    "server exited before writing readiness file\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server did not write readiness file before timeout"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_single_connection(node: *mut HewNode, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // SAFETY: caller passes a live node pointer for this bounded wait.
+            if unsafe { connection::hew_connmgr_count((*node).conn_mgr) > 0 } {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_remote_lookup(
+        node: *mut HewNode,
+        name: *const c_char,
+        expected_node_id: u16,
+        timeout: Duration,
+    ) -> Option<u64> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            // SAFETY: node/name are valid for this bounded wait.
+            let pid = unsafe { hew_node_lookup(node, name) };
+            if pid != 0 && crate::pid::hew_pid_node(pid) == expected_node_id {
+                return Some(pid);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn reset_two_process_delivery() {
+        let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *delivered = false;
+    }
+
+    fn wait_for_two_process_delivery(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*delivered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = TWO_PROCESS_REGISTRY_DELIVERY
+                .1
+                .wait_timeout(delivered, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            delivered = guard;
+            if result.timed_out() && !*delivered {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn reset_two_process_ask_observed() {
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *observed = false;
+    }
+
+    fn mark_two_process_ask_observed() {
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *observed = true;
+        TWO_PROCESS_ASK_OBSERVED.1.notify_all();
+    }
+
+    fn wait_for_two_process_ask_observed(timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut observed = TWO_PROCESS_ASK_OBSERVED
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*observed {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (guard, result) = TWO_PROCESS_ASK_OBSERVED
+                .1
+                .wait_timeout(observed, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            observed = guard;
+            if result.timed_out() && !*observed {
+                return false;
+            }
+        }
+        true
+    }
+
+    unsafe extern "C-unwind" fn two_process_registry_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        if msg_type == TWO_PROCESS_REGISTRY_MSG_TYPE {
+            let mut delivered = TWO_PROCESS_REGISTRY_DELIVERY
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *delivered = true;
+            TWO_PROCESS_REGISTRY_DELIVERY.1.notify_all();
+        }
+
+        std::ptr::null_mut()
+    }
+
+    fn run_registry_gossip_server_helper() {
+        crate::registry::hew_registry_clear();
+        reset_two_process_delivery();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+        crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
+
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let worker = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(two_process_registry_dispatch))
+        };
+        assert!(!worker.is_null(), "server worker spawn failed");
+        // SAFETY: actor was just spawned successfully.
+        let worker_pid = unsafe { (*worker).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(worker_pid),
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            "server worker PID must encode the server node id"
+        );
+
+        let name = CString::new(TWO_PROCESS_REGISTRY_NAME).expect("valid registry name");
+        // SAFETY: node/name/worker_pid are valid in this helper process.
+        let register_rc = unsafe { hew_node_register(node.as_ptr(), name.as_ptr(), worker_pid) };
+        assert_eq!(register_rc, 0, "server register");
+
+        let ready_file = std::env::var(TWO_PROCESS_READY_FILE_ENV).expect("ready file env");
+        std::fs::write(&ready_file, port.to_string()).expect("write ready file");
+
+        let delivered = wait_for_two_process_delivery(Duration::from_secs(30));
+
+        // SAFETY: actor and node are owned by this helper process.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(worker);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+        assert!(delivered, "server did not observe two-process tell");
+    }
+
+    fn run_registry_gossip_client_helper() {
+        crate::registry::hew_registry_clear();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
+            .expect("server port env")
+            .parse::<u16>()
+            .expect("server port");
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is valid for this helper scope.
+        let node = unsafe { TestNode::new(TWO_PROCESS_REGISTRY_CLIENT_NODE, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "client node allocation failed");
+        // SAFETY: node pointer is valid.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+
+        let connect_addr = CString::new(format!(
+            "{TWO_PROCESS_REGISTRY_SERVER_NODE}@127.0.0.1:{server_port}"
+        ))
+        .expect("valid connect addr");
+        // SAFETY: node and connect_addr are valid.
+        unsafe { connect_with_retry(node.as_ptr(), &connect_addr) };
+        assert!(
+            wait_for_single_connection(node.as_ptr(), Duration::from_secs(5)),
+            "client connection did not become active"
+        );
+
+        let name = CString::new(TWO_PROCESS_REGISTRY_NAME).expect("valid registry name");
+        let remote_pid = wait_for_remote_lookup(
+            node.as_ptr(),
+            name.as_ptr(),
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            Duration::from_secs(30),
+        )
+        .expect("client lookup did not resolve remote registry gossip");
+
+        // SAFETY: remote_pid was resolved from registry gossip; null payload is
+        // valid for this signal message.
+        let rc = unsafe {
+            hew_node_send(
+                node.as_ptr(),
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(rc, 0, "client tell send");
+
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_server_helper(
+        node_id: u16,
+        name: &str,
+        dispatch: unsafe extern "C-unwind" fn(
+            *mut crate::execution_context::HewExecutionContext,
+            *mut c_void,
+            i32,
+            *mut c_void,
+            usize,
+            i32,
+        ) -> *mut c_void,
+        hold_after_observed: Duration,
+    ) {
+        crate::registry::hew_registry_clear();
+        // The inbound-ask path decodes the request and encodes the reply via the
+        // registered codec (fail-closed). Register the test u32 codec.
+        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        reset_two_process_ask_observed();
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let (node, port) = start_tcp_test_listener_node(node_id);
+        crate::pid::hew_pid_set_local_node(node_id);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let worker = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(dispatch)) };
+        assert!(!worker.is_null(), "ask server worker spawn failed");
+        // SAFETY: actor was just spawned successfully.
+        let worker_pid = unsafe { (*worker).id };
+        assert_eq!(crate::pid::hew_pid_node(worker_pid), node_id);
+
+        let name = CString::new(name).expect("valid ask registry name");
+        // SAFETY: node/name/worker_pid are valid in this helper process.
+        let register_rc = unsafe { hew_node_register(node.as_ptr(), name.as_ptr(), worker_pid) };
+        assert_eq!(register_rc, 0, "ask server register");
+
+        let ready_file = std::env::var(TWO_PROCESS_READY_FILE_ENV).expect("ready file env");
+        std::fs::write(&ready_file, port.to_string()).expect("write ready file");
+
+        assert!(
+            wait_for_two_process_ask_observed(Duration::from_secs(30)),
+            "ask server did not observe remote ask"
+        );
+        thread::sleep(hold_after_observed);
+
+        // SAFETY: actor and node are owned by this helper process.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(worker);
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_echo_client_helper() {
+        let (node, remote_pid) = run_two_process_ask_client_setup(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_ECHO_NAME,
+        );
+        let send_value: u32 = 21;
+        // SAFETY: remote_pid was resolved from a separate helper process over TCP.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                1_000,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        assert!(!reply_ptr.is_null(), "two-process echo ask returned null");
+        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
+        unsafe { libc::free(reply_ptr) };
+        assert_eq!(
+            reply_value, 42,
+            "two-process echo-double ask must return 42"
+        );
+        assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_timeout_client_helper() {
+        let (node, remote_pid) = run_two_process_ask_client_setup(
+            TWO_PROCESS_REGISTRY_CLIENT_NODE,
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_TIMEOUT_NAME,
+        );
+        let send_value: u32 = 21;
+        let started = Instant::now();
+        // SAFETY: remote_pid was resolved from a separate helper process over TCP.
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                remote_pid,
+                TWO_PROCESS_REGISTRY_MSG_TYPE,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            reply_ptr.is_null(),
+            "timeout ask unexpectedly returned a reply"
+        );
+        assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+        assert!(
+            elapsed < Duration::from_millis(1_500),
+            "timeout ask took {elapsed:?}, expected <1500ms"
+        );
+        // SAFETY: node is owned by this helper process.
+        unsafe {
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    fn run_two_process_ask_client_setup(
+        client_node_id: u16,
+        server_node_id: u16,
+        registry_name: &str,
+    ) -> (TestNode, u64) {
+        crate::registry::hew_registry_clear();
+        // The cross-node send/ask path requires a registered codec for the
+        // payload's msg_type (fail-closed). Register the test u32 codec.
+        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+
+        let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
+            .expect("server port env")
+            .parse::<u16>()
+            .expect("server port");
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is valid for this helper scope.
+        let node = unsafe { TestNode::new(client_node_id, &bind_addr) };
+        assert!(
+            !node.as_ptr().is_null(),
+            "ask client node allocation failed"
+        );
+        // SAFETY: node pointer is valid.
+        assert_eq!(unsafe { hew_node_start(node.as_ptr()) }, 0, "client start");
+
+        let connect_addr = CString::new(format!("{server_node_id}@127.0.0.1:{server_port}"))
+            .expect("valid connect addr");
+        // SAFETY: node and connect_addr are valid.
+        unsafe { connect_with_retry(node.as_ptr(), &connect_addr) };
+        assert!(
+            wait_for_single_connection(node.as_ptr(), Duration::from_secs(5)),
+            "ask client connection did not become active"
+        );
+
+        let name = CString::new(registry_name).expect("valid registry name");
+        let remote_pid = wait_for_remote_lookup(
+            node.as_ptr(),
+            name.as_ptr(),
+            server_node_id,
+            Duration::from_secs(30),
+        )
+        .expect("ask client lookup did not resolve remote registry gossip");
+        assert_ne!(
+            crate::pid::hew_pid_node(remote_pid),
+            client_node_id,
+            "ask test must not resolve to a local pid"
+        );
+        (node, remote_pid)
+    }
+
+    #[test]
+    fn registry_gossip_two_process_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("server")
+        ) {
+            return;
+        }
+        run_registry_gossip_server_helper();
+    }
+
+    #[test]
+    fn registry_gossip_two_process_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("client")
+        ) {
+            return;
+        }
+        run_registry_gossip_client_helper();
+    }
+
+    #[test]
+    fn remote_ask_two_process_echo_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_echo_server")
+        ) {
+            return;
+        }
+        run_two_process_ask_server_helper(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_ECHO_NAME,
+            ask_probe_dispatch,
+            Duration::ZERO,
+        );
+    }
+
+    #[test]
+    fn remote_ask_two_process_echo_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_echo_client")
+        ) {
+            return;
+        }
+        run_two_process_ask_echo_client_helper();
+    }
+
+    #[test]
+    fn remote_ask_two_process_timeout_server_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_timeout_server")
+        ) {
+            return;
+        }
+        run_two_process_ask_server_helper(
+            TWO_PROCESS_REGISTRY_SERVER_NODE,
+            TWO_PROCESS_ASK_TIMEOUT_NAME,
+            blocked_ask_probe_dispatch,
+            Duration::from_millis(1_750),
+        );
+    }
+
+    #[test]
+    fn remote_ask_two_process_timeout_client_helper() {
+        if !matches!(
+            std::env::var(TWO_PROCESS_HELPER_ENV).as_deref(),
+            Ok("ask_timeout_client")
+        ) {
+            return;
+        }
+        run_two_process_ask_timeout_client_helper();
+    }
+
+    #[test]
+    fn two_process_registry_gossip_lookup_then_tell() {
+        let _guard = crate::runtime_test_guard();
+        let ready_dir = tempfile::tempdir().expect("ready tempdir");
+        let ready_file = ready_dir.path().join("server-ready");
+        let ready_file_s = ready_file.to_string_lossy().into_owned();
+
+        let mut server = spawn_registry_gossip_helper(
+            "hew_node::tests::registry_gossip_two_process_server_helper",
+            "server",
+            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+        );
+        let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
+
+        let mut client = spawn_registry_gossip_helper(
+            "hew_node::tests::registry_gossip_two_process_client_helper",
+            "client",
+            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+        );
+        let client_output = client.wait_output(Duration::from_secs(40));
+        assert_child_success("client", &client_output);
+
+        let server_output = server.wait_output(Duration::from_secs(40));
+        assert_child_success("server", &server_output);
+    }
+
+    fn run_two_process_remote_ask_case(
+        server_helper: &'static str,
+        server_role: &'static str,
+        client_helper: &'static str,
+        client_role: &'static str,
+    ) {
+        let _guard = crate::runtime_test_guard();
+        let ready_dir = tempfile::tempdir().expect("ready tempdir");
+        let ready_file = ready_dir.path().join("ask-server-ready");
+        let ready_file_s = ready_file.to_string_lossy().into_owned();
+
+        let mut server = spawn_registry_gossip_helper(
+            server_helper,
+            server_role,
+            &[(TWO_PROCESS_READY_FILE_ENV, ready_file_s)],
+        );
+        let server_port = wait_for_ready_port(&ready_file, &mut server, Duration::from_secs(10));
+
+        let mut client = spawn_registry_gossip_helper(
+            client_helper,
+            client_role,
+            &[(TWO_PROCESS_SERVER_PORT_ENV, server_port.to_string())],
+        );
+        let client_output = client.wait_output(Duration::from_secs(40));
+        assert_child_success(client_role, &client_output);
+
+        let server_output = server.wait_output(Duration::from_secs(40));
+        assert_child_success(server_role, &server_output);
+    }
+
+    #[test]
+    fn two_process_remote_ask_echo_double_returns_42() {
+        run_two_process_remote_ask_case(
+            "hew_node::tests::remote_ask_two_process_echo_server_helper",
+            "ask_echo_server",
+            "hew_node::tests::remote_ask_two_process_echo_client_helper",
+            "ask_echo_client",
+        );
+    }
+
+    #[test]
+    fn two_process_remote_ask_timeout_returns_timeout_under_1500ms() {
+        run_two_process_remote_ask_case(
+            "hew_node::tests::remote_ask_two_process_timeout_server_helper",
+            "ask_timeout_server",
+            "hew_node::tests::remote_ask_two_process_timeout_client_helper",
+            "ask_timeout_client",
+        );
+    }
+
+    /// Start a node whose transport has been pre-allocated as a `quic_mesh`
+    /// transport with the supplied [`MeshTls`] config. The override path
+    /// bypasses `HEW_TRANSPORT`'s default self-signed allowlist so that two
+    /// in-process nodes can mutually pin each other's SPKIs.
+    ///
+    /// Returns the [`TestNode`] handle and the bound UDP port.
+    ///
+    /// Mirrors [`start_tcp_test_listener_node`] but for the native `quic_mesh`
+    /// transport. Used by the cross-node `quic_mesh` integration tests below.
+    #[cfg(feature = "quic")]
+    fn start_quic_mesh_test_listener_node(
+        node_id: u16,
+        tls: crate::quic_mesh::MeshTls,
+    ) -> (TestNode, u16) {
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this helper.
+        let node = unsafe { TestNode::new(node_id, &bind_addr) };
+        assert!(!node.as_ptr().is_null(), "test node allocation failed");
+
+        // SAFETY: hew_transport_quic_mesh_new returns an owned transport
+        // pointer (or null on runtime build failure).
+        let transport = unsafe { crate::quic_mesh::hew_transport_quic_mesh_new() };
+        assert!(
+            !transport.is_null(),
+            "quic_mesh transport allocation failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: transport pointer was just allocated by the constructor.
+        let rc =
+            unsafe { crate::quic_mesh::hew_transport_quic_mesh_set_tls_override(transport, tls) };
+        assert_eq!(rc, 0, "set TLS override on quic_mesh transport");
+
+        // SAFETY: node owns the previously null transport slot; we replace it
+        // with the pre-allocated quic_mesh transport before start.
+        unsafe {
+            (*node.as_ptr()).transport = transport;
+        }
+
+        // SAFETY: node and transport pointers are valid; start consumes the
+        // injected transport instead of selecting from HEW_TRANSPORT.
+        let rc = unsafe { hew_node_start(node.as_ptr()) };
+        assert_eq!(
+            rc,
+            0,
+            "hew_node_start({node_id}) on quic_mesh failed: {:?}",
+            crate::stream_error::take_last_error()
+        );
+        // SAFETY: node started successfully and is using the quic_mesh transport.
+        let port = unsafe {
+            crate::quic_mesh::hew_transport_quic_mesh_bound_port((*node.as_ptr()).transport)
+        }
+        .expect("started quic_mesh test node must expose its bound listener port");
+        (node, port)
+    }
+
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -2349,18 +3979,18 @@ mod tests {
 
         let actor_name = CString::new("hew-node-local-registry").expect("valid actor name");
         let missing_name = CString::new("hew-node-missing-registry").expect("valid actor name");
-        let actor_pid = (u64::from(102u16) << 48) | 0x1234;
+        let actor_id = (u64::from(102u16) << 48) | 0x1234;
 
         // SAFETY: node and C string pointers are valid for each call.
         unsafe {
             assert_eq!(hew_node_start(node.as_ptr()), 0);
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
             assert_eq!(hew_node_lookup(node.as_ptr(), missing_name.as_ptr()), 0);
             assert_eq!(
@@ -2392,16 +4022,16 @@ mod tests {
 
             let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
             assert!(!actor.is_null());
-            let actor_pid = (*actor).pid;
-            assert_eq!(crate::pid::hew_pid_node(actor_pid), 103);
+            let actor_id = (*actor).id;
+            assert_eq!(crate::pid::hew_pid_node(actor_id), 103);
 
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
 
             let n = &*node.as_ptr();
@@ -2443,16 +4073,16 @@ mod tests {
 
             let actor = crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
             assert!(!actor.is_null());
-            let actor_pid = (*actor).pid;
-            assert_eq!(crate::pid::hew_pid_node(actor_pid), 104);
+            let actor_id = (*actor).id;
+            assert_eq!(crate::pid::hew_pid_node(actor_id), 104);
 
             assert_eq!(
-                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
             assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
@@ -2492,16 +4122,16 @@ mod tests {
         unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
         let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
-        let actor_pid = (u64::from(202u16) << 48) | 0x63;
+        let actor_id = (u64::from(202u16) << 48) | 0x63;
         // SAFETY: pointers are valid in this scope.
         unsafe {
             assert_eq!(
-                hew_node_register(node2.as_ptr(), actor_name.as_ptr(), actor_pid),
+                hew_node_register(node2.as_ptr(), actor_name.as_ptr(), actor_id),
                 0
             );
             assert_eq!(
                 hew_node_lookup(node2.as_ptr(), actor_name.as_ptr()),
-                actor_pid
+                actor_id
             );
         }
 
@@ -2581,6 +4211,108 @@ mod tests {
         unsafe { hew_node_free(node) };
     }
 
+    /// Two distinct actors registering the same user-chosen string must be
+    /// refused with a recorded diagnostic — the registration string is a
+    /// cluster-wide routing key with no actor-type qualifier on the wire, so
+    /// the conflict cannot be disambiguated. Re-registering a DIFFERENT
+    /// string for the second actor succeeds (the refusal is per-name).
+    #[test]
+    fn register_same_name_different_actor_fails_closed_with_diagnostic() {
+        // SAFETY: bind_addr is a valid NUL-terminated C string literal.
+        let node = unsafe { hew_node_new(51, c"127.0.0.1:0".as_ptr()) };
+        assert!(!node.is_null());
+        let name = c"l18_primary";
+
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
+        unsafe {
+            assert_eq!(hew_node_register(node, name.as_ptr(), 7001), 0);
+            crate::hew_clear_error();
+            assert_eq!(
+                hew_node_register(node, name.as_ptr(), 7002),
+                -1,
+                "a second actor must not take over an existing name"
+            );
+            // The original mapping is intact (refuse, not clobber).
+            assert_eq!(hew_node_lookup(node, name.as_ptr()), 7001);
+        }
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "conflicting registration must record a diagnostic"
+        );
+        // SAFETY: hew_last_error returns a valid C string when non-null.
+        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
+        assert!(
+            err.contains("l18_primary") && err.contains("7001") && err.contains("7002"),
+            "diagnostic must name the string and both actors: {err}"
+        );
+        crate::hew_clear_error();
+
+        // Distinct string still registers fine.
+        let other = c"l18_secondary";
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
+        unsafe {
+            assert_eq!(hew_node_register(node, other.as_ptr(), 7002), 0);
+            let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+            let _ = crate::registry::hew_registry_unregister(other.as_ptr());
+            hew_node_free(node);
+        }
+    }
+
+    /// A gossiped registry ADD whose name is already mapped to a different
+    /// actor keeps the existing mapping and records the refusal — never a
+    /// silent last-write-wins re-pointing of cluster routing. Idempotent
+    /// re-adds of the same mapping stay silent.
+    #[test]
+    fn gossip_conflicting_registration_refused_and_recorded() {
+        let _guard = crate::runtime_test_guard();
+
+        let registry = HewRegistry::default();
+        registry
+            .remote_names
+            .lock_or_recover()
+            .insert("l18_gossip".to_owned(), 9001);
+        let user_data = (&raw const registry).cast_mut().cast::<c_void>();
+        let name = c"l18_gossip";
+
+        // Idempotent re-add: same mapping, no diagnostic.
+        crate::hew_clear_error();
+        node_registry_gossip_callback(name.as_ptr(), 9001, true, user_data);
+        assert!(
+            crate::hew_last_error().is_null(),
+            "same-mapping gossip re-add must stay silent"
+        );
+
+        // Conflicting add: mapping kept, refusal recorded.
+        node_registry_gossip_callback(name.as_ptr(), 9002, true, user_data);
+        let map = registry.remote_names.lock_or_recover();
+        assert_eq!(
+            map.get("l18_gossip").copied(),
+            Some(9001),
+            "conflicting gossip must not re-point the existing mapping"
+        );
+        drop(map);
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "conflicting gossip must record a diagnostic"
+        );
+        // SAFETY: hew_last_error returns a valid C string when non-null.
+        let err = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy();
+        assert!(
+            err.contains("l18_gossip") && err.contains("9001") && err.contains("9002"),
+            "diagnostic must name the string and both actors: {err}"
+        );
+        crate::hew_clear_error();
+
+        // Removal still applies.
+        node_registry_gossip_callback(name.as_ptr(), 0, false, user_data);
+        assert!(!registry
+            .remote_names
+            .lock_or_recover()
+            .contains_key("l18_gossip"));
+    }
+
     // ── Reply routing table unit tests ─────────────────────────────────
 
     #[test]
@@ -2612,6 +4344,7 @@ mod tests {
                 7,
                 ptr::null_mut(),
                 0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u64>(),
             )
         };
@@ -2781,6 +4514,88 @@ mod tests {
     }
 
     #[test]
+    fn parked_reply_table_complete_resumes_via_pending_handle() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 101,
+            conn_id: 21,
+        };
+        // A dangling (untracked) actor pointer exercises the suspend wake path
+        // without a live actor: `enqueue_resume` re-confirms liveness against the
+        // live registry and drops the wake for an untracked pointer, so the
+        // completion still deposits the outcome the finish path drains.
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        assert_eq!(pending.parked_caller.load(Ordering::Acquire), parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        assert!(REPLY_TABLE.complete(id, Vec::new()));
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert_eq!(reply, remote_void_reply_sentinel());
+        assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
+    }
+
+    #[test]
+    fn parked_reply_timeout_finishes_with_timeout_error() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 102,
+            conn_id: 22,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        assert!(REPLY_TABLE.fail(id, AskError::Timeout));
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert!(reply.is_null());
+        assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
+    }
+
+    #[test]
+    fn parked_reply_connection_drop_finishes_with_connection_dropped_error() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 103,
+            conn_id: 23,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (_id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        REPLY_TABLE.fail_connection(key);
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+
+        assert!(reply.is_null());
+        assert_eq!(
+            hew_node_ask_take_last_error(),
+            AskError::ConnectionDropped as i32
+        );
+    }
+
+    #[test]
+    fn parked_reply_cancel_removes_pending_entry() {
+        let _guard = crate::runtime_test_guard();
+        let key = ConnectionKey {
+            conn_mgr: 104,
+            conn_id: 24,
+        };
+        let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
+        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
+
+        // SAFETY: `handle` is the live creator ref from register_parked.
+        unsafe { hew_node_api_ask_cancel(handle) };
+        // The entry is gone: a late reply finds nothing to complete.
+        assert!(!REPLY_TABLE.complete(id, Vec::new()));
+    }
+
+    #[test]
     fn reply_table_complete_unknown_returns_false() {
         let table = ReplyRoutingTable::new();
         assert!(!table.complete(u64::MAX - 1, vec![42]));
@@ -2903,6 +4718,28 @@ mod tests {
     }
 
     #[test]
+    fn remote_reply_payload_length_mismatch_fails_closed_not_overread() {
+        // A peer's reply payload whose length differs from the caller's static
+        // `reply_size` must fail closed (null → PayloadSizeMismatch), never be
+        // handed to the codegen typed-load that reads `reply_size` bytes.
+        // Short payload: 1 byte where the caller expects 4 — the over-read case.
+        assert!(
+            remote_reply_data_to_ptr(&[0xAB], 4).is_null(),
+            "short reply payload must fail closed, not be read past its allocation"
+        );
+        // Long payload: 8 bytes where the caller expects 4 — silent-truncation case.
+        assert!(
+            remote_reply_data_to_ptr(&[0u8; 8], 4).is_null(),
+            "over-long reply payload must fail closed, not be silently truncated"
+        );
+        // Exact match still succeeds (non-null, owned buffer the caller frees).
+        let ok = remote_reply_data_to_ptr(&[1u8, 2, 3, 4], 4);
+        assert!(!ok.is_null(), "exact-size reply payload must succeed");
+        // SAFETY: ok was malloc'd by remote_reply_data_to_ptr; free it once.
+        unsafe { libc::free(ok) };
+    }
+
+    #[test]
     fn rejection_reason_codes_round_trip_supported_remote_failures() {
         for ask_error in [
             AskError::WorkerAtCapacity,
@@ -2914,7 +4751,7 @@ mod tests {
             let payload = [AskRejectionReasonCode::encode(ask_error)
                 .expect("supported remote ask failure must encode to a wire code")];
             assert_eq!(
-                decode_rejection_reason(&payload),
+                decode_rejection_reason(&payload).expect("known code must decode"),
                 ask_error,
                 "encoded rejection reason must round-trip through the wire payload"
             );
@@ -2940,8 +4777,30 @@ mod tests {
         }
         assert_eq!(
             decode_rejection_reason(&[AskError::Timeout as u8]),
-            AskError::WorkerAtCapacity,
-            "unknown rejection-reason bytes must fail closed to WorkerAtCapacity"
+            Err(AskRejectionDecodeError::UnknownAskRejectionReason {
+                code: AskError::Timeout as u8
+            }),
+            "unknown rejection-reason bytes must produce Err, not a fabricated AskError"
+        );
+    }
+
+    #[test]
+    fn fail_remote_reply_unknown_code_returns_false_and_leaves_ask_unresolved() {
+        let _guard = crate::runtime_test_guard();
+
+        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+            conn_mgr: 92,
+            conn_id: 15,
+        });
+        assert!(!fail_remote_reply(id, &[0xFF]));
+
+        let guard = pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            guard.is_none(),
+            "unknown code must not resolve the pending ask"
         );
     }
 
@@ -3156,17 +5015,21 @@ mod tests {
     /// Stores the `msg_type` of the most-recently received remote message.
     static SEND_PROBE_MSG_TYPE: AtomicU32 = AtomicU32::new(0);
 
-    unsafe extern "C" fn send_probe_dispatch(
+    unsafe extern "C-unwind" fn send_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         #[expect(
             clippy::cast_sign_loss,
             reason = "msg_type is a non-negative tag in this test"
         )]
         SEND_PROBE_MSG_TYPE.store(msg_type as u32, Ordering::Release);
+
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -3208,9 +5071,9 @@ mod tests {
         crate::pid::hew_pid_set_local_node(301);
         assert!(!probe_actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid.
-        let actor_pid = unsafe { (*probe_actor).id };
+        let actor_id = unsafe { (*probe_actor).id };
         assert_eq!(
-            crate::pid::hew_pid_node(actor_pid),
+            crate::pid::hew_pid_node(actor_id),
             302,
             "actor PID must encode node2's ID"
         );
@@ -3224,7 +5087,7 @@ mod tests {
         // Fire-and-forget from node1 to the actor on node2.
         let msg_type_sent: i32 = 77;
         // SAFETY: null payload / size 0 is valid for a bare signal message.
-        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_pid, msg_type_sent, ptr::null(), 0) };
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
         assert_eq!(rc, 0, "hew_node_send should succeed");
 
         let delivered = (0..100).any(|_| {
@@ -3252,17 +5115,229 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    // ── Test: fire-and-forget remote message delivery (quic_mesh) ─────────
+    //
+    // Mirrors `two_node_remote_send_delivery` but routes the payload over the
+    // native `quic_mesh` transport (mTLS-pinned per-actor-pair streams) rather
+    // than TCP. Two in-process nodes mutually pin each other's SPKIs via the
+    // `tls_override` injection helper. Until the A3 Noise→X.509 bridge lands,
+    // this injection is the only way two in-process nodes can authenticate
+    // each other; production deployments pin via the global allowlist.
+
+    /// Stores the `msg_type` of the most-recently received remote message on
+    /// the `quic_mesh` path.  Separate from `SEND_PROBE_MSG_TYPE` so the two
+    /// tests can run independently without static-state cross-talk.
+    #[cfg(feature = "quic")]
+    static SEND_PROBE_MSG_TYPE_QM: AtomicU32 = AtomicU32::new(0);
+
+    #[cfg(feature = "quic")]
+    unsafe extern "C-unwind" fn send_probe_dispatch_qm(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "msg_type is a non-negative tag in this test"
+        )]
+        SEND_PROBE_MSG_TYPE_QM.store(msg_type as u32, Ordering::Release);
+
+        std::ptr::null_mut()
+    }
+
+    /// Build a mutually-pinned `(MeshTls, MeshTls)` pair so two in-process
+    /// `quic_mesh` nodes can complete the handshake. Returns
+    /// `(tls_a, tls_b, spki_a, spki_b)`. The two SPKIs are returned so
+    /// fail-closed tests can construct asymmetric trust configurations.
+    #[cfg(feature = "quic")]
+    fn make_mutually_pinned_mesh_tls(
+        sni_a: &str,
+        sni_b: &str,
+    ) -> (
+        crate::quic_mesh::MeshTls,
+        crate::quic_mesh::MeshTls,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        use crate::quic_mesh::MeshTls;
+        let (tls_a, spki_a) = MeshTls::self_signed(vec![sni_a.into()]).expect("tls_a self_signed");
+        let (tls_b, spki_b) = MeshTls::self_signed(vec![sni_b.into()]).expect("tls_b self_signed");
+        let tls_a = tls_a.with_peer_spki(spki_b.clone());
+        let tls_b = tls_b.with_peer_spki(spki_a.clone());
+        (tls_a, tls_b, spki_a, spki_b)
+    }
+
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_remote_send_delivery_quic_mesh() {
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        // Build mutually-pinned TLS for the two in-process nodes.
+        let (tls_a, tls_b, _spki_a, _spki_b) =
+            make_mutually_pinned_mesh_tls("node-401", "node-402");
+
+        // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 401.
+        let (node1, _node1_port) = start_quic_mesh_test_listener_node(401, tls_a);
+        thread::sleep(Duration::from_millis(50));
+        // Node 2 (responder) starts second; CURRENT_NODE remains node1.
+        let (node2, node2_port) = start_quic_mesh_test_listener_node(402, tls_b);
+
+        // Ensure the scheduler is running so actor dispatches work.
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
+        // This makes the actor look remote from node1's routing perspective.
+        SEND_PROBE_MSG_TYPE_QM.store(0, Ordering::Release);
+        crate::pid::hew_pid_set_local_node(402);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let probe_actor = unsafe {
+            crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(send_probe_dispatch_qm))
+        };
+        // Restore node1 as the local node before any routing decisions.
+        crate::pid::hew_pid_set_local_node(401);
+        assert!(!probe_actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_id = unsafe { (*probe_actor).id };
+        assert_eq!(
+            crate::pid::hew_pid_node(actor_id),
+            402,
+            "actor PID must encode node2's ID"
+        );
+
+        let connect_addr = CString::new(format!("402@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Fire-and-forget from node1 to the actor on node2 over quic_mesh.
+        // This exercises a real CBOR-framed round-trip across the mTLS-pinned
+        // mesh transport — not just process startup.
+        let msg_type_sent: i32 = 91;
+        // SAFETY: null payload / size 0 is valid for a bare signal message.
+        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
+        assert_eq!(rc, 0, "hew_node_send should succeed");
+
+        let delivered = (0..200).any(|_| {
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "msg_type_sent is a non-negative tag value"
+            )]
+            let got = SEND_PROBE_MSG_TYPE_QM.load(Ordering::Acquire) == msg_type_sent as u32;
+            if !got {
+                thread::sleep(Duration::from_millis(20));
+            }
+            got
+        });
+        assert!(
+            delivered,
+            "actor on node2 did not receive the remote message over quic_mesh"
+        );
+
+        // SAFETY: actor and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(probe_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Fail-closed: when the two in-process nodes do NOT mutually pin each
+    /// other's SPKIs, the mTLS handshake must fail and `hew_node_connect`
+    /// must surface a typed diagnostic rather than silently degrading or
+    /// hanging.
+    ///
+    /// Per the M3 trust-bar: no silent fallback. The connect-with-retry loop
+    /// is therefore tolerable in the success test but here we want a single
+    /// `hew_node_connect` call to return -1 (the transport adapter sets
+    /// `last_error` to a `quic_mesh connect: …` diagnostic).
+    #[cfg(feature = "quic")]
+    #[test]
+    fn two_node_remote_send_quic_mesh_rejects_unknown_peer() {
+        use crate::quic_mesh::MeshTls;
+
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+
+        // Build asymmetric TLS: node A pins no peer SPKIs, node B pins no
+        // peer SPKIs. Either side rejects the other → fail-closed.
+        let (tls_a, _spki_a) =
+            MeshTls::self_signed(vec!["node-411".into()]).expect("tls_a self_signed");
+        let (tls_b, _spki_b) =
+            MeshTls::self_signed(vec!["node-412".into()]).expect("tls_b self_signed");
+
+        let (node1, _node1_port) = start_quic_mesh_test_listener_node(411, tls_a);
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_quic_mesh_test_listener_node(412, tls_b);
+
+        let connect_addr = CString::new(format!("412@127.0.0.1:{node2_port}")).unwrap();
+
+        // Try once — the mTLS handshake must fail. We loop briefly to allow
+        // for connection-attempt teardown, but every attempt must return -1.
+        // (We deliberately do NOT call `connect_with_retry`, which would
+        //  panic on persistent failure: here failure IS the success case.)
+        let mut last_rc = 0;
+        for _ in 0..3 {
+            // SAFETY: node1 and connect_addr are valid for this call.
+            last_rc = unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) };
+            if last_rc != 0 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(
+            last_rc, -1,
+            "quic_mesh connect to an SPKI-unpinned peer must fail-closed"
+        );
+
+        // Verify a typed diagnostic was emitted to LAST_ERROR. Use the C-API
+        // because the runtime's `set_last_error` is internal to `hew-runtime`,
+        // not the `hew_cabi::sink` last-error slot.
+        let err_ptr = crate::hew_last_error();
+        assert!(
+            !err_ptr.is_null(),
+            "quic_mesh fail-closed path must populate hew_last_error()"
+        );
+        // SAFETY: hew_last_error returns a thread-local C string valid until
+        // the next set_last_error on this thread.
+        let err = unsafe { std::ffi::CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            err.contains("connect") || err.contains("quic_mesh") || err.contains("transport"),
+            "expected a typed quic_mesh/transport diagnostic, got: {err:?}"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe {
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
     // ── Test: remote ask / reply round-trip ───────────────────────────────
 
     /// Echo-double dispatch: reads a u32 from `data`, replies with `value * 2`.
-    unsafe extern "C" fn ask_probe_dispatch(
+    unsafe extern "C-unwind" fn ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
         size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         if size < std::mem::size_of::<u32>() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: data is valid for at least size_of::<u32>() bytes.
         let value = unsafe { *(data.cast::<u32>()) };
@@ -3270,7 +5345,7 @@ mod tests {
 
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: ch is the current thread-local reply channel; reply_value is valid.
         unsafe {
@@ -3280,39 +5355,58 @@ mod tests {
                 std::mem::size_of::<u32>(),
             );
         }
+        // Mark observed only AFTER the reply has been handed to the channel, so
+        // the server helper (which tears down on observe) cannot drop the
+        // connection before the reply flushes to the asking node.
+        mark_two_process_ask_observed();
+
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn void_ask_probe_dispatch(
+    unsafe extern "C-unwind" fn void_ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         let ch = crate::scheduler::hew_get_reply_channel();
         if ch.is_null() {
-            return;
+            return std::ptr::null_mut();
         }
         // SAFETY: the reply channel comes from the scheduler and is valid for a void reply here.
         unsafe {
             let _ = crate::reply_channel::hew_reply(ch.cast(), ptr::null_mut(), 0);
         }
+
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn orphaned_void_ask_dispatch(
+    unsafe extern "C-unwind" fn orphaned_void_ask_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         crate::actor::hew_actor_self_stop();
+
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn blocked_ask_probe_dispatch(
+    unsafe extern "C-unwind" fn blocked_ask_probe_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        mark_two_process_ask_observed();
+
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -3347,8 +5441,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(313);
         assert!(!void_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*void_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 314);
+        let actor_id = unsafe { (*void_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 314);
 
         let connect_addr = CString::new(format!("314@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -3357,7 +5451,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid and no reply buffer is expected.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         assert_eq!(reply_ptr, remote_void_reply_sentinel());
         assert_eq!(
             hew_node_ask_take_last_error(),
@@ -3378,6 +5481,8 @@ mod tests {
     fn two_node_remote_ask_reply() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
+        // Remote ask requires a registered codec for the payload msg_type.
+        register_test_u32_codec(1);
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
         // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
@@ -3410,9 +5515,9 @@ mod tests {
         crate::pid::hew_pid_set_local_node(311);
         assert!(!echo_actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid.
-        let actor_pid = unsafe { (*echo_actor).id };
+        let actor_id = unsafe { (*echo_actor).id };
         assert_eq!(
-            crate::pid::hew_pid_node(actor_pid),
+            crate::pid::hew_pid_node(actor_id),
             312,
             "actor PID must encode node2's ID"
         );
@@ -3434,10 +5539,11 @@ mod tests {
         // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };
@@ -3458,6 +5564,128 @@ mod tests {
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
+            let _ = crate::actor::hew_actor_free(echo_actor);
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn two_node_remote_ask_async_resumes_on_wire_reply() {
+        // NEW-5 worker-free oracle at the runtime contract: a suspendable remote
+        // ask (`hew_node_api_ask_async`) submits WITHOUT blocking the caller, and
+        // the cross-node wire reply lands in the parked slot — the resume edge —
+        // for `hew_node_api_ask_finish` to drain. The caller never blocks on a
+        // condvar; the reply is delivered by the connection reader thread and
+        // routed at the parked caller through `enqueue_resume`.
+        let _guard = crate::runtime_test_guard();
+        crate::registry::hew_registry_clear();
+        register_test_u32_codec(1);
+
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind address is a valid C string for this scope.
+        let node1 = unsafe { TestNode::new(321, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+        // SAFETY: node1 is valid for the call.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let (node2, node2_port) = start_tcp_test_listener_node(322);
+
+        assert_eq!(
+            crate::scheduler::hew_sched_init(),
+            0,
+            "scheduler init failed"
+        );
+
+        crate::pid::hew_pid_set_local_node(322);
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let echo_actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        crate::pid::hew_pid_set_local_node(321);
+        assert!(!echo_actor.is_null(), "echo actor spawn failed");
+        // SAFETY: actor was just spawned and is valid.
+        let actor_id = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 322);
+
+        // A live local actor stands in for the parked coroutine: the wire reply
+        // routes `enqueue_resume` at it. With no coroutine actually parked the
+        // Suspended→Runnable CAS fails and the wake is dropped (fail-safe), while
+        // the reply still lands in the pending slot the finish path drains.
+        // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
+        let caller =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(ask_probe_dispatch)) };
+        assert!(!caller.is_null(), "caller actor spawn failed");
+
+        let connect_addr = CString::new(format!("322@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this call.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers are valid.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        let send_value: u32 = 21;
+        // SAFETY: send_value is a valid u32 on the stack; caller is a live actor.
+        let handle = unsafe {
+            hew_node_api_ask_async(
+                actor_id,
+                1,
+                (&raw const send_value).cast::<c_void>().cast_mut(),
+                std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                caller,
+            )
+        };
+        assert!(
+            !handle.is_null(),
+            "async remote ask submit should return a pending handle"
+        );
+
+        // Poll the parked slot for the deposited reply — the wire reply arriving on
+        // the reader thread resolves it (the resume edge). The caller never blocked.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let ready = {
+                // SAFETY: `handle` points at the live PendingReply whose creator ref
+                // we still own; this shared borrow is dropped before `_finish`
+                // reclaims that ref.
+                let pending = unsafe { &*handle.cast::<PendingReply>() };
+                pending
+                    .outcome
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+            };
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wire reply never resumed the parked async ask"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // SAFETY: `handle` is the live creator ref; finish consumes it exactly once.
+        let reply_ptr = unsafe { hew_node_api_ask_finish(handle, 1, std::mem::size_of::<u32>()) };
+        assert!(
+            !reply_ptr.is_null(),
+            "resumed async ask should bind a non-null reply"
+        );
+        // SAFETY: reply_ptr was malloc'd by the finish path; valid for a u32 read.
+        let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
+        assert_eq!(
+            reply_value,
+            send_value * 2,
+            "echo-double should return 21 * 2 = 42"
+        );
+        // SAFETY: reply_ptr was malloc'd and is ours to free.
+        unsafe { libc::free(reply_ptr) };
+
+        // SAFETY: actors and nodes were allocated in this test and are valid.
+        unsafe {
+            let _ = crate::actor::hew_actor_free(caller);
             let _ = crate::actor::hew_actor_free(echo_actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
             assert_eq!(hew_node_stop(node2.as_ptr()), 0);
@@ -3496,8 +5724,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(315);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
         let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3506,7 +5734,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -3558,8 +5795,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(317);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
         let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3571,7 +5808,16 @@ mod tests {
         unsafe { crate::actor::hew_actor_stop(actor) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -3626,14 +5872,16 @@ mod tests {
             coalesce_key_fn: None,
             coalesce_fallback: 0,
             budget: 0,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
         };
         // SAFETY: opts points to a valid HewActorOpts for the duration of this call.
         let actor = unsafe { crate::actor::hew_actor_spawn_opts(&raw const opts) };
         crate::pid::hew_pid_set_local_node(326);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 327);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 327);
 
         // SAFETY: actor is valid; mailbox pointer is valid for the actor lifetime.
         let mailbox = unsafe { (*actor).mailbox.cast::<crate::mailbox::HewMailbox>() };
@@ -3651,7 +5899,16 @@ mod tests {
         unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
 
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         assert!(
@@ -3704,8 +5961,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(319);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 320);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 320);
 
         let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3715,7 +5972,16 @@ mod tests {
 
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -3768,8 +6034,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(330);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 331);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 331);
 
         let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -3805,7 +6071,16 @@ mod tests {
         let saved = INBOUND_ASK_ACTIVE.swap(INBOUND_ASK_WORKER_LIMIT, Ordering::AcqRel);
         let ask_start = std::time::Instant::now();
         // SAFETY: this is a remote void ask; null payload/size are valid.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
         INBOUND_ASK_ACTIVE.store(saved, Ordering::Release);
 
@@ -3819,7 +6094,7 @@ mod tests {
             "pre-rejection peer fallback must time out instead of returning WorkerAtCapacity"
         );
         assert!(
-            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
             "fallback ask should resolve near the timeout deadline, not block indefinitely"
         );
 
@@ -3864,8 +6139,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(317);
         assert!(!empty_reply_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*empty_reply_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 318);
+        let actor_id = unsafe { (*empty_reply_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
         let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -3875,7 +6150,14 @@ mod tests {
 
         // SAFETY: non-void remote ask expects a u32-sized reply; an empty success must fail closed.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
         };
         assert!(
             reply_ptr.is_null(),
@@ -3928,8 +6210,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(328);
         assert!(!silent_actor.is_null(), "silent actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*silent_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 329);
+        let actor_id = unsafe { (*silent_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 329);
 
         let connect_addr = CString::new(format!("329@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -3940,7 +6222,14 @@ mod tests {
         let ask_start = std::time::Instant::now();
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let reply_ptr = unsafe {
-            hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>())
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            )
         };
         let err = hew_node_ask_take_last_error();
 
@@ -3951,7 +6240,7 @@ mod tests {
             "remote ask that receives no reply must report Timeout"
         );
         assert!(
-            ask_start.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS * 3),
+            ask_start.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS * 3),
             "ask should complete near the timeout deadline, not block indefinitely"
         );
 
@@ -3997,8 +6286,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(315);
         assert!(!blocked_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*blocked_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 316);
+        let actor_id = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
         let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4008,8 +6297,14 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr =
-                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            );
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4092,8 +6387,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(320);
         assert!(!blocked_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*blocked_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+        let actor_id = unsafe { (*blocked_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
 
         let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4123,8 +6418,14 @@ mod tests {
 
         // SAFETY: the actor pid and null payload are valid for this remote ask probe.
         let ask_handle = thread::spawn(move || unsafe {
-            let ptr =
-                hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, std::mem::size_of::<u32>());
+            let ptr = hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                std::mem::size_of::<u32>(),
+            );
             let err = hew_node_ask_take_last_error();
             (ptr as usize, err)
         });
@@ -4168,7 +6469,7 @@ mod tests {
             "connection drop should report ConnectionDropped"
         );
         assert!(
-            disconnect_started.elapsed() < Duration::from_millis(REMOTE_ASK_TIMEOUT_MS / 2),
+            disconnect_started.elapsed() < Duration::from_millis(TEST_REMOTE_ASK_TIMEOUT_MS / 2),
             "pending remote ask should wake well before the full remote ask timeout"
         );
 
@@ -4394,6 +6695,7 @@ mod tests {
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
+        register_test_u32_codec(1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 
@@ -4422,8 +6724,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(320);
         assert!(!echo_actor.is_null(), "actor spawn failed");
         // SAFETY: the actor was just spawned successfully and remains valid here.
-        let actor_pid = unsafe { (*echo_actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 321);
+        let actor_id = unsafe { (*echo_actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
 
         let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and the connect address are valid for this connection attempt.
@@ -4438,10 +6740,11 @@ mod tests {
         // SAFETY: payload is a valid u32 on the stack; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };
@@ -4523,8 +6826,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(322);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 323);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 323);
 
         let connect_addr = CString::new(format!("323@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this call.
@@ -4540,7 +6843,16 @@ mod tests {
         // the void-success sentinel because the rejection sent an empty payload
         // which remote_reply_data_to_ptr mistook for a void success.
         // SAFETY: null payload / size-0 are valid; this is a void ask.
-        let reply_ptr = unsafe { hew_node_api_ask(actor_pid, 1, ptr::null_mut(), 0, 0) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask(
+                actor_id,
+                1,
+                ptr::null_mut(),
+                0,
+                TEST_REMOTE_ASK_TIMEOUT_MS,
+                0,
+            )
+        };
         let err = hew_node_ask_take_last_error();
 
         // Restore before any assertions so the teardown path is clean.
@@ -4572,6 +6884,7 @@ mod tests {
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
+        register_test_u32_codec(1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 
@@ -4595,8 +6908,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(324);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 325);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 325);
 
         let connect_addr = CString::new(format!("325@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this call.
@@ -4611,10 +6924,11 @@ mod tests {
         // SAFETY: payload is a valid u32; its address is valid for this call.
         let reply_ptr = unsafe {
             hew_node_api_ask(
-                actor_pid,
+                actor_id,
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
+                TEST_REMOTE_ASK_TIMEOUT_MS,
                 std::mem::size_of::<u32>(),
             )
         };
@@ -4822,8 +7136,8 @@ mod tests {
         crate::pid::hew_pid_set_local_node(353);
         assert!(!actor.is_null(), "actor spawn failed");
         // SAFETY: actor was just spawned and is valid here.
-        let actor_pid = unsafe { (*actor).id };
-        assert_eq!(crate::pid::hew_pid_node(actor_pid), 354);
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 354);
 
         let connect_addr = CString::new(format!("354@127.0.0.1:{node2_port}")).unwrap();
         // SAFETY: node1 and connect_addr are valid for this connection attempt.
@@ -4842,7 +7156,7 @@ mod tests {
         // SAFETY: conn_mgr is live and source_node_id identifies the connected peer.
         unsafe {
             node_inbound_router(
-                actor_pid,
+                actor_id,
                 1,
                 ptr::null_mut(),
                 0,
@@ -4901,6 +7215,225 @@ mod tests {
         unsafe {
             let _ = crate::actor::hew_actor_free(actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    // ── SWIM failure-detection (driven detector) integration tests ──────
+
+    /// RAII helper that sets the fast SWIM-timing env vars for a test and
+    /// removes them on drop, all under `ENV_LOCK` exclusive access.
+    ///
+    /// The base fast-env budgets (40 ms ping/period, 120 ms suspect) are
+    /// multiplied by `HEW_SWIM_TEST_TIME_SCALE` (default 1) so `TSan`'s ~10×
+    /// slowdown does not cause false-DEAD verdicts.  The `make tsan` target
+    /// sets `HEW_SWIM_TEST_TIME_SCALE=10`; plain `cargo test` leaves it unset
+    /// (scale = 1, unchanged behaviour).  Production timing is untouched: the
+    /// `HEW_SWIM_PROTOCOL_PERIOD_MS` / `HEW_SWIM_PING_TIMEOUT_MS` /
+    /// `HEW_SWIM_SUSPECT_TIMEOUT_MS` knobs read by `cluster_config_from_env`
+    /// at node-start time are set here only for the test's duration.
+    struct SwimTimingEnv {
+        /// The resolved time scale (≥ 1).  Exposed so tests can derive their
+        /// own wall-clock waits from the same multiplier.
+        scale: u32,
+    }
+
+    impl SwimTimingEnv {
+        fn fast() -> Self {
+            // WHY: TSan imposes ~10× CPU overhead, stretching real elapsed time
+            // so that 40 ms protocol periods expire before TSan-slowed threads
+            // complete a ping round-trip, producing false DEAD verdicts.
+            // WHEN obsolete: if the driven-SWIM tests are converted to a mock
+            // clock, the scale knob becomes unnecessary.
+            // WHAT the real solution looks like: inject a mock monotonic clock
+            // into the SWIM driver so wall time is irrelevant.
+            let scale: u32 = crate::env::ENV_LOCK.read_access(|()| {
+                std::env::var("HEW_SWIM_TEST_TIME_SCALE")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .filter(|v| *v >= 1)
+                    .unwrap_or(1)
+            });
+            crate::env::ENV_LOCK.access(|()| {
+                // SAFETY: ENV_LOCK provides exclusive write access to the environ.
+                unsafe {
+                    std::env::set_var("HEW_SWIM_PROTOCOL_PERIOD_MS", (40 * scale).to_string());
+                    std::env::set_var("HEW_SWIM_PING_TIMEOUT_MS", (40 * scale).to_string());
+                    std::env::set_var("HEW_SWIM_SUSPECT_TIMEOUT_MS", (120 * scale).to_string());
+                }
+            });
+            Self { scale }
+        }
+
+        /// Returns the resolved time-scale multiplier so tests can derive their
+        /// own wall-clock waits from the same factor.
+        fn scale(&self) -> u32 {
+            self.scale
+        }
+    }
+
+    impl Drop for SwimTimingEnv {
+        fn drop(&mut self) {
+            crate::env::ENV_LOCK.access(|()| {
+                // SAFETY: ENV_LOCK provides exclusive access to the environ.
+                unsafe {
+                    std::env::remove_var("HEW_SWIM_PROTOCOL_PERIOD_MS");
+                    std::env::remove_var("HEW_SWIM_PING_TIMEOUT_MS");
+                    std::env::remove_var("HEW_SWIM_SUSPECT_TIMEOUT_MS");
+                }
+            });
+        }
+    }
+
+    /// A dead node is detected by a survivor via the now-driven SWIM detector:
+    /// SUSPECT→DEAD escalation fires and `on_member_dead` fans out a partition
+    /// signal — within a bounded number of protocol periods.
+    ///
+    /// This is the C1 proof. SUSPECT→DEAD escalation and the `on_member_dead`
+    /// fan-out happen ONLY inside `hew_cluster_tick`, which had zero production
+    /// call sites before the driver. Without the driver, node B would stay
+    /// SUSPECT forever (the connection-event path only reaches SUSPECT) and the
+    /// partition recv below would block until the test's deadline.
+    #[test]
+    fn dead_node_is_detected_by_survivor_via_driven_swim() {
+        use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};
+        use crate::duplex::{HewDuplex, RecvError};
+        use std::sync::Arc;
+        const NODE_A: u16 = 340;
+        const NODE_B: u16 = 341;
+        let _guard = crate::runtime_test_guard();
+        let swim_env = SwimTimingEnv::fast();
+        crate::registry::hew_registry_clear();
+
+        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind is a valid C string for the test scope.
+        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
+        assert!(!node_a.as_ptr().is_null());
+        // SAFETY: node_a is valid.
+        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
+        // Allow node A's runtime to settle before connecting; scaled so TSan's
+        // thread-scheduling overhead does not race the node-start path.
+        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
+
+        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+
+        // Install a partition registry on A so on_member_dead is observable,
+        // and bind a duplex recv to NODE_B.
+        let registry = Arc::new(crate::cluster::PartitionRegistry::new());
+        // SAFETY: A's cluster is live after a successful start.
+        unsafe {
+            assert!(!(*node_a.as_ptr()).cluster.is_null());
+            hew_cluster_set_partition_registry((*node_a.as_ptr()).cluster, Arc::clone(&registry));
+        }
+        let (dx, peer) = HewDuplex::new_pair(8, 8);
+        dx.register_recv_with_partition_registry(&registry, NODE_B);
+        let recv_handle = {
+            let handle = dx.clone_handle();
+            thread::spawn(move || handle.recv())
+        };
+
+        // Connect A → B and wait for the handshake so A knows B is ALIVE.
+        let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+        // SAFETY: node_a and the connect addr are valid for this call.
+        unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+        // SAFETY: both nodes are valid here.
+        unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+
+        // Kill node B: stopping it drops the mesh connection, so A's view of B
+        // is no longer refreshed. The driver must escalate it to DEAD.
+        // SAFETY: node_b is valid.
+        unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
+
+        // The blocked recv must resolve to PartitionDetected once the driver
+        // declares B DEAD and on_member_dead fans out. Generous deadline (the
+        // suspect timeout is 120 ms; allow for scheduler jitter under load).
+        let result = recv_handle.join().expect("recv thread panicked");
+        assert!(
+            matches!(result, Err(RecvError::PartitionDetected)),
+            "survivor must detect the dead node via on_member_dead, got: {result:?}"
+        );
+
+        // And A's membership view must record B as DEAD.
+        // SAFETY: A's cluster is still live.
+        let state = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+        assert_eq!(
+            state,
+            crate::cluster::MEMBER_DEAD,
+            "A's membership view must record node B as DEAD"
+        );
+
+        drop(peer);
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe { assert_eq!(hew_node_stop(node_a.as_ptr()), 0) };
+        crate::registry::hew_registry_clear();
+    }
+
+    /// No false positive: two connected, both-alive nodes run the driven SWIM
+    /// detector for many protocol periods and neither is wrongly declared DEAD.
+    ///
+    /// This proves the detector does not kill a slow-but-reachable peer: as
+    /// long as the mesh connection stays up (refreshing last-seen and feeding
+    /// the phi-accrual detector), the tick never escalates either node.
+    #[cfg_attr(windows, ignore)]
+    // WINDOWS-TODO: SwimTimingEnv::fast() uses 40ms periods; Windows 15ms timer resolution causes
+    // spurious DEAD verdicts because the phi-accrual heartbeat intervals fall within the OS
+    // scheduling jitter (15ms default timer granularity vs 40ms period). Fix requires either
+    // timeBeginPeriod(1)/NtSetTimerResolution to tighten the system clock, widening the
+    // fast-test periods to tolerate 15ms drift, or a high-resolution SWIM timer backed by
+    // IOCP timer queues. Unblock once the IOCP reactor (Phase 2) provides timer infrastructure.
+    #[test]
+    fn alive_node_is_not_falsely_killed_by_driven_swim() {
+        use crate::cluster::hew_cluster_member_state;
+        const NODE_A: u16 = 342;
+        const NODE_B: u16 = 343;
+        let _guard = crate::runtime_test_guard();
+        let swim_env = SwimTimingEnv::fast();
+        crate::registry::hew_registry_clear();
+
+        let node_a_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: bind is a valid C string for the test scope.
+        let node_a = unsafe { TestNode::new(NODE_A, &node_a_bind) };
+        assert!(!node_a.as_ptr().is_null());
+        // SAFETY: node_a is valid.
+        unsafe { assert_eq!(hew_node_start(node_a.as_ptr()), 0) };
+        // Allow node A's runtime to settle before connecting; scaled so TSan's
+        // thread-scheduling overhead does not race the node-start path.
+        thread::sleep(Duration::from_millis(50 * u64::from(swim_env.scale())));
+
+        let (node_b, node_b_port) = start_tcp_test_listener_node(NODE_B);
+
+        let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+        // SAFETY: node_a and the connect addr are valid for this call.
+        unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
+        // SAFETY: both nodes are valid here.
+        unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
+
+        // Let the driver run for well beyond the suspect timeout while both
+        // nodes stay up. ~25 protocol periods at the configured period length.
+        // Scaled by the same factor as the SWIM budgets so the ratio holds
+        // under TSan (HEW_SWIM_TEST_TIME_SCALE=10 → 10 s observation window).
+        thread::sleep(Duration::from_millis(1_000 * u64::from(swim_env.scale())));
+
+        // Neither node may have been declared DEAD on the other's view.
+        // SAFETY: A's cluster is live (node still running).
+        let a_view_of_b = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+        // SAFETY: B's cluster is live (node still running).
+        let b_view_of_a = unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
+        assert_ne!(
+            a_view_of_b,
+            crate::cluster::MEMBER_DEAD,
+            "A must not declare a still-alive B as DEAD (state={a_view_of_b})"
+        );
+        assert_ne!(
+            b_view_of_a,
+            crate::cluster::MEMBER_DEAD,
+            "B must not declare a still-alive A as DEAD (state={b_view_of_a})"
+        );
+
+        // SAFETY: nodes were allocated in this test and remain valid.
+        unsafe {
+            assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
         }
         crate::registry::hew_registry_clear();
     }

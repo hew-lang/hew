@@ -1,0 +1,108 @@
+//! Status: runnable (NEW-2 async HTTP/1.1 over `await`)
+//! Description: An await-suspended HTTP/1.1 server and client round-trip on one worker.
+//!
+//! The `Server` actor creates a listener, `await`s a connection (the NEW-2
+//! `SuspendingAccept` carrier), then `await`s the request bytes (the NEW-1
+//! `SuspendingRead` carrier) until the request is fully buffered, and replies.
+//! The `Client` actor connects, writes a GET, and `await`s the response to
+//! close. Run with `HEW_WORKERS=1` for the worker-freeing proof: a single
+//! worker serves AND fetches only because every `await` suspends its handler
+//! (a blocking accept/read would strand the lone worker).
+//!
+//! The `Listener`/`Connection` handles are handler LOCALs, never actor state —
+//! an opaque handle in actor state is rejected by the supervisor-restart clone
+//! gate.
+
+import std::net;
+
+import std::net::http::http_async_server;
+
+import std::net::http::http_async_client;
+
+import std::string;
+
+actor Server {
+    let addr: string;
+
+    receive fn serve(unused: i64) {
+        let listener = net.listen(addr);
+        let conn = await listener.accept();
+        var raw = "";
+        var reads = 0;
+        var done = false;
+        while !done {
+            let chunk = await conn.read_string();
+            reads = reads + 1;
+            if string.is_empty(chunk) {
+                done = true;
+            } else {
+                raw = raw + chunk;
+                if http_async_server.over_limit(raw) {
+                    done = true;
+                } else if http_async_server.request_complete(raw) {
+                    done = true;
+                }
+            }
+            if reads > http_async_server.MAX_READS {
+                done = true;
+            }
+        }
+        let req = http_async_server.parse_request(raw);
+        var reply = http_async_server.response_text(req.reject_status(), "rejected");
+        if req.is_valid() {
+            reply = match req.path() {
+                "/hello" => http_async_server.response_text(200, "hi from hew"),
+                _ => http_async_server.response_text(404, "nope"),
+            };
+        }
+        conn.write_string(reply);
+        let _ = conn.close();
+        let _ = listener.close();
+    }
+}
+
+actor Client {
+    let url: string;
+
+    receive fn go(unused: i64) {
+        sleep_ms(300);
+        let parts = http_async_client.split_address(url);
+        let host = http_async_client.host_of(url);
+        let conn = net.connect(parts.0);
+        conn.write_string(http_async_client.build_get(host, parts.1));
+        var raw = "";
+        var reads = 0;
+        var done = false;
+        while !done {
+            let chunk = await conn.read_string();
+            reads = reads + 1;
+            if string.is_empty(chunk) {
+                done = true;
+            } else {
+                raw = raw + chunk;
+                if http_async_client.response_over_limit(raw) {
+                    done = true;
+                }
+            }
+            if reads > http_async_client.CLIENT_MAX_READS {
+                done = true;
+            }
+        }
+        let _ = conn.close();
+        let resp = http_async_client.parse_response(raw);
+        let line = match resp.status() {
+            200 => f"client-received: {resp.body()}",
+            _ => f"client-error: {resp.status()}",
+        };
+        println(line);
+    }
+}
+
+fn main() {
+    let s = spawn Server(addr: "127.0.0.1:18110");
+    let c = spawn Client(url: "http://127.0.0.1:18110/hello");
+    s.serve(0);
+    c.go(0);
+    sleep_ms(1500);
+    println("main-done");
+}

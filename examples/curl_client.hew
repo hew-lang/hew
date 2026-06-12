@@ -1,7 +1,9 @@
+//! Status: runnable
+//! Description: Simple HTTP downloader (curl-like client) in Hew
+
 // Simple HTTP downloader (curl-like client) in Hew
 //
-// Demonstrates: TCP networking, string manipulation, file I/O,
-// lambda actors for concurrent progress reporting, and f-strings.
+// Demonstrates: TCP networking, string manipulation, file I/O, and f-strings.
 //
 // Usage:
 //   curl_client <url> [output_file]
@@ -16,12 +18,12 @@ import std::fs;
 import std::os;
 
 extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_bytes_to_string(data: bytes) -> string;
 }
 
 // Parse host and path from an http:// URL.
 // Returns "host" via the first call, "path" via the second.
-fn parse_host(url: String) -> String {
+fn parse_host(url: string) -> string {
     // Strip "http://"
     var s = url;
     let prefix_pos = s.find("http://");
@@ -41,7 +43,7 @@ fn parse_host(url: String) -> String {
     s
 }
 
-fn parse_port(url: String) -> String {
+fn parse_port(url: string) -> string {
     var s = url;
     let prefix_pos = s.find("http://");
     if prefix_pos == 0 {
@@ -59,7 +61,7 @@ fn parse_port(url: String) -> String {
     }
 }
 
-fn parse_path(url: String) -> String {
+fn parse_path(url: string) -> string {
     var s = url;
     let prefix_pos = s.find("http://");
     if prefix_pos == 0 {
@@ -101,8 +103,8 @@ fn main() {
     // Connect
     let addr = f"{host}:{port}";
     println(f"  Connecting to {addr}...");
-    let connect_timeout_sec: i32 = 5;
-    let connect_timeout_usec: i32 = 0;
+    let connect_timeout_sec: i64 = 5;
+    let connect_timeout_usec: i64 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
         Ok(_) => {},
@@ -123,13 +125,9 @@ Connection: close
     println("  Request sent");
     println("");
 
-    // Spawn a progress reporter actor
-    let reporter = spawn (bytes_so_far: i64) => {
-        print(f"  Progress: {bytes_so_far} bytes received");
-    };
     // Read response in chunks
     var total_bytes: i64 = 0;
-    var full_response: String = "";
+    var full_response: string = "";
     var reading = true;
     while reading {
         let chunk_bytes = conn.read();
@@ -142,7 +140,7 @@ Connection: close
                 hew_bytes_to_string(chunk_bytes)
             };
             full_response = full_response + chunk;
-            reporter.send(total_bytes);
+            print(f"  Progress: {total_bytes} bytes received");
         }
     }
     println("");
@@ -150,16 +148,19 @@ Connection: close
 
     // Separate headers from body
     let header_end = full_response.find("\r\n\r\n");
-    var body = full_response;
+    let response_len = full_response.len();
+    var body = "";
     if header_end >= 0 {
         let headers = full_response.slice(0, header_end);
-        body = full_response.slice(header_end + 4, full_response.len());
+        body = full_response.slice(header_end + 4, response_len);
         // Print status line
         let first_newline = headers.find("\r\n");
         if first_newline >= 0 {
             let status_line = headers.slice(0, first_newline);
             println(f"  Status: {status_line}");
         }
+    } else {
+        body = full_response;
     }
     // Write body to file
     let write_result = fs.write(outfile, body);
@@ -170,6 +171,5 @@ Connection: close
         println(f"  Error: failed to write {outfile}");
     }
     conn.close();
-    sleep_ms(50);
     println("  Done!");
 }

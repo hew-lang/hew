@@ -1,14 +1,28 @@
 //! Generic MPSC (multi-producer, single-consumer) channels.
 //!
-//! Bounded, blocking channels for passing typed messages between
-//! producers and a single consumer. `Sender<T>` is cloneable for
-//! multi-producer use; `Receiver<T>` drains the channel.
+//! Bounded channels for passing typed messages between producers and a
+//! single consumer. `Sender<T>` is cloneable for multi-producer use;
+//! `Receiver<T>` drains the channel.
 //!
 //! Both `recv()` and `try_recv()` return `Option<T>`, where `None`
 //! indicates the channel is closed (all senders dropped) or empty
 //! (for `try_recv` only).
 //!
-//! Supported element types: `String`, `int`.
+//! ## Receiving
+//!
+//! - `await rx.recv()` from an actor handler / closure / task entry
+//!   SUSPENDS the calling coroutine worker-free when the channel is empty
+//!   with live senders, and resumes when a sender deposits a value or the
+//!   last sender closes (`None`). From a plain `main`/free function it
+//!   blocks the foreign thread instead (there is no parkable continuation).
+//! - `rx.try_recv()` never suspends: it returns `Some(value)` if an item is
+//!   immediately available, else `None`.
+//! - A channel receive arm may also participate in `select { pat from
+//!   rx.recv() => ... }`.
+//!
+//! Supported element types: primitives (`i64`, `f64`, `bool`, `char`, ...),
+//! `string`, `bytes`, and value records/enums/tuples. Container elements
+//! (`Vec<T>`, `HashMap<K, V>`) and handle types are not supported yet.
 //!
 //! # Examples
 //!
@@ -35,7 +49,8 @@
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-type Sender {
+#[opaque]
+pub type Sender {
 }
 
 /// An opaque receiver handle.
@@ -45,7 +60,8 @@ type Sender {
 ///
 /// The type parameter is managed by the compiler — the underlying runtime
 /// handle is type-erased.
-type Receiver {
+#[opaque]
+pub type Receiver {
 }
 
 // ── Sender methods ───────────────────────────────────────────────────
@@ -54,22 +70,25 @@ trait SenderMethods {
     /// Send a message through the channel.
     ///
     /// Blocks if the channel is full (backpressure).
-    fn send(tx: Sender, data: String);
+    fn send(self, data: string);
 
     /// Clone this sender for multi-producer use.
-    fn clone(tx: Sender) -> Sender;
+    fn clone(self) -> Sender;
 
     /// Close this sender and release resources.
     ///
     /// When the last sender is closed the receiver sees channel closure.
-    fn close(tx: Sender);
+    fn close(self);
 }
 
 impl SenderMethods for Sender {
     /// Send a string message through the channel.
-    fn send(tx: Sender, data: String) {
+    ///
+    /// Routes through the element-layout witness entry — codegen intercepts
+    /// the call by name and supplies the witness for the element type.
+    fn send(tx: Sender, data: string) {
         unsafe {
-            hew_channel_send(tx, data)
+            hew_channel_send_layout(tx, data)
         };
     }
     /// Clone this sender for multi-producer use.
@@ -89,33 +108,36 @@ impl SenderMethods for Sender {
 // ── Receiver methods ─────────────────────────────────────────────────
 /// Methods available on a `Receiver<T>`.
 trait ReceiverMethods {
-    /// Block until a message is available and return it.
+    /// Receive the next message, suspending if necessary.
     ///
-    /// Returns `Some(value)` if a message was received, or `None` when the
-    /// channel is closed (all senders dropped).
-    fn recv(rx: Receiver) -> Option<String>;
+    /// `await rx.recv()` from an actor handler / closure / task entry
+    /// suspends the calling coroutine worker-free until a message arrives
+    /// or the channel closes; from `main`/a free function it blocks the
+    /// foreign thread. Returns `Some(value)` on a message, or `None` when
+    /// the channel is closed (all senders dropped).
+    fn recv(self) -> Option<string>;
 
     /// Try to receive a message without blocking.
     ///
     /// Returns `Some(value)` if a message was available, or `None` if
     /// the channel is empty or closed.
-    fn try_recv(rx: Receiver) -> Option<String>;
+    fn try_recv(self) -> Option<string>;
 
     /// Close this receiver and release resources.
-    fn close(rx: Receiver);
+    fn close(self);
 }
 
 impl ReceiverMethods for Receiver {
-    /// Block until a string message is available and return it.
-    fn recv(rx: Receiver) -> Option<String> {
+    /// Receive the next string message, suspending if necessary.
+    fn recv(rx: Receiver) -> Option<string> {
         unsafe {
-            hew_channel_recv(rx)
+            hew_channel_recv_layout(rx)
         }
     }
     /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> Option<String> {
+    fn try_recv(rx: Receiver) -> Option<string> {
         unsafe {
-            hew_channel_try_recv(rx)
+            hew_channel_try_recv_layout(rx)
         }
     }
     /// Close this receiver and release resources.
@@ -136,10 +158,10 @@ impl ReceiverMethods for Receiver {
 ///
 /// ```
 /// let (tx, rx) = channel.new(16);
-/// tx.send("hello");       // infers Sender<String>
-/// println(rx.recv());     // infers Receiver<String>
+/// tx.send("hello");       // infers Sender<string>
+/// println(rx.recv());     // infers Receiver<string>
 /// ```
-pub fn new(capacity: int) -> (Sender, Receiver) {
+pub fn new(capacity: i64) -> (Sender, Receiver) {
     unsafe {
         let pair = hew_channel_new(capacity as i64); // INTERNAL-ABI: runtime ABI takes i64 capacity
         let tx = hew_channel_pair_sender(pair);
@@ -151,7 +173,8 @@ pub fn new(capacity: int) -> (Sender, Receiver) {
 
 // ── FFI bindings ─────────────────────────────────────────────────────
 /// Internal paired channel handle.
-type ChannelPair {
+#[opaque]
+pub type ChannelPair {
 }
 
 extern "C" {
@@ -159,11 +182,10 @@ extern "C" {
     fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
-    fn hew_channel_send(tx: Sender, data: String);
-    fn hew_channel_send_int(tx: Sender, data: int);
-    // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
-    // hew_channel_try_recv_int use an out-parameter ABI for Option<T> and
-    // are declared by codegen with the correct calling convention.
+    // hew_channel_send_layout, hew_channel_recv_layout, and
+    // hew_channel_try_recv_layout use an out-parameter + element-layout
+    // witness ABI and are declared by codegen with the correct calling
+    // convention.
     fn hew_channel_sender_clone(tx: Sender) -> Sender;
     fn hew_channel_sender_close(tx: Sender);
     fn hew_channel_receiver_close(rx: Receiver);

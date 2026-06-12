@@ -1,0 +1,26 @@
+// Reject fixture: an ask-shaped receive method invoked on a struct-field
+// actor receiver must be `await`ed, exactly like an ask on a local `spawn`
+// handle. `actor B { let out: W; ... out.get() }` calls W's non-unit receive
+// method `get` without `await`. Because the field receiver routes through the
+// actor ask machinery (not a synchronous struct-method call), the checker
+// fires the ask-without-await guard rather than silently producing a sync
+// call or an indirect-dispatch error. Pins the fail-closed behaviour for an
+// unsupported (un-awaited) field-receiver ask shape.
+actor W {
+    var total: i64 = 0;
+    receive fn get() -> i64 {
+        total
+    }
+}
+
+actor B {
+    let out: W;
+    receive fn peek() -> i64 {
+        out.get()
+    }
+}
+
+fn main() {
+    let w = spawn W;
+    let b = spawn B(out: w);
+}

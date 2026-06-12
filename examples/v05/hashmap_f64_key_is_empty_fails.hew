@@ -1,0 +1,11 @@
+//! Status: stable
+//! Description: A non-resolver-recording method call (`is_empty`) on a
+//! `HashMap<f64, _>` must still surface as `BoundsNotSatisfied(K: Hash, f64)`
+//! rather than escaping to HIR lowering as `MethodCallNoRewrite`. Regression
+//! guard for the admissibility fail-closed path covering arms that bypass
+//! `record_resolved_hashmap_call`.
+
+fn main() {
+    let m: HashMap<f64, i64> = HashMap::new();
+    let _ = m.is_empty();
+}

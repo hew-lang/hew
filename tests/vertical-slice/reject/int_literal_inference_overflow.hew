@@ -1,0 +1,6 @@
+// Expected: compile error. The unsuffixed literal is checked against the
+// adjacent i32 annotation and must not silently default to i64.
+fn main() -> i64 {
+    let x: i32 = 2147483648;
+    x
+}

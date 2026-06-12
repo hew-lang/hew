@@ -1,0 +1,55 @@
+//! Status: partial (compiles + `hew check` clean and runs to completion; the
+//!         encrypted round-trip is gated on a runtime data-plane ABI fix —
+//!         see the NOTE below).
+//! Description: TLS client — connect over TLS with system-root verification, then GET a page.
+//!
+//! This is the idiomatic `std::net::tls` client shape using the FREE-FUNCTION
+//! surface (`tls.connect` / `tls.write` / `tls.read` / `tls.close`). The method
+//! form (`stream.read(n)`) is intentionally NOT used — it is not supported yet.
+//! Request/response bodies are `bytes`; build a request payload with the public
+//! `string.to_bytes()` surface and decode a response with `bytes.to_string()`.
+//! The short write is detected with a fail-closed guard so the program
+//! terminates cleanly instead of blocking on a read that will never arrive.
+//!
+//! NOTE (known gap, v0.5): the TLS data-plane FFI bridge
+//! (`hew_tls_write_result` / `hew_tls_read_result`) is wired to the legacy
+//! `(ptr, len)` / `HewVec` byte ABI, whereas Hew's `bytes` is a `BytesTriple`.
+//! As a result `tls.write` currently transmits 0 of the request bytes (the
+//! length is dropped at the boundary), so this program reports the short write
+//! and stops before reading. The code below is the correct CALLER shape and
+//! type-checks cleanly; the full round trip works once the runtime bridge
+//! adopts the `BytesTriple` ABI (tracked for the under-the-hood TLS workstream).
+
+import std::net::tls;
+
+fn main() {
+    let host = "example.com";
+    let stream = tls.connect(host, 443);
+    let nl = "\r\n";
+    let request = f"GET / HTTP/1.1{nl}Host: {host}{nl}Connection: close{nl}{nl}";
+    let payload = request.to_bytes();
+    let want = payload.len();
+    let sent = tls.write(stream, payload);
+    println(f"sent {sent}/{want} request bytes to {host}");
+
+    // Fail closed on a short write rather than block on a read that will not
+    // arrive. Once the data-plane ABI is fixed, `sent == want` and the read
+    // below runs.
+    if sent == want {
+        match tls.read(stream, 256) {
+            Ok(data) => {
+                let text = data.to_string();
+                let crlf = "\r\n";
+                let status_line = match text.find(crlf) {
+                    cut if cut >= 0 => text.slice(0, cut),
+                    _ => text,
+                };
+                println(f"response: {status_line}");
+            },
+            Err(_) => println(f"read error: {tls.last_error()}"),
+        }
+    } else {
+        println("short write — skipping read (TLS data-plane ABI gap)");
+    }
+    tls.close(stream);
+}

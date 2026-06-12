@@ -1,6 +1,6 @@
 // Longest common prefix of a set of strings
 // We compare strings pairwise using char_at, tracking the prefix via slice.
-fn common_prefix(a: String, b: String) -> String {
+fn common_prefix(a: string, b: string) -> string {
     var len = a.len();
     if b.len() < len {
         len = b.len();

@@ -1,0 +1,35 @@
+//! End-to-end Hew→FFI coverage for std::crypto::sign.
+//!
+//! Unlike `sign_test.hew`, this fixture avoids the `bytes [...]` literal
+//! (unsupported on this build) and builds its byte buffers with
+//! `"...".to_bytes()`, so it actually exercises the public `sign.sign` /
+//! `sign.verify` calling path through the BytesTriple FFI ABI.
+
+import std::crypto::sign;
+
+import std::testing;
+
+#[test]
+fn test_generate_sign_verify_roundtrip() {
+    let kp = sign.keypair();
+    testing.assert_eq(kp.private_key.len(), 83);
+    testing.assert_eq(kp.public_key.len(), 32);
+
+    let message = "hew end-to-end sign roundtrip".to_bytes();
+    let sig = sign.sign(message, kp.private_key);
+    testing.assert_eq(sig.len(), 64);
+
+    testing.assert_true(sign.verify(message, sig, kp.public_key));
+}
+
+#[test]
+fn test_verify_rejects_tampered_message() {
+    let kp = sign.keypair();
+
+    let message = "authentic payload".to_bytes();
+    let sig = sign.sign(message, kp.private_key);
+    testing.assert_true(sign.verify(message, sig, kp.public_key));
+
+    let tampered = "authentic payloaX".to_bytes();
+    testing.assert_false(sign.verify(tampered, sig, kp.public_key));
+}

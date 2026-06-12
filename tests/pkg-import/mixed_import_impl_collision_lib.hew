@@ -1,0 +1,22 @@
+// File-import library for the mixed-import dedup regression.
+//
+// Deliberately declares a `Result` type, a `ResultMethods` trait, and an
+// `impl ResultMethods for Result` whose BARE names collide exactly with the
+// distinct `Result` / `ResultMethods` / `impl` the `hew::testffi` PACKAGE
+// declares. Hew's per-module-type-identity model makes these two genuinely
+// different types that merely share a bare name (see LESSONS.md). The earlier
+// bare-name dedup key (`"Result:ResultMethods"`) collapsed both, silently
+// dropping the package-import impl; the provenance-based skip keeps both.
+type Result {
+    handle: i64;
+}
+
+trait ResultMethods {
+    fn tag(self) -> i32;
+}
+
+impl ResultMethods for Result {
+    fn tag(self) -> i32 {
+        (self.handle * 10) as i32
+    }
+}

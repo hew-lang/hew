@@ -20,7 +20,7 @@
 /// `flags` controls optional features (e.g., `1` for compression).
 ///
 /// Returns the 10-byte encoded header as a `bytes` value.
-pub fn encode_header(payload_len: int, flags: int) -> bytes {
+pub fn encode_header(payload_len: i64, flags: i64) -> bytes {
     let out: bytes = bytes::new();
     // Magic: "HEW1"
     out.push(72); // 'H'
@@ -30,19 +30,24 @@ pub fn encode_header(payload_len: int, flags: int) -> bytes {
     // Version
     out.push(1);
     // Flags (only bit 0 is valid)
-    out.push(flags & 1);
-    // Payload length (little-endian 4 bytes)
-    out.push(payload_len & 255);
-    out.push(payload_len >> 8 & 255);
-    out.push(payload_len >> 16 & 255);
-    out.push(payload_len >> 24 & 255);
+    out.push((flags & 1) as u8);
+    // Payload length (little-endian 4 bytes). Shift payload_len (i64) then
+    // truncate to u8 for push(). Let-bindings avoid operator-precedence
+    // ambiguity: `x >> n as u8` would cast the literal, not the result.
+    let p8: i64 = payload_len >> 8;
+    let p16: i64 = payload_len >> 16;
+    let p24: i64 = payload_len >> 24;
+    out.push((payload_len & 255) as u8);
+    out.push((p8 & 255) as u8);
+    out.push((p16 & 255) as u8);
+    out.push((p24 & 255) as u8);
     out
 }
 
 /// Decode a wire format header from a `bytes` buffer.
 ///
 /// Returns the payload length on success, or -1 if the header is invalid.
-pub fn decode_header(buffer: bytes) -> int {
+pub fn decode_header(buffer: bytes) -> i64 {
     if !validate_header(buffer) {
         return -1;
     }
@@ -50,8 +55,11 @@ pub fn decode_header(buffer: bytes) -> int {
     let b1 = buffer.get(7);
     let b2 = buffer.get(8);
     let b3 = buffer.get(9);
-    // Reconstruct little-endian u32 as int (widening from byte arithmetic is safe)
-    b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+    // Reconstruct little-endian u32 as i64. Operands are cast to i64 before
+    // arithmetic to prevent i32 overflow at the high byte (b3 * 16777216 can
+    // exceed i32::MAX when b3 >= 128). This also fixes the latent overflow bug
+    // that the prior implicit widen was masking.
+    b0 as i64 + b1 as i64 * 256 + b2 as i64 * 65536 + b3 as i64 * 16777216
 }
 
 /// Validate that a `bytes` buffer contains a well-formed wire header.

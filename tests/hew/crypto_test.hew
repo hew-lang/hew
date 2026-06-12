@@ -3,38 +3,42 @@
 import std::crypto::crypto;
 import std::testing;
 
+fn message() -> bytes {
+    "hew".to_bytes()
+}
+
 #[test]
 fn test_sha256_returns_32_byte_digest() {
-    let digest = crypto.sha256(bytes [104, 101, 119]);
+    let digest = crypto.sha256(message());
     testing.assert_eq(digest.len(), 32);
 }
 
 #[test]
 fn test_sha384_returns_48_byte_digest() {
-    let digest = crypto.sha384(bytes [104, 101, 119]);
+    let digest = crypto.sha384(message());
     testing.assert_eq(digest.len(), 48);
 }
 
 #[test]
 fn test_sha512_returns_64_byte_digest() {
-    let digest = crypto.sha512(bytes [104, 101, 119]);
+    let digest = crypto.sha512(message());
     testing.assert_eq(digest.len(), 64);
 }
 
 #[test]
 fn test_hmac_sha256_returns_32_byte_tag() {
-    let tag = crypto.hmac_sha256(bytes [107, 101, 121], bytes [104, 101, 119]);
+    let tag = crypto.hmac_sha256("key".to_bytes(), message());
     testing.assert_eq(tag.len(), 32);
 }
 
 #[test]
 fn test_constant_time_eq_accepts_equal_bytes() {
-    testing.assert_true(crypto.constant_time_eq(bytes [1, 2, 3], bytes [1, 2, 3]));
+    testing.assert_true(crypto.constant_time_eq("abc".to_bytes(), "abc".to_bytes()));
 }
 
 #[test]
 fn test_constant_time_eq_rejects_different_bytes() {
-    testing.assert_false(crypto.constant_time_eq(bytes [1, 2, 3], bytes [1, 2, 4]));
+    testing.assert_false(crypto.constant_time_eq("abc".to_bytes(), "abd".to_bytes()));
 }
 
 #[test]

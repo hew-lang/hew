@@ -1,11 +1,14 @@
+//! Status: runnable
+//! Description: Static Content Web Server in Hew
+
 // Static Content Web Server in Hew
 //
-// An actor-based HTTP server: the accept loop dispatches each request
-// to a Handler actor for concurrent processing with proper MIME types.
+// A blocking HTTP server: the accept loop serves each request with proper MIME
+// types.
 //
 // Usage: hew build static_server.hew -o serve && ./serve [port] [root]
 // Defaults: port 8080, root "."
-import std::net::http;
+import std::net::http::http;
 
 import std::fs;
 
@@ -13,7 +16,7 @@ import std::os;
 
 import std::net::mime;
 
-fn resolve_path(root: String, url_path: String) -> String {
+fn resolve_path(root: string, url_path: string) -> string {
     let path = root + url_path;
     if url_path.ends_with("/") {
         return path + "index.html";
@@ -28,24 +31,21 @@ fn resolve_path(root: String, url_path: String) -> String {
     path
 }
 
-// Each request is handled by this actor, decoupling accept from serve.
-actor Handler {
-    let root: String;
-    receive fn handle(req: Request, request_path: String) {
-        if request_path.contains("..") {
-            req.respond_text(403, "403 Forbidden");
+fn serve_request(root: string, req: Request) {
+    let request_path = req.path();
+    if request_path.contains("..") {
+        req.respond_text(403, "403 Forbidden");
+    } else {
+        let file_path = resolve_path(root, request_path);
+        if fs.exists(file_path) {
+            let body = fs.read(file_path);
+            let content_type = mime.from_path(file_path);
+            req.respond(200, content_type, body);
         } else {
-            let file_path = resolve_path(root, request_path);
-            if fs.exists(file_path) {
-                let body = fs.read(file_path);
-                let content_type = mime.from_path(file_path);
-                req.respond(200, content_type, body);
-            } else {
-                req.respond_text(404, "404 Not Found");
-            }
+            req.respond_text(404, "404 Not Found");
         }
-        req.free();
     }
+    req.free();
 }
 
 fn main() {
@@ -60,12 +60,10 @@ fn main() {
     }
     let addr = f"0.0.0.0:{port}";
     println(f"Serving {root} on http://{addr}");
-    let handler = spawn Handler(root: root);
     let server = http.listen(addr);
-    // Accept loop: dispatch each request to the handler actor
+    // Accept loop: serve each request.
     loop {
         let req = server.accept();
-        let request_path = req.path();
-        handler.handle(req, request_path);
+        serve_request(root, req);
     }
 }

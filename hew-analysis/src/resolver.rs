@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn resolves_type_def() {
         let source =
-            "type Point { x: int, y: int }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+            "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
         let db = db_with(source);
         // Cursor on the use of `Point` in the return type.
         let offset = source.find("-> Point").unwrap() + 3;
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn resolves_type_method_definition() {
-        let source = "type Counter = { count: int }\n\
+        let source = "type Counter = { count: i64 }\n\
                       impl Counter {\n\
                           fn new() -> Counter { Counter { count: 0 } }\n\
                       }\n\

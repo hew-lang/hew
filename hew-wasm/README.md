@@ -13,6 +13,26 @@ It powers browser-based tooling such as:
 - Online playground with real-time diagnostics
 - In-browser syntax highlighting
 - Client-side type checking
+- AST, formatter, symbol, hover, and inlay-hint support for editor integrations
+
+## Browser API surface
+
+The package exports JSON-string APIs for the current developer-tooling surface:
+
+- `parse_source(source)` returns `{ ast, diagnostics }`.
+- `type_check(source)` returns `{ diagnostics, type_info }`, where `type_info`
+  contains byte-span keyed, user-facing resolved types for hover/editor UI.
+- `format_source(source)` returns `{ formatted, diagnostics }`; `formatted` is
+  `null` when fatal parser diagnostics are present.
+- `analyze(source)` returns `{ diagnostics, tokens, symbols, type_info }`.
+- Editor helpers include `hover`, `complete`, `document_symbols`,
+  `semantic_tokens`, `folding_ranges`, `signature_help`, `inlay_hints`,
+  `goto_definition`, `find_references`, `prepare_rename`, `rename`,
+  `code_actions`, and `get_keywords`.
+
+Diagnostics include stable `phase`, `kind`, nested `span`, `message`, `notes`,
+and `suggestions` fields. The legacy `start_offset` / `end_offset` fields remain
+for existing browser bridges.
 
 ## Capability tier
 

@@ -1,0 +1,7 @@
+runes=6 bytes=9
+cp=72 width=1 kind=upper upper_cp=72
+cp=233 width=2 kind=lower upper_cp=201
+cp=32 width=1 kind=space upper_cp=32
+cp=57 width=1 kind=digit upper_cp=57
+cp=19990 width=3 kind=letter upper_cp=19990
+cp=33 width=1 kind=punct upper_cp=33

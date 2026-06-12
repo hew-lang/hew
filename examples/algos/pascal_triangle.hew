@@ -1,5 +1,5 @@
 // Pascal's triangle - compute binomial coefficient C(n,k)
-fn binomial(n: int, k: int) -> int {
+fn binomial(n: i64, k: i64) -> i64 {
     // Use iterative multiplication to avoid overflow
     if k > n {
         return 0;
@@ -16,7 +16,7 @@ fn binomial(n: int, k: int) -> int {
     result
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

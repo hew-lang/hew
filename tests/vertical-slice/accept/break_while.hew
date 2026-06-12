@@ -1,0 +1,20 @@
+// `break` inside a `while` must seal its block with `Goto exit_bb` so the
+// loop terminates at the break site, not when the condition next fails.
+//
+// The loop guard is `i < 100`; without a working `break` the body would run
+// until `i` reached 100 and `count` would be ~100. `count == 3` triggers the
+// break on the third iteration, so observing exit code 3 proves the `break`
+// jumped straight to the loop exit. (A non-terminating or wrong-target break
+// would surface as a timeout or a different count, not 3.)
+fn main() -> i64 {
+    var i: i64 = 0;
+    var count: i64 = 0;
+    while i < 100 {
+        count = count + 1;
+        if count == 3 {
+            break;
+        }
+        i = i + 1;
+    }
+    count
+}

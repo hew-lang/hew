@@ -1,28 +1,28 @@
-// Adjacency Matrix - Flat n*n Vec<int> representation
+// Adjacency Matrix - Flat n*n Vec<i64> representation
 // matrix[i*n + j] = 1 if edge (i,j) exists, 0 otherwise
-fn mat_get(matrix: Vec<int>, n: int, i: int, j: int) -> int {
+fn mat_get(matrix: Vec<i64>, n: i64, i: i64, j: i64) -> i64 {
     matrix.get(i * n + j)
 }
 
-fn mat_set(matrix: Vec<int>, n: int, i: int, j: int, val: int) {
+fn mat_set(matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) {
     matrix.set(i * n + j, val);
 }
 
-fn add_edge(matrix: Vec<int>, n: int, u: int, v: int) {
+fn add_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) {
     mat_set(matrix, n, u, v, 1);
     mat_set(matrix, n, v, u, 1);
 }
 
-fn remove_edge(matrix: Vec<int>, n: int, u: int, v: int) {
+fn remove_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) {
     mat_set(matrix, n, u, v, 0);
     mat_set(matrix, n, v, u, 0);
 }
 
-fn has_edge(matrix: Vec<int>, n: int, u: int, v: int) -> bool {
+fn has_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) -> bool {
     mat_get(matrix, n, u, v) == 1
 }
 
-fn degree(matrix: Vec<int>, n: int, node: int) -> int {
+fn degree(matrix: Vec<i64>, n: i64, node: i64) -> i64 {
     var d = 0;
     for j in 0 .. n {
         if mat_get(matrix, n, node, j) == 1 {
@@ -32,7 +32,7 @@ fn degree(matrix: Vec<int>, n: int, node: int) -> int {
     d
 }
 
-fn is_symmetric(matrix: Vec<int>, n: int) -> bool {
+fn is_symmetric(matrix: Vec<i64>, n: i64) -> bool {
     for i in 0 .. n {
         for j in 0 .. n {
             if mat_get(matrix, n, i, j) != mat_get(matrix, n, j, i) {
@@ -48,7 +48,7 @@ fn main() {
     var failed = 0;
     let n = 6;
     // Initialize n*n matrix to 0
-    let matrix: Vec<int> = Vec::new();
+    let matrix: Vec<i64> = Vec::new();
     for i in 0 .. n * n {
         matrix.push(0);
     }

@@ -11,7 +11,7 @@
 //
 // Note: character-by-character scanning uses `text.slice(i, i+1)` rather
 // than `text.chars()` because `.chars()` is not yet supported by codegen.
-pub fn word_count(text: String) -> int {
+pub fn word_count(text: string) -> i64 {
     if text.len() == 0 {
         return 0;
     }
@@ -26,7 +26,7 @@ pub fn word_count(text: String) -> int {
     count
 }
 
-pub fn first_word(text: String) -> String {
+pub fn first_word(text: string) -> string {
     var i = 0;
     while i < text.len() {
         if text.slice(i, i + 1) == " " {

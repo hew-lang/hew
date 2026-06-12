@@ -1,0 +1,34 @@
+// Accept fixture: q004_trait_impl_sig_match — impl method signatures that
+// structurally match the trait shape after `Self`-substitution and assoc-type
+// projection must type-check clean. Lock the positive case of Q004
+// (impl-vs-trait signature equivalence).
+//
+// Harness verb: hew compile
+// Expected: clean compile, exit 7.
+
+pub trait Container {
+    type Item;
+    fn unwrap(self) -> Option<Self::Item>;
+}
+
+pub type Holder {
+    n: i64;
+}
+
+impl Container for Holder {
+    type Item = i64;
+    fn unwrap(h: Holder) -> Option<i64> {
+        Some(h.n)
+    }
+}
+
+fn main() -> i64 {
+    let h = Holder { n: 7 };
+    // NB: we deliberately do not call `h.unwrap()` here because trait-method
+    // dispatch on user-defined traits with associated types is not yet wired
+    // through HIR lowering (separate concern from Q004's diagnostic-authority
+    // surface). Q004 only owns the impl-vs-trait sig-equivalence check; that
+    // check fires at registration time, before any HIR lowering, so the impl
+    // block above is the load-bearing surface this fixture pins.
+    h.n
+}

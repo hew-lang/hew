@@ -1,0 +1,24 @@
+// Lambda actor capturing a heap-owning `string` binding. The spawn
+// boxes the capture env and replaces the copied alias with an
+// independent `hew_string_clone`, so the env owns its copy and the
+// caller's binding stays the owner of the original. Two asks read the
+// SAME env field — a premature drop of the env string after the first
+// dispatch would surface as garbage or a MallocScribble crash on the
+// second. The caller keeps using its original after the spawn, proving
+// the clone (not a move) crossed the boundary. The env string is freed
+// exactly once, by the synthesized state dropper at actor shutdown.
+fn main() {
+    let greeting = "hello";
+    let greet = actor |name: string| -> string { f"{greeting}, {name}" };
+    let a = greet("ada");
+    match a {
+        Ok(s) => println(s),
+        Err(_) => println("ask failed"),
+    }
+    let b = greet("alan");
+    match b {
+        Ok(s) => println(s),
+        Err(_) => println("ask failed"),
+    }
+    println(f"caller still owns: {greeting}");
+}

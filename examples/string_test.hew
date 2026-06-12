@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Test string length
+
 fn main() {
     let hello = "Hello";
     let world = "World";

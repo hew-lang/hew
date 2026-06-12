@@ -1,4 +1,4 @@
-fn factorial(n: int) -> int {
+fn factorial(n: i64) -> i64 {
     var result = 1;
     for i in 1 .. n + 1 {
         result = result * i;
@@ -6,7 +6,7 @@ fn factorial(n: int) -> int {
     result
 }
 
-const ITERS: int = 1000000;
+const ITERS: i64 = 1000000;
 
 fn main() {
     var sum = 0;

@@ -1,0 +1,18 @@
+// Invocation BORROWS a closure pair; only an owning store consumes it.
+// Calling the binding first and moving it into a record afterwards is
+// legal, and the record (the new sole owner) dispatches and drops the
+// environment exactly once.
+type Button {
+    on_click: fn(i64) -> i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn main() {
+    let f = make_adder(40);
+    println(f(1)); // 41 — borrow before the move
+    let b = Button { on_click: f }; // first consumption: the move
+    println(b.on_click(2));
+} // 42 — dispatch through the new owner

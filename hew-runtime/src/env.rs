@@ -3,6 +3,10 @@
 //! Provides access to environment variables, command-line arguments, and basic
 //! process/system information for compiled Hew programs. All returned strings
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::cabi::malloc_cstring;
 use crate::lifetime::PoisonSafeRw;
@@ -268,7 +272,16 @@ fn reset_freebsd_argv_warning_for_tests() {
 }
 
 /// Read process arguments via FreeBSD's `kern.proc.args` sysctl.
+///
+/// Only called from the `#[cfg(target_os = "freebsd")]` integration test
+/// (`test_freebsd_sysctl_happy_path_matches_std_env_args`). The live path
+/// invokes `freebsd_args_with(&FreeBsdSysctl)` directly; this wrapper exists
+/// so the test can call it without importing `FreeBsdSysctl`.
 #[cfg(target_os = "freebsd")]
+#[allow(
+    dead_code,
+    reason = "test-only wrapper; the live path calls freebsd_args_with directly"
+)]
 fn freebsd_args() -> Result<Vec<String>, FreeBsdArgvError> {
     freebsd_args_with(&FreeBsdSysctl)
 }
@@ -614,8 +627,8 @@ mod tests {
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated C string per caller.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast()) };
+        // SAFETY: ptr was allocated header-aware by malloc_cstring (env string).
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
         s
     }
 
@@ -839,7 +852,7 @@ mod tests {
                         if !ptr.is_null() {
                             // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
                             unsafe {
-                                libc::free(ptr.cast());
+                                crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
                             }
                         }
                     }
@@ -882,8 +895,8 @@ mod tests {
         } else {
             // SAFETY: orig_ptr is a valid malloc'd NUL-terminated C string.
             let s = unsafe { CStr::from_ptr(orig_ptr) }.to_owned();
-            // SAFETY: orig_ptr was allocated with libc::malloc.
-            unsafe { libc::free(orig_ptr.cast()) };
+            // SAFETY: orig_ptr was allocated header-aware by malloc_cstring.
+            unsafe { crate::cabi::free_cstring(orig_ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
             Some(s)
         };
 
@@ -917,8 +930,8 @@ mod tests {
                     // SAFETY: no preconditions for hew_temp_dir.
                     let ptr = unsafe { hew_temp_dir() };
                     assert!(!ptr.is_null());
-                    // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
-                    unsafe { libc::free(ptr.cast()) };
+                    // SAFETY: ptr was allocated header-aware by malloc_cstring.
+                    unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
                 }
             }));
         }

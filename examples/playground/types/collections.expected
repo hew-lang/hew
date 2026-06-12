@@ -1,7 +1,4 @@
-Vec length: 3
-First: 10
-Popped: 30
-Map length: 3
-get(one): 1
-has three: true
-After remove, length: 2
+length: 5
+first:  10
+third:  30
+sum:    150

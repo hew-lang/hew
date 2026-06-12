@@ -1,0 +1,20 @@
+fn double(x: i64) -> i64 {
+    x * 2
+}
+
+fn triple(x: i64) -> i64 {
+    x * 3
+}
+
+fn main() {
+    let fns: Vec<fn(i64) -> i64> = [double, triple];
+    println(fns.len()); // 2
+    let first = fns[0];
+    println(first(3)); // 6
+    fns.push(|x: i64| x + 100);
+    let third = fns.get(2);
+    println(third(1)); // 101
+    let last = fns.pop();
+    println(last(5)); // 105
+    println(fns.len());
+} // 2

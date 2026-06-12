@@ -1,0 +1,5 @@
+import arith;
+
+fn main() -> i64 {
+    arith.add(10, 32)
+}

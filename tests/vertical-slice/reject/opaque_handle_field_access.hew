@@ -1,0 +1,13 @@
+// Reject fixture: opaque_handle_field_access — an `#[opaque]` runtime handle is
+// opaque to the surface: it has no fields, so any field access is rejected at
+// the checker (field-access opacity is free — an empty body has no fields).
+//
+// Harness verb: hew check
+// Expected: rejected.
+
+#[opaque]
+type Handle {}
+
+fn read(h: Handle) -> i64 {
+    h.x
+}

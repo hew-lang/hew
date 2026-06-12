@@ -1,0 +1,36 @@
+// Accept: value-context `.send` on a lambda-actor handle materializes
+// `Result<(), SendError>` AND still delivers the message.
+//
+// `actor |x: i64| { println(x); }` produces a lambda-actor handle
+// (`Duplex<i64, ()>` underneath). `.send(msg)` in a value context is
+// tell-shaped (reply type `()`), so the checker types it `Result<(),
+// SendError>`. MIR sizes the dest from that recorded type and routes the
+// call through the lambda-actor ABI; codegen materializes the Result in
+// place from the runtime's i32 status (D1 mapping authority).
+//
+// A successful in-process send returns rc 0, which maps to `Result::Ok(())`.
+// Exit 7 proves the Ok arm was reached; stdout `99` proves the message was
+// actually delivered to the actor (not silently dropped). The two together
+// rule out the pre-fix mis-delivery (raw duplex ABI on a lambda-actor handle)
+// and the pre-fix value-context `UnresolvedPlace` failure.
+//
+// The Err arm is exhaustively typed but unreachable here: the only triggers
+// for a nonzero send rc are a closed / released handle (both move the handle
+// away under RAII, so `.send` after `.close()` is a use-after-move the checker
+// rejects) or mailbox backpressure (`SendError::Full`, inherently racy). The
+// rc -> SendError discriminant mapping is covered deterministically by the
+// `emit_send_result_from_rc` codegen unit tests instead.
+fn main() -> i64 {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    let result: Result<(), SendError> = printer.send(99);
+    match result {
+        Result::Ok(_) => 7,
+        Result::Err(e) => match e {
+            SendError::Full => 1,
+            SendError::Closed => 2,
+            SendError::NodeRoutingNotWired => 3,
+        },
+    }
+}

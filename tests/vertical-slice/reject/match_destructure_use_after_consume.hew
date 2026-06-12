@@ -1,0 +1,48 @@
+//! Reject: post-match read of a `BindingRef` scrutinee whose owned fields
+//! were destructured.
+//!
+//! Until the consume-mark landed, `lower_match_project` left the scrutinee
+//! binding `Live` in dataflow after the destructure. A non-BitCopy
+//! destructure hands ownership of owned fields to the bindings and (for
+//! partial extraction) emits inline `Instr::Drop` against the wildcarded
+//! field's interior. The original scrutinee storage is therefore stale —
+//! later code that reads `p.b` after `match p { Pair { a: x, b: _ } => x }`
+//! reads a freed buffer. Under MallocScribble the runtime prints garbage
+//! / empty; without it the same access nondeterministically reads
+//! reclaimed bytes.
+//!
+//! The fix emits a follow-up `MirStatement::Use { intent: Consume }` for
+//! the scrutinee binding when it is a non-captured `BindingRef`, so the
+//! dataflow checker transitions the binding to `Consumed(site)`. Any
+//! `BindingRef` to that binding afterward fires
+//! `E_MIR_CHECK: UseAfterConsume`, catching the UAF at check time.
+//!
+//! Observable contract: `hew check` returns non-zero with `UseAfterConsume`
+//! on the post-match `p.b` read. A regression that re-introduces the
+//! Live-after-destructure misclassification would let this file `check`
+//! green and run-time-leak / UAF.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair() -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let _x = match p {
+        Pair { a: x, b: _ } => x,
+    };
+    // UAF: `p`'s storage was consumed by the destructure above. The match
+    // arm's inline drop released `p.b`'s buffer, and reading `p.b` here
+    // observes freed memory.
+    let y = p.b;
+    println(y);
+    0
+}

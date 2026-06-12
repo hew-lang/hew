@@ -1,0 +1,41 @@
+// HashMap / HashSet layout-keyed run-pass exercise.
+//
+// This fixture pins the native layout-keyed `HashMap<Record, _>` /
+// `HashSet<Record>` user surface end-to-end: checker rewrite → HIR/MIR →
+// native codegen → runtime ABI.
+//
+// WASM is intentionally not registered here. The codegen gate maps every
+// `hew_hashmap_*_layout` / `hew_hashset_*_layout` callee to a structured
+// `WasmUnsupportedSubstrate` diagnostic before lowering, which is the v0.5
+// fail-closed behaviour for this native-only runtime substrate.
+//
+// What the checker does on this file:
+//   * Recognises `Point` as a Copy plain record with hash-eligible i64
+//     fields → admitted as a layout key / set element.
+//   * For each method call below on the layout-keyed handles, the
+//     checker records a runtime method-call rewrite to the matching
+//     `hew_hashmap_<op>_layout` / `hew_hashset_<op>_layout` C-ABI symbol
+//     (catalogued in `hew-hir/src/stdlib_catalog.rs`).
+// `hew run examples/v05/hashmap_run_pass.hew` must complete successfully.
+record Point {
+    x: i64,
+    y: i64
+}
+
+fn main() {
+    let _p = Point { x: 0, y: 0 };
+    // ── HashMap<Point, i64> surface ─────────────────────────────────
+    let m: HashMap<Point, i64> = HashMap::new();
+    m.insert(Point { x: 1, y: 2 }, 10);
+    let _v = m.get(Point { x: 1, y: 2 }); // Option<i64>
+    let _has = m.contains_key(Point { x: 1, y: 2 }); // bool
+    let _ok = m.remove(Point { x: 1, y: 2 }); // bool
+    let _n = m.len(); // i64
+
+    // ── HashSet<Point> surface ──────────────────────────────────────
+    let s: HashSet<Point> = HashSet::new();
+    s.insert(Point { x: 3, y: 4 });
+    let _has_p = s.contains(Point { x: 3, y: 4 }); // bool
+    let _rm = s.remove(Point { x: 3, y: 4 }); // bool
+    let _n2 = s.len();
+} // i64

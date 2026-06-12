@@ -103,7 +103,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc html)
         s
     }
 
@@ -152,7 +152,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         assert!(!s.contains("<script>"), "raw HTML should be stripped: {s}");
         assert!(s.contains("Hello"), "text should be preserved: {s}");
     }

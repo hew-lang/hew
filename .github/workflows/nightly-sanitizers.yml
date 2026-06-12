@@ -15,85 +15,6 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Codegen C++ ASan+UBSan — memory/UB coverage for the embedded MLIR layer
-  # ─────────────────────────────────────────────────────────────────────────
-  codegen-sanitizers:
-    name: Codegen C++ ASan+UBSan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 55
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
-        run: |
-          sudo mkdir -p /etc/apt/keyrings
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
-            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            cmake ninja-build \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
-            clang-${{ env.LLVM_VERSION }} \
-            lld-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            target/
-          key: codegen-sanitizer-rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: codegen-sanitizer-rust-${{ runner.os }}-
-
-      - name: Build hew compiler and runtime
-        run: |
-          cargo build -p hew-cli -p hew-runtime -p hew-serialize
-          cargo build -p hew-lib
-
-      - name: Build C++ test infrastructure with ASan+UBSan
-        env:
-          CC: clang-${{ env.LLVM_VERSION }}
-          CXX: clang++-${{ env.LLVM_VERSION }}
-        run: |
-          cmake -B hew-codegen/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_C_COMPILER=clang-${{ env.LLVM_VERSION }} \
-            -DCMAKE_CXX_COMPILER=clang++-${{ env.LLVM_VERSION }} \
-            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir \
-            -S hew-codegen
-          cmake --build hew-codegen/build -j"$(nproc)"
-
-      - name: Run C++ unit tests (sanitizers)
-        env:
-          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
-          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-codegen/lsan.supp
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: |
-          cd hew-codegen/build
-          ctest --output-on-failure -R "^(mlir_dialect|translate|coro_generator|coro_fib_generator)$"
-
-      - name: Run targeted sanitizer E2E tests
-        env:
-          ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1
-          LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-codegen/lsan.supp
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: |
-          cd hew-codegen/build
-          ctest --output-on-failure -j"$(nproc)" -R "^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|e2e_concurrency_.*|coro_generator|coro_fib_generator|e2e_generators_gen_letbound_for|e2e_generators_for_over_generator)$"
-
-  # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime ASan — memory safety for the actor runtime
   # ─────────────────────────────────────────────────────────────────────────
   rust-runtime-asan:
@@ -101,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install llvm-symbolizer (${{ env.LLVM_VERSION }})
         run: |
@@ -132,8 +53,7 @@ jobs:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-runtime/lsan.supp
           ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
-          # Nightly Rust supports ASan for this target; UBSan coverage is provided
-          # by the C++ sanitizer job above.
+          # Nightly Rust supports ASan for this target.
           cargo +nightly test --target x86_64-unknown-linux-gnu -p hew-runtime --lib
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -153,7 +73,7 @@ jobs:
     continue-on-error: true
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@nightly
 

@@ -28,63 +28,163 @@ pub struct ModuleRegistry {
     drop_funcs: HashMap<String, String>,
 }
 
-/// Build the default module search-path list used by both the CLI and LSP.
+/// Walk up the directory tree from `from`, returning the first ancestor directory
+/// that is a Hew repository root (identified by containing `std/builtins.hew`).
 ///
-/// The search order is:
-/// 1. `HEWPATH` environment variable (colon-separated; each entry is the parent of `std/`)
-/// 2. `HEW_STD` environment variable (path to the `std/` directory itself)
-/// 3. FHS installed location: `<prefix>/share/hew` relative to the compiler binary
-/// 4. Dev fallback: repo root (when `std/` exists two levels above the binary)
+/// Returns `None` if no such ancestor exists, which is the normal case for
+/// external Hew projects compiled with an installed binary.
 #[must_use]
-pub fn build_module_search_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
+    let start = if from.is_dir() {
+        from.to_path_buf()
+    } else {
+        from.parent()?.to_path_buf()
+    };
 
-    // HEWPATH environment variable (colon-separated; each entry is the parent of std/)
+    let mut current = start.as_path();
+    loop {
+        if current.join("std").join("builtins.hew").exists() {
+            return Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return None,
+        }
+    }
+}
+
+/// Build the stdlib search-path list, applying exclusive precedence tiers.
+///
+/// Each tier is tried in order; if a tier produces at least one valid path,
+/// that tier's result is returned immediately — lower tiers are not consulted.
+///
+/// **Tier 1 — explicit override (env vars):**
+/// If `HEWPATH` (colon-separated; each entry is the parent of `std/`) or
+/// `HEW_STD` (points directly at a `std/` directory) is set, only those paths
+/// are returned.  All other sources are ignored.
+///
+/// **Tier 2 — in-worktree (developing Hew itself):**
+/// Walk up from `source_hint` (if provided) or from cwd, looking for an
+/// enclosing Hew checkout root (a directory that contains `std/builtins.hew`).
+/// If found, only that root is returned.  This fixes the cross-worktree
+/// contamination: a file inside worktree-A resolves std from A only, even
+/// when the binary was built in a sibling worktree-B.
+///
+/// **Tier 3 — installed / external project:**
+/// FHS (`<exe>/../share/hew`), XDG (`~/.local/share/hew/std` parent),
+/// `~/.hew`, `/usr/local/share/hew`, `/usr/share/hew`, and the dev-build
+/// fallback (two levels above the binary for `cargo run`-style invocations).
+/// Multiple roots are allowed here; the first match wins at module-load time.
+#[must_use]
+pub fn build_module_search_paths_for(source_hint: Option<&std::path::Path>) -> Vec<PathBuf> {
+    // --- Tier 1: explicit env-var override ---
+    let mut tier1: Vec<PathBuf> = Vec::new();
+
     if let Ok(hewpath) = std::env::var("HEWPATH") {
         for p in hewpath.split(':') {
             let path = PathBuf::from(p);
             if path.exists() {
-                paths.push(path);
+                tier1.push(path);
             }
         }
     }
 
-    // HEW_STD environment variable (points directly to the std/ directory;
-    // module loader needs its parent as the search root)
     if let Ok(hew_std) = std::env::var("HEW_STD") {
         let std_path = PathBuf::from(&hew_std);
         if std_path.exists() {
             if let Some(parent) = std_path.parent() {
                 let parent = parent.to_path_buf();
-                if !paths.contains(&parent) {
-                    paths.push(parent);
+                if !tier1.contains(&parent) {
+                    tier1.push(parent);
                 }
             }
         }
     }
 
-    // FHS installed location: <prefix>/share/hew (parent of std/)
-    // e.g. /usr/local/bin/hew → /usr/local/share/hew → contains std/
+    if !tier1.is_empty() {
+        return tier1;
+    }
+
+    // --- Tier 2: enclosing Hew checkout (in-worktree dev) ---
+    //
+    // Walk up from source_hint first, then cwd.  Using source_hint ensures the
+    // file being compiled determines which worktree's std/ is used, not the
+    // process cwd (which could be a different worktree or an external dir).
+    let tier2_probe = source_hint.and_then(find_enclosing_hew_root).or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| find_enclosing_hew_root(&cwd))
+    });
+
+    if let Some(root) = tier2_probe {
+        return vec![root];
+    }
+
+    // --- Tier 3: installed binary / external project ---
+    let mut tier3: Vec<PathBuf> = Vec::new();
+
+    // FHS: <exe>/../share/hew
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let share_hew = exe_dir.join("../share/hew");
-            if share_hew.join("std").exists() && !paths.contains(&share_hew) {
-                paths.push(share_hew);
+            if share_hew.join("std").exists() && !tier3.contains(&share_hew) {
+                tier3.push(share_hew);
             }
         }
     }
 
-    // Dev fallback: repo root (when std/ exists two levels above the binary)
+    // XDG: ~/.local/share/hew
+    if let Some(home) = std::env::var_os("HOME") {
+        let xdg_hew = PathBuf::from(home).join(".local/share/hew");
+        if xdg_hew.join("std").exists() && !tier3.contains(&xdg_hew) {
+            tier3.push(xdg_hew);
+        }
+    }
+
+    // ~/.hew
+    if let Some(home) = std::env::var_os("HOME") {
+        let dot_hew = PathBuf::from(home).join(".hew");
+        if dot_hew.join("std").exists() && !tier3.contains(&dot_hew) {
+            tier3.push(dot_hew);
+        }
+    }
+
+    // System-wide FHS locations
+    for prefix in &["/usr/local/share/hew", "/usr/share/hew"] {
+        let p = PathBuf::from(prefix);
+        if p.join("std").exists() && !tier3.contains(&p) {
+            tier3.push(p);
+        }
+    }
+
+    // Dev fallback: two levels above the binary (e.g. target/debug/hew → repo root).
+    // Only reached for an installed/external project when tier-2 found nothing —
+    // i.e. a developer binary compiling a project outside any Hew checkout.
+    // WHY: `cargo run` builds land in target/debug/ so exe/../.. is the repo root.
+    // WHEN obsolete: when Hew has a proper install prefix and std is co-installed.
+    // WHAT the real solution is: install std alongside the binary under share/hew.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            let repo_root = exe_dir.join("../..");
-            if repo_root.join("std").exists() {
-                paths.push(repo_root);
+            if let Some(repo_root) = exe_dir.parent().and_then(|p| p.parent()) {
+                if repo_root.join("std").exists() && !tier3.contains(&repo_root.to_path_buf()) {
+                    tier3.push(repo_root.to_path_buf());
+                }
             }
         }
     }
 
-    paths
+    tier3
+}
+
+/// Build the default module search-path list used by both the CLI and LSP.
+///
+/// This is a context-free wrapper around [`build_module_search_paths_for`]
+/// with no source hint.  Callers that have a source file path should prefer
+/// [`build_module_search_paths_for`] so that tier-2 (in-worktree) resolution
+/// can anchor to the correct Hew checkout.
+#[must_use]
+pub fn build_module_search_paths() -> Vec<PathBuf> {
+    build_module_search_paths_for(None)
 }
 
 #[derive(Debug)]
@@ -640,6 +740,273 @@ mod tests {
         assert!(
             all.contains(&"json.Value".to_string()),
             "all_handle_types should include json.Value"
+        );
+    }
+
+    // ── search path precedence tests ──────────────────────────────────────────
+
+    /// A `TestHewTree` creates a minimal fake Hew checkout on disk:
+    /// a root directory with `std/builtins.hew` (the worktree marker).
+    struct TestHewTree {
+        dir: TestDir,
+    }
+
+    impl TestHewTree {
+        fn new(prefix: &str) -> Self {
+            let dir = TestDir::new(prefix);
+            let std_dir = dir.root.join("std");
+            fs::create_dir_all(&std_dir).unwrap();
+            fs::write(std_dir.join("builtins.hew"), "// fake builtins\n").unwrap();
+            Self { dir }
+        }
+
+        fn root(&self) -> &PathBuf {
+            &self.dir.root
+        }
+    }
+
+    /// HEWPATH set → tier-1 returns exactly those paths, no dev/cwd leakage.
+    #[test]
+    fn tier1_hewpath_returns_only_hewpath_entries() {
+        let tree_a = TestHewTree::new("sp-hewpath-a");
+        let tree_b = TestHewTree::new("sp-hewpath-b");
+
+        // Set HEWPATH to tree_a only.
+        let prev_hewpath = std::env::var("HEWPATH").ok();
+        let prev_hew_std = std::env::var("HEW_STD").ok();
+        // SAFETY: test process is single-threaded for env mutation; cargo test
+        // runs each test fn sequentially within a thread.
+        unsafe {
+            std::env::set_var("HEWPATH", tree_a.root().to_str().unwrap());
+            std::env::remove_var("HEW_STD");
+        }
+
+        let paths = build_module_search_paths_for(Some(tree_b.root()));
+
+        // Restore env.
+        // SAFETY: same single-threaded env-mutation guarantee as the set above.
+        unsafe {
+            match prev_hewpath {
+                Some(v) => std::env::set_var("HEWPATH", v),
+                None => std::env::remove_var("HEWPATH"),
+            }
+            match prev_hew_std {
+                Some(v) => std::env::set_var("HEW_STD", v),
+                None => std::env::remove_var("HEW_STD"),
+            }
+        }
+
+        // Must contain exactly tree_a (canonicalized comparison).
+        let canon_a = tree_a.root().canonicalize().unwrap();
+        let canon_b = tree_b.root().canonicalize().unwrap();
+        let got_canon: Vec<_> = paths.iter().filter_map(|p| p.canonicalize().ok()).collect();
+        assert!(
+            got_canon.contains(&canon_a),
+            "HEWPATH entry should appear in result"
+        );
+        assert!(
+            !got_canon.contains(&canon_b),
+            "source_hint tree must not leak in when HEWPATH is set"
+        );
+    }
+
+    /// `HEW_STD` set → tier-1 returns parent of that std/, no other sources.
+    #[test]
+    fn tier1_hew_std_returns_only_hew_std_parent() {
+        let tree_a = TestHewTree::new("sp-hew-std-a");
+        let tree_b = TestHewTree::new("sp-hew-std-b");
+        let std_a = tree_a.root().join("std");
+
+        let prev_hewpath = std::env::var("HEWPATH").ok();
+        let prev_hew_std = std::env::var("HEW_STD").ok();
+        // SAFETY: test process is single-threaded for env mutation.
+        unsafe {
+            std::env::remove_var("HEWPATH");
+            std::env::set_var("HEW_STD", std_a.to_str().unwrap());
+        }
+
+        let paths = build_module_search_paths_for(Some(tree_b.root()));
+
+        // SAFETY: same single-threaded env-mutation guarantee as the set above.
+        unsafe {
+            match prev_hewpath {
+                Some(v) => std::env::set_var("HEWPATH", v),
+                None => std::env::remove_var("HEWPATH"),
+            }
+            match prev_hew_std {
+                Some(v) => std::env::set_var("HEW_STD", v),
+                None => std::env::remove_var("HEW_STD"),
+            }
+        }
+
+        let canon_a = tree_a.root().canonicalize().unwrap();
+        let canon_b = tree_b.root().canonicalize().unwrap();
+        let got_canon: Vec<_> = paths.iter().filter_map(|p| p.canonicalize().ok()).collect();
+        assert!(
+            got_canon.contains(&canon_a),
+            "HEW_STD parent should appear in result"
+        );
+        assert!(
+            !got_canon.contains(&canon_b),
+            "source_hint tree must not leak in when HEW_STD is set"
+        );
+    }
+
+    /// In-worktree (tier-2): source hint inside a Hew checkout resolves to
+    /// that checkout's root only — a sibling checkout with a different std/ must
+    /// not appear.  This is the contamination-repro oracle.
+    #[test]
+    fn tier2_source_inside_worktree_resolves_own_root_only() {
+        let tree_a = TestHewTree::new("sp-worktree-a");
+        let tree_b = TestHewTree::new("sp-worktree-b");
+
+        // Write a dummy source file inside tree_a.
+        let src_dir = tree_a.root().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src_file = src_dir.join("main.hew");
+        fs::write(&src_file, "// dummy\n").unwrap();
+
+        let prev_hewpath = std::env::var("HEWPATH").ok();
+        let prev_hew_std = std::env::var("HEW_STD").ok();
+        // SAFETY: test process is single-threaded for env mutation.
+        unsafe {
+            std::env::remove_var("HEWPATH");
+            std::env::remove_var("HEW_STD");
+        }
+
+        // Pass a source hint pointing inside tree_a.
+        let paths = build_module_search_paths_for(Some(&src_file));
+
+        // SAFETY: same single-threaded env-mutation guarantee as the set above.
+        unsafe {
+            match prev_hewpath {
+                Some(v) => std::env::set_var("HEWPATH", v),
+                None => std::env::remove_var("HEWPATH"),
+            }
+            match prev_hew_std {
+                Some(v) => std::env::set_var("HEW_STD", v),
+                None => std::env::remove_var("HEW_STD"),
+            }
+        }
+
+        assert_eq!(
+            paths.len(),
+            1,
+            "tier-2 must return exactly one root, got: {paths:?}"
+        );
+        let canon_result = paths[0].canonicalize().unwrap();
+        let canon_a = tree_a.root().canonicalize().unwrap();
+        let canon_b = tree_b.root().canonicalize().unwrap();
+        assert_eq!(
+            canon_result, canon_a,
+            "source inside tree_a must resolve to tree_a root"
+        );
+        assert_ne!(
+            canon_result, canon_b,
+            "tree_b must never appear when source is inside tree_a"
+        );
+    }
+
+    /// `find_enclosing_hew_root`: a path inside a Hew checkout finds the root.
+    #[test]
+    fn find_enclosing_hew_root_finds_ancestor_with_marker() {
+        let tree = TestHewTree::new("sp-find-root");
+        let nested = tree.root().join("a/b/c");
+        fs::create_dir_all(&nested).unwrap();
+
+        let result = find_enclosing_hew_root(&nested);
+        assert!(result.is_some(), "should find an enclosing root");
+        let canon_result = result.unwrap().canonicalize().unwrap();
+        let canon_tree = tree.root().canonicalize().unwrap();
+        assert_eq!(canon_result, canon_tree);
+    }
+
+    /// `find_enclosing_hew_root`: a directory tree with no `std/builtins.hew`
+    /// anywhere returns None.  We test with a self-contained temp tree that is
+    /// itself rooted (no further parent walk needed) by creating it under
+    /// a `TestHewTree`'s `other/` sub-dir whose ancestry is the fake tree, not the
+    /// real repo — so the walk hits the fake root (which has no marker for this
+    /// sub-path) and stops.
+    ///
+    /// Actually: test a *flat* `TestDir` that has no `std/builtins.hew` and whose
+    /// parent chain does not include the real repo root.  We achieve that by
+    /// creating the dir directly under the OS temp dir so the walk never
+    /// reaches the Hew repo root.
+    #[test]
+    fn find_enclosing_hew_root_returns_none_outside_checkout() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        // Use the OS temp dir so the ancestor walk never reaches the Hew repo.
+        let outside = std::env::temp_dir().join(format!(
+            "hew-test-no-root-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&outside).unwrap();
+
+        let result = find_enclosing_hew_root(&outside);
+
+        // Clean up.
+        let _ = fs::remove_dir_all(&outside);
+
+        assert!(
+            result.is_none(),
+            "should return None for a directory outside any Hew checkout, got: {result:?}"
+        );
+    }
+
+    /// Tier-3 fallback: with no env vars and a source path that has no
+    /// enclosing Hew root, the result should be non-empty (the dev-binary
+    /// fallback or global paths cover external projects).
+    ///
+    /// Use the OS temp dir as the "external project" so the walk never finds
+    /// the Hew checkout root and tier-2 cannot fire.
+    #[test]
+    fn tier3_fallback_nonempty_for_external_project() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let external = std::env::temp_dir().join(format!(
+            "hew-test-external-{}-{}",
+            std::process::id(),
+            unique
+        ));
+        fs::create_dir_all(&external).unwrap();
+
+        let prev_hewpath = std::env::var("HEWPATH").ok();
+        let prev_hew_std = std::env::var("HEW_STD").ok();
+        // SAFETY: test process is single-threaded for env mutation.
+        unsafe {
+            std::env::remove_var("HEWPATH");
+            std::env::remove_var("HEW_STD");
+        }
+
+        let paths = build_module_search_paths_for(Some(&external));
+
+        // Restore env and clean up temp dir.
+        // SAFETY: same single-threaded env-mutation guarantee as the set above.
+        unsafe {
+            match prev_hewpath {
+                Some(v) => std::env::set_var("HEWPATH", v),
+                None => std::env::remove_var("HEWPATH"),
+            }
+            match prev_hew_std {
+                Some(v) => std::env::set_var("HEW_STD", v),
+                None => std::env::remove_var("HEW_STD"),
+            }
+        }
+        let _ = fs::remove_dir_all(&external);
+
+        // The dev-binary fallback (exe/../..) resolves to the actual Hew checkout
+        // in this test environment, so tier-3 should be non-empty.
+        assert!(
+            !paths.is_empty(),
+            "tier-3 should return at least the dev-build fallback path"
         );
     }
 }

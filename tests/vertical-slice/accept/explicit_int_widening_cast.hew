@@ -1,0 +1,7 @@
+// ACCEPT: explicit `as` cast for integer widening is required and works correctly.
+// `x as i64` widens i32 to i64; the value is preserved.
+fn main() -> i64 {
+    let x: i32 = 5;
+    let y: i64 = x as i64;
+    y
+}

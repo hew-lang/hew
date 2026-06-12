@@ -16,7 +16,7 @@ fn struct_variant_init_infers_type_args() {
         }
 
         fn main() {
-            let e: Event<int> = Event::Move { x: 10, y: 20 };
+            let e: Event<i64> = Event::Move { x: 10, y: 20 };
             let _ = e;
         }
         ",
@@ -40,9 +40,9 @@ fn struct_variant_init_mismatched_field_type_is_an_error() {
         }
 
         fn main() {
-            // Annotate T=int via first field; passing a bool for the second
+            // Annotate T=i64 via first field; passing a bool for the second
             // field is a mismatch because T must be consistent.
-            let e: Event<int> = Event::Move { x: 1, y: true };
+            let e: Event<i64> = Event::Move { x: 1, y: true };
             let _ = e;
         }
         ",
@@ -64,7 +64,7 @@ fn struct_variant_pattern_binds_concrete_field_types() {
             Empty;
         }
 
-        fn add(w: Wrapper<int>) -> int {
+        fn add(w: Wrapper<i64>) -> i64 {
             match w {
                 Wrapper::Pair { first, second } => first + second,
                 Wrapper::Empty => 0,
@@ -89,9 +89,9 @@ fn struct_variant_pattern_wrong_field_use_is_an_error() {
             Empty;
         }
 
-        fn broken(w: Wrapper<int>) -> bool {
+        fn broken(w: Wrapper<i64>) -> bool {
             match w {
-                // first is int, but we return it as bool — type error
+                // first is i64, but we return it as bool — type error
                 Wrapper::Pair { first, second } => first,
                 Wrapper::Empty => true,
             }
@@ -115,7 +115,7 @@ fn struct_variant_init_unqualified_infers_type_args() {
         }
 
         fn main() {
-            let s: Shape<int> = Rect { width: 5, height: 3 };
+            let s: Shape<i64> = Rect { width: 5, height: 3 };
             let _ = s;
         }
         ",
@@ -129,9 +129,9 @@ fn struct_variant_init_unqualified_infers_type_args() {
 
 // ── Nested-generic expected-type preseed (review blocker fix) ─────────────────
 
-// When the declared type (e.g. `let w: Wrap<int>`) is already known, nested
-// generic fields such as `inner: Box<T>` must be checked as `Box<int>`, not
-// the raw `Box<T>`.  Without preseed the checker would see `Box<int>` (from
+// When the declared type (e.g. `let w: Wrap<i64>`) is already known, nested
+// generic fields such as `inner: Box<T>` must be checked as `Box<i64>`, not
+// the raw `Box<T>`.  Without preseed the checker would see `Box<i64>` (from
 // the inner struct init) vs `Box<T>` (from the variant definition) and emit a
 // spurious mismatch.
 #[test]
@@ -145,7 +145,7 @@ fn struct_variant_init_nested_generic_field_with_expected_type() {
         }
 
         fn main() {
-            let w: Wrap<int> = Wrap::Boxed { inner: Box { value: 1 } };
+            let w: Wrap<i64> = Wrap::Boxed { inner: Box { value: 1 } };
             let _ = w;
         }
         ",
@@ -170,18 +170,18 @@ fn variant_constructors_preserve_type_args() {
             Nothing;
         }
 
-        impl Maybe<int> {
-            fn unwrap(m: Maybe<int>) -> int {
+        impl Maybe<i64> {
+            fn unwrap(m: Maybe<i64>) -> i64 {
                 0
             }
         }
 
         fn main() {
-            let explicit: Maybe<int> = Just(42);
+            let explicit: Maybe<i64> = Just(42);
             let x = Just(42);
-            let y: int = x.unwrap();
-            let _: Maybe<int> = explicit;
-            let _: int = y;
+            let y: i64 = x.unwrap();
+            let _: Maybe<i64> = explicit;
+            let _: i64 = y;
         }
         ",
     );
@@ -206,8 +206,8 @@ fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
             Right(B);
         }
 
-        fn main() -> int {
-            let e: Either<int, String> = Either::Left(42);
+        fn main() -> i64 {
+            let e: Either<i64, string> = Either::Left(42);
             match e {
                 Either::Left(n) => println(n),
                 Either::Right(s) => println(s),
@@ -244,7 +244,7 @@ fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
             }
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             show(Foo::Item(42));
             show(Foo::Item("hello"));
             0
@@ -272,7 +272,7 @@ fn impl_inline_bound_satisfies_display_in_method_body() {
             }
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             let h = Holder { value: 42 };
             h.show();
             0
@@ -300,7 +300,7 @@ fn impl_where_clause_bound_satisfies_display_in_method_body() {
             }
         }
 
-        fn main() -> int {
+        fn main() -> i64 {
             let h = Holder { value: 42 };
             h.show();
             0

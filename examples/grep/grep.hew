@@ -1,0 +1,286 @@
+// grep — idiomatic Hew v0.5 reimplementation of POSIX grep.
+//
+// Usage: grep [FLAGS] PATTERN [FILE...]
+//
+// Flags:
+//   -i   case-insensitive matching
+//   -n   prefix each output line with its 1-based line number
+//   -v   invert match (print non-matching lines)
+//   -c   count-only mode: print match count per file instead of lines
+//   -r   recursive: walk directories, treat each regular file as input
+//
+// With multiple files (or -r), output lines are prefixed "file:" .
+// With -n, the prefix becomes "file:linenum:" (or "linenum:" for single file).
+// With -c, output is "file:count" (or just "count" for single stdin read).
+//
+// Stdin is read when no FILE arguments are given.
+//
+// Error handling: file open failures print to stderr and continue; the
+// overall exit code is 1 if no matches were found, 2 if any error occurred,
+// 0 if at least one match was found.
+import std::fs;
+
+import std::io;
+
+import std::os;
+
+import std::path;
+
+import std::string;
+
+import std::text::regex;
+
+// ── Configuration ─────────────────────────────────────────────────────────────
+type Config {
+    pattern: string; // raw pattern string as given on argv
+    flag_i: bool; // -i  case-insensitive
+    flag_n: bool; // -n  line numbers
+    flag_v: bool; // -v  invert match
+    flag_c: bool; // -c  count-only
+    flag_r: bool; // -r  recursive directory walk
+    files: Vec<string>; // remaining positional arguments (files/dirs)
+}
+
+// ── Match state ────────────────────────────────────────────────────────────────
+type MatchState {
+    found_any: bool; // any match seen across all files
+    had_error: bool; // any file open / read error
+}
+
+// ── Argument parsing ──────────────────────────────────────────────────────────
+fn parse_args() -> Result<Config, string> {
+    let argc = os.args_count();
+    if argc < 2 {
+        return Err("usage: grep [FLAGS] PATTERN [FILE...]");
+    }
+    var flag_i = false;
+    var flag_n = false;
+    var flag_v = false;
+    var flag_c = false;
+    var flag_r = false;
+    var pattern: string = "";
+    var pattern_set = false;
+    let files: Vec<string> = Vec::new();
+    var i = 1;
+    while i < argc {
+        let arg = os.args(i);
+        if !pattern_set && arg.starts_with("-") && arg.len() > 1 {
+            // Treat each character after '-' as an individual flag.
+            // "--" ends flag parsing (next arg is the pattern).
+            if arg == "--" {
+                i = i + 1;
+                if i >= argc {
+                    return Err("grep: missing pattern after --");
+                }
+                pattern = os.args(i);
+                pattern_set = true;
+                i = i + 1;
+                continue;
+            }
+            let flag_chars = arg.slice(1, arg.len());
+            let fc_len = flag_chars.len();
+            var fi = 0;
+            while fi < fc_len {
+                let ch = flag_chars.slice(fi, fi + 1);
+                if ch == "i" {
+                    flag_i = true;
+                } else if ch == "n" {
+                    flag_n = true;
+                } else if ch == "v" {
+                    flag_v = true;
+                } else if ch == "c" {
+                    flag_c = true;
+                } else if ch == "r" {
+                    flag_r = true;
+                } else {
+                    return Err(f"grep: unknown flag: -{ch}");
+                }
+                fi = fi + 1;
+            }
+        } else if !pattern_set {
+            pattern = arg;
+            pattern_set = true;
+        } else {
+            files.push(arg);
+        }
+        i = i + 1;
+    }
+    if !pattern_set {
+        return Err("grep: missing pattern");
+    }
+    Ok(Config { pattern: pattern, flag_i: flag_i, flag_n: flag_n, flag_v: flag_v, flag_c: flag_c, flag_r: flag_r, files: files })
+}
+
+// ── Line-by-line matching ──────────────────────────────────────────────────────
+
+// Process a block of text (already loaded as a string) against the compiled
+// Pattern.  Returns the number of matching lines emitted (or counted).
+fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string, show_label: bool) -> i64 { // "file:" prefix, or "" for unlabelled output
+    let lines = string.lines(content);
+    let nlines = lines.len();
+    var match_count: i64 = 0;
+    var lineno: i64 = 1;
+    var li = 0;
+    while li < nlines {
+        let raw_line = lines.get(li);
+        // For -i, fold the line to lowercase before matching.
+        // The pattern was already folded when the Pattern was compiled.
+        let test_line = if cfg.flag_i {
+            raw_line.to_lowercase()
+        } else {
+            raw_line
+        };
+        let matched = pat.is_match(test_line);
+        let print_this = if cfg.flag_v {
+            !matched
+        } else {
+            matched
+        };
+        if print_this {
+            match_count = match_count + 1;
+            if !cfg.flag_c {
+                // Assemble the output line prefix.
+                let prefix = if show_label && cfg.flag_n {
+                    f"{label}{lineno}:"
+                } else if show_label {
+                    f"{label}"
+                } else if cfg.flag_n {
+                    f"{lineno}:"
+                } else {
+                    ""
+                };
+                println(f"{prefix}{raw_line}");
+            }
+        }
+        lineno = lineno + 1;
+        li = li + 1;
+    }
+    match_count
+}
+
+// ── File-level grep ────────────────────────────────────────────────────────────
+// Returns updated MatchState (structs are value-semantic; callers must reassign).
+fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: bool, state: MatchState) -> MatchState {
+    let label = if show_label {
+        f"{file_path}:"
+    } else {
+        ""
+    };
+    let result = fs.try_read(file_path);
+    match result {
+        Err(e) => {
+            let msg = fs.io_error_message(e);
+            io.write_err(f"grep: {file_path}: {msg}
+");
+            MatchState { found_any: state.found_any, had_error: true }
+        },
+        Ok(content) => {
+            let count = grep_content(content, pat, cfg, label, show_label);
+            if cfg.flag_c {
+                if show_label {
+                    println(f"{file_path}:{count}");
+                } else {
+                    println(f"{count}");
+                }
+            }
+            MatchState { found_any: state.found_any || count > 0, had_error: state.had_error }
+        },
+    }
+}
+
+// ── Recursive directory walk ───────────────────────────────────────────────────
+
+// Walk `dir_path` recursively, calling grep_file on every regular file found.
+// GAP: no fs.walk_dir; we implement recursive descent via fs.list_dir + fs.is_dir.
+// Returns updated MatchState (structs are value-semantic; callers must reassign).
+fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState {
+    let entries_result = fs.try_list_dir(dir_path);
+    match entries_result {
+        Err(e) => {
+            let msg = fs.io_error_message(e);
+            io.write_err(f"grep: {dir_path}: {msg}
+");
+            MatchState { found_any: state.found_any, had_error: true }
+        },
+        Ok(entries) => {
+            let n = entries.len();
+            var ei = 0;
+            var s = state;
+            while ei < n {
+                let name = entries.get(ei);
+                let full = path.combine(dir_path, name);
+                if fs.is_dir(full) {
+                    s = grep_dir(full, pat, cfg, s);
+                } else {
+                    s = grep_file(full, pat, cfg, true, s);
+                }
+                ei = ei + 1;
+            }
+            s
+        },
+    }
+}
+
+// ── Stdin grep ────────────────────────────────────────────────────────────────
+// Returns updated MatchState (structs are value-semantic; callers must reassign).
+fn grep_stdin(pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState {
+    // io.read_all reads until EOF — suitable for piped/redirected stdin.
+    // GAP: no line-by-line stdin iterator; we fall back to read_all + string.lines.
+    let content = io.read_all();
+    let count = grep_content(content, pat, cfg, "", false);
+    if cfg.flag_c {
+        println(f"{count}");
+    }
+    MatchState { found_any: state.found_any || count > 0, had_error: state.had_error }
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────────
+fn main() -> i64 {
+    match parse_args() {
+        Err(msg) => {
+            io.write_err(f"{msg}
+");
+            2
+        },
+        Ok(cfg) => {
+            // For -i, fold the pattern to lowercase so it matches lowercased input.
+            let compiled_pattern = if cfg.flag_i {
+                cfg.pattern.to_lowercase()
+            } else {
+                cfg.pattern
+            };
+            // GAP[1]: re"..." is a compile-time literal; it cannot interpolate a runtime
+            // string.  Until the compiler supports runtime-pattern re-literals or a
+            // re!(expr) macro, callers must use regex.new(expr) for dynamic patterns.
+            let pat = regex.new(compiled_pattern);
+            var state = MatchState { found_any: false, had_error: false };
+            let nfiles = cfg.files.len();
+            if nfiles == 0 {
+                // No file arguments — read from stdin.
+                state = grep_stdin(pat, cfg, state);
+            } else {
+                // show_label is true whenever output is ambiguous without the filename:
+                // multiple files, or -r (which may expand a single dir into many files).
+                let show_label = nfiles > 1 || cfg.flag_r;
+                var fi = 0;
+                while fi < nfiles {
+                    let arg = cfg.files.get(fi);
+                    if cfg.flag_r && fs.is_dir(arg) {
+                        state = grep_dir(arg, pat, cfg, state);
+                    } else {
+                        state = grep_file(arg, pat, cfg, show_label, state);
+                    }
+                    fi = fi + 1;
+                }
+            }
+            pat.free();
+            if state.had_error {
+                return 2;
+            }
+            if state.found_any {
+                return 0;
+            }
+            1
+        },
+    }
+}

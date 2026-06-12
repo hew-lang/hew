@@ -1,0 +1,13 @@
+// Regression: file-imported trait impl methods must emit as definitions,
+// not external declarations. Previously, the fourth-pass (package-import
+// module-graph walk) re-lowered file-import impls, producing duplicate
+// HirItem::Function entries for the same unqualified method symbol,
+// which caused the codegen LLVM verifier to reject the module with:
+//   "Global is external, but doesn't have external or weak linkage!"
+import "file_import_trait_impl_lib.hew";
+
+fn main() {
+    let r = Rect { width: 4, height: 3 };
+    println(r.area());
+    println(r.perimeter());
+}

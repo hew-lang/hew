@@ -19,21 +19,21 @@
 /// Read a single line from standard input.
 ///
 /// Strips the trailing newline. Returns an empty string on EOF or error.
-pub fn read_line() -> String {
+pub fn read_line() -> string {
     unsafe {
         hew_io_read_line()
     }
 }
 
 /// Write a string to standard output without a trailing newline.
-pub fn write(s: String) {
+pub fn write(s: string) {
     unsafe {
         hew_io_write(s)
     };
 }
 
 /// Write a string to standard error without a trailing newline.
-pub fn write_err(s: String) {
+pub fn write_err(s: string) {
     unsafe {
         hew_io_write_err(s)
     };
@@ -42,16 +42,58 @@ pub fn write_err(s: String) {
 /// Read all available data from standard input.
 ///
 /// Returns an empty string on error.
-pub fn read_all() -> String {
+pub fn read_all() -> string {
     unsafe {
         hew_io_read_all()
     }
 }
 
+// ── Declarative bytes receiver FFI ───────────────────────────────────
+//
+// Native bytes now has a dedicated push ABI. The remaining collection-like
+// helpers stay on the checked-in Vec symbols until corresponding hew_bytes_*
+// runtime entries exist.
+impl bytes {
+    #[extern_symbol(hew_bytes_push)]
+    fn push(buf: bytes, byte: u8) {}
+    #[extern_symbol(hew_vec_pop_i32)]
+    fn pop(buf: bytes) -> u8 {
+        0
+    }
+    #[extern_symbol(hew_vec_len)]
+    fn len(buf: bytes) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_bytes_index)]
+    fn get(buf: bytes, index: i64) -> u8 {
+        0
+    }
+    #[extern_symbol(hew_vec_set_i32)]
+    fn set(buf: bytes, index: i64, byte: u8) {}
+    #[extern_symbol(hew_vec_is_empty)]
+    fn is_empty(buf: bytes) -> bool {
+        false
+    }
+    #[extern_symbol(hew_vec_clear)]
+    fn clear(buf: bytes) {}
+    #[extern_symbol(hew_vec_contains_i32)]
+    fn contains(buf: bytes, byte: u8) -> bool {
+        false
+    }
+    #[extern_symbol(hew_bytes_to_string)]
+    fn to_string(buf: bytes) -> string {
+        ""
+    }
+    #[extern_symbol(hew_vec_append)]
+    fn append(buf: bytes, other: bytes) {}
+    #[extern_symbol(hew_vec_append)]
+    fn extend(buf: bytes, other: bytes) {}
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_io_read_line() -> String;
-    fn hew_io_write(s: String);
-    fn hew_io_write_err(s: String);
-    fn hew_io_read_all() -> String;
+    fn hew_io_read_line() -> string;
+    fn hew_io_write(s: string);
+    fn hew_io_write_err(s: string);
+    fn hew_io_read_all() -> string;
 }

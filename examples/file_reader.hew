@@ -1,7 +1,10 @@
+//! Status: runnable
+//! Description: File reader via message-passing actors
+
 // File reader via message-passing actors
 // Reads an input file and prints contents to console via actor messages
 actor Printer {
-    let lines_printed: i32;
+    var lines_printed: i32;
     receive fn print_line(text: i32) {
         lines_printed = lines_printed + 1;
     }
@@ -11,16 +14,18 @@ actor Printer {
 }
 
 actor FileReader {
-    let done: i32;
+    var done: i32;
     receive fn read(path: i32) {
         println("FileReader: reading file...");
         done = 1;
     }
 }
 
+import std::fs;
+
 fn main() {
     println("=== File Reader via Actors ===");
-    let content = read_file("examples/actor_fib.hew");
+    let content = fs.read("examples/actor_fib.hew");
     println("--- File Contents ---");
     println(content);
     println("--- End Contents ---");

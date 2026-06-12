@@ -16,7 +16,7 @@ fn main() {
     }
     for i in 1 .. amount + 1 {
         for j in 0 .. num_coins {
-            let c = coins.get(j);
+            let c: i64 = coins.get(j) as i64;
             if c <= i {
                 let prev = dp.get(i - c);
                 if prev + 1 < dp.get(i) {

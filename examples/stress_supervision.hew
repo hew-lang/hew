@@ -1,16 +1,18 @@
+//! Status: runnable
+//! Description: stress_supervision.hew - Test supervisor tree creation and actor management
+
 // stress_supervision.hew - Test supervisor tree creation and actor management
 // Creates a supervisor with workers and verifies the tree starts correctly.
 actor Worker {
-    let id: int;
-    receive fn work(x: int) {
+    let id: i64;
+    receive fn work(x: i64) {
         println(f"Worker {id} processing {x}");
     }
 }
 
 supervisor WorkerPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 10;
+    intensity: 5 within 10s;
 }
 
 fn main() {
@@ -30,11 +32,6 @@ fn main() {
     for i in 0 .. 10 {
         w3.work(i + 200);
     }
-    close(w1);
-    close(w2);
-    close(w3);
-    await w1;
-    await w2;
-    await w3;
+    sleep_ms(50);
     println("PASS: supervision tree defined, actors process messages");
 }

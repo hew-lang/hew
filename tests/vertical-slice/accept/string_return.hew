@@ -1,0 +1,4 @@
+fn main() -> string {
+  let s = "hello";
+  return s;
+}

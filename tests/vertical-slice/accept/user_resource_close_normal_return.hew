@@ -1,0 +1,29 @@
+// W3.030 V1 — User resource closes implicitly on normal return.
+//
+// `Conn` is a `#[resource]` type whose `close` is declared in a sibling
+// inherent-impl block (the Q-α-B ratified surface). The implicit drop
+// contract dispatches `Conn::close` on every scope-exit path; here the
+// scope-exit is the normal `0` tail return of `main`.
+//
+// Expected stdout:
+//   work
+//   7
+// (The `7` line is emitted from `Conn::close` printing the consumed
+// `c.fd`. The order — `work` first, then `7` — proves close fires at
+// scope exit, after the tail expression is evaluated.)
+#[resource]
+type Conn {
+    fd: i64
+}
+impl Conn {
+    fn close(c: Conn) {
+        print(c.fd);
+        println("");
+    }
+}
+
+fn main() -> i64 {
+    let c: Conn = Conn { fd: 7 };
+    println("work");
+    0
+}

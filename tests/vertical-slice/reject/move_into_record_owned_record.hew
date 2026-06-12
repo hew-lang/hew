@@ -1,0 +1,8 @@
+type Owned { value: string; }
+type Holder { item: Owned; }
+
+fn main() -> string {
+    let item = Owned { value: "hello" };
+    let _holder = Holder { item: item };
+    item.value
+}

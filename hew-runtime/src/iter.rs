@@ -1,3 +1,7 @@
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 //! Iterator protocol for Hew collections.
 
 // Pointer casts from the data buffer are safe because the backing storage
@@ -75,7 +79,7 @@ pub unsafe extern "C" fn hew_iter_vec(vec: *const HewVec) -> *mut HewIter {
     // SAFETY: caller guarantees `vec` is valid.
     unsafe {
         let v = &*vec;
-        let iter: *mut HewIter = libc::malloc(core::mem::size_of::<HewIter>()).cast();
+        let iter: *mut HewIter = libc::malloc(core::mem::size_of::<HewIter>()).cast(); // ALLOCATOR-PAIRING: libc
         if iter.is_null() {
             libc::abort();
         }
@@ -96,7 +100,7 @@ pub unsafe extern "C" fn hew_iter_vec(vec: *const HewVec) -> *mut HewIter {
 pub unsafe extern "C" fn hew_iter_free(iter: *mut HewIter) {
     if !iter.is_null() {
         // SAFETY: caller guarantees `iter` was allocated with malloc.
-        unsafe { libc::free(iter.cast()) };
+        unsafe { libc::free(iter.cast()) }; // ALLOCATOR-PAIRING: libc
     }
 }
 

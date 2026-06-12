@@ -1,0 +1,12 @@
+// Typechecker-accept fixture: regex literal in match-arm predicate position.
+// `re"..."` in match arms is type-checked via HirMatchArmPredicate::Regex;
+// the pattern syntax is validated by the regex-syntax crate at check time.
+// End-to-end `hew check` currently reaches codegen-front and fails closed until
+// regex literal handles are threaded through the pipeline.
+fn classify(s: string) -> i64 {
+    match s {
+        re"^[0-9]+$" => 0,
+        re"^[a-zA-Z]+$" => 1,
+        _ => 2,
+    }
+}

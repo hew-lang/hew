@@ -12,5 +12,6 @@
 //! `libhew_runtime.a`.
 
 pub mod cabi;
+pub mod map;
 pub mod sink;
 pub mod vec;

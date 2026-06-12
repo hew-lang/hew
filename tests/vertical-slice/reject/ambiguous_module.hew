@@ -1,0 +1,3 @@
+import ambig_mod;
+
+fn main() -> i64 { 0 }

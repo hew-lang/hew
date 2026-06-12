@@ -7,7 +7,7 @@
 //! Available source-code analysis capabilities:
 //!
 //! - **Diagnostics** — parse, type-check, and analyze Hew source code
-//!   (`analyze`, `hover`, `get_keywords`).
+//!   (`parse_source`, `type_check`, `analyze`, `hover`, `get_keywords`).
 //! - **Navigation** — go-to-definition, find references, rename.
 //! - **Editing** — completions, signature help, code actions.
 //! - **Presentation** — semantic tokens, document symbols, inlay hints, folding ranges.
@@ -45,6 +45,53 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn analyze(source: &str) -> Result<String, JsValue> {
     export_json("analyze", || Ok(run_analysis(source)))
+}
+
+/// Parse Hew source code and return JSON `{ ast, diagnostics }`.
+///
+/// `ast` is the parser AST for callers that want to inspect declarations or
+/// expressions directly. `diagnostics` contains parser diagnostics with stable
+/// `kind`, `span`, `message`, `notes`, and `suggestions` fields.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the parse result cannot be serialized.
+#[wasm_bindgen]
+pub fn parse_source(source: &str) -> Result<String, JsValue> {
+    export_json("parse_source", || {
+        let parse_result = hew_parser::parse(source);
+        Ok(ParseSourceResult {
+            ast: parse_result.program,
+            diagnostics: convert_parse_diagnostics(parse_result.errors),
+        })
+    })
+}
+
+/// Type-check Hew source code and return JSON `{ diagnostics, type_info }`.
+///
+/// `diagnostics` includes parser and checker diagnostics. `type_info` contains
+/// byte-span keyed, user-facing resolved types for hover/editor consumers; it is
+/// empty when parsing fails and the checker is skipped.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the type-check result cannot be serialized.
+#[wasm_bindgen]
+pub fn type_check(source: &str) -> Result<String, JsValue> {
+    export_json("type_check", || Ok(run_type_check(source)))
+}
+
+/// Format Hew source code and return JSON `{ formatted, diagnostics }`.
+///
+/// `formatted` is `null` when fatal parser diagnostics are present. Otherwise it
+/// contains canonical Hew source text produced by the parser formatter.
+///
+/// # Errors
+///
+/// Returns a JavaScript error if the format result cannot be serialized.
+#[wasm_bindgen]
+pub fn format_source(source: &str) -> Result<String, JsValue> {
+    export_json("format_source", || Ok(run_format(source)))
 }
 
 /// Get the list of Hew keywords for editor completion.
@@ -378,9 +425,26 @@ fn export_error_to_js_value(err: &WasmExportError) -> JsValue {
     }
 }
 
+/// A byte-offset span in source text.
+#[derive(Clone, Copy, Serialize)]
+struct WasmSpan {
+    start: usize,
+    end: usize,
+}
+
+impl WasmSpan {
+    fn from_span(span: &std::ops::Range<usize>) -> Self {
+        Self {
+            start: span.start,
+            end: span.end,
+        }
+    }
+}
+
 /// A secondary span attached to a diagnostic (e.g. "defined here").
 #[derive(Serialize)]
 struct WasmNote {
+    span: WasmSpan,
     start_offset: usize,
     end_offset: usize,
     message: String,
@@ -390,12 +454,46 @@ struct WasmNote {
 #[derive(Serialize)]
 struct WasmDiagnostic {
     severity: String,
+    phase: &'static str,
     message: String,
+    span: WasmSpan,
     start_offset: usize,
     end_offset: usize,
     kind: String,
     notes: Vec<WasmNote>,
     suggestions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_module: Option<String>,
+}
+
+/// Resolved type attached to a source span.
+#[derive(Serialize)]
+struct WasmTypeInfo {
+    span: WasmSpan,
+    start_offset: usize,
+    end_offset: usize,
+    type_name: String,
+}
+
+/// Parse-only result returned by `parse_source()`.
+#[derive(Serialize)]
+struct ParseSourceResult {
+    ast: hew_parser::ast::Program,
+    diagnostics: Vec<WasmDiagnostic>,
+}
+
+/// Type-check result returned by `type_check()`.
+#[derive(Serialize)]
+struct TypeCheckResult {
+    diagnostics: Vec<WasmDiagnostic>,
+    type_info: Vec<WasmTypeInfo>,
+}
+
+/// Formatter result returned by `format_source()`.
+#[derive(Serialize)]
+struct FormatResult {
+    formatted: Option<String>,
+    diagnostics: Vec<WasmDiagnostic>,
 }
 
 /// Combined analysis result returned by `analyze()`.
@@ -404,27 +502,76 @@ struct AnalysisResult {
     diagnostics: Vec<WasmDiagnostic>,
     tokens: Vec<hew_analysis::SemanticToken>,
     symbols: Vec<hew_analysis::SymbolInfo>,
+    type_info: Vec<WasmTypeInfo>,
 }
 
 struct AnalyzedSource {
     parse_result: hew_parser::ParseResult,
     type_output: Option<hew_types::TypeCheckOutput>,
+    /// Diagnostics from HIR lowering, run after type-checking so that errors
+    /// such as `CheckerBoundaryViolation` (e.g. nested closure captures that
+    /// the checker leaves unresolved) are surfaced in the browser editor.
+    ///
+    /// WHY: Without HIR lowering the browser checker silently accepts closure
+    /// expressions that `hew run` rejects at lowering time — a false-green.
+    /// Fail-closed per the checker-authority doctrine: the editor must never
+    /// show green for code that the native compiler rejects.
+    ///
+    /// REAL FIX: once the checker materialises closure capture metadata fully,
+    /// these diagnostics will be empty for well-formed closure code.
+    hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
-    let type_output = if parse_result.errors.is_empty() {
+    let (type_output, hir_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
-        Some(checker.check_program(&parse_result.program))
+        let tco = checker.check_program(&parse_result.program);
+        // Run HIR lowering after type-checking so that checker-boundary
+        // violations (e.g. closure captures without materialized metadata)
+        // are caught and reported rather than silently accepted.
+        //
+        // WHY X86_64: the browser checker is analysis-only and must NOT apply
+        // wasm32 target restrictions (actors and machines run fine in the
+        // sandbox VM, which has its own coroutine scheduler). Using X86_64
+        // lets actors/machines pass HIR lowering while still catching
+        // CheckerBoundaryViolation diagnostics that arise regardless of target.
+        let hir_diagnostics = if tco.errors.is_empty() {
+            let lower_output = hew_hir::lower_program(
+                &parse_result.program,
+                &tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::X86_64,
+            );
+            // Run the HIR verifier to catch Unsupported placeholders and other
+            // structural invariant violations that lower_program may not diagnose
+            // directly. Dedup by (kind, span) so each problem is reported once.
+            // Mirrors the native `hew check` path in hew-cli/src/main.rs.
+            let mut diags = lower_output.diagnostics;
+            let verifier_diags = hew_hir::verify_hir(&lower_output.module);
+            for diag in verifier_diags {
+                let already_present = diags
+                    .iter()
+                    .any(|d| d.kind == diag.kind && d.span == diag.span);
+                if !already_present {
+                    diags.push(diag);
+                }
+            }
+            diags
+        } else {
+            Vec::new()
+        };
+        (Some(tco), hir_diagnostics)
     } else {
-        None
+        (None, Vec::new())
     };
 
     AnalyzedSource {
         parse_result,
         type_output,
+        hir_diagnostics,
     }
 }
 
@@ -444,14 +591,127 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
         hew_parser::Severity::Warning => "warning",
         hew_parser::Severity::Error => "error",
     };
+    let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
         severity: severity.to_string(),
+        phase: "parse",
         message: err.message,
-        start_offset: err.span.start,
-        end_offset: err.span.end,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
         kind: err.kind.as_kind_str().to_string(),
         notes: Vec::new(),
+        suggestions: err.hint.into_iter().collect(),
+        source_module: None,
+    }
+}
+
+fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
+    use hew_hir::HirDiagnosticKind as K;
+    match kind {
+        K::NotYetImplemented { .. } => "NotYetImplemented",
+        K::MachineEventFieldNotFound { .. } => "MachineEventFieldNotFound",
+        K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
+        K::ImportMissing { .. } => "ImportMissing",
+        K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",
+        K::UnresolvedInferenceVar => "UnresolvedInferenceVar",
+        K::DuplicateBindingId { .. } => "DuplicateBindingId",
+        K::DuplicateSiteId { .. } => "DuplicateSiteId",
+        K::DuplicateNodeId { .. } => "DuplicateNodeId",
+        K::DanglingRef { .. } => "DanglingRef",
+        K::ReturnTypeMismatch { .. } => "ReturnTypeMismatch",
+        K::ResourceMissingClose { .. } => "ResourceMissingClose",
+        K::LinearNoConsumingMethods { .. } => "LinearNoConsumingMethods",
+        K::ResourceGenericUnsupported { .. } => "ResourceGenericUnsupported",
+        K::ResourceCloseSourceUnsupported { .. } => "ResourceCloseSourceUnsupported",
+        K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
+        K::AwaitOutOfPosition => "AwaitOutOfPosition",
+        K::AwaitNonTask { .. } => "AwaitNonTask",
+        K::ForkChildNotACall => "ForkChildNotACall",
+        K::TaskNotNameable => "TaskNotNameable",
+        K::TaskCannotEscape => "TaskCannotEscape",
+        K::SelectArmNotSealedForm { .. } => "SelectArmNotSealedForm",
+        K::SelectArmTypeMismatch { .. } => "SelectArmTypeMismatch",
+        K::SelectMultipleAfterArms => "SelectMultipleAfterArms",
+        K::SelectNoArms => "SelectNoArms",
+        K::SelectStreamNextArity { .. } => "SelectStreamNextArity",
+        K::JoinBranchNotActorAsk { .. } => "JoinBranchNotActorAsk",
+        K::JoinNoBranches => "JoinNoBranches",
+        K::MachineExhaustivenessViolation { .. } => "MachineExhaustivenessViolation",
+        K::MachineSelfTransitionNeedsReenter { .. } => "MachineSelfTransitionNeedsReenter",
+        K::MachineEffectParityViolation { .. } => "MachineEffectParityViolation",
+        K::MachineEmitCycle { .. } => "MachineEmitCycle",
+        K::MachineEmitNotInManifest { .. } => "MachineEmitNotInManifest",
+        K::MethodCallNoRewrite { .. } => "MethodCallNoRewrite",
+        K::ImplBlockShapeNotLowered { .. } => "ImplBlockShapeNotLowered",
+        K::TraitObjectMethodNoSideTableEntry { .. } => "TraitObjectMethodNoSideTableEntry",
+        K::TraitObjectCoercionMissing { .. } => "TraitObjectCoercionMissing",
+        K::ActorStateGuardMissing { .. } => "ActorStateGuardMissing",
+        K::CheckerBoundaryViolation { .. } => "CheckerBoundaryViolation",
+        K::MonomorphisationCallTypeArgsViolation { .. } => "MonomorphisationCallTypeArgsViolation",
+        K::MonomorphisationCapExceeded { .. } => "MonomorphisationCapExceeded",
+        K::RecordLayoutTypeArgsViolation { .. } => "RecordLayoutTypeArgsViolation",
+        K::RecordLayoutCapExceeded { .. } => "RecordLayoutCapExceeded",
+        K::RecordLayoutMissing { .. } => "RecordLayoutMissing",
+        K::RecursiveGenericTypeUnsupported { .. } => "RecursiveGenericTypeUnsupported",
+        K::EnumLayoutCapExceeded { .. } => "EnumLayoutCapExceeded",
+        K::UnresolvedMachineTypeParamPostMono { .. } => "UnresolvedMachineTypeParamPostMono",
+        K::MachineMonomorphisationCapExceeded { .. } => "MachineMonomorphisationCapExceeded",
+        K::UnresolvedLayoutTypeParamPostMono { .. } => "UnresolvedLayoutTypeParamPostMono",
+        K::UnknownIntrinsic { .. } => "UnknownIntrinsic",
+        K::ImportedBodyMissingPrivateHelper { .. } => "ImportedBodyMissingPrivateHelper",
+        K::ImportedFreeFnBodyUnresolvedBareCall { .. } => "ImportedFreeFnBodyUnresolvedBareCall",
+        K::TargetCoroutineUnsupported { .. } => "TargetCoroutineUnsupported",
+        K::BlockingChannelRecvUnsupportedOnWasm { .. } => "BlockingChannelRecvUnsupportedOnWasm",
+        K::TaskSpawnSignatureUnsupported { .. } => "TaskSpawnSignatureUnsupported",
+        K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
+        K::SpawnedClosureSignatureUnsupported { .. } => "SpawnedClosureSignatureUnsupported",
+        K::SpawnedClosureNonSendCapture { .. } => "SpawnedClosureNonSendCapture",
+        K::ForkBlockBodyUnsupported { .. } => "ForkBlockBodyUnsupported",
+        K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
+        K::AwaitTaskResultUnsupported { .. } => "AwaitTaskResultUnsupported",
+        K::SupervisorPoolChildAccessorUnsupported { .. } => {
+            "SupervisorPoolChildAccessorUnsupported"
+        }
+        K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
+        K::ActorSendRequiresUnitHandler { .. } => "ActorSendRequiresUnitHandler",
+        K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
+        K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
+        K::PlatformSizedDivRemUnsupported { .. } => "PlatformSizedDivRemUnsupported",
+        K::PlatformSizedShiftUnsupported { .. } => "PlatformSizedShiftUnsupported",
+        K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
+        K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",
+        K::SupervisorSpawnArgsUnsupported { .. } => "SupervisorSpawnArgsUnsupported",
+        K::VecIndexElementTypeUnsupported { .. } => "VecIndexElementTypeUnsupported",
+        K::VecSliceElementTypeUnsupported { .. } => "VecSliceElementTypeUnsupported",
+        K::CloneNotYetSupported { .. } => "CloneNotYetSupported",
+    }
+}
+
+fn hir_diagnostic_to_wasm(diag: hew_hir::HirDiagnostic) -> WasmDiagnostic {
+    let span = WasmSpan::from_span(&diag.span);
+    let kind = hir_kind_str(&diag.kind).to_string();
+    let notes = diag
+        .secondary_spans
+        .into_iter()
+        .map(|(span, msg)| WasmNote {
+            span: WasmSpan::from_span(&span),
+            start_offset: span.start,
+            end_offset: span.end,
+            message: msg,
+        })
+        .collect();
+    WasmDiagnostic {
+        severity: "error".to_string(),
+        phase: "hir",
+        message: diag.note,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
+        kind,
+        notes,
         suggestions: Vec::new(),
+        source_module: diag.source_module,
     }
 }
 
@@ -460,53 +720,134 @@ fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
         hew_types::error::Severity::Warning => "warning",
         hew_types::error::Severity::Error => "error",
     };
+    let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
         severity: severity.to_string(),
+        phase: "typecheck",
         message: err.message,
-        start_offset: err.span.start,
-        end_offset: err.span.end,
+        span,
+        start_offset: span.start,
+        end_offset: span.end,
         kind: err.kind.as_kind_str().to_string(),
         notes: err
             .notes
             .into_iter()
             .map(|(span, msg)| WasmNote {
+                span: WasmSpan::from_span(&span),
                 start_offset: span.start,
                 end_offset: span.end,
                 message: msg,
             })
             .collect(),
         suggestions: err.suggestions,
+        source_module: err.source_module,
     }
+}
+
+fn convert_parse_diagnostics(parse_errors: Vec<hew_parser::ParseError>) -> Vec<WasmDiagnostic> {
+    parse_errors.into_iter().map(parse_error_to_wasm).collect()
 }
 
 fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
+    hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
 ) -> Vec<WasmDiagnostic> {
-    let mut diagnostics: Vec<WasmDiagnostic> =
-        parse_errors.into_iter().map(parse_error_to_wasm).collect();
+    let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
         diagnostics.extend(type_output.errors.into_iter().map(type_error_to_wasm));
+        diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
+    diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
     diagnostics
+}
+
+fn build_type_info(type_output: &hew_types::TypeCheckOutput) -> Vec<WasmTypeInfo> {
+    let mut entries: Vec<WasmTypeInfo> = type_output
+        .expr_types
+        .iter()
+        .map(|(span_key, ty)| {
+            let span = WasmSpan {
+                start: span_key.start,
+                end: span_key.end,
+            };
+            WasmTypeInfo {
+                span,
+                start_offset: span.start,
+                end_offset: span.end,
+                type_name: ty.materialize_literal_defaults().user_facing().to_string(),
+            }
+        })
+        .collect();
+    entries.sort_by_key(|entry| (entry.start_offset, entry.end_offset));
+    entries
+}
+
+fn run_type_check(source: &str) -> TypeCheckResult {
+    let analysis = parse_and_type_check(source);
+    let type_info = analysis
+        .type_output
+        .as_ref()
+        .map(build_type_info)
+        .unwrap_or_default();
+    let AnalyzedSource {
+        parse_result,
+        type_output,
+        hir_diagnostics,
+    } = analysis;
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
+
+    TypeCheckResult {
+        diagnostics,
+        type_info,
+    }
+}
+
+fn run_format(source: &str) -> FormatResult {
+    let parse_result = hew_parser::parse(source);
+    let has_fatal_error = parse_result
+        .errors
+        .iter()
+        .any(|err| matches!(err.severity, hew_parser::Severity::Error));
+    let formatted = if has_fatal_error {
+        None
+    } else {
+        Some(hew_parser::fmt::format_source(
+            source,
+            &parse_result.program,
+        ))
+    };
+    let diagnostics = convert_parse_diagnostics(parse_result.errors);
+
+    FormatResult {
+        formatted,
+        diagnostics,
+    }
 }
 
 fn run_analysis(source: &str) -> AnalysisResult {
     let tokens = build_tokens(source);
     let analysis = parse_and_type_check(source);
+    let type_info = analysis
+        .type_output
+        .as_ref()
+        .map(build_type_info)
+        .unwrap_or_default();
     // Build symbols first while parse_result is still fully owned, then
     // destructure to pass errors and type_output by value to convert_diagnostics.
     let symbols = build_symbols(source, &analysis.parse_result);
     let AnalyzedSource {
         parse_result,
         type_output,
+        hir_diagnostics,
     } = analysis;
-    let diagnostics = convert_diagnostics(parse_result.errors, type_output);
+    let diagnostics = convert_diagnostics(parse_result.errors, type_output, hir_diagnostics);
 
     AnalysisResult {
         diagnostics,
         tokens,
         symbols,
+        type_info,
     }
 }
 
@@ -537,6 +878,25 @@ fn curated_playground_manifest_smoke() {
     );
 
     let valid_wasi = ["runnable", "unsupported"];
+    // Sandbox bytecode export has no implicit default: every manifest entry
+    // must declare one of these tiers, and future tiers should be added here
+    // before use so tests fail closed as coverage changes.
+    let valid_sandbox = ["runnable", "simulated", "unsupported_native_only"];
+
+    let validate_sandbox_capability = |id: &str, sandbox_cap: &str| -> Result<(), String> {
+        if valid_sandbox.contains(&sandbox_cap) {
+            Ok(())
+        } else {
+            Err(format!(
+                "manifest entry {id}: capabilities.sandbox must be one of {valid_sandbox:?}, got {sandbox_cap:?}"
+            ))
+        }
+    };
+
+    assert!(
+        validate_sandbox_capability("negative-fixture", "analysis-only").is_err(),
+        "sandbox capability schema must reject hew-wasm's analysis-only tier"
+    );
 
     for entry in entries {
         let id = entry
@@ -567,6 +927,11 @@ fn curated_playground_manifest_smoke() {
             valid_wasi.contains(&wasi_cap),
             "manifest entry {id}: capabilities.wasi must be one of {valid_wasi:?}, got {wasi_cap:?}"
         );
+        let sandbox_cap = caps
+            .get("sandbox")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("manifest entry {id} missing capabilities.sandbox"));
+        validate_sandbox_capability(id, sandbox_cap).unwrap_or_else(|err| panic!("{err}"));
 
         let source_path_rel = entry
             .get("source_path")
@@ -626,6 +991,104 @@ mod tests {
         let result = ok(analyze("fn {"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed["diagnostics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_source_returns_ast_and_parse_diagnostics() {
+        let result = ok(parse_source("fn main() { let x = 1; }"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed["ast"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "parse_source must return a serialized AST: {result}"
+        );
+        assert!(
+            parsed["diagnostics"].as_array().unwrap().is_empty(),
+            "valid source should have no parse diagnostics: {result}"
+        );
+
+        let error_result = ok(parse_source("fn {"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        let diagnostics = error_parsed["diagnostics"].as_array().unwrap();
+        assert!(
+            !diagnostics.is_empty(),
+            "invalid source should report parse diagnostics: {error_result}"
+        );
+        let first = &diagnostics[0];
+        assert_eq!(first["phase"].as_str(), Some("parse"));
+        assert!(first["kind"].as_str().is_some_and(|kind| !kind.is_empty()));
+        assert!(first["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()));
+        assert!(first["span"]["start"].as_u64().is_some());
+        assert!(first["span"]["end"].as_u64().is_some());
+        assert!(first["notes"].as_array().is_some());
+    }
+
+    #[test]
+    fn type_check_returns_diagnostics_with_spans_and_type_info() {
+        let result = ok(type_check("fn main() { let x: i64 = 42; let _y = x; }"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            !parsed["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diag| diag["severity"].as_str() == Some("error")),
+            "valid source should not report error diagnostics: {result}"
+        );
+        let type_info = parsed["type_info"].as_array().unwrap();
+        assert!(
+            !type_info.is_empty(),
+            "valid source should expose resolved type spans for hover: {result}"
+        );
+        assert!(
+            type_info.iter().any(|entry| {
+                entry["type_name"].as_str() == Some("i64")
+                    && entry["span"]["start"].as_u64().is_some()
+                    && entry["span"]["end"].as_u64().is_some()
+            }),
+            "type_info should include user-facing i64 entries with spans: {result}"
+        );
+
+        let error_result = ok(type_check("fn main() { let x = 1; x = 2; }"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        let diagnostics = error_parsed["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag["phase"].as_str() == Some("typecheck")
+                    && diag["span"]["start"].as_u64().is_some()
+                    && diag["span"]["end"].as_u64().is_some()
+                    && diag["kind"].as_str().is_some_and(|kind| !kind.is_empty())
+                    && diag["notes"].as_array().is_some()
+            }),
+            "type errors must carry kind/span/message/notes: {error_result}"
+        );
+    }
+
+    #[test]
+    fn format_source_returns_formatted_source_or_parse_diagnostics() {
+        let result = ok(format_source("fn main(){let x=1;}"));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            parsed["formatted"].as_str().is_some_and(|formatted| {
+                formatted.contains("fn main()") && formatted.contains("let x = 1;")
+            }),
+            "format_source must return canonical source: {result}"
+        );
+        assert!(parsed["diagnostics"].as_array().unwrap().is_empty());
+
+        let error_result = ok(format_source("fn {"));
+        let error_parsed: serde_json::Value = serde_json::from_str(&error_result).unwrap();
+        assert!(
+            error_parsed["formatted"].is_null(),
+            "format_source must not format fatal parse errors: {error_result}"
+        );
+        assert!(
+            !error_parsed["diagnostics"].as_array().unwrap().is_empty(),
+            "format_source must return parse diagnostics on invalid source: {error_result}"
+        );
     }
 
     #[test]
@@ -791,6 +1254,14 @@ mod tests {
         assert!(!diags.is_empty(), "expected at least one parse diagnostic");
         for d in diags {
             assert!(
+                d.get("span").and_then(|span| span.get("start")).is_some(),
+                "diagnostic missing nested `span.start`: {d}"
+            );
+            assert!(
+                d.get("span").and_then(|span| span.get("end")).is_some(),
+                "diagnostic missing nested `span.end`: {d}"
+            );
+            assert!(
                 d.get("notes").and_then(|n| n.as_array()).is_some(),
                 "parse-path diagnostic missing `notes` array: {d}"
             );
@@ -809,6 +1280,14 @@ mod tests {
         // matters, which is covered by analyze_valid_program.  If there are
         // diagnostics, every one must carry both fields.
         for d in diags {
+            assert!(
+                d.get("span").and_then(|span| span.get("start")).is_some(),
+                "type-path diagnostic missing nested `span.start`: {d}"
+            );
+            assert!(
+                d.get("span").and_then(|span| span.get("end")).is_some(),
+                "type-path diagnostic missing nested `span.end`: {d}"
+            );
             assert!(
                 d.get("notes").and_then(|n| n.as_array()).is_some(),
                 "type-path diagnostic missing `notes` array: {d}"
@@ -921,6 +1400,7 @@ mod tests {
             "InvalidLiteral",
             "MissingExpression",
             "InvalidPattern",
+            "ClosurePipeSyntax",
             "Other",
         ];
         let json = ok(analyze("fn {"));

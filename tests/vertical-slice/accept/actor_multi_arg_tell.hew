@@ -1,0 +1,36 @@
+// Declared-actor multi-arg tell through the packed-args anonymous-record
+// wire. Covers a mixed BitCopy + heap-owning payload (string, i64) and a
+// two-heap-owning payload (string, string) — the double-free shape risk:
+// each string pointer is copied into the packed record, deep-copied into
+// the mailbox node, and owned by the handler afterwards; the caller's
+// bindings are consumed at the send boundary.
+//
+// Output is deterministic: all prints run inside Sink in mailbox FIFO
+// order; the trailing ask fences main until every tell has dispatched.
+actor Sink {
+    var total: i64;
+    receive fn process(label: string, count: i64) {
+        total = total + count;
+        println(f"{label}: count={count} total={total}");
+    }
+    receive fn note(a: string, b: string) {
+        println(f"note: {a}/{b}");
+    }
+    receive fn fence() -> i64 {
+        total
+    }
+}
+
+fn main() {
+    let s = spawn Sink(total: 0);
+    s.process("first", 5);
+    s.process("second", 7);
+    let left = "alpha";
+    let right = "beta";
+    s.note(left, right);
+    let r = await s.fence();
+    match r {
+        Ok(v) => println(f"fence total={v}"),
+        Err(_) => println("fence failed"),
+    }
+}

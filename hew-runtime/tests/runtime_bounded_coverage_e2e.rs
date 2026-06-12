@@ -117,12 +117,14 @@ impl DispatchGate {
 
 static DISPATCH_GATE: DispatchGate = DispatchGate::new();
 
-unsafe extern "C" fn gated_dispatch(
+unsafe extern "C-unwind" fn gated_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     let mut state = DISPATCH_GATE.state.lock().unwrap();
     state.started += 1;
     let target = state.started;
@@ -131,6 +133,7 @@ unsafe extern "C" fn gated_dispatch(
     while state.released < target {
         state = DISPATCH_GATE.cond.wait(state).unwrap();
     }
+    std::ptr::null_mut()
 }
 
 fn cstr(s: &str) -> CString {
@@ -228,6 +231,9 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             restart_policy: 0,
             mailbox_capacity: -1,
             overflow: 1,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
         assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
         assert_eq!(hew_supervisor_start(sup), 0);

@@ -6,6 +6,10 @@
 //! The [`HewTimerList`] struct is `#[repr(C)]` because generated code creates
 //! it on the stack.  Locking uses `libc::pthread_mutex_*` to match the C ABI
 //! layout.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -166,7 +170,7 @@ pub unsafe extern "C" fn hew_timer_list_destroy(tl: *mut HewTimerList) {
         let mut cur = (*tl).head;
         while !cur.is_null() {
             let next = (*cur).next;
-            drop(Box::from_raw(cur));
+            drop(Box::from_raw(cur)); // ALLOCATOR-PAIRING: GlobalAlloc
             cur = next;
         }
         (*tl).head = ptr::null_mut();
@@ -196,6 +200,7 @@ pub unsafe extern "C" fn hew_timer_schedule(
     // SAFETY: hew_now_ms has no preconditions.
     let now = unsafe { hew_now_ms() };
     let timer = Box::into_raw(Box::new(HewTimer {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         deadline_ms: now + delay_ms,
         cb: Some(cb),
         data,
@@ -271,7 +276,7 @@ pub unsafe extern "C" fn hew_timer_tick(tl: *mut HewTimerList) -> c_int {
                     fired += 1;
                 }
             }
-            drop(Box::from_raw(t));
+            drop(Box::from_raw(t)); // ALLOCATOR-PAIRING: GlobalAlloc
 
             mutex_lock(&raw mut (*tl).lock);
         }

@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: stress_match.hew - Complex pattern matching stress test
+
 // stress_match.hew - Complex pattern matching stress test
 // Exercises advanced pattern matching with enum variants, data payloads, and nested logic
 enum ComplexData {

@@ -1,4 +1,4 @@
-fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
+fn build_graph(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, n: i64) -> i64 {
     for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
@@ -18,9 +18,9 @@ fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
     return 0;
 }
 
-fn bfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> int {
-    let visited: Vec<int> = Vec::new();
-    let queue: Vec<int> = Vec::new();
+fn bfs(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, n: i64, start_node: i64) -> i64 {
+    let visited: Vec<i64> = Vec::new();
+    let queue: Vec<i64> = Vec::new();
     for i in 0 .. n {
         visited.push(0);
     }
@@ -45,12 +45,12 @@ fn bfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> i
     return count;
 }
 
-const ITERS: int = 100000;
+const ITERS: i64 = 100000;
 
 fn main() {
     let n = 50;
-    let adj_nodes: Vec<int> = Vec::new();
-    let adj_offsets: Vec<int> = Vec::new();
+    let adj_nodes: Vec<i64> = Vec::new();
+    let adj_offsets: Vec<i64> = Vec::new();
     let _ = build_graph(adj_nodes, adj_offsets, n);
     var checksum = 0;
     for i in 0 .. ITERS {

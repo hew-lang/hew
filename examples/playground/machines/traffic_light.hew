@@ -1,0 +1,33 @@
+//! @name Traffic Light
+//! @description A traffic signal state machine
+
+machine TrafficLight {
+    events {
+        Tick;
+    }
+
+    state Red;
+    state Green;
+    state Yellow;
+
+    on Tick: Red => Green {
+        Green
+    }
+    on Tick: Green => Yellow {
+        Yellow
+    }
+    on Tick: Yellow => Red {
+        Red
+    }
+}
+
+fn main() {
+    var light = TrafficLight::Red;
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+}

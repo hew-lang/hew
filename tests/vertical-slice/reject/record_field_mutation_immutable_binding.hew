@@ -1,0 +1,8 @@
+// Expected: compile error. Record field writes require a mutable binding.
+record Point { x: i64, y: i64 }
+
+fn main() -> i64 {
+    let p: Point = Point { x: 1, y: 2 };
+    p.x = 40;
+    p.x
+}

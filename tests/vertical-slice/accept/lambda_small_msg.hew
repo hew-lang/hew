@@ -1,0 +1,37 @@
+// Accept fixture: lambda actors with sub-8-byte message types
+// (`bool` = 1 byte, `i32` = 4 bytes) exercise the 8-byte zero-padded
+// wire format. Pre-fix, the codegen allocated the spill slot at the
+// SOURCE type's width and the runtime read 8 bytes from it — for
+// `bool` this read 7 bytes of adjacent stack (and the body's memcpy
+// then wrote 8 bytes into the user param's 1-byte alloca: a stack
+// over-WRITE on the receive side too).
+//
+// The fix is on both ends: the sender now spills into a real 8-byte
+// zero-initialised i64 alloca with a typed store at the base (the
+// source's bytes occupy the low end, zero padding occupies the high
+// end) and the body's msg-deserialise prologue copies exactly
+// `sizeof(user_ty)` bytes back. Wire format stays a uniform 8 bytes.
+//
+// Use ASK-shape so each send blocks for reply — stdout order is
+// deterministic regardless of dispatch-thread scheduling. The reply
+// path also exercises the B2 status-branched reply decode.
+fn main() {
+    let b = actor |x: bool| -> i64 {
+        if x {
+            println("bool true");
+            1
+        } else {
+            println("bool false");
+            0
+        }
+    };
+    let _r1 = b(true);
+    let _r2 = b(false);
+
+    let n32 = actor |n: i32| -> i64 {
+        println(f"i32 got {n}");
+        n as i64
+    };
+    let _r3 = n32(42);
+    let _r4 = n32(-1);
+}

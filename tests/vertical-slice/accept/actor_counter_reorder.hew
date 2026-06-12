@@ -1,0 +1,30 @@
+// Q87 slice 1 regression fixture: same semantics as `actor_counter.hew`
+// but with the two `receive fn`s declared in the opposite source order.
+//
+// Pre-Q87 the msg_id assigned to each handler was its `.enumerate()` index,
+// so reordering `increment` and `total` here would silently flip the wire
+// protocol: a caller built against `actor_counter.hew` would land its
+// `increment` messages on the slot now occupied by `total`, and the test
+// would fail in confusing ways (or pass spuriously if both were unit).
+//
+// After Q87 slice 1, msg_ids are derived from the fully-qualified handler
+// name via SipHash-1-3, so this fixture must still exit 42.
+actor Counter {
+    var count: i64;
+    receive fn total() -> i64 {
+        count
+    }
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(count: 0);
+    counter.increment(10);
+    counter.increment(32);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

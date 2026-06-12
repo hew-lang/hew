@@ -20,19 +20,19 @@
 //! ```
 
 /// Encode binary data to a lowercase hex string.
-pub fn encode(data: bytes) -> String {
+pub fn encode(data: bytes) -> string {
     encode_impl(data, false)
 }
 
 /// Encode binary data to an uppercase hex string.
-pub fn encode_upper(data: bytes) -> String {
+pub fn encode_upper(data: bytes) -> string {
     encode_impl(data, true)
 }
 
 /// Decode a hex string to binary data.
 ///
 /// Returns an empty `bytes` buffer if the input is not valid hex.
-pub fn decode(s: String) -> bytes {
+pub fn decode(s: string) -> bytes {
     let slen = s.len();
     let out: bytes = bytes::new();
     if slen == 0 {
@@ -51,21 +51,21 @@ pub fn decode(s: String) -> bytes {
         if lo < 0 {
             return bytes::new();
         }
-        out.push(hi * 16 + lo);
+        out.push((hi * 16 + lo) as u8);
         i = i + 2;
     }
     out
 }
 
 /// Encode binary data to a hex string, optionally uppercase.
-fn encode_impl(data: bytes, upper: bool) -> String {
+fn encode_impl(data: bytes, upper: bool) -> string {
     let out: bytes = bytes::new();
     for i in 0 .. data.len() {
         let b = data.get(i);
-        let hi = b / 16;
-        let lo = b % 16;
-        out.push(nibble_to_char(hi, upper));
-        out.push(nibble_to_char(lo, upper));
+        let hi = b as i32 / 16;
+        let lo = b as i32 % 16;
+        out.push(nibble_to_char(hi, upper) as u8);
+        out.push(nibble_to_char(lo, upper) as u8);
     }
     out.to_string()
 }
@@ -84,52 +84,30 @@ fn nibble_to_char(n: i32, upper: bool) -> i32 { // INTERNAL-ABI: byte-level nibb
 }
 
 /// Convert a single hex character to its 4-bit nibble value, or -1 if invalid.
-fn hex_char_to_nibble(ch: String) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
-    if ch == "0" {
-        0 as i32
-    } else if ch == "1" {
-        1 as i32
-    } else if ch == "2" {
-        2 as i32
-    } else if ch == "3" {
-        3 as i32
-    } else if ch == "4" {
-        4 as i32
-    } else if ch == "5" {
-        5 as i32
-    } else if ch == "6" {
-        6 as i32
-    } else if ch == "7" {
-        7 as i32
-    } else if ch == "8" {
-        8 as i32
-    } else if ch == "9" {
-        9 as i32
-    } else if ch == "a" {
-        10 as i32
-    } else if ch == "b" {
-        11 as i32
-    } else if ch == "c" {
-        12 as i32
-    } else if ch == "d" {
-        13 as i32
-    } else if ch == "e" {
-        14 as i32
-    } else if ch == "f" {
-        15 as i32
-    } else if ch == "A" {
-        10 as i32
-    } else if ch == "B" {
-        11 as i32
-    } else if ch == "C" {
-        12 as i32
-    } else if ch == "D" {
-        13 as i32
-    } else if ch == "E" {
-        14 as i32
-    } else if ch == "F" {
-        15 as i32
-    } else {
-        -1 as i32
+fn hex_char_to_nibble(ch: string) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; byte-level helper
+    match ch {
+        "0" => 0 as i32,
+        "1" => 1 as i32,
+        "2" => 2 as i32,
+        "3" => 3 as i32,
+        "4" => 4 as i32,
+        "5" => 5 as i32,
+        "6" => 6 as i32,
+        "7" => 7 as i32,
+        "8" => 8 as i32,
+        "9" => 9 as i32,
+        "a" => 10 as i32,
+        "b" => 11 as i32,
+        "c" => 12 as i32,
+        "d" => 13 as i32,
+        "e" => 14 as i32,
+        "f" => 15 as i32,
+        "A" => 10 as i32,
+        "B" => 11 as i32,
+        "C" => 12 as i32,
+        "D" => 13 as i32,
+        "E" => 14 as i32,
+        "F" => 15 as i32,
+        _ => -1 as i32,
     }
 }

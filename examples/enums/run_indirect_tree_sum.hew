@@ -1,0 +1,25 @@
+// Exercises a recursive `indirect enum` with two self-referential variants.
+// Regression for the G1 enum-storage-class bug: the `Node(Tree, Tree)` variant
+// payload was incorrectly sized as 0 bytes (opaque-struct ABI-size miscomputation),
+// causing `hew_alloc(0)` → null heap pointer → SIGSEGV on construction.
+//
+// After the fix, each Tree variable is heap-allocated at the correct size
+// (sizeof the tagged-union outer struct), and pointer-typed in the function
+// ABI so recursive calls pass heap pointers correctly.
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+fn sum(t: Tree) -> i64 {
+    match t {
+        Leaf(n) => n,
+        Node(l, r) => sum(l) + sum(r),
+    }
+}
+
+fn main() {
+    let t = Node(Leaf(3), Leaf(4));
+    let s = sum(t);
+    println(f"sum={s}");
+}

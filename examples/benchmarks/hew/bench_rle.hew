@@ -1,4 +1,4 @@
-fn rle_count(s: string) -> int {
+fn rle_count(s: string) -> i64 {
     let n = s.len();
     if n == 0 {
         return 0;
@@ -23,7 +23,7 @@ fn rle_count(s: string) -> int {
     return runs;
 }
 
-const ITERS: int = 500000;
+const ITERS: i64 = 500000;
 
 fn main() {
     let s = "aaabbccccdddddeee";

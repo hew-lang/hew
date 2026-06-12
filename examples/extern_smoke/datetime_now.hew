@@ -1,0 +1,10 @@
+extern "rt" {
+    fn hew_datetime_now_ms() -> i64;
+}
+
+fn main() {
+    let now: i64 = unsafe {
+        hew_datetime_now_ms()
+    };
+    println(now);
+}

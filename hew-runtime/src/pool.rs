@@ -1,3 +1,7 @@
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 //! Actor pool abstraction with configurable routing strategies.
 
 use std::ffi::c_char;
@@ -89,7 +93,7 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
 ///
 /// `pool` must be a valid pointer returned by [`hew_pool_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -> c_int {
+pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_id: u64) -> c_int {
     if pool.is_null() {
         return -1;
     }
@@ -101,7 +105,7 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     let Some(mut state) = lock_state(pool) else {
         return -1;
     };
-    state.members.push(actor_pid);
+    state.members.push(actor_id);
     0
 }
 
@@ -113,7 +117,7 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
 ///
 /// `pool` must be a valid pointer returned by [`hew_pool_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64) -> c_int {
+pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_id: u64) -> c_int {
     if pool.is_null() {
         return -1;
     }
@@ -125,7 +129,7 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     let Some(mut state) = lock_state(pool) else {
         return -1;
     };
-    if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
+    if let Some(idx) = state.members.iter().position(|&pid| pid == actor_id) {
         state.members.swap_remove(idx);
         return 0;
     }
@@ -149,6 +153,32 @@ pub unsafe extern "C" fn hew_pool_size(pool: *const HewActorPool) -> usize {
     }
     match lock_state(pool) {
         Some(s) => s.members.len(),
+        None => 0,
+    }
+}
+
+/// Return the PID of the member at a given index within the pool.
+///
+/// Returns `0` if `pool` is null, `index` is out of range, or the pool state
+/// is inaccessible. The index is **unstable**: members are stored as an
+/// unordered set, and a `hew_pool_remove` call may shift other indices via
+/// `swap_remove`. Do not cache an index across removals.
+///
+/// # Safety
+///
+/// `pool` must be a valid pointer returned by [`hew_pool_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_pool_get_at(pool: *const HewActorPool, index: usize) -> u64 {
+    if pool.is_null() {
+        return 0;
+    }
+    // SAFETY: Caller guarantees `pool` is valid.
+    let pool = unsafe { &*pool };
+    if pool_is_freed(pool) {
+        return 0;
+    }
+    match lock_state(pool) {
+        Some(s) => s.members.get(index).copied().unwrap_or(0),
         None => 0,
     }
 }

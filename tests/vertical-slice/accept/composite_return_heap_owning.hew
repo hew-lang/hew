@@ -1,0 +1,26 @@
+// Accept (W5.020): composite return of a heap-owning enum payload.
+// `Option<string>` carries an owned `string` in its `Some` payload. The
+// move-out + caller-side tag-aware in-place drop spine transfers that single
+// owner across the return boundary and drops it exactly once at the caller's
+// scope exit — no leak, no double-free. (Was a reject fixture before W5.020;
+// the codegen boundary failed closed with "requires tag-aware drop".)
+//
+// Exit 1 proves the caller received the composite and matched the Some arm,
+// reading through to the owned payload. The Err/None counterpart drop path is
+// exercised by the runtime oracle fixtures.
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn greet() -> Option<string> {
+    Option::Some("hello")
+}
+
+fn main() -> i64 {
+    let r = greet();
+    match r {
+        Option::Some(s) => 1,
+        Option::None => 0,
+    }
+}

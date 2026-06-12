@@ -9,39 +9,54 @@
 //!
 //! Also tests: link propagation, monitor DOWN notifications, circuit breaker,
 //! and deterministic testing infrastructure.
+//!
+//! Supervisor and standalone-actor handle lifecycle is funnelled through
+//! `hew_runtime_testkit::{TestSupervisor, TestActor}`. The runtime's child-
+//! management FFI (`HewChildSpec`, `hew_supervisor_add_child_spec`,
+//! `wait_restart`, `get_child_wait`, `set_child_state_drop`, …) is inherently
+//! raw and is annotated per-test below.
 
-#![expect(
+#![allow(
     clippy::undocumented_unsafe_blocks,
-    reason = "Integration test — safety invariants documented per-test"
+    reason = "Integration test — supervisor child-management FFI is inherently raw; SAFETY notes on unsafe blocks where load-bearing"
 )]
-// (removed invalid lint: clippy::missing_docs_in_crate_items)
 
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use hew_runtime::actor::{hew_actor_send, hew_actor_spawn};
+use hew_runtime::actor::{
+    hew_actor_send, hew_actor_set_crash_teardown_order_hook,
+    HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION,
+    HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION,
+};
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
-use hew_runtime::internal::types::HewActorState;
 use hew_runtime::link::hew_actor_link;
 use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
-    hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait, hew_supervisor_new,
+    hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
     hew_supervisor_set_child_state_drop, hew_supervisor_set_circuit_breaker,
-    hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-    hew_supervisor_wait_restart, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
-    HEW_CIRCUIT_BREAKER_OPEN, SYS_MSG_DOWN,
+    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, HewChildSpec,
+    HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN, SYS_MSG_DOWN,
 };
+use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
-static SCHED_INIT: std::sync::Once = std::sync::Once::new();
-fn ensure_scheduler() {
-    SCHED_INIT.call_once(|| {
-        hew_runtime::scheduler::hew_sched_init();
-    });
-}
+// Windows scheduler resolution (15 ms default) combined with the full parallel
+// test suite means actor/supervisor round-trips can take longer than on
+// POSIX platforms.  Use a wider assertion window for timing-sensitive tests.
+#[cfg(windows)]
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(not(windows))]
+const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(5);
+/// Same value as [`SUPERVISOR_TIMEOUT`] expressed in milliseconds for
+/// `hew_supervisor_wait_restart`'s `timeout_ms` parameter.
+#[cfg(windows)]
+const SUPERVISOR_TIMEOUT_MS: u64 = 30_000;
+#[cfg(not(windows))]
+const SUPERVISOR_TIMEOUT_MS: u64 = 5_000;
 
 /// Global lock to serialize all tests in this file.
 ///
@@ -99,14 +114,17 @@ static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
 static DISPATCH_SIGNAL: DispatchSignal = DispatchSignal::new();
 
 /// Simple dispatch: increments counter.
-unsafe extern "C" fn counting_dispatch(
+unsafe extern "C-unwind" fn counting_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
     DISPATCH_SIGNAL.record_dispatch();
+    std::ptr::null_mut()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,6 +168,7 @@ impl MonitorDispatchSignal {
             && !data.is_null()
             && data_size == std::mem::size_of::<DownMessageView>()
         {
+            // SAFETY: SYS_MSG_DOWN payload size matches DownMessageView.
             let down = unsafe { (data.cast::<DownMessageView>().cast_const()).read_unaligned() };
             state.down_messages.push(down);
         }
@@ -201,37 +220,27 @@ impl MonitorDispatchSignal {
 
 static MONITOR_DISPATCH_SIGNAL: MonitorDispatchSignal = MonitorDispatchSignal::new();
 
-unsafe extern "C" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
-unsafe extern "C" fn noop_dispatch(
+unsafe extern "C-unwind" fn noop_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
-) {
-}
-
-fn wait_for_actor_state(
-    actor: *mut hew_runtime::actor::HewActor,
-    expected: HewActorState,
-    timeout: Duration,
-) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let state = unsafe { &*actor }.actor_state.load(Ordering::Acquire);
-        if state == expected as i32 {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    unsafe { &*actor }.actor_state.load(Ordering::Acquire) == expected as i32
+    _borrow_mode: i32,
+) -> *mut c_void {
+    std::ptr::null_mut()
 }
 
 fn wait_for_circuit_state(
@@ -242,6 +251,7 @@ fn wait_for_circuit_state(
 ) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
+        // SAFETY: sup is a live supervisor pointer for the test's duration.
         let state = unsafe { hew_supervisor_get_child_circuit_state(sup, index) };
         if state == expected {
             return true;
@@ -278,11 +288,10 @@ fn supervised_actor_crash_and_restart() {
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
     DISPATCH_SIGNAL.reset();
 
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    // SAFETY: sup wraps a live supervisor; child-management FFI is raw.
     unsafe {
-        // 1. Create and start supervisor
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
-        assert!(!sup.is_null(), "supervisor must be created");
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         let mut state: i32 = 42;
         let name = cstr("worker");
@@ -294,17 +303,23 @@ fn supervised_actor_crash_and_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-        assert_eq!(hew_supervisor_start(sup), 0);
-        assert_eq!(hew_supervisor_child_count(sup), 1);
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+        assert_eq!(hew_supervisor_child_count(sup.as_ptr()), 1);
 
-        // 2. Get the child actor and record its ID
-        let child = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        // Get the child actor and record its ID.
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!child.is_null(), "child must be spawned");
         let original_id = (*child).id;
 
-        // 3. Send a normal message — should dispatch successfully
+        // Send a normal message — should dispatch successfully.
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
         assert!(
             DISPATCH_SIGNAL.wait_for(1, Duration::from_secs(5)),
@@ -312,23 +327,20 @@ fn supervised_actor_crash_and_restart() {
             DISPATCH_COUNT.load(Ordering::SeqCst)
         );
 
-        // 4. Inject a crash fault for the child actor
-        hew_fault_inject_crash(original_id, 1); // crash on next dispatch
+        // Inject a crash fault for the child actor.
+        hew_fault_inject_crash(original_id, 1);
 
-        // 5. Send another message — this should trigger the crash
+        // Send another message — this should trigger the crash.
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
 
-        // 6. Wait for: crash detection → supervisor notification →
-        //    supervisor dispatch → restart → new actor spawn
-        let restart_count = hew_supervisor_wait_restart(sup, 1, 5_000);
+        // Wait for restart cycle.
+        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor should report a completed restart cycle"
         );
 
-        // 7. The supervisor should have restarted the child with a NEW actor.
-        //    (The old `child` pointer may be freed — don't dereference it.)
-        let restarted = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(
             !restarted.is_null(),
             "child should be available after restart"
@@ -348,16 +360,13 @@ fn supervised_actor_crash_and_restart() {
             DISPATCH_COUNT.load(Ordering::SeqCst)
         );
 
-        // 8. Verify crash was logged
+        // Verify crash was logged.
         assert!(
             hew_crash_log_count() > 0,
             "crash log should have at least one entry"
         );
-
-        // Clean up
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
     }
+    hew_deterministic_reset();
 }
 
 /// Supervisor with circuit breaker: repeated crashes should trip the breaker.
@@ -374,11 +383,11 @@ fn circuit_breaker_trips_on_repeated_crashes() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
+    let watcher = TestActor::spawn(monitor_dispatch);
+    // SAFETY: sup and watcher are live for the test duration; child-mgmt FFI is raw.
     unsafe {
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
-        hew_supervisor_set_restart_notify(sup);
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
-        assert!(!watcher.is_null(), "watcher actor should be spawned");
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         let mut state: i32 = 0;
         let name = cstr("breaker-test");
@@ -390,38 +399,46 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
-        assert_eq!(hew_supervisor_start(sup), 0);
-
-        // Configure circuit breaker: max 2 crashes in 60 seconds
-        assert_eq!(hew_supervisor_set_circuit_breaker(sup, 0, 2, 60, 5), 0);
         assert_eq!(
-            hew_supervisor_get_child_circuit_state(sup, 0),
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+
+        // Configure circuit breaker: max 2 crashes in 60 seconds.
+        assert_eq!(
+            hew_supervisor_set_circuit_breaker(sup.as_ptr(), 0, 2, 60, 5),
+            0
+        );
+        assert_eq!(
+            hew_supervisor_get_child_circuit_state(sup.as_ptr(), 0),
             HEW_CIRCUIT_BREAKER_CLOSED,
         );
 
-        // Crash the child twice, waiting for the first restart and the second
-        // crash to trip the breaker.
         let crashes_before = hew_crash_log_count();
         for crash_num in 0usize..2 {
-            let child = hew_supervisor_get_child_wait(sup, 0, 5_000);
+            let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
             assert!(
                 !child.is_null(),
                 "child should be available before crash iteration {crash_num}"
             );
-            let ref_id = hew_actor_monitor(watcher, child);
+            let ref_id = hew_actor_monitor(watcher.as_ptr(), child);
             assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
 
             let child_id = (*child).id;
             hew_fault_inject_crash(child_id, 1);
             hew_actor_send(child, 1, std::ptr::null_mut(), 0);
             MONITOR_DISPATCH_SIGNAL
-                .wait_for_down_count(crash_num + 1, Duration::from_secs(5))
+                .wait_for_down_count(crash_num + 1, SUPERVISOR_TIMEOUT)
                 .expect("watcher should observe each crash");
 
             if crash_num == 0 {
-                let restart_count = hew_supervisor_wait_restart(sup, 1, 5_000);
+                let restart_count =
+                    hew_supervisor_wait_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
                 assert!(
                     restart_count >= 1,
                     "first crash should complete a supervisor restart cycle"
@@ -429,10 +446,10 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             } else {
                 assert!(
                     wait_for_circuit_state(
-                        sup,
+                        sup.as_ptr(),
                         0,
                         HEW_CIRCUIT_BREAKER_OPEN,
-                        Duration::from_secs(5)
+                        SUPERVISOR_TIMEOUT,
                     ),
                     "second repeated crash should open the circuit breaker"
                 );
@@ -440,15 +457,13 @@ fn circuit_breaker_trips_on_repeated_crashes() {
         }
 
         let final_crash_count = hew_crash_log_count();
-        let _state = hew_supervisor_get_child_circuit_state(sup, 0);
+        let _state = hew_supervisor_get_child_circuit_state(sup.as_ptr(), 0);
         assert!(
             final_crash_count >= crashes_before + 2,
             "crash log should have at least 2 new entries (before={crashes_before}, after={final_crash_count})"
         );
-
-        hew_deterministic_reset();
-        hew_supervisor_stop(sup);
     }
+    hew_deterministic_reset();
 }
 
 /// Actor links: when a linked actor crashes, EXIT signal is delivered
@@ -459,18 +474,21 @@ fn link_delivers_exit_on_crash() {
     static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
     static LINK_EXIT_SIGNAL: DispatchSignal = DispatchSignal::new();
 
-    /// Dispatch that detects EXIT system messages.
-    unsafe extern "C" fn exit_detecting_dispatch(
+    unsafe extern "C-unwind" fn exit_detecting_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         // SYS_MSG_EXIT = 103
         if msg_type == 103 {
             LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
             LINK_EXIT_SIGNAL.record_dispatch();
         }
+
+        std::ptr::null_mut()
     }
 
     let _guard = TEST_LOCK
@@ -481,35 +499,210 @@ fn link_delivers_exit_on_crash() {
     LINK_EXIT_RECEIVED.store(0, Ordering::SeqCst);
     LINK_EXIT_SIGNAL.reset();
 
+    let actor_a = TestActor::spawn(counting_dispatch);
+    let actor_b = TestActor::spawn(exit_detecting_dispatch);
+
+    // SAFETY: actors are live; reading id and FFI ops use the runtime's contract.
     unsafe {
-        // Spawn two actors — actor_b uses exit-detecting dispatch
-        let actor_a = hew_actor_spawn(std::ptr::null_mut(), 0, Some(counting_dispatch));
-        let actor_b = hew_actor_spawn(std::ptr::null_mut(), 0, Some(exit_detecting_dispatch));
-        assert!(!actor_a.is_null());
-        assert!(!actor_b.is_null());
+        hew_actor_link(actor_a.as_ptr(), actor_b.as_ptr());
 
-        // Link them bidirectionally
-        hew_actor_link(actor_a, actor_b);
-
-        // Crash actor_a via fault injection
-        let id_a = (*actor_a).id;
+        let id_a = (*actor_a.as_ptr()).id;
         hew_fault_inject_crash(id_a, 1);
-        hew_actor_send(actor_a, 1, std::ptr::null_mut(), 0);
-
-        assert!(
-            wait_for_actor_state(actor_a, HewActorState::Crashed, Duration::from_secs(5)),
-            "actor_a should be in Crashed state"
-        );
-
-        // Link propagation wakes the idle actor automatically.
-        assert!(
-            LINK_EXIT_SIGNAL.wait_for(1, Duration::from_secs(5)),
-            "linked actor_b should have received EXIT message (got {})",
-            LINK_EXIT_RECEIVED.load(Ordering::SeqCst)
-        );
-
-        hew_deterministic_reset();
+        hew_actor_send(actor_a.as_ptr(), 1, std::ptr::null_mut(), 0);
     }
+
+    assert!(
+        actor_a.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "actor_a should be in Crashed state"
+    );
+
+    assert!(
+        LINK_EXIT_SIGNAL.wait_for(1, Duration::from_secs(5)),
+        "linked actor_b should have received EXIT message (got {})",
+        LINK_EXIT_RECEIVED.load(Ordering::SeqCst)
+    );
+
+    hew_deterministic_reset();
+}
+
+/// D48 cascade invariant: a linked actor's crash-cascade EXIT is enqueued
+/// before the supervisor's restart cycle for the crashed actor completes.
+///
+/// The EXIT-enqueue probe sends directly from the crash teardown path after
+/// `propagate_exit_to_links`, while a separate waiter thread sends when
+/// `hew_supervisor_wait_restart` observes restart completion. The test drains
+/// the shared channel and asserts the first signal is the EXIT enqueue, so the
+/// assertion is not constructed by sequentially waiting for EXIT before restart.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Integration setup keeps the independent ordering probes in one test"
+)]
+fn linked_actor_receives_exit_before_supervisor_restarts() {
+    const STRATEGY_ONE_FOR_ONE: i32 = 0;
+    const RESTART_PERMANENT: i32 = 0;
+    const OVERFLOW_DROP_NEW: i32 = 1;
+
+    static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
+    static CRASH_TEARDOWN_ORDER_TX: Mutex<Option<mpsc::Sender<(&'static str, usize)>>> =
+        Mutex::new(None);
+
+    struct CrashTeardownOrderHookGuard;
+
+    impl Drop for CrashTeardownOrderHookGuard {
+        fn drop(&mut self) {
+            hew_actor_set_crash_teardown_order_hook(None);
+            *CRASH_TEARDOWN_ORDER_TX.lock().unwrap() = None;
+        }
+    }
+
+    fn crash_teardown_order_hook(event: i32) {
+        if event == HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION {
+            std::thread::sleep(Duration::from_millis(250));
+            return;
+        }
+
+        if event == HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION {
+            if let Some(tx) = CRASH_TEARDOWN_ORDER_TX.lock().unwrap().as_ref() {
+                let _ = tx.send(("exit_enqueued", 0));
+            }
+        }
+    }
+
+    unsafe extern "C-unwind" fn exit_observing_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        // SYS_MSG_EXIT = 103.
+        if msg_type == 103 {
+            LINK_EXIT_RECEIVED.fetch_add(1, Ordering::SeqCst);
+        }
+
+        std::ptr::null_mut()
+    }
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    LINK_EXIT_RECEIVED.store(0, Ordering::SeqCst);
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    DISPATCH_SIGNAL.reset();
+    let (order_tx, order_rx) = mpsc::channel();
+    *CRASH_TEARDOWN_ORDER_TX.lock().unwrap() = Some(order_tx.clone());
+    hew_actor_set_crash_teardown_order_hook(Some(crash_teardown_order_hook));
+    let _order_hook_guard = CrashTeardownOrderHookGuard;
+
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    let linked = TestActor::spawn(exit_observing_dispatch);
+
+    // SAFETY: supervisor and standalone actor wrappers keep the
+    // underlying handles live; child-management and link FFI are raw.
+    unsafe {
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+
+        let mut state: i32 = 0;
+        let name = cstr("cascade-source");
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+        };
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        assert_eq!(sup.start(), 0);
+
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(!child.is_null(), "supervised child must be spawned");
+        let crashed_id = (*child).id;
+
+        // Wait until the child is actually dispatching so the link
+        // attaches to a runnable target.
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+        assert!(
+            DISPATCH_SIGNAL.wait_for(1, Duration::from_secs(5)),
+            "supervised child should run at least once before linking"
+        );
+
+        // Link standalone actor → supervised child.  When the child
+        // crashes, propagate_exit_to_links must enqueue SYS_MSG_EXIT in
+        // the standalone actor's mailbox.
+        hew_actor_link(linked.as_ptr(), child);
+
+        // Inject the crash and trigger it.
+        let restart_waiter_ready = Arc::new(Barrier::new(2));
+        let sup_addr = sup.as_ptr() as usize;
+        let restart_tx = order_tx.clone();
+        let restart_waiter = {
+            let restart_waiter_ready = Arc::clone(&restart_waiter_ready);
+            std::thread::spawn(move || {
+                restart_waiter_ready.wait();
+                let restart_count = hew_supervisor_wait_restart(
+                    sup_addr as *mut hew_runtime::supervisor::HewSupervisor,
+                    1,
+                    5_000,
+                );
+                let _ = restart_tx.send(("restart", restart_count));
+            })
+        };
+        restart_waiter_ready.wait();
+
+        hew_fault_inject_crash(crashed_id, 1);
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+
+        let first = order_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("linked EXIT or supervisor restart observation must arrive");
+        assert_eq!(
+            first.0, "exit_enqueued",
+            "D48 invariant: linked actor's EXIT enqueue must win the \
+             independent race against supervisor restart completion (first={first:?})"
+        );
+
+        let second = order_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("supervisor restart observation must arrive after linked EXIT");
+        assert_eq!(
+            second.0, "restart",
+            "only linked EXIT and supervisor restart observations are expected"
+        );
+        assert!(
+            second.1 >= 1,
+            "supervisor must complete a restart cycle for the crashed child"
+        );
+        restart_waiter
+            .join()
+            .expect("restart waiter must not panic");
+
+        // Sanity: the restarted child gets a fresh actor id, proving
+        // the supervisor actually re-spawned.
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(
+            !restarted.is_null(),
+            "restarted child must be available after restart cycle"
+        );
+        assert_ne!(
+            (*restarted).id,
+            crashed_id,
+            "restart must replace the crashed child with a new actor"
+        );
+    }
+
+    hew_deterministic_reset();
 }
 
 /// Monitor: when monitored actor crashes, watcher receives a DOWN notification.
@@ -522,45 +715,43 @@ fn monitor_detects_crash() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    unsafe {
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!watcher.is_null());
-        assert!(!target.is_null());
+    let watcher = TestActor::spawn(monitor_dispatch);
+    let target = TestActor::spawn(noop_dispatch);
 
-        // Set up monitor: watcher monitors target
-        let ref_id = hew_actor_monitor(watcher, target);
+    // SAFETY: actors are live; monitor/fault-inject/send use runtime contract.
+    let (target_id, ref_id) = unsafe {
+        let ref_id = hew_actor_monitor(watcher.as_ptr(), target.as_ptr());
         assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
 
-        // Crash the target
-        let target_id = (*target).id;
+        let target_id = (*target.as_ptr()).id;
         hew_fault_inject_crash(target_id, 1);
-        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+        hew_actor_send(target.as_ptr(), 1, std::ptr::null_mut(), 0);
+        (target_id, ref_id)
+    };
 
-        assert!(
-            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
-            "target should enter Crashed state"
-        );
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state"
+    );
 
-        let down_messages = MONITOR_DISPATCH_SIGNAL
-            .wait_for_down_count(1, Duration::from_secs(5))
-            .expect("watcher should receive a DOWN notification");
-        let down = down_messages
-            .last()
-            .copied()
-            .expect("DOWN notification should be recorded");
-        assert_eq!(
-            down,
-            DownMessageView {
-                monitored_actor_id: target_id,
-                ref_id,
-                reason: HewActorState::Crashed as i32,
-            },
-            "DOWN payload should identify the crashed actor and monitor ref"
-        );
+    let down_messages = MONITOR_DISPATCH_SIGNAL
+        .wait_for_down_count(1, Duration::from_secs(5))
+        .expect("watcher should receive a DOWN notification");
+    let down = down_messages
+        .last()
+        .copied()
+        .expect("DOWN notification should be recorded");
+    assert_eq!(
+        down,
+        DownMessageView {
+            monitored_actor_id: target_id,
+            ref_id,
+            reason: HewActorState::Crashed as i32,
+        },
+        "DOWN payload should identify the crashed actor and monitor ref"
+    );
 
-        hew_deterministic_reset();
-    }
+    hew_deterministic_reset();
 }
 
 /// Demonitoring before a crash suppresses the watcher DOWN notification.
@@ -573,38 +764,38 @@ fn demonitor_before_crash_suppresses_down() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    unsafe {
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!watcher.is_null());
-        assert!(!target.is_null());
+    let watcher = TestActor::spawn(monitor_dispatch);
+    let target = TestActor::spawn(noop_dispatch);
 
-        let ref_id = hew_actor_monitor(watcher, target);
+    // SAFETY: actors are live; monitor/demonitor/fault-inject use runtime contract.
+    let target_id = unsafe {
+        let ref_id = hew_actor_monitor(watcher.as_ptr(), target.as_ptr());
         assert_ne!(ref_id, 0, "monitor ref_id should be non-zero");
         hew_actor_demonitor(ref_id);
 
-        let target_id = (*target).id;
+        let target_id = (*target.as_ptr()).id;
         hew_fault_inject_crash(target_id, 1);
-        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+        hew_actor_send(target.as_ptr(), 1, std::ptr::null_mut(), 0);
+        target_id
+    };
 
-        assert!(
-            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
-            "target should enter Crashed state after injected fault"
-        );
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state after injected fault"
+    );
 
-        hew_actor_send(watcher, 77, std::ptr::null_mut(), 0);
-        assert!(
-            MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(1, Duration::from_secs(5)),
-            "watcher should process the probe message"
-        );
-        let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
-        assert!(
-            dispatch_state.down_messages.is_empty(),
-            "demonitored watcher must not receive DOWN for actor {target_id}"
-        );
+    watcher.send_empty(77);
+    assert!(
+        MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(1, Duration::from_secs(5)),
+        "watcher should process the probe message"
+    );
+    let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
+    assert!(
+        dispatch_state.down_messages.is_empty(),
+        "demonitored watcher must not receive DOWN for actor {target_id}"
+    );
 
-        hew_deterministic_reset();
-    }
+    hew_deterministic_reset();
 }
 
 /// Monitoring an already-crashed actor resolves immediately with the usual DOWN payload.
@@ -617,56 +808,57 @@ fn late_monitor_after_crash_delivers_immediate_down() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    unsafe {
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!watcher.is_null());
-        assert!(!target.is_null());
+    let watcher = TestActor::spawn(monitor_dispatch);
+    let target = TestActor::spawn(noop_dispatch);
 
-        let target_id = (*target).id;
-        hew_fault_inject_crash(target_id, 1);
-        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+    // SAFETY: actors are live; reading target id + fault-injecting use runtime contract.
+    let target_id = unsafe {
+        let id = (*target.as_ptr()).id;
+        hew_fault_inject_crash(id, 1);
+        hew_actor_send(target.as_ptr(), 1, std::ptr::null_mut(), 0);
+        id
+    };
 
-        assert!(
-            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
-            "target should enter Crashed state before late monitor registration"
-        );
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state before late monitor registration"
+    );
 
-        let ref_id = hew_actor_monitor(watcher, target);
-        assert_ne!(ref_id, 0, "late monitor should still return a ref_id");
+    // SAFETY: late monitor on a live watcher+target.
+    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    assert_ne!(ref_id, 0, "late monitor should still return a ref_id");
 
-        let down_messages = MONITOR_DISPATCH_SIGNAL
-            .wait_for_down_count(1, Duration::from_secs(5))
-            .expect("late monitor should receive an immediate DOWN notification");
-        let down = down_messages
-            .last()
-            .copied()
-            .expect("DOWN notification should be recorded");
-        assert_eq!(
-            down,
-            DownMessageView {
-                monitored_actor_id: target_id,
-                ref_id,
-                reason: HewActorState::Crashed as i32,
-            },
-            "late monitor should reuse the existing DOWN payload shape"
-        );
+    let down_messages = MONITOR_DISPATCH_SIGNAL
+        .wait_for_down_count(1, Duration::from_secs(5))
+        .expect("late monitor should receive an immediate DOWN notification");
+    let down = down_messages
+        .last()
+        .copied()
+        .expect("DOWN notification should be recorded");
+    assert_eq!(
+        down,
+        DownMessageView {
+            monitored_actor_id: target_id,
+            ref_id,
+            reason: HewActorState::Crashed as i32,
+        },
+        "late monitor should reuse the existing DOWN payload shape"
+    );
 
-        hew_actor_demonitor(ref_id);
-        hew_actor_send(watcher, 77, std::ptr::null_mut(), 0);
-        assert!(
-            MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(2, Duration::from_secs(5)),
-            "watcher should process the immediate DOWN and probe message"
-        );
-        let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
-        assert_eq!(
-            dispatch_state.down_messages.len(),
-            1,
-            "late monitor should not leave behind a second pending DOWN"
-        );
+    hew_actor_demonitor(ref_id);
+    watcher.send_empty(77);
+    assert!(
+        MONITOR_DISPATCH_SIGNAL.wait_for_total_dispatches(2, Duration::from_secs(5)),
+        "watcher should process the immediate DOWN and probe message"
+    );
+    let dispatch_state = MONITOR_DISPATCH_SIGNAL.snapshot();
+    assert_eq!(
+        dispatch_state.down_messages.len(),
+        1,
+        "late monitor should not leave behind a second pending DOWN"
+    );
 
-        hew_deterministic_reset();
-    }
+    hew_deterministic_reset();
 }
 
 /// Crash forensics: crash reports contain meaningful metadata.
@@ -678,18 +870,22 @@ fn crash_report_has_metadata() {
     ensure_scheduler();
     hew_deterministic_reset();
 
+    // Record the crash log count before our test.
+    // SAFETY: hew_crash_log_count is total over runtime initialization.
+    let log_before = unsafe { hew_crash_log_count() };
+
+    let actor = TestActor::spawn(counting_dispatch);
+
+    // SAFETY: actor is live; reading id and fault-injecting use runtime contract.
     unsafe {
-        // Record the crash log count before our test
-        let log_before = hew_crash_log_count();
-
-        let actor = hew_actor_spawn(std::ptr::null_mut(), 0, Some(counting_dispatch));
-        assert!(!actor.is_null());
-
-        let actor_id = (*actor).id;
+        let actor_id = (*actor.as_ptr()).id;
         hew_fault_inject_crash(actor_id, 1);
-        hew_actor_send(actor, 1, std::ptr::null_mut(), 0);
+        hew_actor_send(actor.as_ptr(), 1, std::ptr::null_mut(), 0);
+    }
 
-        // Poll until the crash is recorded (Windows CI can be slow).
+    // Poll until the crash is recorded.
+    // SAFETY: hew_crash_log_count / hew_crash_log_last are total over runtime init.
+    let report = unsafe {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if hew_crash_log_count() > log_before {
@@ -701,20 +897,16 @@ fn crash_report_has_metadata() {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-
         let _log_after = hew_crash_log_count();
+        hew_crash_log_last()
+    };
+    assert_eq!(report.signal, -1, "injected crash should have signal=-1");
+    assert!(
+        report.timestamp_ns > 0,
+        "crash report should have a timestamp"
+    );
 
-        // Get the latest crash report — it should be ours
-        let report = hew_crash_log_last();
-        // Injected crashes use signal=-1
-        assert_eq!(report.signal, -1, "injected crash should have signal=-1");
-        assert!(
-            report.timestamp_ns > 0,
-            "crash report should have a timestamp"
-        );
-
-        hew_deterministic_reset();
-    }
+    hew_deterministic_reset();
 }
 
 /// Deterministic testing: seed control and fault injection work correctly.
@@ -725,7 +917,6 @@ fn deterministic_seed_and_fault_injection() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     hew_deterministic_reset();
 
-    // Set a seed and verify it sticks
     hew_runtime::deterministic::hew_deterministic_set_seed(12345);
     assert_eq!(
         hew_runtime::deterministic::hew_deterministic_get_seed(),
@@ -733,7 +924,6 @@ fn deterministic_seed_and_fault_injection() {
         "seed should be set"
     );
 
-    // Fault injection: inject and clear
     hew_fault_inject_crash(999, 3);
     assert_eq!(
         hew_runtime::deterministic::hew_fault_count(),
@@ -752,30 +942,13 @@ fn deterministic_seed_and_fault_injection() {
 }
 
 // ── State-drop regression for supervisor-spawn paths ────────────────────────
-//
-// Verifies that `hew_supervisor_set_child_state_drop` registers the callback
-// on the spec so that every restarted replacement also has state_drop_fn set,
-// and the callback fires when the restarted actor is torn down normally.
 
 static SUPERVISOR_STATE_DROP_COUNT: AtomicI32 = AtomicI32::new(0);
 
-/// Simulated state-drop callback — increments `SUPERVISOR_STATE_DROP_COUNT`.
-/// In production code this is emitted by the Hew compiler to walk and free
-/// each heap-allocated field inside the actor's state struct.
 unsafe extern "C" fn supervisor_child_state_drop(_state: *mut c_void) {
     SUPERVISOR_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Verify `state_drop_fn` is registered on the restarted actor so it fires on
-/// normal teardown.
-///
-/// Scenario:
-/// 1. Spawn a supervised child; register `state_drop_fn` via the new setter.
-/// 2. Crash the child; wait for a restart.
-/// 3. Stop the supervisor; wait for teardown.
-/// 4. Assert the drop callback ran exactly once — for the restarted actor's
-///    final teardown. The original actor is Crashed and intentionally skips
-///    the drop (its state may be corrupted — see `free_actor_resources`).
 #[test]
 fn supervisor_restart_runs_state_drop_on_new_actor() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -790,10 +963,10 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
     DISPATCH_SIGNAL.reset();
     SUPERVISOR_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
-        assert!(!sup.is_null(), "supervisor must be created");
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
         let mut state: u64 = 0xDEAD_BEEF;
         let name = CString::new("drop-test-child").unwrap();
@@ -805,41 +978,37 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
         assert_eq!(
-            hew_supervisor_add_child_spec(sup, &raw const spec),
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
             0,
             "add_child_spec must succeed"
         );
-        // Register the state-drop callback on the spec.
-        // child_index 0 = first (only) actor child.
-        hew_supervisor_set_child_state_drop(sup, 0, supervisor_child_state_drop);
+        hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
 
-        assert_eq!(hew_supervisor_start(sup), 0, "supervisor must start");
+        assert_eq!(sup.start(), 0, "supervisor must start");
 
-        // Wait for the initial child to appear.
-        let child = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!child.is_null(), "child must be spawned");
         let original_id = (*child).id;
 
-        // Assert the initial actor already has state_drop_fn registered
-        // (the setter back-fills it onto the live actor).
         assert!(
             (*child).state_drop_fn.is_some(),
             "initial actor must have state_drop_fn registered"
         );
 
-        // Crash the child and wait for restart.
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup, 1, 10_000);
+        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must report at least one completed restart"
         );
 
-        // Confirm the slot holds a new actor.
-        let restarted = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!restarted.is_null(), "restarted child must appear in slot");
         assert_ne!(
             (*restarted).id,
@@ -847,41 +1016,24 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             "restarted actor must have a new identity"
         );
 
-        // The restarted actor must also have state_drop_fn set.
         assert!(
             (*restarted).state_drop_fn.is_some(),
             "restarted actor must have state_drop_fn registered"
         );
 
-        // Stop the supervisor — this teardowns the restarted actor.
         hew_deterministic_reset();
-        hew_supervisor_stop(sup);
-
-        // The drop callback must have fired exactly once — for the restarted
-        // actor's normal teardown on supervisor stop. The original crashed
-        // actor intentionally skips state_drop_fn (its state may be
-        // corrupted). Pre-fix: this count was 0 because restart_child_from_spec
-        // did not call hew_actor_set_state_drop on the new actor.
-        let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
-        assert_eq!(
-            drops, 1,
-            "state_drop_fn must fire for the restarted actor's teardown (got {drops})"
-        );
     }
+    // TestSupervisor::Drop runs hew_supervisor_stop, which tears down the
+    // restarted actor and triggers the drop callback exactly once.
+
+    drop(sup);
+    let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        drops, 1,
+        "state_drop_fn must fire for the restarted actor's teardown (got {drops})"
+    );
 }
 
-/// Verify `state_drop_fn` registered via `hew_supervisor_set_child_state_drop`
-/// fires on the restarted actor for a **dynamically-added** child.
-///
-/// Scenario:
-/// 1. Start the supervisor; add a child via `hew_supervisor_add_child_dynamic`.
-/// 2. Register `state_drop_fn` via `hew_supervisor_set_child_state_drop` (the
-///    two-step contract required by the dynamic path).
-/// 3. Crash the child; wait for a restart.
-/// 4. Stop the supervisor; wait for teardown.
-/// 5. Assert the drop callback ran exactly once — for the restarted actor's
-///    final teardown. This mirrors `supervisor_restart_runs_state_drop_on_new_actor`
-///    for the dynamic registration path.
 #[test]
 fn dynamic_child_restart_runs_state_drop() {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -896,11 +1048,11 @@ fn dynamic_child_restart_runs_state_drop() {
     DISPATCH_SIGNAL.reset();
     SUPERVISOR_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
-        assert!(!sup.is_null(), "supervisor must be created");
-        hew_supervisor_set_restart_notify(sup);
-        assert_eq!(hew_supervisor_start(sup), 0, "supervisor must start");
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+        assert_eq!(sup.start(), 0, "supervisor must start");
 
         let mut state: u64 = 0xCAFE_BABE;
         let name = std::ffi::CString::new("dyn-drop-child").unwrap();
@@ -912,35 +1064,33 @@ fn dynamic_child_restart_runs_state_drop() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
 
-        // Two-step contract: add, then register state_drop.
-        let idx = hew_supervisor_add_child_dynamic(sup, &raw const spec);
+        let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
         assert!(idx >= 0, "add_child_dynamic must succeed");
-        hew_supervisor_set_child_state_drop(sup, idx, supervisor_child_state_drop);
+        hew_supervisor_set_child_state_drop(sup.as_ptr(), idx, supervisor_child_state_drop);
 
-        // Wait for the child to appear.
-        let child = hew_supervisor_get_child_wait(sup, idx, 5_000);
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), idx, 5_000);
         assert!(!child.is_null(), "dynamically added child must be spawned");
         let original_id = (*child).id;
 
-        // Confirm back-fill: state_drop_fn should be set on the live actor.
         assert!(
             (*child).state_drop_fn.is_some(),
             "dynamic child must have state_drop_fn registered after set_child_state_drop"
         );
 
-        // Crash and wait for a restart.
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup, 1, 10_000);
+        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must restart the dynamically added child"
         );
 
-        // Confirm the restarted actor also has state_drop_fn.
-        let restarted = hew_supervisor_get_child_wait(sup, idx, 5_000);
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), idx, 5_000);
         assert!(!restarted.is_null(), "restarted dynamic child must appear");
         assert_ne!(
             (*restarted).id,
@@ -952,37 +1102,17 @@ fn dynamic_child_restart_runs_state_drop() {
             "restarted dynamic child must have state_drop_fn registered"
         );
 
-        // Stop; drop must fire exactly once for the restarted actor's teardown.
         hew_deterministic_reset();
-        hew_supervisor_stop(sup);
-
-        let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
-        assert_eq!(
-            drops, 1,
-            "state_drop_fn must fire once for the restarted dynamic child (got {drops})"
-        );
     }
+
+    drop(sup);
+    let drops = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        drops, 1,
+        "state_drop_fn must fire once for the restarted dynamic child (got {drops})"
+    );
 }
 
-/// Verify that `hew_actor_free_for_restart` suppresses `state_drop_fn` for
-/// siblings stopped during a `ONE_FOR_ALL` restart.
-///
-/// Under `ONE_FOR_ALL`, when one child crashes every sibling is stopped and freed
-/// (via `hew_actor_free_for_restart`) before all children are restarted.
-/// `hew_actor_free_for_restart` must NOT invoke `state_drop_fn` because the
-/// sibling's heap-owned state is byte-aliased by `spec.init_state` and is
-/// about to be reused for the restarted actor — calling `impl Drop` on it
-/// would corrupt the upcoming init or double-free the heap allocation.
-///
-/// Sequence:
-/// 1. `ONE_FOR_ALL` supervisor; two children, both with `state_drop_fn` registered.
-/// 2. Crash child 0.  Supervisor stops child 1 via `hew_actor_free_for_restart`
-///    (suppress) and restarts both.
-/// 3. Immediately after the restart completes, `SUPERVISOR_STATE_DROP_COUNT`
-///    must still be 0 — neither the crashed actor nor the stopped sibling ran
-///    their `state_drop` during the restart.
-/// 4. Stop the supervisor; both restarted actors are freed normally.
-///    `SUPERVISOR_STATE_DROP_COUNT` must now be 2.
 #[test]
 fn one_for_all_suppresses_state_drop_on_sibling_restart() {
     const STRATEGY_ONE_FOR_ALL: i32 = 1;
@@ -997,12 +1127,12 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
     DISPATCH_SIGNAL.reset();
     SUPERVISOR_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ALL, 5, 60);
+    // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ALL, 5, 60);
-        assert!(!sup.is_null(), "supervisor must be created");
-        hew_supervisor_set_restart_notify(sup);
+        hew_supervisor_set_restart_notify(sup.as_ptr());
 
-        // Child 0: the one we will crash.
+        // Child 0.
         let mut state0: u64 = 0xAAAA_0000;
         let name0 = CString::new("ofs-child-0").unwrap();
         let spec0 = HewChildSpec {
@@ -1013,11 +1143,16 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec0), 0);
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec0),
+            0
+        );
 
-        // Child 1: the innocent sibling that must NOT have state_drop called on
-        // its pre-restart instance.
+        // Child 1.
         let mut state1: u64 = 0xBBBB_0000;
         let name1 = CString::new("ofs-child-1").unwrap();
         let spec1 = HewChildSpec {
@@ -1028,73 +1163,70 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
-        assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec1), 0);
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec1),
+            0
+        );
 
-        assert_eq!(hew_supervisor_start(sup), 0, "supervisor must start");
+        assert_eq!(sup.start(), 0, "supervisor must start");
 
-        // Register state_drop on both children BEFORE getting the actor
-        // pointers so the back-fill path is exercised.
-        hew_supervisor_set_child_state_drop(sup, 0, supervisor_child_state_drop);
-        hew_supervisor_set_child_state_drop(sup, 1, supervisor_child_state_drop);
+        hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
+        hew_supervisor_set_child_state_drop(sup.as_ptr(), 1, supervisor_child_state_drop);
 
-        let child0 = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        let child0 = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!child0.is_null(), "child 0 must be spawned");
         assert!(
             (*child0).state_drop_fn.is_some(),
             "child 0 must have state_drop_fn registered"
         );
 
-        let child1 = hew_supervisor_get_child_wait(sup, 1, 5_000);
+        let child1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!child1.is_null(), "child 1 must be spawned");
         assert!(
             (*child1).state_drop_fn.is_some(),
             "child 1 must have state_drop_fn registered"
         );
 
-        // Crash child 0 and wait for the full ONE_FOR_ALL restart cycle.
         let id0 = (*child0).id;
         hew_fault_inject_crash(id0, 1);
         hew_actor_send(child0, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup, 1, 10_000);
+        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "ONE_FOR_ALL supervisor must complete a restart cycle"
         );
 
-        // Immediately after restart: state_drop must NOT have fired on either
-        // the crashed actor or the stopped sibling — both were freed via the
-        // suppress path.
         let drops_after_restart = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
         assert_eq!(
             drops_after_restart, 0,
             "state_drop must be suppressed during ONE_FOR_ALL restart (got {drops_after_restart})"
         );
 
-        // Both restarted actors must have state_drop_fn re-registered.
-        let restarted0 = hew_supervisor_get_child_wait(sup, 0, 5_000);
+        let restarted0 = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!restarted0.is_null(), "restarted child 0 must appear");
         assert!(
             (*restarted0).state_drop_fn.is_some(),
             "restarted child 0 must have state_drop_fn registered"
         );
 
-        let restarted1 = hew_supervisor_get_child_wait(sup, 1, 5_000);
+        let restarted1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!restarted1.is_null(), "restarted child 1 must appear");
         assert!(
             (*restarted1).state_drop_fn.is_some(),
             "restarted child 1 must have state_drop_fn registered"
         );
 
-        // Stop the supervisor; both restarted actors are freed normally with
-        // state_drop_fn invoked.
         hew_deterministic_reset();
-        hew_supervisor_stop(sup);
-
-        let drops_after_stop = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
-        assert_eq!(
-            drops_after_stop, 2,
-            "state_drop_fn must fire for each restarted actor on supervisor stop (got {drops_after_stop})"
-        );
     }
+
+    drop(sup);
+    let drops_after_stop = SUPERVISOR_STATE_DROP_COUNT.load(Ordering::SeqCst);
+    assert_eq!(
+        drops_after_stop, 2,
+        "state_drop_fn must fire for each restarted actor on supervisor stop (got {drops_after_stop})"
+    );
 }

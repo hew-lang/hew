@@ -1,0 +1,32 @@
+//! Runnable oracle for std::crypto `bytes` return ABI behaviour.
+
+import std::crypto::crypto;
+import std::crypto::encrypt;
+import std::testing;
+
+fn main() {
+    let key = crypto.random_bytes(32);
+    testing.assert_eq(key.len(), 32);
+
+    let message = "hew".to_bytes();
+    let sha256_digest = crypto.sha256(message);
+    testing.assert_eq(sha256_digest.len(), 32);
+
+    let sha384_digest = crypto.sha384(message);
+    testing.assert_eq(sha384_digest.len(), 48);
+
+    let sha512_digest = crypto.sha512(message);
+    testing.assert_eq(sha512_digest.len(), 64);
+
+    let hmac_key = "key".to_bytes();
+    let hmac_tag = crypto.hmac_sha256(hmac_key, message);
+    testing.assert_eq(hmac_tag.len(), 32);
+
+    let ciphertext = encrypt.seal(key, "hew crypto ABI survives");
+    match encrypt.try_open(key, ciphertext) {
+        Ok(plaintext) => testing.assert_eq_str(plaintext, "hew crypto ABI survives"),
+        Err(err) => panic(f"try_open unexpectedly failed: {encrypt.error_message(err)}"),
+    }
+
+    println("crypto return ABI oracle passed");
+}

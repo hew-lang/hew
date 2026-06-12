@@ -1,5 +1,5 @@
 // Primality test by trial division
-fn is_prime(n: int) -> int {
+fn is_prime(n: i64) -> i64 {
     if n < 2 {
         return 0;
     }
@@ -19,7 +19,7 @@ fn is_prime(n: int) -> int {
     1
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

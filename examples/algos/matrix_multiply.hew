@@ -2,11 +2,12 @@
 // C[i][j] = sum(A[i][k] * B[k][j]) for k in 0..n
 fn mat_mul(a: Vec<i32>, b: Vec<i32>, n: i32) -> Vec<i32> {
     let c: Vec<i32> = Vec::new();
-    for i in 0 .. n {
-        for j in 0 .. n {
+    let n64: i64 = n as i64;
+    for i in 0 .. n64 {
+        for j in 0 .. n64 {
             var sum = 0;
-            for k in 0 .. n {
-                sum = sum + a.get(i * n + k) * b.get(k * n + j);
+            for k in 0 .. n64 {
+                sum = sum + a.get(i * n64 + k) * b.get(k * n64 + j);
             }
             c.push(sum as i32);
         }

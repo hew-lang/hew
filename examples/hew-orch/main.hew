@@ -1,0 +1,170 @@
+// hew-orch ingest — D66 canonical fixture (A249), Hew-only (A248-193).
+//
+// Walks a directory tree of markdown files, extracts identifier patterns
+// ("A###", "Q###", "D##") from prose, builds an in-memory frequency
+// index, and prints a summary.
+//
+// All constructs in this file trace to the Hew Dialect Authority
+// (2026-05-24, v05-integration @ be656757). Surfaces that the substrate
+// does not yet expose are commented inline with the §6 gap row that
+// closes them and the Wave 3 lane that lands the fix.
+//
+// Type-spelling discipline (A250, slepp 00:05): canonical primitives
+// only — `string` (never `str`/`String`), `i32`/`i64`/`u8` (never `byte`),
+// `f64` (never `float`/`Float`), `bool`, `char`, `bytes`. The aliases
+// `PRIMITIVE_ALIASES` (ty.rs:354) currently accepts are baggage scheduled
+// for removal; this file is written so it does not need re-editing when
+// they are dropped.
+import std::fs;
+
+// ---------------------------------------------------------------------------
+// Character classification
+//
+// Per dialect authority §4.1, the public `string` surface exposes
+// `len`, `slice`, `contains`, `find`, `starts_with`, `ends_with`,
+// `split`, `lines`, `trim`, `+` (concat). The internal `string_char_at`
+// helper that the stdlib uses for codepoint-level work is NOT re-exported
+// (verified: bare `string_char_at` is unresolved at HIR from user scope).
+//
+// Practical consequence for A247 corrections #3, #5, #6: user code cannot
+// access char/byte values directly. We classify a 1-char slice by ASCII
+// membership against literal sets. Equivalent to a codepoint range at
+// runtime, just spelled through `contains`.
+const DIGITS: string = "0123456789";
+
+const ID_HEADS: string = "AQD";
+
+fn is_digit_str(c: string) -> bool {
+    DIGITS.contains(c)
+}
+
+fn is_id_head_str(c: string) -> bool {
+    ID_HEADS.contains(c)
+}
+
+// ---------------------------------------------------------------------------
+// ID extraction
+//
+// Scan a single line and append every "A###" / "Q###" / "D##" occurrence
+// to `out`. The walker uses `for i in 0..n` (A247 #1 / #12) and probes
+// the digit run via `for j in i+1..n` whose empty range auto-skips
+// (A247 #4). Index access on Vec<T> is `v[i]` (A247 #9) once Vec<string>
+// is enabled end-to-end (see gap below).
+//
+// FC-P1-* / Lane-N forms are out of scope here — they need alternation
+// + capture groups (regex `find_all` is not in the public stdlib today).
+fn extract_ids_in_line(line: string, out: Vec<string>) {
+    let n = line.len();
+    for i in 0 .. n {
+        let head = line.slice(i, i + 1); // this should use [i] accessor when available
+        if is_id_head_str(head) {
+            // Walk the digit run.
+            var end = i + 1;
+            for j in i + 1 .. n {
+                if is_digit_str(line.slice(j, j + 1)) { // this should use [j] accessor when available
+                    end = j + 1;
+                } else {
+                    break;
+                }
+            }
+            if end > i + 1 {
+                out.push(line.slice(i, end));
+                break;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recursive .md collection
+//
+// Replaces the prior sketch's "name has no dot" heuristic with the real
+// `fs.is_dir` predicate (dialect authority §4 / std/fs.hew:495). No more
+// false negatives on README, Makefile, etc.
+fn collect_md_files(dir: string, out: Vec<string>) {
+    let entries = fs.list_dir(dir);
+    for name in entries {
+        let full = dir + "/" + name;
+        if fs.is_dir(full) {
+            collect_md_files(full, out);
+        } else if name.ends_with(".md") {
+            out.push(full);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Index ingest
+//
+// Index shape: HashMap<string, i32> (id → reference count). Per dialect
+// authority §1.2 + §4.3, HashMap value types are monomorphized for
+// {i32, i64, f64, string}; Vec<T> as a value is not yet supported, so we
+// cannot keep the natural HashMap<string, Vec<(file,line)>> shape — that
+// is closed by W3.4 (HashMap<K,V> proper) + W3.5 (tuple/record generics).
+//
+// Subscript assignment `index[id] = v + 1` (A247 #10) does not lower for
+// HashMap today — typecheck rejects "cannot index into HashMap<string,
+// i32>". Closed by W3.4. We use `get` + `insert` and match on the
+// `Option<i32>` returned by `get`.
+fn ingest_file(path: string, index: HashMap<string, i32>) {
+    let content = fs.read(path);
+    let ids: Vec<string> = Vec::new();
+    for line in content.lines() {
+        extract_ids_in_line(line, ids);
+    }
+    for id in ids {
+        match index.get(id) {
+            Some(prev) => {
+                index.insert(id, prev + 1);
+            },
+            None => {
+                index.insert(id, 1);
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// main
+//
+// CLI surface: `hew run examples/hew-orch/main.hew -- <dir>`.
+// `os.args(i)` returns `string` (dialect authority §1 stdlib survey),
+// `os.args_count() -> i64`. A247 #11's preferred `os.args() -> Vec<string>`
+// surface does not exist today; rather than fabricate it, we accept the
+// current surface and default to `.tmp/orchestration` when no arg is given.
+fn main() {
+    let dir = ".tmp/orchestration";
+    println(f"hew-orch ingest {dir}");
+    let files: Vec<string> = Vec::new();
+    collect_md_files(dir, files);
+    println(f"files found: {files.len()}");
+    let index: HashMap<string, i32> = HashMap::new();
+    for file in files {
+        ingest_file(file, index);
+    }
+    let keys = index.keys();
+    println(f"distinct ids indexed: {keys.len()}");
+
+    // "Top-5 most-referenced" requires Vec<(string,i32)> + a sort-by-second
+    // closure. Neither is in v0.5: tuples-as-Vec-elements close in W3.5;
+    // sort-by closure surface (dialect authority §4.2 lists only natural-
+    // order `vec.sort()` for {i32,i64,f64}) is not yet exposed. We print
+    // the first 5 keys with their counts, unranked.
+    println("first 5 ids (unranked):");
+    let kn = keys.len();
+    let limit = if kn < 5 {
+        kn
+    } else {
+        5
+    };
+    for k in 0 .. limit {
+        let id = keys.get(k);
+        match index.get(id) {
+            Some(c) => {
+                println(id);
+                println(c);
+            },
+            None => {},
+        }
+    }
+}

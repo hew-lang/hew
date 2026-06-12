@@ -1,13 +1,13 @@
 //! Mathematical operations.
 //!
-//! Integer functions (absolute value, min, max, clamp, sign) and
-//! floating-point functions (sqrt, pow, floor, ceil, round) plus
-//! common constants.
+//! Generic numeric functions (absolute value, min, max), integer helpers
+//! (clamp, sign), floating-point functions (sqrt, pow, floor, ceil, round),
+//! and transcendentals (exp, log, sin, cos) plus common constants.
 //!
-//! Integer helpers and constants are implemented directly in Hew.
-//! Floating-point functions are lowered to MLIR/LLVM math ops by the
-//! codegen backend. The Rust crate in `src/lib.rs` remains only as a
-//! workspace build placeholder.
+//! Generic numeric and floating-point functions are lowered to LLVM math ops by
+//! the codegen backend. Integer-only helpers and constants are
+//! implemented directly in Hew. The Rust crate in `src/lib.rs` remains only
+//! as a workspace build placeholder.
 //!
 //! # Examples
 //!
@@ -33,36 +33,22 @@ pub fn e() -> f64 {
     2.718281828459045
 }
 
+// ── Generic numeric operations ────────────────────────────────────────
+/// Return the absolute value of a numeric value.
+#[intrinsic("math.abs")]
+pub fn abs<T: Num>(x: T) -> T {}
+
+/// Return the smaller of two numeric values.
+#[intrinsic("math.min")]
+pub fn min<T: Num>(a: T, b: T) -> T {}
+
+/// Return the larger of two numeric values.
+#[intrinsic("math.max")]
+pub fn max<T: Num>(a: T, b: T) -> T {}
+
 // ── Integer operations ────────────────────────────────────────────────
-/// Return the absolute value of an integer.
-pub fn abs(x: int) -> int {
-    if x < 0 {
-        -x
-    } else {
-        x
-    }
-}
-
-/// Return the smaller of two integers.
-pub fn min(a: int, b: int) -> int {
-    if a < b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Return the larger of two integers.
-pub fn max(a: int, b: int) -> int {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
 /// Clamp `x` to the range [`lo`, `hi`].
-pub fn clamp(x: int, lo: int, hi: int) -> int {
+pub fn clamp(x: i64, lo: i64, hi: i64) -> i64 {
     if x < lo {
         return lo;
     }
@@ -73,7 +59,7 @@ pub fn clamp(x: int, lo: int, hi: int) -> int {
 }
 
 /// Return the sign of an integer: -1, 0, or 1.
-pub fn sign(x: int) -> int {
+pub fn sign(x: i64) -> i64 {
     if x < 0 {
         return -1;
     }
@@ -84,72 +70,69 @@ pub fn sign(x: int) -> int {
 }
 
 // ── Floating-point operations ─────────────────────────────────────────
-// Codegen emits MLIR math-dialect intrinsics for these. The bodies
+// Codegen emits LLVM math intrinsics for these. The bodies
 // below are compile-time stubs that satisfy the type-checker.
-/// Return the absolute value of a float.
-pub fn abs_f(x: f64) -> f64 {
-    if x < 0.0 {
-        -x
-    } else {
-        x
-    }
-}
-
-/// Return the smaller of two floats.
-pub fn min_f(a: f64, b: f64) -> f64 {
-    if a < b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Return the larger of two floats.
-pub fn max_f(a: f64, b: f64) -> f64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-/// Clamp `x` to the range [`lo`, `hi`].
-pub fn clamp_f(x: f64, lo: f64, hi: f64) -> f64 {
-    if x < lo {
-        return lo;
-    }
-    if x > hi {
-        return hi;
-    }
-    x
-}
-
+// WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
+// in the stdlib-refactor early-substrate lane. The attribute names the catalog key
+// so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
+// WHEN OBSOLETE: once the mass-migration slices (4-7) land and the catalog entry is
+// removed, this comment becomes the authoritative declaration and the WHY/WHEN block
+// can be dropped in favour of a plain doc-comment.
+// WHAT: slices 4-7 remove the parallel catalog entry and make this declaration the
+// sole source of truth; codegen emits the LLVM intrinsic by intrinsic key.
 /// Return the square root of a float.
-pub fn sqrt(x: f64) -> f64 {
-    // Codegen maps to mlir::math::SqrtOp
-    0.0
-}
+#[intrinsic("math.sqrt")]
+pub fn sqrt(x: f64) -> f64 {}
 
+// WHY the stub body: codegen intercepts calls to these four functions by name
+// via `math_builtin_intrinsic` (hew-codegen-rs/src/llvm.rs) and emits the
+// corresponding LLVM intrinsic (`llvm.pow.f64`, `llvm.floor.f64`, etc.)
+// directly at the call site, bypassing the body entirely. This is the
+// call-site interception path, distinct from the `#[intrinsic]` attribute
+// path used by `sqrt`, `exp`, `log`, `sin`, and `cos`. The `0.0` body is
+// never executed; it satisfies the type-checker only.
 /// Raise `base` to the power `exp`.
 pub fn pow(base: f64, exp: f64) -> f64 {
-    // Codegen maps to mlir::math::PowFOp
     0.0
 }
 
+// WHY the stub body: call-site interception via `math_builtin_intrinsic` emits
+// `llvm.floor.f64`. See comment on `pow` above for the full explanation.
 /// Return the largest integer value less than or equal to `x`.
 pub fn floor(x: f64) -> f64 {
-    // Codegen maps to mlir::math::FloorOp
     0.0
 }
 
+// WHY the stub body: call-site interception via `math_builtin_intrinsic` emits
+// `llvm.ceil.f64`. See comment on `pow` above for the full explanation.
 /// Return the smallest integer value greater than or equal to `x`.
 pub fn ceil(x: f64) -> f64 {
-    // Codegen maps to mlir::math::CeilOp
     0.0
 }
 
+// WHY the stub body: call-site interception via `math_builtin_intrinsic` emits
+// `llvm.round.f64`. See comment on `pow` above for the full explanation.
 /// Round to the nearest integer, with ties rounding away from zero.
 pub fn round(x: f64) -> f64 {
-    // Codegen maps to mlir::math::RoundOp
     0.0
 }
+
+// ── Transcendental functions ──────────────────────────────────────────
+// These lower to LLVM math intrinsics via `#[intrinsic]` the same way
+// `sqrt` does. The empty body satisfies the type-checker; codegen routes
+// through `emit_math_builtin_intrinsic_call` using the `llvm.*.f64` name.
+/// Return e raised to the power `x`.
+#[intrinsic("math.exp")]
+pub fn exp(x: f64) -> f64 {}
+
+/// Return the natural logarithm of `x`.
+#[intrinsic("math.log")]
+pub fn log(x: f64) -> f64 {}
+
+/// Return the sine of `x` (radians).
+#[intrinsic("math.sin")]
+pub fn sin(x: f64) -> f64 {}
+
+/// Return the cosine of `x` (radians).
+#[intrinsic("math.cos")]
+pub fn cos(x: f64) -> f64 {}

@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.5 codegen-rs parity for non-spine statements and stdlib calls)
+//! Description: Benchmark harness demo
+
 // Benchmark harness demo
 // Shows how to use std::bench to measure function performance.
 import std::bench;
@@ -20,10 +23,10 @@ fn sum_to(n: i64) -> i64 {
 
 fn main() {
     let s = bench.suite("Demo Benchmarks");
-    s.add("fibonacci(20)", 100, () => {
+    s.add("fibonacci(20)", 100, || {
         fibonacci(20);
     });
-    s.add("sum_to(1000)", 1000, () => {
+    s.add("sum_to(1000)", 1000, || {
         sum_to(1000);
     });
     s.report();

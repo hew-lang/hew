@@ -2,13 +2,39 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-use std::io::{self, BufRead, Read, Write};
+use std::io;
+#[cfg(unix)]
+use std::io::{BufRead, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
+
+/// Canonical schema version expected on every JSON envelope returned by the
+/// profiler/observe HTTP surface.
+///
+/// Mirrors `hew_runtime::profiler::OBSERVE_SCHEMA_VERSION`. The two crates
+/// duplicate the literal because `hew-observe` deliberately does not depend on
+/// `hew-runtime`; both copies must move together when the envelope shape
+/// evolves. Producer and consumer at v0.5 emit/accept `"v0.5"`; no
+/// cross-version compatibility shims (per R58 Q136 Option B).
+pub const OBSERVE_SCHEMA_VERSION: &str = "v0.5";
+
+/// Canonical envelope returned by every `/api/*` JSON endpoint:
+/// `{"schema_version": "<OBSERVE_SCHEMA_VERSION>", "data": <body>}`.
+///
+/// The producer (`hew_runtime::profiler::server::envelope_json`) wraps every
+/// response body in this shape so downstream consumers (this client, the
+/// dashboard, the sandbox-VM bridge) can detect when the producer's event
+/// shape has drifted.
+#[derive(Debug, Deserialize)]
+struct Envelope<T> {
+    schema_version: String,
+    data: T,
+}
 
 /// Typed failure categories from a profiler client request.
 ///
@@ -25,8 +51,10 @@ pub enum ClientError {
     /// Could not connect to the unix socket (stale path, permissions, etc.).
     Connect(io::Error),
     /// Failed to configure socket read/write timeouts.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Timeout(io::Error),
     /// Failed to write the HTTP request.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Write(io::Error),
     /// Failed to read the HTTP response (status line, headers, or body).
     Read(io::Error),
@@ -308,10 +336,7 @@ impl TraceEvent {
     /// (timeline, actor drill-down).  This is the single source of truth for
     /// the "actionable event" predicate used throughout hew-observe.
     pub fn is_actionable(&self) -> bool {
-        matches!(
-            self.event_type.as_str(),
-            "send" | "spawn" | "crash" | "stop"
-        )
+        crate::events::trace_event_meta(&self.event_type).is_actionable()
     }
 }
 
@@ -333,6 +358,15 @@ pub struct CrashEntry {
     pub actor_id: u64,
     #[serde(default)]
     pub signal: i32,
+    /// Canonical Hew trap discriminator resolved from the raw `signal`
+    /// (`HEW_TRAP_*` band → `"DivideByZero"`, `"IntegerOverflow"`, …; an OS
+    /// signal number → `"Signal"`; clean stop → `"Normal"`).
+    ///
+    /// Populated by `hew_runtime::crash::snapshot_crashes_json` via
+    /// `ExitReason::from_error_code(signal).trap_kind_name()`. Defaults to the
+    /// empty string when a profiler/runtime predating this field is observed.
+    #[serde(default)]
+    pub trap_kind: String,
     #[serde(default)]
     pub msg_type: i32,
     #[serde(default)]
@@ -451,15 +485,31 @@ impl ProfilerClient {
     }
 
     /// Fetch JSON from an endpoint. Does NOT affect connection status.
+    ///
+    /// Parses the canonical observe envelope
+    /// (`{"schema_version":"v0.5","data":<T>}`) — bare bodies emitted by a
+    /// pre-envelope producer fail with `ClientError::Parse`. The envelope's
+    /// `schema_version` field is checked against [`OBSERVE_SCHEMA_VERSION`];
+    /// a mismatch surfaces as `ClientError::BadStatus` so the caller's
+    /// `last_error` flags the version drift instead of silently returning
+    /// possibly-shape-shifted data.
     fn get_json<T: serde::de::DeserializeOwned>(&mut self, path: &str) -> Option<T> {
         let body = self.get_bytes(path)?;
-        match serde_json::from_slice(&body) {
-            Ok(v) => Some(v),
+        let envelope: Envelope<T> = match serde_json::from_slice(&body) {
+            Ok(v) => v,
             Err(e) => {
                 self.last_error = Some(ClientError::Parse(e));
-                None
+                return None;
             }
+        };
+        if envelope.schema_version != OBSERVE_SCHEMA_VERSION {
+            self.last_error = Some(ClientError::BadStatus(format!(
+                "schema_version mismatch: expected {OBSERVE_SCHEMA_VERSION}, got {}",
+                envelope.schema_version
+            )));
+            return None;
         }
+        Some(envelope.data)
     }
 
     /// Raw GET request returning the response body bytes.
@@ -653,6 +703,246 @@ mod tests {
         });
     }
 
+    // ── crash entry deserialization ──────────────────────────────────────
+
+    /// Pins the `/api/crashes` JSON contract from the consumer side: the
+    /// `trap_kind` field MUST land on `CrashEntry` populated with the
+    /// canonical Hew trap-kind slug (e.g. `"DivideByZero"`), not silently
+    /// dropped or defaulted to the empty string when the producer supplies
+    /// it. Producer-side coverage lives in
+    /// `hew-runtime/tests/crashinfo_observe_event.rs`, which round-trips a
+    /// real actor trap through `snapshot_crashes_json`.
+    #[test]
+    fn crash_entry_deserialises_trap_kind_from_profiler_payload() {
+        // Shape mirrors what `hew_runtime::crash::snapshot_crashes_json`
+        // emits for an actor that trapped with `HEW_TRAP_DIVIDE_BY_ZERO`
+        // (202). The runtime test asserts the exact same shape is
+        // produced by a live trap; this test asserts the observe consumer
+        // parses it correctly.
+        let body = r#"[{"time_s":1.5,"actor_id":42,"signal":202,"trap_kind":"DivideByZero","msg_type":7,"fault_addr":0}]"#;
+        let entries: Vec<CrashEntry> =
+            serde_json::from_str(body).expect("profiler crash payload must parse");
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.actor_id, 42);
+        assert_eq!(entry.signal, 202);
+        assert_eq!(entry.trap_kind, "DivideByZero");
+        assert_eq!(entry.msg_type, 7);
+    }
+
+    /// Pre-existing profiler payloads that do not carry `trap_kind` (e.g.
+    /// older runtimes) must still parse — `trap_kind` is `#[serde(default)]`
+    /// and defaults to the empty string. Prevents a flag-day break on the
+    /// consumer when a downstream tool inspects an older /api/crashes body.
+    #[test]
+    fn crash_entry_trap_kind_defaults_when_field_absent() {
+        let body = r#"[{"time_s":0.0,"actor_id":1,"signal":11,"msg_type":0,"fault_addr":0}]"#;
+        let entries: Vec<CrashEntry> = serde_json::from_str(body).expect("parse");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].trap_kind.is_empty(),
+            "missing trap_kind must default to the empty string for forward-compat"
+        );
+    }
+
+    // ── Schema-version envelope unwrapping ────────────────────────────────
+
+    /// `get_json` MUST peel the canonical envelope
+    /// (`{"schema_version":"v0.5","data":<body>}`) before handing the inner
+    /// `T` back. Producer-side coverage lives in
+    /// `hew_runtime::profiler::server`; this test pins the consumer half.
+    #[test]
+    fn get_json_unwraps_canonical_envelope_and_returns_inner_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_ok.sock");
+
+        let inner = r#"[{"time_s":2.5,"actor_id":17,"signal":202,"trap_kind":"DivideByZero","msg_type":3,"fault_addr":0}]"#;
+        let body = format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{inner}}}"#);
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let crashes = client
+            .fetch_crashes()
+            .expect("envelope-wrapped crash list must parse");
+        assert_eq!(crashes.len(), 1);
+        assert_eq!(crashes[0].actor_id, 17);
+        assert_eq!(crashes[0].trap_kind, "DivideByZero");
+        assert!(
+            client.last_error.is_none(),
+            "successful envelope fetch must clear last_error, got {:?}",
+            client.last_error
+        );
+    }
+
+    /// A producer that drifts to a non-canonical `schema_version` MUST be
+    /// surfaced via `last_error` (not silently returned) so downstream tools
+    /// can prompt the user to upgrade either side.
+    #[test]
+    fn get_json_rejects_envelope_with_mismatched_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_drift.sock");
+
+        let body = r#"{"schema_version":"v9.9","data":[]}"#;
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let result = client.fetch_crashes();
+        assert!(result.is_none(), "schema drift must short-circuit fetch");
+        assert!(
+            matches!(
+                client.last_error,
+                Some(ClientError::BadStatus(ref s)) if s.contains("schema_version") && s.contains("v9.9")
+            ),
+            "expected schema_version drift to surface as BadStatus, got {:?}",
+            client.last_error
+        );
+    }
+
+    /// A bare (un-wrapped) body emitted by a pre-envelope producer fails with
+    /// `ClientError::Parse` rather than silently degrading — R58 Q136 Option
+    /// B is field-only with no compat shims, so version drift on the wire
+    /// must be loud.
+    #[test]
+    fn get_json_rejects_bare_body_without_envelope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sock = tmp.path().join("envelope_bare.sock");
+
+        let body = "[]";
+        let body_len = body.len();
+        let response: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        serve_once(&sock, response);
+        std::thread::sleep(Duration::from_millis(50));
+
+        let mut client = ProfilerClient::new_unix(&sock);
+        let result = client.fetch_crashes();
+        assert!(result.is_none(), "bare body must fail without envelope");
+        assert!(
+            matches!(client.last_error, Some(ClientError::Parse(_))),
+            "expected ClientError::Parse for bare body, got {:?}",
+            client.last_error
+        );
+    }
+
+    // ── Live profiler server round-trip ──────────────────────────────────
+
+    #[test]
+    fn live_profiler_server_snapshot_round_trips_through_observe_client() {
+        let (listener, addr) = bind_ephemeral_profiler_listener();
+
+        let ctx = std::sync::Arc::new(hew_runtime::profiler::ProfilerContext {
+            ring: std::sync::Arc::new(std::sync::Mutex::new(
+                hew_runtime::profiler::metrics::MetricsRing::new(),
+            )),
+            cluster: std::ptr::null_mut(),
+            connmgr: std::ptr::null_mut(),
+            routing: std::ptr::null_mut(),
+        });
+
+        std::thread::Builder::new()
+            .name("observe-live-smoke-profiler".into())
+            .spawn({
+                let ctx = std::sync::Arc::clone(&ctx);
+                move || hew_runtime::profiler::run_tcp_with_listener(listener, ctx)
+            })
+            .expect("spawn live profiler server");
+
+        let base_url = format!("http://{addr}");
+        wait_for_live_profiler(&base_url);
+
+        let mut client = ProfilerClient::new_tcp(&base_url).expect("create observe TCP client");
+        let raw_body = client
+            .get_bytes("/api/metrics")
+            .expect("live profiler metrics envelope must be readable");
+        let envelope: Envelope<serde_json::Value> = serde_json::from_slice(&raw_body)
+            .unwrap_or_else(|err| panic!("live profiler payload must parse: {err}"));
+        assert_eq!(envelope.schema_version, OBSERVE_SCHEMA_VERSION);
+        let data = envelope
+            .data
+            .as_object()
+            .expect("metrics snapshot data must be a JSON object");
+        for key in [
+            "timestamp_secs",
+            "tasks_spawned",
+            "tasks_completed",
+            "steals",
+            "messages_sent",
+            "messages_received",
+            "active_workers",
+            "alloc_count",
+            "dealloc_count",
+            "bytes_allocated",
+            "bytes_freed",
+            "bytes_live",
+            "peak_bytes_live",
+            "tcp_bytes_read",
+            "tcp_bytes_written",
+            "tcp_accept_count",
+            "tcp_connect_count",
+            "tcp_error_count",
+        ] {
+            assert!(
+                data.contains_key(key),
+                "live metrics v0.5 payload must include {key}"
+            );
+        }
+
+        let metrics = client
+            .fetch_metrics()
+            .expect("observe client must parse live v0.5 metrics snapshot");
+        assert!(
+            metrics.timestamp_secs.is_finite(),
+            "metrics timestamp must be finite"
+        );
+        assert_eq!(client.status, ConnectionStatus::Connected);
+        assert!(
+            client.last_error.is_none(),
+            "successful live fetch must leave no client error, got {:?}",
+            client.last_error
+        );
+    }
+
+    fn wait_for_live_profiler(base_url: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut last_error = None;
+        while std::time::Instant::now() < deadline {
+            match ProfilerClient::new_tcp(base_url) {
+                Ok(mut client) => {
+                    if client.fetch_metrics().is_some() {
+                        return;
+                    }
+                    last_error = client.last_error.map(|err| err.to_string());
+                }
+                Err(err) => last_error = Some(err.to_string()),
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("live profiler did not become ready at {base_url}: {last_error:?}");
+    }
+
+    fn bind_ephemeral_profiler_listener() -> (std::net::TcpListener, std::net::SocketAddr) {
+        for _ in 0..16 {
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral profiler port");
+            let addr = listener.local_addr().expect("read ephemeral profiler addr");
+            if addr.port() != 6060 {
+                return (listener, addr);
+            }
+        }
+        panic!("ephemeral profiler port selection kept returning forbidden :6060");
+    }
+
     // ── connect error ─────────────────────────────────────────────────────
 
     #[test]
@@ -730,8 +1020,12 @@ mod tests {
         client.fetch_metrics();
         assert!(client.last_error.is_some());
 
-        // Swap to a socket that serves valid metrics JSON.
-        let metrics_json = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        // Swap to a socket that serves valid metrics JSON wrapped in the
+        // canonical observe envelope (producer/consumer at v0.5 emit/accept
+        // `{"schema_version":"v0.5","data":<body>}`).
+        let metrics_inner = r#"{"timestamp_secs":1.0,"tasks_spawned":0,"tasks_completed":0,"steals":0,"messages_sent":0,"messages_received":0,"active_workers":0,"alloc_count":0,"dealloc_count":0,"bytes_allocated":0,"bytes_freed":0,"bytes_live":0,"peak_bytes_live":0,"tcp_bytes_read":0,"tcp_bytes_written":0,"tcp_accept_count":0,"tcp_connect_count":0,"tcp_error_count":0}"#;
+        let metrics_json =
+            format!(r#"{{"schema_version":"{OBSERVE_SCHEMA_VERSION}","data":{metrics_inner}}}"#);
         let body_len = metrics_json.len();
         let response =
             format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{metrics_json}");
@@ -797,5 +1091,67 @@ mod tests {
             .unwrap_err()
             .into();
         assert!(e.to_string().starts_with("parse failed:"), "{e}");
+    }
+
+    // ── TraceEvent channel lifecycle round-trip tests ─────────────────────
+
+    fn make_trace_event(event_type: &str) -> TraceEvent {
+        serde_json::from_str(&format!(
+            r#"{{"trace_id":"0000000000000000","span_id":1,"parent_span_id":0,"actor_id":12345678,"event_type":"{event_type}","msg_type":0,"timestamp_ns":9999}}"#
+        ))
+        .expect("TraceEvent JSON must deserialise")
+    }
+
+    /// Each new channel `event_type` string deserialises into a `TraceEvent`
+    /// with the `event_type` field populated (wire-contract-test-presence).
+    #[test]
+    fn channel_event_types_deserialise_with_populated_fields() {
+        for et in crate::events::CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .filter(|meta| meta.is_actionable())
+            .map(|meta| meta.name)
+        {
+            if matches!(et, "send" | "spawn" | "crash" | "stop") {
+                continue;
+            }
+            let ev = make_trace_event(et);
+            assert_eq!(ev.event_type, et, "event_type must round-trip for {et}");
+            assert_eq!(
+                ev.actor_id, 12_345_678,
+                "actor_id must be populated for {et}"
+            );
+            assert_eq!(
+                ev.timestamp_ns, 9999,
+                "timestamp_ns must be populated for {et}"
+            );
+        }
+    }
+
+    /// Channel lifecycle events are actionable (visible in the trace UI).
+    #[test]
+    fn channel_event_types_are_actionable() {
+        for et in crate::events::CURRENT_TRACE_EVENT_METADATA
+            .iter()
+            .filter(|meta| meta.is_actionable())
+            .map(|meta| meta.name)
+        {
+            let ev = make_trace_event(et);
+            assert!(
+                ev.is_actionable(),
+                "channel event '{et}' must be actionable"
+            );
+        }
+    }
+
+    /// Internal-only span types remain non-actionable.
+    #[test]
+    fn internal_span_types_are_not_actionable() {
+        for et in ["begin", "end", "io_accept", "io_recv", "unknown"] {
+            let ev = make_trace_event(et);
+            assert!(
+                !ev.is_actionable(),
+                "internal event '{et}' must not be actionable"
+            );
+        }
     }
 }

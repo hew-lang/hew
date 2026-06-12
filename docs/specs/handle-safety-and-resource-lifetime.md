@@ -1,10 +1,10 @@
 # Handle safety and resource lifetime
 
 **Status:** Accepted design spec. Records the durable language invariant for
-owned, FFI-backed resource handles and the staged work that earns it. No code
-in this change; implementation is staged across v0.4.x stop-the-bleeding,
-v0.5.x calibration and per-handle migration, and v0.5.x runtime-scope
-cleanup, tracked by issues #1228, #1251, #1252, #1295, #1399.
+owned, FFI-backed resource handles and the staged work that earns it.
+Implementation is in progress, staged across stop-the-bleeding,
+calibration and per-handle migration, and runtime-scope cleanup, tracked
+by issues #1228, #1251, #1252, #1295, #1399.
 **Audience:** Hew language designers, stdlib maintainers, codegen and runtime
 implementers, and reviewers of the migration PRs that follow.
 **Scope:** the language-surface contract for owned, FFI-backed resource handles
@@ -44,27 +44,25 @@ no cleanup line is written at all.
 
 ---
 
-## 2. v0.4.0 is the transition state, not the destination
+## 2. The manual-`free()` model is transitional
 
-The v0.4.0 migration guide records that `impl Drop` for `http.Server`,
-`http.Request`, `regex.Pattern`, and `json.Value` was *removed* because the
-existing drop paths called the same C free function as the explicit
-`close()`/`free()` methods, producing a double-free whenever a caller invoked
-the explicit method and then exited scope (`docs/migrations/v0.4.0.md` §§
-#1314, #1500). Removing `impl Drop` made `close()` / `free()` the single,
-unambiguous release path. That decision was correct under the constraints that
-existed when it shipped: Hew had no move checker, no null-after-move
-infrastructure for arbitrary handle types, no field-alias analysis, and no
-receiver mutability primitive (issue #1295).
+The migration guide (`docs/migrations/v0.4.0.md` §§ #1314, #1500) records that
+`impl Drop` for `http.Server`, `http.Request`, `regex.Pattern`, and `json.Value`
+was removed because the existing drop paths called the same C free function as
+the explicit `close()`/`free()` methods, producing a double-free whenever a
+caller invoked the explicit method and then exited scope. Removing `impl Drop`
+made `close()` / `free()` the single, unambiguous release path. That decision
+was correct under the constraints at the time: Hew had no move checker, no
+null-after-move infrastructure for arbitrary handle types, no field-alias
+analysis, and no receiver mutability primitive (issue #1295).
 
-This spec does **not** rewind that decision. v0.4.0's manual-`free()` model
-remains the supported user contract for v0.4.x. The destination — automatic
-single-release at scope exit — is reached only after the substrate work in
-§§ 7–8 lands and is calibrated on a single pilot handle (the calibration
-milestone — see §7).
+This spec does **not** rewind that decision. The manual-`free()` model is
+the current supported user contract. The destination — automatic single-release
+at scope exit — is reached only after the substrate work in §§ 7–8 lands and
+is calibrated on a single pilot handle (the calibration milestone — see §7).
 
-The migration guide is updated in this same change to mark the manual-`free()`
-state as transitional and forward-link to this spec.
+The migration guide marks the manual-`free()` state as transitional and
+forward-links to this spec.
 
 ---
 
@@ -210,11 +208,9 @@ The checker is the authority. Codegen consumes pre-validated facts.
   YieldedAcrossSuspend / Temporary). These are the categories LESSONS row
   `exhaustive-traversal-and-lowering` requires; the spec mandates their
   exhaustive presence with no wildcard fallthrough.
-- `TypedProgram` carries these facts across the msgpack boundary into MLIR
-  codegen exactly the way `expr_types`, `assign_target_kinds`,
-  `assign_target_shapes`, and `lowering_facts` carry their facts today
-  (`docs/specs/typedprogram-soundness-matrix.md`). A new row
-  `handle_ownership_kinds` is added to that matrix in this same change.
+- The HIR/MIR pipeline carries these facts into `hew-codegen-rs` as
+  validated MIR metadata. No `TypedProgram`/MessagePack/C++ backend seam
+  exists; the HIR/MIR pipeline is the sole path.
 - Codegen's role is fail-closed consumption only: missing classification at
   lowering is an invariant diagnostic (LESSONS `assignment-target-authority`,
   `checker-codegen-pattern-contract`), never a fall-back inference, and never
@@ -252,8 +248,7 @@ ownership model, not two.
   oracle.
 - **Analysis contract:** the full spec for what the move-checker substrate
   must implement — DROP-TODO inventory, failure-mode mapping, diagnostic
-  vocabulary, and rejection fixtures — is in
-  [`move-checker.md`](./move-checker.md).
+  vocabulary, and rejection fixtures — was tracked under issue #1399.
 
 ---
 
@@ -321,7 +316,7 @@ hook, sanitiser test), not just *what* the failure is.
 | FM-9 | WASM parity gap (native target gets the cleanup, WASM target does not) | `make test-wasm` per per-handle PR | LESSONS `native-wasm-parity`; either parity green or named `WASM-TODO` (§10). |
 | FM-10 | Field-alias double-free (struct field passed as call arg whose callee drops it) | Checker pre-scan (LESSONS `field-alias-fail-closed`) | Reject at compile time before call IR is emitted; `errorCount_` incremented alongside `emitError`. |
 | FM-11 | Closure-capture leak (handle captured by long-lived closure that is never invoked) | Checker move-classification (`ClosureCapture`) | The move-checker substrate (issue #1399) publishes the classification; codegen emits a drop on closure deallocation. Reject if the captured handle's affine semantics cannot be satisfied. |
-| FM-12 | Generator suspend/resume use-after-free (DROP-TODO D6 at `MLIRGen.cpp:5268`) | Checker move-classification (`YieldedAcrossSuspend`) | The move-checker substrate (issue #1399) must publish this category before any per-handle migration that touches a generator. Until then, generators that hold handle bindings are checker-rejected. |
+| FM-12 | Generator suspend/resume use-after-free (retired-backend DROP-TODO D6) | Checker move-classification (`YieldedAcrossSuspend`) | The move-checker substrate (issue #1399) must publish this category before any per-handle migration that touches a generator. Until then, generators that hold handle bindings are checker-rejected. |
 | FM-13 | C ABI consumer double-free with **address reuse** — a C caller invokes `hew_*_free` after Hew already released, the underlying allocator hands the same address back to a *different* live allocation, and the second free corrupts the new allocation (the failure mode that drove rejection of mechanism F in §3) | C ABI test harness in `hew-cabi/tests/` | Calibration-milestone deliverable; release functions guarded by an FFI-side `closed` flag *only when proven idempotent and regression-tested* (LESSONS `ffi-ownership-contracts`). |
 
 ---
@@ -354,9 +349,9 @@ Per LESSONS `native-wasm-parity`: any handle-lifecycle behaviour that lands in
 
 For this lane specifically:
 
-- The **codegen drop emission table** (H) is target-independent — it lives in
-  MLIR generation and is emitted before the target backend split. WASM parity
-  is automatic for tier 1.
+- The **codegen drop emission table** (H) is target-independent — it is derived
+  before native/WASM target emission in the Rust HIR/MIR/codegen-rs path. WASM
+  parity is automatic for tier 1 once the shared MIR facts are accepted.
 - The **actor cleanup hook** (I) is duplicated across the two scheduler files.
   The runtime-scope cleanup milestone explicitly touches both. A per-handle
   migration PR that introduces a new hook entry must update both schedulers
@@ -376,9 +371,8 @@ For this lane specifically:
 ## 11. Per-handle migration table (work breakdown)
 
 For every entry in §7, the per-handle migration PR records what changes for
-the user, the
-stdlib, and codegen. The full content of each row is finalised by the PR
-itself; this spec fixes the *shape*.
+the user, the stdlib, and codegen-rs. The full content of each row is finalised
+by the PR itself; this spec fixes the *shape*.
 
 | Handle | User-facing change | Stdlib-internal change | Codegen change |
 | --- | --- | --- | --- |
@@ -467,20 +461,15 @@ behind a flag, the following rules apply:
   and consume-on-call), #1314 (`http.Server` / `regex.Pattern` manual-release
   migration), #1399 (move-checker substrate), #1500 (`http.Request` /
   `json.Value` manual-release migration).
-- Soundness matrix: `docs/specs/typedprogram-soundness-matrix.md` (extended
-  in the same change to add a `handle_ownership_kinds` row).
-- Substrate paths cited in this spec: `hew-codegen/src/mlir/MLIRGen.cpp`,
-  `hew-codegen/src/mlir/MLIRGenExpr.cpp`, `hew-runtime/src/scheduler.rs`,
-  `hew-runtime/src/scheduler_wasm.rs`, `hew-runtime/src/session.rs`,
-  `hew-cabi/tests/`.
+- Substrate paths cited in this spec: `hew-mir/`, `hew-codegen-rs/`,
+  `hew-runtime/src/scheduler.rs`, `hew-runtime/src/scheduler_wasm.rs`,
+  `hew-runtime/src/session.rs`, `hew-cabi/tests/`.
 - LESSONS rows: `ffi-ownership-contracts`, `raii-null-after-move`,
   `field-alias-fail-closed`, `cleanup-all-exits`, `checker-output-boundary`,
   `checker-codegen-pattern-contract`, `serializer-fail-closed`,
   `assignment-target-authority`, `exhaustive-traversal-and-lowering`,
-  `native-wasm-parity`, `mlir-local-type-hints`,
+  `native-wasm-parity`, historical retired-backend local type hints,
   `static-cpp-object-libcxx-boundary`, `error-count-exit-code`,
   `preflight-perf-discipline`, `check-pass-does-not-imply-run-pass`,
   `network-smoke-readiness`.
-- Soundness matrix: `docs/specs/typedprogram-soundness-matrix.md` (extended in
-  the same change to add a `handle_ownership_kinds` row).
 - Issues: #1228, #1251, #1252, #1281, #1295, #1314, #1399, #1500.

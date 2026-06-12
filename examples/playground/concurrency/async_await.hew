@@ -1,12 +1,15 @@
 //! @name Async/Await
-//! @description Async functions with await
+//! @description Actor call-and-await
 
-fn compute(n: int) -> int {
-    let result = fib(n);
-    result
+actor FibPrinter {
+    receive fn print_fib(n: i64) -> i64 {
+        let result = fib(n);
+        println(f"fib({n}) = {result}");
+        result
+    }
 }
 
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -15,8 +18,10 @@ fn fib(n: int) -> int {
 }
 
 fn main() {
-    let future = compute(10);
-    let result = await future;
-    print("fib(10) = ");
-    println(result);
+    let fibber = spawn FibPrinter;
+    let r = await fibber.print_fib(10);
+    match r {
+        Ok(v) => println(f"awaited fib(10) = {v}"),
+        Err(_) => println("ask failed"),
+    }
 }

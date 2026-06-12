@@ -1,0 +1,19 @@
+// Generic record constructed inside a generic fn body, monomorphised at two
+// distinct concrete BitCopy types (i64 and bool) in one program. Proves the
+// post-function-mono record-layout discovery is genuinely polymorphic, not a
+// single-type special case. The `Box<T>` layout is registered only after
+// `make` is substituted as `make$$i64` / `make$$bool`.
+record Box<T> {
+    value: T
+}
+
+fn make<T>(x: T) -> Box<T> {
+    Box { value: x }
+}
+
+fn main() {
+    let a = make(7);
+    let b = make(true);
+    println(a.value);
+    println(b.value);
+}

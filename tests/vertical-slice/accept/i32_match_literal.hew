@@ -1,0 +1,11 @@
+// Regression: bare integer literal match arms must coerce to the i32 scrutinee
+// type instead of defaulting the comparand to i64.
+fn pick() -> i32 { 7 }
+
+fn main() -> i32 {
+    match pick() {
+        6 => 1,
+        7 => 42,
+        _ => 0,
+    }
+}

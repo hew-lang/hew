@@ -1,11 +1,18 @@
 //! Hew runtime: dynamic actor group with condvar-based waiting.
 //!
 //! [`HewActorGroup`] is a heap-allocated, dynamically-growing actor
-//! container. Unlike the legacy [`HewScope`](super::scope::HewScope), it
-//! has no fixed capacity limit and uses a condvar for efficient waiting.
-//! This is the intended migration target for new structured-concurrency
-//! runtime/codegen paths while [`HewScope`](super::scope::HewScope) remains
-//! as the stable stack-allocated ABI for already-generated code.
+//! container with no fixed capacity limit; it uses a condvar for
+//! efficient waiting. It is the heap-allocated companion to
+//! [`HewTaskScope`](super::task_scope::HewTaskScope), the canonical
+//! structured-concurrency substrate that `scope { … }` lowers to.
+//!
+//! **Note:** `HewActorGroup` is currently unintegrated and retained as a
+//! reference design for future heap-allocated actor groups. It is not
+//! currently emitted by codegen.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -84,7 +91,7 @@ pub unsafe extern "C" fn hew_actor_group_new() -> *mut HewActorGroup {
         lock: std::sync::Mutex::new(()),
         done_cond: Arc::new(std::sync::Condvar::new()),
     });
-    Box::into_raw(group)
+    Box::into_raw(group) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Destroy an actor group, freeing all internal resources.
@@ -101,7 +108,7 @@ pub unsafe extern "C" fn hew_actor_group_destroy(g: *mut HewActorGroup) {
         return;
     }
     // SAFETY: Caller guarantees `g` was Box-allocated.
-    let group = unsafe { Box::from_raw(g) };
+    let group = unsafe { Box::from_raw(g) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Unregister death notifiers for all tracked actors.
     for &actor_ptr in &group.actors {

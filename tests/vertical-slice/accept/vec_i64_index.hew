@@ -1,0 +1,15 @@
+// vec-generic-index S0 control: scalar `xs[i]` on `Vec<i64>` (BitCopy scalar
+// element). Confirms the generic indexing substrate covers by-value scalars
+// alongside the heap-owning `Vec<string>` case — both flow through the same
+// bounds-checked `lower_vec_index` path, dispatching on element type
+// (`hew_vec_get_i64` here vs `hew_vec_get_str` for strings).
+//
+// xs = [10, 20, 12]
+//   xs[1] + xs[2] - xs[0] = 20 + 12 - 10 = 22  →  exit 22
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    xs.push(12);
+    xs[1] + xs[2] - xs[0]
+}

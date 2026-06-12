@@ -1,0 +1,18 @@
+fn main() {
+    let pairs: Vec<(i64, i64)> = Vec::new();
+    pairs.push((10, 20));
+    pairs.push((30, 40));
+
+    let first = pairs.get(0);
+    let second = pairs.get(1);
+
+    if first.0 != 10 { panic(f"expected first.0=10, got {first.0}"); }
+    if first.1 != 20 { panic(f"expected first.1=20, got {first.1}"); }
+    if second.0 != 30 { panic(f"expected second.0=30, got {second.0}"); }
+    if second.1 != 40 { panic(f"expected second.1=40, got {second.1}"); }
+
+    println(first.0);
+    println(first.1);
+    println(second.0);
+    println(second.1);
+}

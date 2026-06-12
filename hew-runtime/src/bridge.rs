@@ -143,6 +143,7 @@ impl std::fmt::Debug for HewActorMeta {
 /// Combined metadata registry + cache state.
 struct MetaState {
     registry: HashMap<String, ActorMetaEntry>,
+    trace_attribution: HashMap<i32, ActorTraceAttribution>,
     /// `msg_type → "ActorName::handler_name"` side table for trace attribution.
     ///
     /// Populated at registration time by [`hew_wasm_register_actor_meta`].
@@ -151,7 +152,8 @@ struct MetaState {
     /// last-registered wins.  This is a pre-existing ambiguity in the bridge
     /// model for AOT programs; collision is a codegen concern tracked
     /// separately.  See [`resolve_handler_name`] for the lookup path.
-    // WASM-TODO(#1451): hew_register_handler_name ABI call not yet emitted by WASM codegen
+    // WASM-TODO(#1451): full WASI task-scope parity remains separate; trace
+    // actor metadata is produced by hew_wasm_register_actor_meta.
     handler_names: HashMap<i32, String>,
     cache_all: Option<String>,
 }
@@ -174,6 +176,15 @@ struct HandlerMetaEntry {
     return_size: u32,
 }
 
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:854 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+#[derive(Clone)]
+struct ActorTraceAttribution {
+    actor_type_id: u64,
+    actor_type: String,
+    handler_name: String,
+}
+
 struct ParamMetaEntry {
     name: String,
     type_name: String,
@@ -186,6 +197,7 @@ fn meta_state() -> MutexGuard<'static, MetaState> {
         .get_or_init(|| {
             Mutex::new(MetaState {
                 registry: HashMap::new(),
+                trace_attribution: HashMap::new(),
                 handler_names: HashMap::new(),
                 cache_all: None,
             })
@@ -207,6 +219,7 @@ fn clear_handler_names_for_session_reset() {
     let mut state = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.trace_attribution.clear();
     state.handler_names.clear();
 }
 
@@ -232,8 +245,48 @@ pub(crate) fn register_bridge_reset_hook() {
 /// NOTE: last-registered wins on `msg_type` collision across actor types.
 /// This is a pre-existing ambiguity in the AOT model — see the `handler_names`
 /// field documentation on [`MetaState`] for details.
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:857 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 pub(crate) fn resolve_handler_name(msg_type: i32) -> Option<String> {
     meta_state().handler_names.get(&msg_type).cloned()
+}
+
+fn wasm_actor_type_id(actor_name: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in actor_name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
+}
+
+/// Resolve WASM bridge metadata for trace JSON attribution.
+///
+/// The returned `actor_type_id` is a deterministic, non-zero WASM-local type
+/// identity derived from the registered actor name. It is not the native
+/// dispatch-function pointer used by the profiler registry on native targets.
+///
+/// NOTE: last-registered wins on flat `msg_type` collisions, matching
+/// [`resolve_handler_name`] and the current AOT bridge model.
+// live on wasm32 + test; dead on native non-test; caller tracing.rs:856 (cfg(any(wasm32,test)))
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+pub(crate) fn resolve_actor_trace_attribution(
+    msg_type: i32,
+) -> Option<(u64, String, Option<String>)> {
+    meta_state().trace_attribution.get(&msg_type).map(|entry| {
+        (
+            entry.actor_type_id,
+            entry.actor_type.clone(),
+            Some(entry.handler_name.clone()),
+        )
+    })
 }
 
 // ── Host → WASM: send a message to a named actor ───────────────────────
@@ -274,32 +327,31 @@ pub unsafe extern "C" fn hew_wasm_send(
     // HewActor layout (64-bit):
     //   0: sched_link_next (8 bytes, AtomicPtr)
     //   8: id (8 bytes, u64)
-    //  16: pid (8 bytes, u64)
-    //  24: state (8 bytes, *mut c_void)
-    //  32: state_size (8 bytes, usize)
-    //  40: dispatch (8 bytes, Option<fn>)
-    //  48: mailbox (8 bytes, *mut c_void)
+    //  16: state (8 bytes, *mut c_void)
+    //  24: state_size (8 bytes, usize)
+    //  32: dispatch (8 bytes, Option<fn>)
+    //  40: mailbox (8 bytes, *mut c_void)
     const MAILBOX_OFFSET: usize = std::mem::offset_of!(HewActor, mailbox);
 
     // Verify offsets match expectations (checked at compile time).
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(MAILBOX_OFFSET == 48);
+    const _: () = assert!(MAILBOX_OFFSET == 40);
     #[cfg(target_pointer_width = "32")]
-    const _: () = assert!(MAILBOX_OFFSET == 36);
+    const _: () = assert!(MAILBOX_OFFSET == 28);
 
     // After sending, wake the actor: transition IDLE → RUNNABLE and enqueue.
     // This mirrors what the native scheduler does in hew_actor_send.
     //
-    // actor_state is at offset 56 (after mailbox at 48):
-    //  48: mailbox (8 bytes)
-    //  56: actor_state (4 bytes, AtomicI32)
+    // actor_state is at offset 48 (after mailbox at 40):
+    //  40: mailbox (8 bytes)
+    //  48: actor_state (4 bytes, AtomicI32)
     const ACTOR_STATE_OFFSET: usize = std::mem::offset_of!(HewActor, actor_state);
 
     // Verify offsets match expectations (checked at compile time).
     #[cfg(target_pointer_width = "64")]
-    const _: () = assert!(ACTOR_STATE_OFFSET == 56);
+    const _: () = assert!(ACTOR_STATE_OFFSET == 48);
     #[cfg(target_pointer_width = "32")]
-    const _: () = assert!(ACTOR_STATE_OFFSET == 40);
+    const _: () = assert!(ACTOR_STATE_OFFSET == 32);
 
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable
@@ -574,10 +626,18 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     let mut state = meta_state();
     // Populate the msg_type → "ActorName::handler_name" side table used by
     // drain_events_json for span-level trace attribution.
+    let actor_type_id = wasm_actor_type_id(&name);
     for h in &handlers {
-        state
-            .handler_names
-            .insert(h.msg_type, format!("{}::{}", name, h.name));
+        let handler_name = format!("{}::{}", name, h.name);
+        state.handler_names.insert(h.msg_type, handler_name.clone());
+        state.trace_attribution.insert(
+            h.msg_type,
+            ActorTraceAttribution {
+                actor_type_id,
+                actor_type: name.clone(),
+                handler_name,
+            },
+        );
     }
     state
         .registry
@@ -770,6 +830,7 @@ pub fn bridge_init() {
     let _ = META_STATE.get_or_init(|| {
         Mutex::new(MetaState {
             registry: HashMap::new(),
+            trace_attribution: HashMap::new(),
             handler_names: HashMap::new(),
             cache_all: None,
         })
@@ -786,8 +847,8 @@ pub fn bridge_shutdown() {
     outbound_queue().clear();
     let mut state = meta_state();
     state.registry.clear();
-    // `handler_names` is intentionally left intact here; the shared
-    // session-reset hook clears it immediately after bridge shutdown so the
+    // Trace-attribution side tables are intentionally left intact here; the shared
+    // session-reset hook clears them immediately after bridge shutdown so the
     // rest of the session can still observe a stable AOT mapping.
     state.cache_all = None;
 }
@@ -854,6 +915,7 @@ pub(crate) fn reset_bridge_full() {
     outbound_queue().clear();
     let mut state = meta_state();
     state.registry.clear();
+    state.trace_attribution.clear();
     state.handler_names.clear();
     state.cache_all = None;
 }
@@ -1339,6 +1401,40 @@ mod tests {
     }
 
     #[test]
+    fn actor_trace_attribution_resolves_registered_actor_type() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        let handler = HewHandlerMeta {
+            name: c"handle_ping".as_ptr().cast(),
+            msg_type: 42,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let actor_meta = HewActorMeta {
+            name: c"TraceActor".as_ptr().cast(),
+            handler_count: 1,
+            handlers: &raw const handler,
+        };
+
+        assert_eq!(resolve_actor_trace_attribution(42), None);
+
+        // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
+
+        let (actor_type_id, actor_type, handler_name) =
+            resolve_actor_trace_attribution(42).expect("registered attribution");
+        assert_ne!(actor_type_id, 0);
+        assert_eq!(actor_type_id, wasm_actor_type_id("TraceActor"));
+        assert_eq!(actor_type, "TraceActor");
+        assert_eq!(handler_name, Some("TraceActor::handle_ping".to_owned()));
+        assert_eq!(resolve_actor_trace_attribution(99), None);
+    }
+
+    #[test]
     fn session_reset_clears_handler_name_side_table_via_hook() {
         let _runtime_guard = crate::runtime_test_guard();
         let _session_guard = crate::session::reset_hooks_for_test();
@@ -1365,12 +1461,20 @@ mod tests {
         unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
 
         assert_eq!(resolve_handler_name(7), Some("ResetActor::ping".to_owned()));
+        assert!(
+            resolve_actor_trace_attribution(7).is_some(),
+            "trace attribution must be populated before reset"
+        );
 
         bridge_shutdown();
         assert_eq!(
             resolve_handler_name(7),
             Some("ResetActor::ping".to_owned()),
             "bridge_shutdown keeps handler_names until session_reset runs"
+        );
+        assert!(
+            resolve_actor_trace_attribution(7).is_some(),
+            "bridge_shutdown keeps trace attribution until session_reset runs"
         );
 
         crate::session::session_reset();
@@ -1379,6 +1483,11 @@ mod tests {
             resolve_handler_name(7),
             None,
             "session_reset must clear the handler-name side table"
+        );
+        assert_eq!(
+            resolve_actor_trace_attribution(7),
+            None,
+            "session_reset must clear trace attribution"
         );
     }
 }

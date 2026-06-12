@@ -254,7 +254,7 @@ def test_override_with_sentinel_emits_stderr_warning() -> None:
     assert "PREFLIGHT_TEST_COMMANDS" in result.stderr, result.stderr
     assert "test-only" in result.stderr, result.stderr
     assert "==> Hew CI preflight dispatcher" in result.stdout, result.stdout
-    assert "  - printf '%s' OVERRIDE_OK >/dev/null  (budget: 180s)" in result.stdout, (
+    assert "  - printf '%s' OVERRIDE_OK >/dev/null  (budget: 600s)" in result.stdout, (
         result.stdout
     )
 
@@ -310,11 +310,11 @@ def test_profile_json_records_elapsed_for_each_command() -> None:
 
 
 def test_scripts_config_budget_annotation() -> None:
-    """scripts-config lane (narrow) shows 180s budget in dry-run."""
+    """scripts-config lane uses the conservative fallback budget in dry-run."""
     result = run_dispatcher("Makefile")
     assert result.returncode == 0, result.stderr
-    assert "(budget: 180s)" in result.stdout, (
-        f"Expected '(budget: 180s)' for scripts-config lane.\nstdout:\n{result.stdout}"
+    assert "(budget: 600s)" in result.stdout, (
+        f"Expected '(budget: 600s)' for scripts-config lane.\nstdout:\n{result.stdout}"
     )
 
 
@@ -326,6 +326,36 @@ def test_runtime_net_lane_budget_annotation() -> None:
     assert "(budget: 180s)" in result.stdout, (
         f"Expected '(budget: 180s)' for runtime-net lane.\nstdout:\n{result.stdout}"
     )
+
+
+def test_runtime_net_lane_rebuilds_libhew() -> None:
+    """runtime-net lane includes make stdlib + freshness check before tests.
+
+    Both hew-runtime and hew-lib source changes must produce libhew.a before
+    test-runtime-net runs, so that linked programs never test against a stale .a.
+    """
+    for path in ("hew-runtime/src/lib.rs", "hew-lib/src/lib.rs"):
+        result = run_dispatcher(path)
+        assert result.returncode == 0, result.stderr
+        assert "Selected profile: runtime-net" in result.stdout, (
+            f"Expected runtime-net profile for {path}.\nstdout:\n{result.stdout}"
+        )
+        assert "make stdlib" in result.stdout, (
+            f"Expected 'make stdlib' in runtime-net commands for {path}.\n"
+            f"stdout:\n{result.stdout}"
+        )
+        assert "scripts/check-libhew-fresh.sh" in result.stdout, (
+            f"Expected 'scripts/check-libhew-fresh.sh' in runtime-net commands for {path}.\n"
+            f"stdout:\n{result.stdout}"
+        )
+        # Freshness gate must appear before the test command.
+        stdlib_pos = result.stdout.index("make stdlib")
+        fresh_pos = result.stdout.index("scripts/check-libhew-fresh.sh")
+        test_pos = result.stdout.index("make test-runtime-net")
+        assert stdlib_pos < fresh_pos < test_pos, (
+            f"Expected order: make stdlib < check-libhew-fresh < test-runtime-net.\n"
+            f"stdout:\n{result.stdout}"
+        )
 
 
 def test_zero_timeout_fails_closed() -> None:
@@ -356,6 +386,158 @@ def test_zero_timeout_fails_closed() -> None:
     )
 
 
+def test_compiler_pipeline_rs_change_includes_vertical_slice_oracle() -> None:
+    """Pure compiler-pipeline Rust changes run the end-to-end vertical-slice oracle."""
+    result = run_dispatcher("hew-mir/src/lower.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "make test-vertical-slice" in result.stdout, result.stdout
+
+
+def test_docs_only_change_does_not_include_vertical_slice_oracle() -> None:
+    """Docs-only changes remain a no-op and do not run the compiler oracle."""
+    result = run_dispatcher("docs/README.md")
+    assert result.returncode == 0, result.stderr
+    assert "docs-only" in result.stdout, result.stdout
+    assert "make test-vertical-slice" not in result.stdout, result.stdout
+
+
+def test_fallback_lane_includes_smoke_tier_before_heavy() -> None:
+    """Fallback lane runs the smoke tier (make ci-preflight-smoke) before make lint and make test.
+
+    The smoke tier surfaces fmt/clippy/fast-oracle failures in <5 min before
+    the expensive full suite (make lint + make playground-check + make test) is
+    invoked.  Coverage is unchanged: the heavy tier runs on smoke pass.
+    """
+    # An unclassified path routes to the fallback (comprehensive) lane.
+    result = run_dispatcher("some-unclassified-root-file.txt")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert "make ci-preflight-smoke" in result.stdout, (
+        "Expected 'make ci-preflight-smoke' in fallback lane commands.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert "make lint" in result.stdout, (
+        f"Expected 'make lint' in fallback lane commands.\nstdout:\n{result.stdout}"
+    )
+    assert "make test" in result.stdout, (
+        f"Expected 'make test' in fallback lane commands.\nstdout:\n{result.stdout}"
+    )
+    # Smoke tier must appear before make lint in the command list.
+    smoke_pos = result.stdout.index("make ci-preflight-smoke")
+    lint_pos = result.stdout.index("make lint")
+    test_pos = result.stdout.index("make test")
+    assert smoke_pos < lint_pos < test_pos, (
+        f"Expected order: make ci-preflight-smoke < make lint < make test.\n"
+        f"smoke_pos={smoke_pos}, lint_pos={lint_pos}, test_pos={test_pos}\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_ci_parity_script_passes() -> None:
+    """scripts/check-preflight-ci-parity.sh exits 0 on the current fallback lane.
+
+    This is the Stage 6 lock: any future change that drops a CI-required check
+    from the dispatcher fallback lane will cause this test to fail.
+    """
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "check-preflight-ci-parity.sh")],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"CI parity check failed — the fallback lane is missing a CI-required step.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    import re
+
+    # Match "N/N checks present" where N is the number of CI-required entries.
+    # The count comes from the dispatcher's --ci-required list, not a hardcoded literal.
+    assert re.search(r"\d+/\d+ checks present", result.stdout), (
+        f"Expected '<N>/<N> checks present' in parity output.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_hew_tests_path_routes_to_hew_tests_lane() -> None:
+    """Changes in tests/hew/ route to the hew-tests lane with both ratchets."""
+    result = run_dispatcher("tests/hew/vec_test.hew")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: hew-tests" in result.stdout, result.stdout
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' in hew-tests lane.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_std_hew_file_adds_hew_suite_addon() -> None:
+    """A .hew change under std/ appends both hew-suite ratchets as addons.
+
+    The lane is determined by the non-hew parts of the diff; the ratchets are
+    appended regardless of which lane was selected.  Use a pure std/.hew change,
+    which routes to the runtime-net lane (std/net/*.hew) or may route to
+    another lane — the key assertion is that the ratchets appear in the command
+    list.
+    """
+    result = run_dispatcher("std/string.hew")
+    assert result.returncode == 0, result.stderr
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' appended for std/ .hew change.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' appended for std/ .hew change.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
+def test_fallback_lane_includes_hew_suite_ratchets() -> None:
+    """Fallback (comprehensive) lane includes both Hew-language suite ratchets."""
+    result = run_dispatcher("some-unclassified-root-file.txt")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: comprehensive" in result.stdout, result.stdout
+    assert "make test-hew-ratchet" in result.stdout, (
+        f"Expected 'make test-hew-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-stdlib-ratchet" in result.stdout, (
+        f"Expected 'make test-stdlib-ratchet' in fallback lane.\nstdout:\n{result.stdout}"
+    )
+    # Ratchets must appear after make test (Rust suite runs first).
+    # The budget annotation "(budget: Xs)" may appear on the same line in dry-run.
+    test_pos = result.stdout.index("  - make test")
+    hew_pos = result.stdout.index("make test-hew-ratchet")
+    stdlib_pos = result.stdout.index("make test-stdlib-ratchet")
+    assert test_pos < hew_pos, (
+        f"Expected make test before make test-hew-ratchet.\nstdout:\n{result.stdout}"
+    )
+    assert test_pos < stdlib_pos, (
+        f"Expected make test before make test-stdlib-ratchet.\nstdout:\n{result.stdout}"
+    )
+
+
+def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
+    """Parser + type-checker changes route to the types lane, not fallback.
+
+    test-types runs hew-types + hew-parser + hew-lexer, covering both buckets.
+    This avoids the 9156-test fallback suite for a change that only touches the
+    parser/types dependency closure.
+    """
+    result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: types" in result.stdout, (
+        f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-types" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full suite.
+    assert (
+        "make test\n" not in result.stdout and "  - make test\n" not in result.stdout
+    ), f"Expected narrow types lane, not full fallback.\nstdout:\n{result.stdout}"
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -381,7 +563,16 @@ _TESTS = [
     test_profile_json_records_elapsed_for_each_command,
     test_scripts_config_budget_annotation,
     test_runtime_net_lane_budget_annotation,
+    test_runtime_net_lane_rebuilds_libhew,
     test_zero_timeout_fails_closed,
+    test_compiler_pipeline_rs_change_includes_vertical_slice_oracle,
+    test_docs_only_change_does_not_include_vertical_slice_oracle,
+    test_fallback_lane_includes_smoke_tier_before_heavy,
+    test_parser_plus_types_narrow_multi_bucket_uses_types_lane,
+    test_hew_tests_path_routes_to_hew_tests_lane,
+    test_std_hew_file_adds_hew_suite_addon,
+    test_fallback_lane_includes_hew_suite_ratchets,
+    test_ci_parity_script_passes,
 ]
 
 if __name__ == "__main__":

@@ -1,0 +1,42 @@
+//! Non-BitCopy record match destructure — ALL-wildcard arm leaves the
+//! scrutinee reusable.
+//!
+//! An all-wildcard arm (`Outer { name: _, inner: _ }`) moves nothing out of
+//! the scrutinee, so the scrutinee binding stays live after the match: it is
+//! NOT consume-marked (only an arm that binds at least one owned field earns
+//! the consume mark). Reading the scrutinee afterward is therefore legitimate,
+//! and the binding's composite drop still fires at scope exit.
+//!
+//! This is the inverse of `reject/match_destructure_use_after_consume`: there
+//! an owned field is moved into a binding, the scrutinee is consume-marked, and
+//! a post-match read fires `UseAfterConsume`. Here nothing is moved, so the
+//! post-match read of `o.name` compiles and observes the intact value.
+//!
+//! Observable contract: prints `alpha` (the untouched `name` field) and exits
+//! 0. A regression that over-eagerly consume-marked an all-wildcard scrutinee
+//! would reject this read at check time.
+
+type Inner {
+    value: string,
+}
+
+type Outer {
+    name: string,
+    inner: Inner,
+}
+
+fn make() -> Outer {
+    Outer {
+        name: string_concat("alpha", ""),
+        inner: Inner { value: string_concat("beta", "") },
+    }
+}
+
+fn main() -> i64 {
+    let o = make();
+    let _r = match o {
+        Outer { name: _, inner: _ } => 0,
+    };
+    println(o.name);
+    0
+}

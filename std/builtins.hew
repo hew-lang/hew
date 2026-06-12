@@ -1,24 +1,357 @@
 //! Built-in functions available in every Hew program.
 //!
 //! These functions are always in scope — no `import` is needed.
-//! They cover I/O, assertions, math, String operations, and
+//! They cover I/O, assertions, math, string operations, and
 //! program control flow.
+
+// ---------------------------------------------------------------------------
+// Actor pid types
+// ---------------------------------------------------------------------------
+/// A process-local actor pid returned by `spawn`.
+///
+/// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `link`,
+/// `monitor`, etc.) and by any function that takes `dyn Pid<Msg = M>`.
+///
+/// Coercion to a remote pid is explicit:
+///
+/// ```
+/// let remote = pid.to_remote_via(node_handle);
+/// ```
+pub type LocalPid<T> {
+}
+
+/// An actor pid on a remote node.
+///
+/// Produced by peer-discovery or explicit construction via `RemotePid::from_raw`.
+/// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
+///
+/// `.tell` is a fail-closed stub until S4 wires up `hew_actor_send_remote`.
+///
+/// # SHIM
+///
+/// `RemotePid::from_raw` is scaffolding for S1 tests. `.tell` fails closed
+/// with `SendError::NodeRoutingNotWired` until `hew_actor_send_remote` lands.
+pub type RemotePid<T> {
+}
+
+/// Error returned when a pid send cannot be completed.
+pub enum SendError {
+    /// The destination mailbox is full.
+    Full;
+    /// The destination is closed or no longer alive.
+    Closed;
+    /// Cross-node routing has not been wired for this runtime path yet.
+    NodeRoutingNotWired;
+}
+
+/// Error returned when `Node::lookup<T>(name)` cannot resolve `name`.
+///
+/// Returned as `Err(LookupError::NotFound)` when no actor is registered
+/// under `name` on the current node (or any peer with a gossiped name).
+/// Future variants (e.g. transport-level failures, schema mismatches) are
+/// deferred to follow-on polish; today the runtime collapses every failure
+/// into `NotFound` since the underlying registry surface is fail-closed
+/// per `set_last_error` for the diagnostic detail.
+pub enum LookupError {
+    /// No actor is registered under the requested name.
+    NotFound;
+}
+
+/// Error returned when a remote actor ask cannot complete.
+///
+/// Variant order matches the native runtime ask ABI so codegen can project
+/// the runtime error discriminant directly into this public enum.
+pub enum AskError {
+    /// Internal no-error sentinel; should not be returned as `Err`.
+    NoError;
+    /// The local node is not running.
+    NodeNotRunning;
+    /// The destination node or actor could not be routed.
+    RoutingFailed;
+    /// The request payload could not be encoded.
+    EncodeFailed;
+    /// The request could not be sent.
+    SendFailed;
+    /// The caller-supplied timeout elapsed before a reply arrived.
+    Timeout;
+    /// The remote connection closed before the reply arrived.
+    ConnectionDropped;
+    /// The reply payload did not match the expected reply size.
+    PayloadSizeMismatch;
+    /// The remote ask worker is at capacity.
+    WorkerAtCapacity;
+    /// The destination actor is stopped.
+    ActorStopped;
+    /// The destination actor mailbox is full.
+    MailboxFull;
+    /// A reply arrived after its waiter was gone.
+    OrphanedAsk;
+    /// The runtime had no runnable work while waiting for the reply.
+    NoRunnableWork;
+}
+
+/// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
+///
+/// Returned as `Err(TimeoutError::Timeout)` when the deadline fires before an
+/// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
+///
+/// ```hew
+/// match await rx.recv() | after 50ms {
+///     Ok(Some(v)) => v,       // item received before deadline
+///     Ok(None)    => -1,      // channel closed (no deadline race)
+///     Err(_)      => -2,      // deadline fired
+/// }
+/// ```
+pub enum TimeoutError {
+    /// The deadline fired before the recv completed.
+    Timeout;
+}
+
+/// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
+///
+/// Named actors opt into the erased `Pid` surface by implementing this trait
+/// and binding `Msg` to the envelope type accepted by `.tell` / `.ask`, plus
+/// `Reply` to the response type returned by `.ask`.
+pub trait ActorMsg {
+    type Msg;
+
+    type Reply;
+}
+
+/// Trait satisfied by both `LocalPid<A>` and `RemotePid<A>`.
+///
+/// Future surface target for accepting either local or remote pids. A640:
+/// generic `P: Pid` sends are fail-closed unless `P::Msg` is concretely proven
+/// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
+/// model below.
+///
+/// ```
+/// fn ping<P: Pid>(p: P, msg: P::Msg) -> Result<(), SendError> {
+///     p.tell(msg)
+/// }
+/// ```
+pub trait Pid {
+    type Msg;
+
+    fn tell(pid: Self, msg: Self::Msg) -> Result<(), SendError>;
+}
+
+impl<T: ActorMsg> LocalPid<T> {
+    /// Send a message to this local actor.
+    fn tell(pid: LocalPid<T>, msg: T::Msg) -> Result<(), SendError> {
+        Ok(())
+    }
+}
+
+impl<T> LocalPid<T> {
+    // WASM-TODO(#1451): RemotePid cross-node routing is native-only until
+    // a wasm peer transport is decided.
+    /// Obtain a remote pid that routes to the same actor via `node_handle`.
+    ///
+    /// SHIM: `node_handle` is currently unused; actual cross-node routing
+    /// arrives in S4 when `hew_actor_send_remote` is wired up.
+    fn to_remote_via(pid: LocalPid<T>, node_handle: dyn Display) -> RemotePid<T> {}
+}
+
+impl<T> RemotePid<T> {
+    // WASM-TODO(#1451): RemotePid construction is native-only until a wasm
+    // peer transport is decided.
+    /// Construct a remote pid from raw node/serial components.
+    ///
+    /// SHIM: fail-closed stub. Used in tests to surface a `RemotePid<T>`
+    /// value without a live peer-discovery mechanism. The empty body keeps
+    /// codegen fail-closed (no self-recursive stack overflow). Replace when
+    /// the peer API lands.
+    fn from_raw(node_id: u64, serial: u64) -> RemotePid<T> {}
+}
+
+impl<T: ActorMsg> RemotePid<T> {
+    /// Send a message to this remote actor.
+    ///
+    /// Lowered by codegen: the checker rewrites every `pid.tell(msg)` site
+    /// on a `RemotePid<T>` receiver to a direct call to
+    /// `hew_remote_pid_tell`, and the LLVM backend intercepts that call
+    /// and emits the `hew_actor_send_by_id(pid, msg_type, ptr, size)`
+    /// runtime ABI plus an in-place `Result<(), SendError>` construction.
+    /// The body below is unreachable on the native path and is retained
+    /// only for type-check seeding (so the trait surface matches `LocalPid`)
+    /// and as a fail-closed fallback on targets without the codegen
+    /// interception (notably WASM, where remote routing is not wired —
+    /// WASM-TODO(#1451)).
+    fn tell(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
+        Err(SendError::NodeRoutingNotWired)
+    }
+    /// Ask this remote actor for a reply, failing with `AskError` if the
+    /// caller-supplied timeout elapses or routing/reply delivery fails.
+    fn ask(pid: RemotePid<T>, msg: T::Msg, timeout_ms: u64) -> Result<T::Reply, AskError> {
+        Err(AskError::NodeNotRunning)
+    }
+}
+
+impl<T: ActorMsg> Pid for LocalPid<T> {
+    type Msg = T::Msg;
+    fn tell(pid: LocalPid<T>, msg: Self::Msg) -> Result<(), SendError> {
+        pid.tell(msg)
+    }
+}
+
+impl<T: ActorMsg> Pid for RemotePid<T> {
+    type Msg = T::Msg;
+    fn tell(pid: RemotePid<T>, msg: Self::Msg) -> Result<(), SendError> {
+        pid.tell(msg)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Iterator trait
+// ---------------------------------------------------------------------------
+/// Produce a sequence of values one item at a time.
+///
+/// User-defined iterators implement this trait directly; `for` loops accept
+/// values whose type implements `IntoIterator` and walk the resulting
+/// `Iterator` to bind each yielded `Item`.
+///
+/// `next` takes its receiver mutably (`var self`): iterator implementations
+/// step their internal state in place (cursor advance, decrement remaining,
+/// flush a buffer) and surface successive items through the
+/// `Option<Self::Item>` return. Callers must hold the iterator in a `var`
+/// binding so that the mutated receiver remains observable between calls;
+/// binding the iterator with `let` is rejected by the checker with a
+/// "receiver requires mutable binding" diagnostic.
+///
+/// Iterator methods with mutable receivers keep the iterator `Live` past
+/// exhaustion; drop fires at scope exit, not at the `None` return. This is
+/// a deliberate shift from a hypothetical by-move shape: exhaustion is a
+/// `Some → None` boundary, not a lifetime boundary. Iterator implementations
+/// that own non-shared resources (heap-owning buffers, channel readers)
+/// inherit the "exhaustion ≠ drop" invariant — see the `lifecycle-symmetry`
+/// invariant in `LESSONS.md`.
+pub trait Iterator {
+    type Item;
+
+    fn next(var self) -> Option<Self::Item>;
+}
+
+// ---------------------------------------------------------------------------
+// IntoIterator trait
+// ---------------------------------------------------------------------------
+/// Convert a value into an `Iterator`.
+///
+/// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
+/// match it.next() { Some(x) => ..., None => break } }` — the iterable on the
+/// right of `in` must implement `IntoIterator`, and the loop binding is typed
+/// as `<Self::IntoIter as Iterator>::Item`.
+///
+/// `IntoIter` carries the `Iterator<Item = Self::Item>` bound so that callers
+/// projecting `<T as IntoIterator>::IntoIter::Item` always agree with
+/// `<T as IntoIterator>::Item`. Concrete `IntoIterator` impls live next to
+/// each collection (`Vec`, `HashSet`, `HashMap`); this trait declaration
+/// reserves the surface only.
+pub trait IntoIterator {
+    type Item;
+
+    type IntoIter: Iterator<Item = Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter;
+}
+
+// ---------------------------------------------------------------------------
+// VecIter — concrete IntoIterator impl for Vec<T>
+// ---------------------------------------------------------------------------
+/// Cursor iterator over a `Vec<T>` produced by `vec.into_iter()`.
+///
+/// `VecIter<T>` is the concrete `IntoIterator::IntoIter` for `Vec<T>` — it
+/// pairs the owned vector with the current `idx` cursor so that
+/// `for x in v { ... }` (for-loop desugar) and the lazy combinators in
+/// `std/iter` can drive iteration through the trait surface rather than the
+/// per-type `*_int` / `*_str` / `*_f64` table.
+///
+/// `next` takes a mutable receiver: each call reads the current element and
+/// then bumps `self.idx` in place via a field-store. `idx` advances once per
+/// call until it reaches the vector's length, after which every subsequent
+/// `next` returns `None`. The receiver remains `Live` after exhaustion and
+/// drops at scope exit — see the `Iterator` trait doc-comment.
+///
+/// `Vec` is a refcounted heap handle, so the cursor carries the underlying
+/// vector storage by handle (no per-step copy).
+///
+/// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
+/// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
+/// per-stdlib-module receiver-impl harness only handles a fixed set of
+/// receivers; auto-registration on builtin nominals belongs in builtins).
+pub type VecIter<T> {
+    vec: Vec<T>;
+    idx: i64;
+}
+
+impl<T> Iterator for VecIter<T> {
+    type Item = T;
+    /// Return `Some(vec.get(idx))` and advance `idx` by one; return `None`
+    /// once the cursor reaches the vector's length.
+    ///
+    /// The `self.idx = self.idx + 1` field-store mutates the receiver in
+    /// place; the caller observes the bumped cursor on the next call.
+    fn next(var self) -> Option<T> {
+        if self.idx >= self.vec.len() {
+            None
+        } else {
+            let v = self.vec[self.idx];
+            self.idx = self.idx + 1;
+            Some(v)
+        }
+    }
+}
+
+impl<T> IntoIterator for Vec<T> {
+    type Item = T;
+    type IntoIter = VecIter<T>;
+    /// Produce a `VecIter<T>` positioned at index `0`.
+    ///
+    /// The returned iterator shares the receiver's underlying refcounted
+    /// storage; mutating the source `Vec` while a `VecIter` is live yields
+    /// the same semantics as any other shared-handle aliasing in Hew
+    /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
+    fn into_iter(v: Vec<T>) -> VecIter<T> {
+        VecIter { vec: v, idx: 0 }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Index trait
+// ---------------------------------------------------------------------------
+/// Bracket indexing surface for values that define an element lookup.
+///
+/// `obj[k]` type-checks through this trait for user-defined receivers. Vec
+/// keeps its compiler-backed bounds-check/runtime path, with this impl
+/// providing the same trait surface for bounds and associated-type projection.
+pub trait Index {
+    type Output;
+
+    fn at(self, key: i32) -> Self::Output;
+}
+
+impl<T> Index for Vec<T> {
+    type Output = T;
+    fn at(vec: Vec<T>, key: i32) -> T {}
+}
 
 // ---------------------------------------------------------------------------
 // Display trait
 // ---------------------------------------------------------------------------
-/// Convert a value of type `Self` into a human-readable `String`.
+/// Convert a value of type `Self` into a human-readable `string`.
 ///
 /// Implementing `Display` for a type lets it flow through `print`,
 /// `println`, `assert_eq`, `assert_ne`, `to_string`, `len`, and `stop`.
-/// The trait method must return a `String` derived from the receiver
+/// The trait method must return a `string` derived from the receiver
 /// without invoking `print` itself (otherwise the output path becomes
 /// recursive).
 ///
 /// Blanket impls below cover the primitive numeric kinds, `bool`,
-/// `char`, and `String`; user types add their own impls per receiver.
+/// `char`, and `string`; user types add their own impls per receiver.
+#[lang_item("display")]
 pub trait Display {
-    fn fmt(val: Self) -> String;
+    #[lang_item("display_fmt")]
+    fn fmt(val: Self) -> string;
 }
 
 // Blanket impls for primitive types.  Each body delegates to the magic
@@ -27,62 +360,131 @@ pub trait Display {
 // migrate to user trait dispatch, these bodies become the single
 // source of truth.
 impl Display for i8 {
-    fn fmt(val: i8) -> String {
+    fn fmt(val: i8) -> string {
         to_string(val)
     }
 }
 
 impl Display for i16 {
-    fn fmt(val: i16) -> String {
+    fn fmt(val: i16) -> string {
         to_string(val)
     }
 }
 
 impl Display for i32 {
-    fn fmt(val: i32) -> String {
+    fn fmt(val: i32) -> string {
         to_string(val)
     }
 }
 
 impl Display for i64 {
-    fn fmt(val: i64) -> String {
+    fn fmt(val: i64) -> string {
         to_string(val)
     }
 }
 
 impl Display for u8 {
-    fn fmt(val: u8) -> String {
+    fn fmt(val: u8) -> string {
         to_string(val)
     }
 }
 
 impl Display for u16 {
-    fn fmt(val: u16) -> String {
+    fn fmt(val: u16) -> string {
         to_string(val)
     }
 }
 
 impl Display for u32 {
-    fn fmt(val: u32) -> String {
+    fn fmt(val: u32) -> string {
         to_string(val)
     }
 }
 
 impl Display for u64 {
-    fn fmt(val: u64) -> String {
+    fn fmt(val: u64) -> string {
         to_string(val)
     }
 }
 
 impl Display for bool {
-    fn fmt(val: bool) -> String {
+    fn fmt(val: bool) -> string {
         to_string(val)
     }
 }
 
 impl Display for char {
-    fn fmt(val: char) -> String {
+    fn fmt(val: char) -> string {
         to_string(val)
+    }
+}
+
+impl Display for f64 {
+    fn fmt(val: f64) -> string {
+        to_string(val)
+    }
+}
+
+impl Display for string {
+    fn fmt(val: string) -> string {
+        val
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Time canaries
+// ---------------------------------------------------------------------------
+pub type Instant {
+    nanos: i64;
+}
+
+impl duration {
+    #[extern_symbol(hew_duration_nanos)]
+    fn nanos(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_micros)]
+    fn micros(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_millis)]
+    fn millis(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_secs)]
+    fn secs(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_mins)]
+    fn mins(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_hours)]
+    fn hours(d: duration) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_duration_abs)]
+    fn abs(d: duration) -> duration {
+        d
+    }
+    #[extern_symbol(hew_duration_is_zero)]
+    fn is_zero(d: duration) -> bool {
+        false
+    }
+}
+
+impl Instant {
+    #[extern_symbol(hew_instant_now)]
+    fn now() -> Instant {
+        Instant { nanos: 0 }
+    }
+    #[extern_symbol(hew_instant_elapsed)]
+    fn elapsed(i: Instant) -> duration {
+        0ns
+    }
+    #[extern_symbol(hew_instant_duration_since)]
+    fn duration_since(i: Instant, earlier: Instant) -> duration {
+        0ns
     }
 }
 
@@ -192,7 +594,7 @@ pub fn to_float(x: i32) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// String operations
+// string operations
 // ---------------------------------------------------------------------------
 /// Concatenate two strings, returning a new string.
 ///
@@ -201,19 +603,19 @@ pub fn to_float(x: i32) -> f64 {
 /// ```
 /// let full = string_concat("hello ", "world");
 /// ```
-pub fn string_concat(a: String, b: String) -> String {
+pub fn string_concat(a: string, b: string) -> string {
     ""
 }
 
 /// Returns the byte length of a string.
-pub fn string_length(s: String) -> i32 {
+pub fn string_length(s: string) -> i32 {
     0 as i32
 }
 
 /// Convert any value to its string representation.
 ///
 /// Accepts any type that implements `Display` — this includes all numeric
-/// primitives, `bool`, `char`, `String`, and user types with a `Display` impl.
+/// primitives, `bool`, `char`, `string`, and user types with a `Display` impl.
 ///
 /// # Examples
 ///
@@ -222,7 +624,7 @@ pub fn string_length(s: String) -> i32 {
 /// let t = to_string(true);   // "true"
 /// let u = to_string('x');    // "x"
 /// ```
-pub fn to_string(value: dyn Display) -> String {
+pub fn to_string(value: dyn Display) -> string {
     ""
 }
 
@@ -232,12 +634,12 @@ pub fn len(value: dyn Display) -> i32 {
 }
 
 /// Returns the character (as a `char`) at the given byte index.
-pub fn string_char_at(s: String, index: i32) -> char {
+pub fn string_char_at(s: string, index: i32) -> char {
     'a'
 }
 
 /// Test whether two strings are equal.
-pub fn string_equals(a: String, b: String) -> bool {
+pub fn string_equals(a: string, b: string) -> bool {
     false
 }
 
@@ -248,17 +650,17 @@ pub fn string_equals(a: String, b: String) -> bool {
 /// ```
 /// let s = string_from_int(42);  // "42"
 /// ```
-pub fn string_from_int(n: int) -> String {
+pub fn string_from_int(n: i64) -> string {
     ""
 }
 
 /// Test whether `haystack` contains `needle`.
-pub fn string_contains(haystack: String, needle: String) -> bool {
+pub fn string_contains(haystack: string, needle: string) -> bool {
     false
 }
 
 /// Test whether a string starts with the given prefix.
-pub fn string_starts_with(s: String, prefix: String) -> bool {
+pub fn string_starts_with(s: string, prefix: string) -> bool {
     false
 }
 
@@ -269,24 +671,24 @@ pub fn string_starts_with(s: String, prefix: String) -> bool {
 /// ```
 /// let s = substring("hello", 0, 3);  // "hel"
 /// ```
-pub fn substring(s: String, start: i32, end: i32) -> String {
+pub fn substring(s: string, start: i32, end: i32) -> string {
     ""
 }
 
 /// Strip leading and trailing whitespace.
-pub fn string_trim(s: String) -> String {
+pub fn string_trim(s: string) -> string {
     ""
 }
 
 /// Parse a string as an integer. Returns 0 on failure.
-pub fn string_to_int(s: String) -> int {
+pub fn string_to_int(s: string) -> i64 {
     0
 }
 
 /// Find the first occurrence of `needle` in `haystack`.
 ///
 /// Returns the byte offset, or -1 if not found.
-pub fn string_find(haystack: String, needle: String) -> i32 {
+pub fn string_find(haystack: string, needle: string) -> i32 {
     0 as i32
 }
 
@@ -294,12 +696,12 @@ pub fn string_find(haystack: String, needle: String) -> i32 {
 // File I/O  (convenience wrappers — see also `import std::fs;`)
 // ---------------------------------------------------------------------------
 /// Read the entire contents of a file as a string.
-pub fn read_file(path: String) -> String {
+pub fn read_file(path: string) -> string {
     ""
 }
 
 /// Write a string to a file, creating or overwriting it.
-pub fn write_file(path: String, content: String) {}
+pub fn write_file(path: string, content: string) {}
 
 // ---------------------------------------------------------------------------
 // Program control
@@ -327,4 +729,4 @@ pub fn exit(code: i32) {}
 /// ```
 /// panic("something went wrong");
 /// ```
-pub fn panic(message: String) {}
+pub fn panic(message: string) {}

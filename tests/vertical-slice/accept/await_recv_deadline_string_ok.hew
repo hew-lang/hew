@@ -1,0 +1,33 @@
+// Accept fixture (NEW-7): `await rx.recv() | after d` with element type `string`.
+// Proves the generic recv deadline path works for heap-owning element types, not
+// just bitcopy primitives. The sender writes one string, the actor awakes with
+// Ok(Some(v)) before the deadline fires.
+//
+// Exit-code contract: Ok(Some("hello")) → 3.
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+        tx.send("hello");
+        let got: Result<Option<string>, TimeoutError> = await rx.recv() | after 5000ms;
+        let _ = tx;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(_s) => 3,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

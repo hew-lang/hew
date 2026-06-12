@@ -1,0 +1,45 @@
+// Runnable fixture: traffic light state machine executed end-to-end.
+//
+// Drives the user-visible machine substrate via `hew run`:
+//   1. Construct a `TrafficLight` machine at its initial state.
+//   2. Read the current state name via `m.state_name()`.
+//   3. Advance the machine with `m.step(Tick)` and observe the next
+//      state name.
+//
+// Resolved by the HIR module-scope constructor-resolution pass: bare
+// `Red` and `Tick` identifiers and the qualified forms
+// `TrafficLight::Red` / `TrafficLightEvent::Tick` all lower through
+// `HirExprKind::MachineVariantCtor`, which MIR and codegen turn into
+// the tagged-union construction primitives the runtime expects.
+// `tests/machine_exec.rs::run_traffic_light_fixture_executes` is the
+// end-to-end signal for this fixture.
+machine TrafficLight {
+    events {
+        Tick;
+    }
+
+    state Red;
+    state Green;
+    state Yellow;
+
+    on Tick: Red => Green {
+        Green
+    }
+    on Tick: Green => Yellow {
+        Yellow
+    }
+    on Tick: Yellow => Red {
+        Red
+    }
+}
+
+fn main() {
+    var light = Red;
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+    light.step(Tick);
+    println(light.state_name());
+}

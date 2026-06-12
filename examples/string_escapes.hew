@@ -1,4 +1,7 @@
-// String escape sequences
+//! Status: runnable
+//! Description: string escape sequences
+
+// string escape sequences
 // Demonstrates tab, newline, quote, and backslash escapes.
 //
 // Expected output:

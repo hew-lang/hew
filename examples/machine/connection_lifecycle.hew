@@ -1,0 +1,47 @@
+// Pure-machine companion to run_connection_lifecycle.hew, for diagramming.
+//
+// Run:
+//   hew machine diagram examples/machine/connection_lifecycle.hew
+//   hew machine diagram examples/machine/connection_lifecycle.hew --format graphviz
+//   hew machine diagram examples/machine/connection_lifecycle.hew --format json
+//
+// The `Connected` composite renders as a nested `state Connected { … }` block
+// grouping its three substates with the initial-substate marker.
+machine ConnectionLifecycle {
+    events {
+        Connect;
+        AuthOk;
+        DrainStart;
+        DrainDone;
+        Disconnect;
+    }
+
+    state Disconnected;
+
+    state Connected {
+        initial state Authenticating;
+        state Active;
+        state Draining;
+        on Disconnect: _ => Disconnected;
+    }
+
+    on Connect: Disconnected => Authenticating;
+    on AuthOk: Authenticating => Active;
+    on DrainStart: Active => Draining;
+    on DrainDone: Draining => Disconnected;
+    on Connect: _ => _ {
+        state
+    }
+    on AuthOk: _ => _ {
+        state
+    }
+    on DrainStart: _ => _ {
+        state
+    }
+    on DrainDone: _ => _ {
+        state
+    }
+    on Disconnect: _ => _ {
+        state
+    }
+}

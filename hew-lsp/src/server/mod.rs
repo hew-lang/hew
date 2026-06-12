@@ -38,7 +38,9 @@ use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
-use self::analysis::{build_diagnostics, diagnostic_data, populate_user_module_imports};
+use self::analysis::{
+    analyze_document, build_diagnostics, diagnostic_data, populate_user_module_imports,
+};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
 #[cfg(test)]
@@ -47,7 +49,7 @@ use self::workspace::has_test_attribute;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 #[cfg(test)]
@@ -319,23 +321,57 @@ fn build_run_test_invocation(test_name: &str, workspace_root: &Path) -> (PathBuf
 
 // ── Server ───────────────────────────────────────────────────────────
 
+/// Per-document debounce state: the generation counter incremented on each
+/// keystroke.  A spawned analysis task compares against this before doing
+/// work — if the value has changed since the task was created the edit has
+/// been superseded and the task exits without publishing stale diagnostics.
+type AnalysisVersions = Arc<DashMap<Url, u64>>;
+
+/// Debounce window: how long an analysis task waits before checking whether
+/// it is still the most recent edit.  100 ms is short enough to feel live on
+/// typical files while coalescing rapid-fire keystrokes into a single run.
+const DEBOUNCE_MS: u64 = 100;
+
 /// Hew language server providing IDE features via LSP.
 #[derive(Debug)]
 pub struct HewLanguageServer {
     client: Client,
-    documents: DashMap<Url, DocumentState>,
+    /// Document states shared with spawned analysis tasks via `Arc`.
+    documents: Arc<DashMap<Url, DocumentState>>,
     workspace_roots: RwLock<Vec<PathBuf>>,
+    /// Per-URI generation counters used by the debounced analysis path.
+    analysis_versions: AnalysisVersions,
+    /// Extra package-search directories passed via `--pkg-path` (or the
+    /// `hew.pkgPath` vscode setting).  Appended to the default search roots
+    /// so that `hew check --pkg-path DIR` and editor diagnostics agree on
+    /// which `hew::…` imports resolve.
+    extra_pkg_paths: Vec<PathBuf>,
 }
 
 impl HewLanguageServer {
     /// Create a new language server with the given LSP client.
+    ///
+    /// `extra_pkg_paths` mirrors `hew check --pkg-path`: each directory is
+    /// appended to the module search roots so that `hew::pkg` imports that
+    /// resolve via `--pkg-path` in the CLI also resolve in the LSP.
     #[must_use]
-    pub fn new(client: Client) -> Self {
+    pub fn new_with_options(client: Client, extra_pkg_paths: Vec<PathBuf>) -> Self {
         Self {
             client,
-            documents: DashMap::new(),
+            documents: Arc::new(DashMap::new()),
             workspace_roots: RwLock::new(Vec::new()),
+            analysis_versions: Arc::new(DashMap::new()),
+            extra_pkg_paths,
         }
+    }
+
+    /// Create a new language server with no extra package paths.
+    ///
+    /// Equivalent to `new_with_options(client, vec![])`.  Satisfies the
+    /// `tower_lsp::LspService::new(HewLanguageServer::new)` closure contract.
+    #[must_use]
+    pub fn new(client: Client) -> Self {
+        Self::new_with_options(client, vec![])
     }
 
     fn workspace_root(&self) -> Option<PathBuf> {
@@ -355,14 +391,48 @@ impl HewLanguageServer {
 
     /// Re-lex, re-parse, and re-typecheck the document and any open importers,
     /// then publish diagnostics.
-    async fn reanalyze(&self, uri: &Url, source: &str) {
-        for (updated_uri, diagnostics) in
-            refresh_document_and_dependents(uri, source, &self.documents)
-        {
-            self.client
-                .publish_diagnostics(updated_uri, diagnostics, None)
-                .await;
-        }
+    ///
+    /// Rapid successive edits are coalesced: a short debounce window lets the
+    /// caller issue multiple `reanalyze` calls before the first analysis task
+    /// runs.  Each call increments a per-URI generation counter; the spawned
+    /// task checks that counter after sleeping and exits without doing work if a
+    /// newer edit has arrived in the meantime.
+    ///
+    /// The function itself is synchronous — analysis runs in a `tokio::spawn`
+    /// task so the handler path returns immediately.
+    fn reanalyze(&self, uri: &Url, source: &str) {
+        // Increment the generation counter for this URI and capture the new value.
+        let version = {
+            let mut entry = self.analysis_versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
+        // Clone the shared state the spawned task needs.
+        let client = self.client.clone();
+        let documents = Arc::clone(&self.documents);
+        let versions = Arc::clone(&self.analysis_versions);
+        let uri = uri.clone();
+        let source = source.to_owned();
+        let extra_pkg_paths = self.extra_pkg_paths.clone();
+
+        tokio::spawn(async move {
+            // Debounce: wait for the window to expire before running the pipeline.
+            tokio::time::sleep(tokio::time::Duration::from_millis(DEBOUNCE_MS)).await;
+
+            // Bail if a newer edit has already superseded this one.
+            if versions.get(&uri).map(|v| *v) != Some(version) {
+                return;
+            }
+
+            for (updated_uri, diagnostics) in
+                refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths)
+            {
+                client
+                    .publish_diagnostics(updated_uri, diagnostics, None)
+                    .await;
+            }
+        });
     }
 
     async fn run_test_command(&self, test_name: &str) -> Result<Option<Value>> {
@@ -596,7 +666,7 @@ mod tests {
     use hew_analysis::CompletionKind;
     use std::io;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestDir {
@@ -812,7 +882,7 @@ mod tests {
             .find(|item| item.label == "select...")
             .unwrap();
         let select_text = select.insert_text.as_deref().unwrap();
-        assert!(select_text.contains("<-"));
+        assert!(select_text.contains(" from "));
         assert!(select_text.contains("after"));
 
         let select_from = snippets
@@ -1041,7 +1111,8 @@ mod tests {
 
     #[test]
     fn dot_completions_for_builtin_stream() {
-        let source = "fn probe(s: Stream<String>) { s.next(); }";
+        // Stream<T> uses channel-family naming: .recv() not .next()
+        let source = "fn probe(s: Stream<string>) { s.recv(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1063,7 +1134,7 @@ mod tests {
             type_output: Some(type_output),
             diagnostics_by_uri: HashMap::new(),
         };
-        let dot_pos = source.find("s.next").unwrap() + 2;
+        let dot_pos = source.find("s.recv").unwrap() + 2;
         let items = hew_analysis::completions::complete(
             &doc.source,
             &doc.parse_result,
@@ -1072,28 +1143,105 @@ mod tests {
         );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(
-            labels.contains(&"next"),
-            "expected method 'next' in completions, got: {labels:?}"
+            labels.contains(&"recv"),
+            "expected method 'recv' in completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"try_recv"),
+            "expected method 'try_recv' in completions, got: {labels:?}"
+        );
+        // .next and .lines are retired; channel-family naming uses .recv.
+        // .collect returned to the stream surface (hew_stream_collect_string)
+        // and is a legitimate completion.
+        assert!(
+            !labels.contains(&"next"),
+            "method 'next' should not appear in completions, got: {labels:?}"
         );
         assert!(
             labels.contains(&"collect"),
             "expected method 'collect' in completions, got: {labels:?}"
         );
         assert!(
-            labels.contains(&"lines"),
-            "expected method 'lines' in completions, got: {labels:?}"
+            !labels.contains(&"lines"),
+            "method 'lines' should not appear in completions, got: {labels:?}"
         );
-        let next_item = items
+        let recv_item = items
             .iter()
-            .find(|item| item.label == "next")
-            .expect("next completion should exist");
+            .find(|item| item.label == "recv")
+            .expect("recv completion should exist");
         assert!(
-            next_item
+            recv_item
                 .detail
                 .as_deref()
-                .is_some_and(|detail| detail.contains("Option<String>")),
-            "expected Stream<String> detail for next(), got: {:?}",
-            next_item.detail
+                .is_some_and(|detail| detail.contains("string")),
+            "expected Stream<string> detail for recv(), got: {:?}",
+            recv_item.detail
+        );
+    }
+
+    #[test]
+    fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
+        // After `spawn`, completing on the handle (`c.`) must surface:
+        //   - `tell` and `to_remote_via` (LocalPid's own impl methods from std/builtins.hew)
+        //   - `increment` (the actor's declared receive handler)
+        //
+        // Regression: before the fix, `named_receiver_parts` unwrapped `LocalPid<Counter>`
+        // to `Counter`, so `collect_method_sigs_for_receiver` only saw Counter's methods
+        // and silently dropped LocalPid's own send primitives.
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
+        let source = concat!(
+            "actor Counter {\n",
+            "    count: i64;\n",
+            "    receive fn increment(n: i64) { count = count + n; }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let c = spawn Counter(count: 0);\n",
+            "    c.increment(1);\n",
+            "}",
+        );
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let mut checker = Checker::new(registry);
+        let type_output = checker.check_program(&parse_result.program);
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
+        };
+        // Cursor right after `c.` in `c.increment(1)`.
+        let dot_pos = source.rfind("c.increment").unwrap() + 2;
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            dot_pos,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"tell"),
+            "expected `tell` in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"to_remote_via"),
+            "expected `to_remote_via` in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"increment"),
+            "expected `increment` (receive handler) in actor-handle completions, got: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"count"),
+            "internal actor field `count` must not appear in actor-handle completions, got: {labels:?}"
         );
     }
 
@@ -1164,6 +1312,56 @@ mod tests {
         assert!(
             !labels.contains(&"baz"),
             "baz should not appear after spawn"
+        );
+    }
+
+    #[test]
+    fn is_rhs_completion_includes_builtin_primitive_types() {
+        // After the `is` keyword, the LSP completion provider must surface
+        // builtin primitive type names (`i32`, `string`, `bool`, `u64`,
+        // etc.) as candidates in addition to user-defined type names.
+        // The set is sourced from `hew_types::ty::PRIMITIVE_ALIASES` so it
+        // stays aligned with what the checker's `is` type-pattern resolver
+        // accepts via `Ty::from_name`.
+        let source = r"
+            type Holder {
+                v: i64;
+            }
+
+            fn main() {
+                let h = Holder { v: 1 };
+                let _eq: bool = h is
+            }
+        ";
+        let parse_result = hew_parser::parse(source);
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parse_result.program);
+        let doc = DocumentState {
+            source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
+            parse_result,
+            type_output: Some(type_output),
+            diagnostics_by_uri: HashMap::new(),
+        };
+        // Position the cursor immediately after the trailing `is`.
+        let offset = source.find("h is").unwrap() + "h is".len();
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for primitive in &["i32", "i64", "u64", "bool", "string", "char", "bytes"] {
+            assert!(
+                labels.contains(primitive),
+                "expected builtin primitive `{primitive}` in is-RHS completion, got: {labels:?}",
+            );
+        }
+        // User types must still be present alongside the builtins.
+        assert!(
+            labels.contains(&"Holder"),
+            "user type `Holder` must still appear in is-RHS completion, got: {labels:?}",
         );
     }
 
@@ -1581,7 +1779,7 @@ impl Worker {
 
     #[test]
     fn hover_on_builtin_type_name() {
-        let source = "fn drain(rx: Receiver<String>) { rx.close(); }";
+        let source = "fn drain(rx: Receiver<string>) { rx.close(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2160,9 +2358,12 @@ impl Worker {
 }
 
 machine Traffic {
-    event Start;
+    events {
+        Start;
+    }
+
     state Idle;
-    on Start: Idle -> Idle;
+    on Start: Idle => Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2211,6 +2412,33 @@ machine Traffic {
         assert_eq!(symbols[0].name, "hidden_worker");
     }
 
+    #[test]
+    fn workspace_symbols_scan_repository_style_std_and_examples() {
+        let test_dir = TestDir::new("workspace-symbols-repo-layout");
+        let root = test_dir.path();
+        let std_dir = root.join("std").join("demo");
+        let examples_dir = root.join("examples");
+        std::fs::create_dir_all(&std_dir).unwrap();
+        std::fs::create_dir_all(&examples_dir).unwrap();
+        std::fs::write(
+            std_dir.join("stdlib_probe.hew"),
+            "fn stdlib_probe() -> i32 { 0 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            examples_dir.join("example_probe.hew"),
+            "fn example_probe() -> i32 { 0 }\n",
+        )
+        .unwrap();
+
+        let documents = DashMap::new();
+        let symbols = collect_project_workspace_symbols(&documents, &[root.to_path_buf()], "probe");
+        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+
+        assert!(names.contains(&"stdlib_probe"), "symbols: {names:?}");
+        assert!(names.contains(&"example_probe"), "symbols: {names:?}");
+    }
+
     // ── Diagnostic data tests ───────────────────────────────────────
 
     #[test]
@@ -2254,15 +2482,19 @@ machine Traffic {
             TypeErrorKind::UnreachableCode,
             TypeErrorKind::Shadowing,
             TypeErrorKind::DeadCode,
-            TypeErrorKind::PurityViolation,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
+            TypeErrorKind::OnUpgradeNotYetWired,
             TypeErrorKind::MachineExhaustivenessError,
+            TypeErrorKind::BlockingCallInReceiveFn,
         ];
         for kind in &kinds {
             let data = diagnostic_data(kind, &[]);
             let kind_str = data["kind"].as_str().unwrap();
-            assert!(!kind_str.is_empty(), "kind string should not be empty");
+            assert!(
+                !kind_str.is_empty(),
+                "diagnostic_data kind string must not be empty for {kind:?}"
+            );
         }
     }
 
@@ -2365,7 +2597,7 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url.clone(), make_doc(circle_source));
 
-        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         let main_diags = refreshed
             .iter()
             .find(|(uri, _)| uri == &main_url)
@@ -2400,7 +2632,7 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(dep_url.clone(), make_doc(dep_source));
 
-        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let refreshed = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         let dep_diag = refreshed
             .iter()
             .find(|(uri, _)| uri == &dep_url)
@@ -2445,6 +2677,7 @@ machine Traffic {
                 label: "test".to_string(),
                 kind: analysis_kind,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -2461,6 +2694,7 @@ machine Traffic {
             label: "if".to_string(),
             kind: CompletionKind::Snippet,
             detail: Some("if statement".to_string()),
+            documentation: None,
             insert_text: Some("if ${1:condition} {\n\t$0\n}".to_string()),
             insert_text_is_snippet: true,
             sort_text: Some("0001".to_string()),
@@ -2575,9 +2809,12 @@ machine Traffic {
 }
 
 machine Traffic {
-    event Start;
+    events {
+        Start;
+    }
+
     state Idle;
-    on Start: Idle -> Idle;
+    on Start: Idle => Idle;
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2616,10 +2853,12 @@ machine Traffic {
             .find(|symbol| symbol.name == "Idle")
             .unwrap();
         assert_eq!(event.kind, SymbolKind::EVENT);
-        assert_eq!(event.selection_range.start.line, 5);
-        assert_eq!(event.selection_range.start.character, 10);
+        // `Start` now lives inside the `events { … }` header (line 6, indented
+        // 8 spaces) rather than the former interleaved `event Start;` line.
+        assert_eq!(event.selection_range.start.line, 6);
+        assert_eq!(event.selection_range.start.character, 8);
         assert_eq!(state.kind, SymbolKind::ENUM_MEMBER);
-        assert_eq!(state.selection_range.start.line, 6);
+        assert_eq!(state.selection_range.start.line, 9);
         assert_eq!(state.selection_range.start.character, 10);
     }
 
@@ -2691,7 +2930,7 @@ machine Traffic {
 
     #[test]
     fn signature_help_for_builtin_method_call() {
-        let source = "fn send_one(tx: Sender<int>) { tx.send(1); }";
+        let source = "fn send_one(tx: Sender<i64>) { tx.send(1); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2713,7 +2952,7 @@ machine Traffic {
             "expected signature help inside builtin method call"
         );
         let sh = result.unwrap();
-        assert_eq!(sh.signatures[0].label, "fn send(value: int)");
+        assert_eq!(sh.signatures[0].label, "fn send(value: i64)");
     }
 
     // ── Non-empty helper test ───────────────────────────────────────
@@ -4186,7 +4425,7 @@ machine Traffic {
             "unexpected parse errors in main_source: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         // The import should now have resolved_items populated from the in-memory buffer.
         let import_decl = parse_result
@@ -4235,7 +4474,7 @@ machine Traffic {
             "unexpected parse errors in main_source: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let import_decl = parse_result
             .program
@@ -4285,7 +4524,7 @@ machine Traffic {
         );
 
         // Populate resolved_items from the documents map.
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4321,7 +4560,7 @@ machine Traffic {
             parse_result.errors
         );
 
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4347,7 +4586,7 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert_eq!(
             initial.len(),
             1,
@@ -4358,7 +4597,7 @@ machine Traffic {
             "importer should start with UnresolvedImport before foo.hew is open"
         );
 
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "opening foo.hew should refresh diagnostics for the open importer"
@@ -4380,19 +4619,19 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before foo.hew is valid"
         );
 
-        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents);
+        refresh_document_and_dependents(&foo_url, invalid_foo_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should stay unresolved while foo.hew has parse errors"
         );
 
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "editing foo.hew should refresh diagnostics for the open importer"
@@ -4413,19 +4652,19 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before foo.hew is open"
         );
 
-        refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
         assert!(
             !has_unresolved_import(&documents, &main_url),
             "opening foo.hew should clear the importer's stale UnresolvedImport"
         );
 
-        let refreshed = close_document_and_dependents(&foo_url, &documents);
+        let refreshed = close_document_and_dependents(&foo_url, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "closing foo.hew should refresh diagnostics for the open importer"
@@ -4450,7 +4689,7 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let initial = refresh_document_and_dependents(&main_url, main_source, &documents);
+        let initial = refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert_eq!(
             initial.len(),
             1,
@@ -4461,7 +4700,8 @@ machine Traffic {
             "importer should start with UnresolvedImport before shapes/circle/circle.hew is open"
         );
 
-        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        let refreshed =
+            refresh_document_and_dependents(&circle_url, circle_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "opening shapes/circle/circle.hew should refresh diagnostics for the open importer"
@@ -4483,19 +4723,20 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should start with UnresolvedImport before shapes/circle/circle.hew is valid"
         );
 
-        refresh_document_and_dependents(&circle_url, invalid_circle_source, &documents);
+        refresh_document_and_dependents(&circle_url, invalid_circle_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &main_url),
             "importer should stay unresolved while shapes/circle/circle.hew has parse errors"
         );
 
-        let refreshed = refresh_document_and_dependents(&circle_url, circle_source, &documents);
+        let refreshed =
+            refresh_document_and_dependents(&circle_url, circle_source, &documents, &[]);
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &main_url),
             "editing shapes/circle/circle.hew should refresh diagnostics for the open importer"
@@ -4523,7 +4764,7 @@ machine Traffic {
             parse_result.errors
         );
 
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -4544,7 +4785,7 @@ machine Traffic {
         let util_url = make_test_uri("/project/util.hew");
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        let refreshed = refresh_document_and_dependents(&util_url, util_source, &documents);
+        let refreshed = refresh_document_and_dependents(&util_url, util_source, &documents, &[]);
         let util_diags = refreshed
             .into_iter()
             .find(|(uri, _)| *uri == util_url)
@@ -4567,8 +4808,8 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&main_url, main_source, &documents);
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents);
+        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
+        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
 
         for expected_uri in [&main_url, &foo_url] {
             let diagnostics = refreshed
@@ -4611,7 +4852,7 @@ machine Traffic {
             "unexpected parse errors: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let import_decl = parse_result
             .program
@@ -4656,14 +4897,14 @@ machine Traffic {
 
         // Open A first — B and C are not yet in the store, so A has stale
         // diagnostics (UnresolvedImport for b.hew).
-        refresh_document_and_dependents(&a_url, a_source, &documents);
+        refresh_document_and_dependents(&a_url, a_source, &documents, &[]);
         assert!(
             has_unresolved_import(&documents, &a_url),
             "A should have UnresolvedImport before B is open"
         );
 
         // Open B — C is still missing, but A should now be re-analysed.
-        refresh_document_and_dependents(&b_url, b_source, &documents);
+        refresh_document_and_dependents(&b_url, b_source, &documents, &[]);
         // B itself will have an UnresolvedImport (c.hew not open yet).
         assert!(
             has_unresolved_import(&documents, &b_url),
@@ -4671,7 +4912,7 @@ machine Traffic {
         );
 
         // Open C — this should transitively refresh B and then A.
-        let refreshed = refresh_document_and_dependents(&c_url, c_source, &documents);
+        let refreshed = refresh_document_and_dependents(&c_url, c_source, &documents, &[]);
 
         assert!(
             refreshed.iter().any(|(uri, _)| uri == &b_url),
@@ -4708,12 +4949,12 @@ machine Traffic {
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
 
-        refresh_document_and_dependents(&a_url, a_source, &documents);
-        refresh_document_and_dependents(&b_url, b_source, &documents);
-        refresh_document_and_dependents(&c_url, c_source, &documents);
+        refresh_document_and_dependents(&a_url, a_source, &documents, &[]);
+        refresh_document_and_dependents(&b_url, b_source, &documents, &[]);
+        refresh_document_and_dependents(&c_url, c_source, &documents, &[]);
 
         // Opening D triggers the refresh.  This must not panic or loop.
-        let refreshed = refresh_document_and_dependents(&d_url, d_source, &documents);
+        let refreshed = refresh_document_and_dependents(&d_url, d_source, &documents, &[]);
 
         for url in [&b_url, &c_url, &a_url] {
             assert!(
@@ -4754,7 +4995,7 @@ machine Traffic {
             "unexpected parse errors: {:?}",
             parse_result.errors
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents);
+        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
 
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let output = checker.check_program(&parse_result.program);
@@ -5908,5 +6149,1505 @@ machine Traffic {
             range.end.character, utf16_len,
             "end.character must be UTF-16 code units ({utf16_len}), not byte count ({byte_len})"
         );
+    }
+
+    // ── Hew v0.5 syntax coverage fixtures ────────────────────────────────
+    //
+    // W4.023 Stage 0 — baseline inventory and ownership classification
+    //
+    // Every `hew-lsp/tests/fixtures/v05_*.hew` fixture is classified below.
+    // Classification taxonomy (four classes):
+    //
+    //   accepted                      — parser admits the construct at the
+    //                                   syntax level; existing LSP editor
+    //                                   tests (symbols/hover/goto) pass.
+    //                                   Some rows carry intentional type
+    //                                   errors by design (error-recovery
+    //                                   fixtures, non-exhaustive machine
+    //                                   coverage) or substrate-limited type
+    //                                   parameters; these are noted per row.
+    //                                   Full hover/goto/symbols/completion/
+    //                                   semantic-token coverage is the target
+    //                                   for later assertion expansion.
+    //
+    //   known-rejected                — compiler intentionally rejects this
+    //                                   construct in v0.5.  LSP publishes
+    //                                   diagnostics only; no hover/completion
+    //                                   claims implying acceptance.
+    //
+    //   cross-module-single-source-limited — multi-file fixture.  Native LSP
+    //                                   tests it with a multi-document workspace.
+    //                                   Single-source WASM API cannot resolve
+    //                                   cross-file imports; tested separately
+    //                                   in `v05_cross_module_machine_ctor_lsp_coverage`.
+    //
+    //   pending-upstream-substrate    — intended v0.5 behavior; compiler/parser
+    //                                   substrate not yet implemented.  Rows in
+    //                                   this class name the specific blocking
+    //                                   W3 lane.  Once that lane lands, reclassify
+    //                                   to `accepted` and add targeted assertions.
+    //
+    // ─── Fixture classification matrix ───────────────────────────────────
+    //
+    //  Fixture                            | Class                          | Notes / blocking lane
+    //  ─────────────────────────────────────────────────────────────────────────────────────────────
+    //  v05_associated_type_projection     | accepted                       | trait + assoc type + impl; LSP test passes
+    //  v05_async_await                    | known-rejected                 | `async fn` / `await` are not valid Hew syntax; parser rejects them; permanently out of v0.5 scope (see ignored test below)
+    //  v05_attributes                     | accepted                       | actor attributes (#[max_heap]); LSP test passes
+    //  v05_closures                       | accepted                       | closure syntax |x| { … }; LSP test passes
+    //  v05_cross_module_machine_defs      | accepted                       | machine defs module; used as dep in cross-module native test
+    //  v05_cross_module_machine_main      | cross-module-single-source-limited | single-source WASM API cannot resolve cross-file imports; native test uses multi-doc workspace
+    //  v05_display_fstring                | accepted                       | Display impl + f-string formatting; LSP test passes
+    //  v05_extern_unsafe                  | accepted                       | `extern "C"` block; LSP + resolver tests pass
+    //  v05_generators                     | accepted                       | generator functions; LSP test passes
+    //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
+    //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
+    //  v05_is_operator                    | accepted                       | `is` operator + targeted surface tests (resolver, semantic-token, completion) pass
+    //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
+    //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
+    //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes
+    //  v05_machine_states                 | accepted                       | machine state/entry/exit hooks; non-exhaustive coverage intentional; LSP test passes
+    //  v05_machine_substrate              | accepted                       | `Lifecycle<T: Resource>` machine; LSP + completion tests pass
+    //  v05_match_enum_variant             | accepted                       | enum variant pattern matching; LSP test passes
+    //  v05_record_decl                    | accepted                       | record type declarations; LSP + completion tests pass
+    //  v05_record_literals                | accepted                       | struct literal syntax; LSP test passes
+    //  v05_record_tuple_literal           | pending-upstream-substrate     | `type Pair(i32, i32)` tuple-record syntax; parser cannot parse positional-field types; blocking lane: W3.006 (slice-2 substrate, Stage-0.2-tuple-ready)
+    //  v05_regex_literal                  | accepted                       | `re"…"` regex literal; LSP + hover tests pass
+    //  v05_result_option_ctors            | accepted                       | Result/Option enum ctors; LSP test passes
+    //  v05_scope_fork                     | accepted                       | `scope { fork { … } }` syntax; LSP test passes
+    //  v05_select_arms                    | accepted                       | compiler-accepted actor ask, channel recv, and after select arms; LSP + hard-error guard pass
+    //  v05_spawn_lambda_actor             | pending-upstream-substrate     | `spawn |msg: T| { … }` lambda-actor spawn syntax; parser/analysis do not support inline lambda spawn; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
+    //  v05_std_channels                   | accepted (syntax/smoke tier)   | parser admits Channel<T>/Stream<T>/Sink<T>; LSP probe test passes; generic channel type errors are a substrate limitation (lowering implemented only for string/bytes), not intentional fixture design; future work should add fail-closed type-error assertions for the generic params
+    //  v05_string_methods                 | accepted                       | string method completions; LSP + full L2 surface tests pass
+    //  v05_trait_bounds                   | accepted                       | trait bounds + impl; LSP test passes
+    //  v05_unsafe_block                   | accepted                       | unsafe block; LSP test passes
+    //  v05_while_let                      | accepted                       | `while let Some(v) = expr` syntax; LSP + hover tests pass
+    //
+    // ─── Ignored-test classification ─────────────────────────────────────
+    //
+    //  Test name                               | Decision        | Rationale
+    //  ──────────────────────────────────────────────────────────────────────────────────────────────
+    //  v05_record_tuple_literal_lsp_coverage   | remain-ignored  | Compiler-substrate dependency W3.006; do not unignore until W3.006 tuple substrate lands.
+    //  v05_spawn_lambda_actor_lsp_coverage     | re-enabled (passing) | `actor |…| { }` is the landed syntax; the prior fixture used `spawn |…|` which was wrong. Test is now #[test] at mod.rs:7146 and passes.
+    //  v05_async_await_lsp_coverage            | become-fail-closed-diagnostic | `async fn`/`await` permanently not in Hew syntax; test should assert parse-error diagnostics rather than remaining an indefinitely-ignored smoke check.  See v05_async_await_is_rejected_with_parse_errors below.
+    //
+    // ─── ResolvedTy::user_facing() verification ──────────────────────────
+    //
+    //  Pre-verified at plan-revision time: `ResolvedTy::user_facing()` is
+    //  present at `hew-types/src/resolved_ty.rs:448` and returns
+    //  `UserFacingResolvedTy<'_>` (impl Display).  Stage 2 "Canonical
+    //  primitive names" Matrix A row must assert observable hover/completion
+    //  strings produced by that method, not the internal API name.
+    //
+    // ─── Fixture count notes ─────────────────────────────────────────────
+    //
+    //  Total v05_*.hew fixtures: 31
+    //    accepted:                          28 (all have passing native LSP tests;
+    //                                          v05_std_channels accepted at
+    //                                          syntax/smoke tier — see row note;
+    //                                          v05_spawn_lambda_actor re-enabled)
+    //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
+    //    known-rejected:                     1 (v05_async_await)
+    //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
+    //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
+    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==9 in v05_wasm_coverage.rs.
+
+    fn v05_fixture_path(name: &str) -> String {
+        format!("file:///v05/{name}.hew")
+    }
+
+    fn flatten_symbol_names<'a>(symbols: &'a [DocumentSymbol], names: &mut Vec<&'a str>) {
+        for symbol in symbols {
+            names.push(symbol.name.as_str());
+            if let Some(children) = &symbol.children {
+                flatten_symbol_names(children, names);
+            }
+        }
+    }
+
+    /// Check the `documentSymbols` LSP surface for a v0.5 fixture.
+    ///
+    /// Parses `source`, builds the document-symbol tree, and asserts that every
+    /// name in `expected` appears somewhere in the flattened tree.
+    ///
+    /// Failure messages identify: surface, fixture name, and the missing symbol.
+    fn assert_v05_document_symbols(fixture_name: &str, source: &str, expected: &[&str]) {
+        let doc = make_typed_doc(source);
+        assert!(
+            doc.parse_result.errors.is_empty(),
+            "surface=documentSymbols fixture={fixture_name}: parse errors prevent symbol analysis: {:?}",
+            doc.parse_result.errors
+        );
+        let analysis_symbols =
+            hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
+        let document_symbols: Vec<DocumentSymbol> = analysis_symbols
+            .into_iter()
+            .map(|symbol| symbol_info_to_doc_symbol(&doc.source, &doc.line_offsets, symbol))
+            .collect();
+        let mut symbol_names = Vec::new();
+        flatten_symbol_names(&document_symbols, &mut symbol_names);
+        for expected_name in expected {
+            assert!(
+                symbol_names.contains(expected_name),
+                "surface=documentSymbols fixture={fixture_name}: missing symbol {expected_name:?}; got {symbol_names:?}"
+            );
+        }
+    }
+
+    /// Check the `gotoDefinition` LSP surface for a v0.5 fixture probe.
+    ///
+    /// Uses the last occurrence of `probe_name` in `source` as the request
+    /// offset.  Asserts that either the resolver or the AST-walk fallback
+    /// returns a definition location.
+    ///
+    /// Failure messages identify: surface, fixture name, probe name, and byte
+    /// offset.
+    fn assert_v05_goto_definition(fixture_name: &str, source: &str, probe_name: &str) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
+            panic!("surface=gotoDefinition fixture={fixture_name}: missing probe {probe_name:?}")
+        });
+        let resolver_has_definition = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            probe_offset,
+        )
+        .is_some_and(|resolution| resolution.def_location().is_some());
+        assert!(
+            resolver_has_definition
+                || find_definition_in_ast(
+                    &doc.source,
+                    &doc.line_offsets,
+                    &doc.parse_result,
+                    probe_name,
+                )
+                .is_some(),
+            "surface=gotoDefinition fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: no definition found via resolver or AST walk"
+        );
+    }
+
+    /// Check the `findReferences` LSP surface for a v0.5 fixture probe.
+    ///
+    /// Uses the last occurrence of `probe_name` in `source` as the request
+    /// offset.  Asserts that the reference list has at least `min_count`
+    /// entries (typically 2: definition site + one use site).
+    ///
+    /// Failure messages identify: surface, fixture name, probe name, byte
+    /// offset, and the actual reference list.
+    fn assert_v05_find_references(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        min_count: usize,
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let doc = make_typed_doc(source);
+        let probe_offset = source.rfind(probe_name).unwrap_or_else(|| {
+            panic!("surface=findReferences fixture={fixture_name}: missing probe {probe_name:?}")
+        });
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        documents.insert(uri.clone(), doc);
+        let doc_ref = documents.get(&uri).unwrap();
+        let refs = build_reference_locations(&uri, &doc_ref, probe_offset, true, &documents);
+        assert!(
+            refs.len() >= min_count,
+            "surface=findReferences fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: expected >={min_count} refs, got {refs:?}"
+        );
+    }
+
+    /// Check the `semanticTokens` LSP surface for a v0.5 fixture at a specific
+    /// byte offset.
+    ///
+    /// Finds the semantic token whose `start` equals `offset` and asserts that
+    /// its `token_type` matches `expected_type`.  Use `hew_analysis::token_types`
+    /// constants for the expected type.
+    ///
+    /// Failure messages identify: surface, fixture name, offset, expected type,
+    /// and the actual type returned.
+    fn assert_v05_semantic_token_at(
+        fixture_name: &str,
+        source: &str,
+        offset: usize,
+        expected_type: u32,
+    ) {
+        let tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let token = tokens
+            .iter()
+            .find(|t| t.start == offset)
+            .unwrap_or_else(|| {
+                panic!(
+                    "surface=semanticTokens fixture={fixture_name} offset={offset}: \
+                 no token at that offset; token starts: {:?}",
+                    tokens.iter().map(|t| t.start).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            token.token_type, expected_type,
+            "surface=semanticTokens fixture={fixture_name} offset={offset}: \
+             expected token_type={expected_type}, got token_type={}",
+            token.token_type
+        );
+    }
+
+    /// Smoke-test all four LSP surfaces (documentSymbols, hover, gotoDefinition,
+    /// findReferences) for a v0.5 fixture in a single call.
+    ///
+    /// This is the thin orchestration wrapper used by the majority of v0.5
+    /// fixture tests.  For targeted precision assertions use the individual
+    /// surface helpers above.
+    ///
+    /// Delegates to:
+    /// - [`assert_v05_document_symbols`] for the symbol-table surface
+    /// - inline hover check (probe name must appear in hover text; does not
+    ///   require zero type errors so fixtures with intentional type errors are
+    ///   accepted at this tier)
+    /// - [`assert_v05_goto_definition`] for the definition-jump surface
+    /// - [`assert_v05_find_references`] for the reference-list surface
+    fn assert_v05_lsp_fixture(
+        fixture_name: &str,
+        source: &str,
+        probe_name: &str,
+        expected_symbols: &[&str],
+    ) {
+        // documentSymbols surface (also validates parse-level correctness)
+        assert_v05_document_symbols(fixture_name, source, expected_symbols);
+
+        // hover surface — probe name must appear in hover text at its call-site
+        // offset.  No hard-type-error guard here so that fixtures with intentional
+        // type errors (machine lifecycle variants, index-trait error recovery, …)
+        // still pass this smoke check.
+        let doc = make_typed_doc(source);
+        let probe_offset = source
+            .rfind(probe_name)
+            .unwrap_or_else(|| panic!("fixture={fixture_name}: missing probe {probe_name:?}"));
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            probe_offset,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "surface=hover fixture={fixture_name} probe={probe_name:?} \
+                 offset={probe_offset}: hover returned None"
+            )
+        });
+        assert!(
+            hover.contents.contains(probe_name),
+            "surface=hover fixture={fixture_name} probe={probe_name:?} \
+             offset={probe_offset}: hover should mention probe name, got: {}",
+            hover.contents
+        );
+
+        // gotoDefinition surface
+        assert_v05_goto_definition(fixture_name, source, probe_name);
+
+        // findReferences surface — expect definition site + at least one use site
+        assert_v05_find_references(fixture_name, source, probe_name, 2);
+    }
+
+    fn assert_no_hard_type_errors(fixture_name: &str, doc: &DocumentState) {
+        let Some(type_output) = doc.type_output.as_ref() else {
+            panic!("missing type output for {fixture_name}");
+        };
+        let hard_errors: Vec<_> = type_output
+            .errors
+            .iter()
+            .filter(|error| error.severity == hew_types::error::Severity::Error)
+            .collect();
+        assert!(
+            hard_errors.is_empty(),
+            "hard type errors in {fixture_name}: {hard_errors:?}"
+        );
+    }
+
+    fn assert_v05_completion_labels(
+        fixture_name: &str,
+        source: &str,
+        offset: usize,
+        expected_labels: &[&str],
+    ) {
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors(fixture_name, &doc);
+        let items: Vec<_> = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .into_iter()
+        .map(to_lsp_completion)
+        .collect();
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        for expected in expected_labels {
+            assert!(
+                labels.contains(expected),
+                "surface=completion fixture={fixture_name} offset={offset}: \
+                 missing label {expected:?}; got {labels:?}"
+            );
+        }
+    }
+
+    fn assert_v05_hover_contains(fixture_name: &str, source: &str, offset: usize, expected: &str) {
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors(fixture_name, &doc);
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .unwrap_or_else(|| {
+            panic!("surface=hover fixture={fixture_name} offset={offset}: hover returned None")
+        });
+        assert!(
+            hover.contents.contains(expected),
+            "surface=hover fixture={fixture_name} offset={offset}: \
+             expected {expected:?} in hover, got: {}",
+            hover.contents
+        );
+    }
+
+    fn assert_lsp_rejection_diagnostic(
+        fixture_name: &str,
+        source: &str,
+        expected_code: &str,
+        expected_kind: &str,
+        expected_line: u32,
+    ) {
+        let uri = Url::parse(&v05_fixture_path(fixture_name)).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        let published = refresh_document_and_dependents(&uri, source, &documents, &[]);
+        let diagnostics = published
+            .iter()
+            .find(|(published_uri, _)| published_uri == &uri)
+            .map_or(&[] as &[Diagnostic], |(_, diagnostics)| {
+                diagnostics.as_slice()
+            });
+
+        let matches: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic.message.starts_with(&format!("{expected_code}:"))
+                    && diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("kind"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_kind)
+            })
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one {expected_code}/{expected_kind} diagnostic in {fixture_name}; got {diagnostics:?}"
+        );
+        assert_eq!(
+            matches[0].range.start.line, expected_line,
+            "{fixture_name} {expected_code} diagnostic should point at the rejected transition expression"
+        );
+    }
+
+    #[test]
+    fn lsp_reject_gen_in_transition_diagnostic_code() {
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_gen_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_gen_in_transition.hew"),
+            "E_GENBLOCK_IN_MACHINE_TRANSITION",
+            "GenBlockInMachineTransition",
+            9, // 0-indexed: `gen { yield Open; }` is on line 9 (1-indexed line 10)
+        );
+    }
+
+    #[test]
+    fn lsp_reject_await_in_transition_diagnostic_code() {
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_await_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_await_in_transition.hew"),
+            "E_AWAIT_IN_MACHINE_TRANSITION",
+            "AwaitInMachineTransition",
+            9, // 0-indexed: `await pending;` is on line 9 (1-indexed line 10)
+        );
+    }
+
+    #[test]
+    fn v05_record_literals_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_record_literals",
+            include_str!("../../tests/fixtures/v05_record_literals.hew"),
+            "record_probe",
+            &["Point", "record_probe", "record_literals"],
+        );
+    }
+
+    #[test]
+    fn v05_regex_literal_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_regex_literal",
+            include_str!("../../tests/fixtures/v05_regex_literal.hew"),
+            "regex_literal_probe",
+            &["regex_literal_probe", "regex_literal_use"],
+        );
+    }
+
+    #[test]
+    fn v05_regex_literal_hover_reports_pattern_type() {
+        let source = include_str!("../../tests/fixtures/v05_regex_literal.hew");
+        let doc = make_typed_doc(source);
+        assert!(
+            doc.parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_result.errors
+        );
+        let offset = source
+            .find("re\"")
+            .expect("regex literal fixture should contain re\"");
+        let hover = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        )
+        .expect("hover should resolve regex literal expression");
+        assert!(
+            hover.contents.contains("regex.Pattern"),
+            "regex literal hover should mention regex.Pattern, got: {}",
+            hover.contents
+        );
+    }
+
+    // W4.023 Stage 0: pending-upstream-substrate — W3.006 (slice-2 tuple substrate)
+    // Do not unignore until W3.006 tuple support lands and the parser accepts
+    // positional-field type declarations (`type Pair(i32, i32)`).
+    #[test]
+    #[ignore = "pending-upstream-substrate W3.006: tuple-record type syntax not yet parsed"]
+    fn v05_record_tuple_literal_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_record_tuple_literal",
+            include_str!("../../tests/fixtures/v05_record_tuple_literal.hew"),
+            "record_tuple_probe",
+            &["Pair", "record_tuple_probe", "record_tuple_literal"],
+        );
+    }
+
+    #[test]
+    fn v05_is_operator_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        assert_v05_lsp_fixture(
+            "v05_is_operator",
+            source,
+            "is_probe",
+            &["Payload", "is_probe", "is_operator"],
+        );
+    }
+
+    #[test]
+    fn v05_is_operator_rhs_type_pattern_lsp_surfaces_are_correct() {
+        let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_is_operator", &doc);
+
+        let uri = Url::parse(&v05_fixture_path("v05_is_operator")).unwrap();
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+        let published = refresh_document_and_dependents(&uri, source, &documents, &[]);
+        let diagnostics = published
+            .iter()
+            .find(|(published_uri, _)| published_uri == &uri)
+            .map_or(&[] as &[Diagnostic], |(_, diagnostics)| {
+                diagnostics.as_slice()
+            });
+        assert!(
+            !diagnostics.iter().any(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("kind"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("UndefinedVariable")
+                    && diagnostic.message.contains("Payload")
+            }),
+            "`is` operator RHS type pattern should not resolve as a value variable; got {diagnostics:?}"
+        );
+
+        let rhs_offset = source.find("is Payload").expect("is type pattern") + "is ".len();
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            uri.as_str(),
+            rhs_offset,
+        )
+        .expect("RHS type pattern should resolve");
+        let def = resolution
+            .def_location()
+            .expect("RHS type pattern should jump to type declaration");
+        assert!(
+            def.1.start < source.find("fn is_probe").expect("probe fn"),
+            "`is` RHS definition should point at Payload type declaration, got {def:?}"
+        );
+
+        assert_v05_semantic_token_at(
+            "v05_is_operator",
+            source,
+            rhs_offset,
+            hew_analysis::token_types::TYPE,
+        );
+
+        let completion_offset = rhs_offset;
+        let completions = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            completion_offset,
+        );
+        let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Payload"),
+            "`is` RHS completion should include Payload type, got {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"is_probe"),
+            "`is` RHS completion should be type-pattern focused, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn v05_unsafe_block_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_unsafe_block",
+            include_str!("../../tests/fixtures/v05_unsafe_block.hew"),
+            "unsafe_probe",
+            &["unsafe_probe", "unsafe_block"],
+        );
+    }
+
+    #[test]
+    fn v05_extern_unsafe_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_extern_unsafe",
+            include_str!("../../tests/fixtures/v05_extern_unsafe.hew"),
+            "extern_unsafe_probe",
+            &["extern \"C\"", "raw_number", "extern_unsafe_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_extern_unsafe_resolves_extern_call_definition() {
+        let source = include_str!("../../tests/fixtures/v05_extern_unsafe.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_extern_unsafe", &doc);
+        let call_offset = source.rfind("raw_number").expect("raw_number call");
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            &v05_fixture_path("v05_extern_unsafe"),
+            call_offset,
+        )
+        .expect("extern raw_number call should resolve");
+        let def = resolution
+            .def_location()
+            .expect("extern raw_number should have a definition");
+        assert!(
+            def.1.start < source.find("fn extern_unsafe_probe").expect("probe fn"),
+            "extern definition should point at the extern declaration, got {def:?}"
+        );
+    }
+
+    #[test]
+    fn v05_string_methods_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
+        assert_v05_lsp_fixture(
+            "v05_string_methods",
+            source,
+            "string_methods_probe",
+            &["string_methods_probe"],
+        );
+        let hover_offset = source.find("text.slice").expect("slice call");
+        assert_v05_hover_contains("v05_string_methods", source, hover_offset, "string");
+    }
+
+    #[test]
+    fn v05_string_methods_completion_includes_full_l2_surface() {
+        let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
+        let doc = make_typed_doc(source);
+        assert_no_hard_type_errors("v05_string_methods", &doc);
+        let offset = source.find("text.clone").expect("text.clone") + "text.".len();
+        let items = hew_analysis::completions::complete(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let expected = [
+            "slice",
+            "replace",
+            "find",
+            "index_of",
+            "split",
+            "lines",
+            "repeat",
+            "char_at",
+            "chars",
+            "is_digit",
+            "is_alpha",
+            "is_alphanumeric",
+            "clone",
+        ];
+        let missing: Vec<_> = expected
+            .iter()
+            .copied()
+            .filter(|label| !labels.contains(label))
+            .collect();
+        assert_eq!(
+            missing.as_slice(),
+            &[] as &[&str],
+            "string method completion should include all L2-wired methods; missing {missing:?}, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn v05_trait_bounds_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_trait_bounds",
+            include_str!("../../tests/fixtures/v05_trait_bounds.hew"),
+            "trait_bounds_probe",
+            &[
+                "Describable",
+                "describe",
+                "Label",
+                "trait_bounds_probe",
+                "trait_bounds_use",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_impl_where_clause_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_impl_where_clause",
+            include_str!("../../tests/fixtures/v05_impl_where_clause.hew"),
+            "impl_where_clause_probe",
+            &["Holder", "impl", "show", "impl_where_clause_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_record_decl_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        assert_v05_lsp_fixture(
+            "v05_record_decl",
+            source,
+            "record_decl_probe",
+            &["AutoRecord", "record_decl_probe"],
+        );
+        let offset =
+            source.find("AutoRecord { count").expect("record literal") + "AutoRecord { ".len();
+        assert_v05_completion_labels("v05_record_decl", source, offset, &["count", "name"]);
+    }
+
+    #[test]
+    fn v05_while_let_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_while_let.hew");
+        assert_v05_lsp_fixture(
+            "v05_while_let",
+            source,
+            "while_let_probe",
+            &["while_let_probe"],
+        );
+        let offset = source.find("total + value").expect("while-let value") + "total + ".len();
+        assert_v05_hover_contains("v05_while_let", source, offset, "value: i64");
+    }
+
+    #[test]
+    fn v05_machine_generics_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_generics",
+            include_str!("../../tests/fixtures/v05_machine_generics.hew"),
+            "machine_generics_probe",
+            &["Boxed", "Store", "Idle", "machine_generics_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_machine_substrate_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_machine_substrate.hew");
+        assert_v05_lsp_fixture(
+            "v05_machine_substrate",
+            source,
+            "machine_substrate_probe",
+            &[
+                "Resource",
+                "close",
+                "FileHandle",
+                "Lifecycle",
+                "Idle",
+                "Active",
+                "Start",
+                "Stop",
+                "Started",
+                "machine_substrate_probe",
+            ],
+        );
+        let offset = source
+            .find("lifecycle.state_name")
+            .expect("state_name call")
+            + "lifecycle.".len();
+        assert_v05_completion_labels(
+            "v05_machine_substrate",
+            source,
+            offset,
+            &["step", "state_name"],
+        );
+    }
+
+    #[test]
+    fn v05_cross_module_machine_ctor_lsp_coverage() {
+        let main_source = include_str!("../../tests/fixtures/v05_cross_module_machine_main.hew");
+        let defs_source = include_str!("../../tests/fixtures/v05_cross_module_machine_defs.hew");
+        let main_uri = make_test_uri("/v05/cross_module/main.hew");
+        let defs_uri = make_test_uri("/v05/cross_module/machines/toggle.hew");
+        let documents: DashMap<Url, DocumentState> = DashMap::new();
+
+        refresh_document_and_dependents(&defs_uri, defs_source, &documents, &[]);
+        refresh_document_and_dependents(&main_uri, main_source, &documents, &[]);
+
+        let main_doc = documents
+            .get(&main_uri)
+            .expect("main fixture should be analyzed");
+        assert_no_hard_type_errors("v05_cross_module_machine_main", &main_doc);
+        let type_output = main_doc
+            .type_output
+            .as_ref()
+            .expect("cross-module machine fixture should be type checked");
+        assert!(
+            type_output.type_defs.contains_key("Toggle"),
+            "imported machine type should be visible in type defs"
+        );
+        assert!(
+            type_output.type_defs.contains_key("ToggleEvent"),
+            "imported machine event type should be visible in type defs"
+        );
+
+        let state_name_offset = main_source
+            .find("toggle.state_name")
+            .expect("state_name call")
+            + "toggle.".len();
+        let items = hew_analysis::completions::complete(
+            &main_doc.source,
+            &main_doc.parse_result,
+            main_doc.type_output.as_ref(),
+            state_name_offset,
+        );
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"state_name"),
+            "cross-module machine completion should include state_name, got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn v05_machine_states_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_states",
+            include_str!("../../tests/fixtures/v05_machine_states.hew"),
+            "machine_states_probe",
+            &[
+                "Traffic",
+                "Start",
+                "Stop",
+                "Idle",
+                "Running",
+                "machine_states_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_machine_methods_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_machine_methods",
+            include_str!("../../tests/fixtures/v05_machine_methods.hew"),
+            "machine_methods_probe",
+            &[
+                "Turnstile",
+                "Coin",
+                "Push",
+                "Locked",
+                "Unlocked",
+                "machine_methods_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_scope_fork_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_scope_fork",
+            include_str!("../../tests/fixtures/v05_scope_fork.hew"),
+            "fork_worker",
+            &["fork_worker", "scope_fork"],
+        );
+    }
+
+    #[test]
+    fn v05_supervisor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_supervisor",
+            include_str!("../../tests/fixtures/v05_supervisor.hew"),
+            "supervisor_probe",
+            &[
+                "LogWorker",
+                "AppSupervisor",
+                "supervisor_probe",
+                "supervisor_use",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_composite_machine_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_composite_machine",
+            include_str!("../../tests/fixtures/v05_composite_machine.hew"),
+            "composite_machine_probe",
+            &[
+                "ConnectionLifecycle",
+                "composite_machine_probe",
+                "composite_machine_use",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_select_arms_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_select_arms.hew");
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-lsp has a parent (repo root)")
+            .to_path_buf();
+        let uri = Url::from_file_path(repo_root.join("hew-lsp/tests/fixtures/v05_select_arms.hew"))
+            .expect("fixture path is absolute");
+        let docs: DashMap<Url, DocumentState> = DashMap::new();
+        let doc = analyze_document(&uri, source, &docs, &[]);
+        assert_no_hard_type_errors("v05_select_arms", &doc);
+        assert_v05_lsp_fixture(
+            "v05_select_arms",
+            source,
+            "select_probe",
+            &["Responder", "ask", "select_probe", "select_arms"],
+        );
+    }
+
+    /// `await expr | after duration` (`Expr::Timeout`) parses and is accepted
+    /// by the LSP without false diagnostics.  Uses actor ask so no `std::net`
+    /// import is required.  Verifies parse-clean symbol coverage and hover.
+    #[test]
+    fn v05_await_deadline_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_await_deadline",
+            include_str!("../../tests/fixtures/v05_await_deadline.hew"),
+            "await_deadline_probe",
+            &[
+                "Responder",
+                "ask",
+                "await_deadline_probe",
+                "await_deadline_coverage",
+            ],
+        );
+    }
+
+    /// `await conn.read_string() | after duration` deadline form (NEW-6c).
+    /// Checks that the parser accepts the form and the LSP produces no false
+    /// parse-level diagnostics.  Hover and goto-definition are tested on the
+    /// probe function; the unresolved net import is expected in unit-test context.
+    #[test]
+    fn v05_read_string_deadline_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_read_string_deadline.hew");
+        // Verify: no parse errors (the deadline form must parse cleanly).
+        let parse_result = hew_parser::parse(source);
+        let parse_errors: Vec<_> = parse_result
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_parser::Severity::Error)
+            .collect();
+        assert!(
+            parse_errors.is_empty(),
+            "v05_read_string_deadline must have no parse errors; got: {parse_errors:?}"
+        );
+        // Verify: document symbols include the probe function (parse-level coverage).
+        assert_v05_document_symbols(
+            "v05_read_string_deadline",
+            source,
+            &[
+                "read_string_deadline_probe",
+                "read_string_deadline_coverage",
+            ],
+        );
+    }
+
+    /// `await ln.accept() | after duration` deadline form (NEW-6d).
+    /// Same contract as `v05_read_string_deadline_lsp_coverage`.
+    #[test]
+    fn v05_accept_deadline_lsp_coverage() {
+        let source = include_str!("../../tests/fixtures/v05_accept_deadline.hew");
+        let parse_result = hew_parser::parse(source);
+        let parse_errors: Vec<_> = parse_result
+            .errors
+            .iter()
+            .filter(|e| e.severity == hew_parser::Severity::Error)
+            .collect();
+        assert!(
+            parse_errors.is_empty(),
+            "v05_accept_deadline must have no parse errors; got: {parse_errors:?}"
+        );
+        assert_v05_document_symbols(
+            "v05_accept_deadline",
+            source,
+            &["accept_deadline_probe", "accept_deadline_coverage"],
+        );
+    }
+
+    #[test]
+    fn v05_attributes_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_attributes",
+            include_str!("../../tests/fixtures/v05_attributes.hew"),
+            "attribute_crash_probe",
+            &[
+                "AttributeActor",
+                "ping",
+                "attribute_crash_probe",
+                "attribute_upgrade_probe",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_link_monitor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_link_monitor",
+            include_str!("../../tests/fixtures/v05_link_monitor.hew"),
+            "link_monitor_probe",
+            &["LinkWorker", "ping", "link_monitor_probe", "link_monitor"],
+        );
+    }
+
+    // `actor |params| { body }` is the landed lambda-actor syntax.
+    // The earlier `spawn |…| { … }` form was removed before v0.5.0; the
+    // fixture now uses the correct `actor` keyword so the parser accepts it.
+    #[test]
+    fn v05_spawn_lambda_actor_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_spawn_lambda_actor",
+            include_str!("../../tests/fixtures/v05_spawn_lambda_actor.hew"),
+            "spawn_lambda_probe",
+            &["spawn_lambda_probe", "spawn_lambda_actor"],
+        );
+    }
+
+    #[test]
+    fn v05_std_channels_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_std_channels",
+            include_str!("../../tests/fixtures/v05_std_channels.hew"),
+            "std_channels_probe",
+            &["std_channels_probe", "std_channels"],
+        );
+    }
+
+    #[test]
+    fn v05_associated_type_projection_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_associated_type_projection",
+            include_str!("../../tests/fixtures/v05_associated_type_projection.hew"),
+            "associated_projection_probe",
+            &["Conveyor", "Item", "next", "associated_projection_probe"],
+        );
+    }
+
+    #[test]
+    fn v05_index_trait_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_index_trait",
+            include_str!("../../tests/fixtures/v05_index_trait.hew"),
+            "index_probe",
+            &[
+                "Bag",
+                "Indexable",
+                "Item",
+                "get",
+                "index_probe",
+                "index_trait",
+            ],
+        );
+    }
+
+    // W4.023 Stage 0: known-rejected — `async fn`/`await` are not valid Hew syntax.
+    // The parser permanently rejects these keywords; they are out of v0.5 scope.
+    // This fail-closed test asserts parser errors rather than leaving the test
+    // as an indefinitely-ignored smoke check.
+    #[test]
+    fn v05_async_await_is_rejected_with_parse_errors() {
+        let source = include_str!("../../tests/fixtures/v05_async_await.hew");
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            !parse_result.errors.is_empty(),
+            "v05_async_await.hew must produce parse errors: \
+             `async fn` / `await` are not valid Hew syntax and the parser must reject them"
+        );
+    }
+
+    #[test]
+    fn v05_generators_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_generators",
+            include_str!("../../tests/fixtures/v05_generators.hew"),
+            "generator_probe",
+            &["generator_probe", "generators"],
+        );
+    }
+
+    #[test]
+    fn v05_closures_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_closures",
+            include_str!("../../tests/fixtures/v05_closures.hew"),
+            "closure_probe",
+            &["closure_probe", "closures"],
+        );
+    }
+
+    #[test]
+    fn v05_result_option_ctors_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_result_option_ctors",
+            include_str!("../../tests/fixtures/v05_result_option_ctors.hew"),
+            "result_option_probe",
+            &[
+                "Result",
+                "Ok",
+                "Err",
+                "Option",
+                "Some",
+                "None",
+                "result_option_probe",
+                "result_option_ctors",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_match_enum_variant_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_match_enum_variant",
+            include_str!("../../tests/fixtures/v05_match_enum_variant.hew"),
+            "match_enum_probe",
+            &[
+                "Shape",
+                "Circle",
+                "Square",
+                "match_enum_probe",
+                "match_enum_variant",
+            ],
+        );
+    }
+
+    #[test]
+    fn v05_display_fstring_lsp_coverage() {
+        assert_v05_lsp_fixture(
+            "v05_display_fstring",
+            include_str!("../../tests/fixtures/v05_display_fstring.hew"),
+            "display_probe",
+            &["Point", "display_probe", "display_fstring"],
+        );
+    }
+
+    // ── W4.023 Stage 2 — targeted accepted-surface assertions ────────────────
+    //
+    // Each test below extends beyond the Stage 0/1 smoke tier.  They pin a
+    // specific LSP surface on an accepted fixture using Stage 1 helpers.
+    // Organisation mirrors the Stage 2 scope:
+    //
+    //   Group A — Field-access hover:        record field-access hover in call sites / impl bodies
+    //   Group B — Records / wires:           field-declaration hover
+    //   Group C — Static trait dispatch:     goto-definition + find-references
+    //   Group D — Match enum:                pattern-binding hover
+    //   Group E — Machines:                  precision document-symbol assertions
+    //   Group F — Canonical primitives:      integer-literal hover
+    //   Group G — Result/Option constructors: enum-variant goto-definition
+
+    // ── Group A: Field-access hover — call sites and impl bodies ─────────────
+
+    /// `value.count` field access in `record_decl_probe` must surface
+    /// `count: i64` via the field-access hover path.
+    #[test]
+    fn v05_record_decl_field_access_hover_pins_count_type() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        let offset = source
+            .find("value.count")
+            .expect("value.count field access")
+            + "value.".len();
+        assert_v05_hover_contains("v05_record_decl", source, offset, "count: i64");
+    }
+
+    /// `p.x` field access inside the `Display` impl body must surface
+    /// `x: i64` via the field-access hover path.
+    ///
+    /// Note: the only occurrence of `p.x` in the fixture is inside the
+    /// f-string interpolation `f"Point({p.x})"`.  The field-access hover
+    /// path does not currently route through f-string contents — the
+    /// surrounding string expression type wins at that offset.  The
+    /// assertion below therefore uses the field-*declaration* hover path
+    /// on `type Point { x: i64; }`, which IS a `TypeDecl` and is handled
+    /// by `hover_field_declaration_at_offset`.
+    #[test]
+    fn v05_display_fstring_type_decl_field_declaration_hover_pins_type() {
+        let source = include_str!("../../tests/fixtures/v05_display_fstring.hew");
+        // offset of `x` inside the `type Point { x: i64; }` declaration
+        let offset = source.find("x: i64").expect("x: i64 field declaration");
+        assert_v05_hover_contains("v05_display_fstring", source, offset, "x: i64");
+    }
+
+    /// `label.text` field access inside the `Describable` impl body must
+    /// surface `text: string` via the field-access hover path.
+    #[test]
+    fn v05_trait_bounds_impl_field_access_hover_pins_type() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        let offset = source.find("label.text").expect("label.text field access") + "label.".len();
+        assert_v05_hover_contains("v05_trait_bounds", source, offset, "text: string");
+    }
+
+    // ── Group B: Records / wires — field-declaration hover ───────────────────
+
+    /// Hovering on the field name tokens inside a `record` type declaration
+    /// must surface the declared field type via `hover_field_declaration_at_offset`.
+    ///
+    /// `record AutoRecord { … }` is parsed as `Item::Record` (a separate AST
+    /// node from `Item::TypeDecl`).  The hover walk now handles both forms.
+    #[test]
+    fn v05_record_decl_field_declaration_hover_pins_types() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        // `count` in `count: i64,` → `count: i64`
+        let count_offset = source.find("count: i64").expect("count field decl");
+        assert_v05_hover_contains("v05_record_decl", source, count_offset, "count: i64");
+        // `name` in `name: string,` → `name: string`
+        let name_offset = source.find("name: string").expect("name field decl");
+        assert_v05_hover_contains("v05_record_decl", source, name_offset, "name: string");
+    }
+
+    /// `type Point { x: i32; y: i32; }` produces an `Item::TypeDecl`; hovering
+    /// on the field names must surface the field types via
+    /// `hover_field_declaration_at_offset`.
+    #[test]
+    fn v05_record_literals_type_decl_field_declaration_hover_pins_types() {
+        let source = include_str!("../../tests/fixtures/v05_record_literals.hew");
+        // `x` in `x: i32;` field declaration
+        let x_offset = source.find("x: i32").expect("x: i32 field decl");
+        assert_v05_hover_contains("v05_record_literals", source, x_offset, "x: i32");
+        // `y` in `y: i32;` field declaration
+        let y_offset = source.find("y: i32").expect("y: i32 field decl");
+        assert_v05_hover_contains("v05_record_literals", source, y_offset, "y: i32");
+    }
+
+    // ── Group C: Static trait dispatch — goto-definition + find-references ───
+
+    /// The last occurrence of `describe` in the fixture is the `item.describe()`
+    /// call site.  Both the resolver and the AST-walk fallback must be able to
+    /// locate the trait or impl definition.
+    #[test]
+    fn v05_trait_bounds_static_dispatch_method_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        assert_v05_goto_definition("v05_trait_bounds", source, "describe");
+    }
+
+    /// `Describable` in `<T: Describable>` (the last occurrence) must navigate
+    /// back to the `trait Describable { … }` declaration via goto-definition.
+    /// Uses `rfind("Describable")` which resolves the type-bound usage site;
+    /// the AST-walk locates `Item::Trait("Describable")` as the definition.
+    #[test]
+    fn v05_trait_bounds_trait_name_has_goto_definition_from_type_bound() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        // rfind finds <T: Describable>; assert navigation reaches the declaration.
+        assert_v05_goto_definition("v05_trait_bounds", source, "Describable");
+    }
+
+    /// Substrate-pending: the reference engine returns only the declaration site
+    /// when queried at the type-bound position `<T: Describable>`.
+    /// `min_count=1` is trivially satisfiable and does not prove declaration +
+    /// use-site behaviour; this test is therefore reclassified as ignored rather
+    /// than kept as a green accepted-surface assertion.
+    /// Unignore and raise to `min_count >= 3` (declaration + `impl Describable`
+    /// header + `<T: Describable>` type-bound) when the reference engine gains
+    /// full trait-name cross-reference tracking.
+    #[test]
+    #[ignore = "substrate: reference engine returns declaration-only for trait names; min_count=1 does not prove cross-reference behaviour"]
+    fn v05_trait_bounds_trait_name_find_references_includes_declaration() {
+        let source = include_str!("../../tests/fixtures/v05_trait_bounds.hew");
+        // When unignored this should assert >= 3: declaration + impl header + type-bound.
+        assert_v05_find_references("v05_trait_bounds", source, "Describable", 3);
+    }
+
+    /// The last occurrence of `show` in the fixture is the `holder.show()` call
+    /// site.  Both the resolver and the AST-walk fallback must locate the impl
+    /// method definition.
+    #[test]
+    fn v05_impl_where_clause_method_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_impl_where_clause.hew");
+        assert_v05_goto_definition("v05_impl_where_clause", source, "show");
+    }
+
+    // ── Group D: Match enum — pattern-binding hover ───────────────────────────
+
+    /// `r` in `Shape::Circle(r)` is a constructor-pattern binding.
+    /// `hover_pattern_binding` must resolve its type from the `Circle(i64)`
+    /// variant definition and surface `r: i64`.
+    #[test]
+    fn v05_match_enum_variant_pattern_binding_hover_pins_payload_type() {
+        let source = include_str!("../../tests/fixtures/v05_match_enum_variant.hew");
+        // Position inside the constructor pattern, not the arm body.
+        let offset = source
+            .find("Shape::Circle(r)")
+            .expect("Circle pattern in match arm")
+            + "Shape::Circle(".len();
+        assert_v05_hover_contains("v05_match_enum_variant", source, offset, "r: i64");
+    }
+
+    // ── Group E: Machines — precision document-symbol assertions ─────────────
+
+    /// The smoke test for `v05_machine_states` only checks Start / Stop / Idle /
+    /// Running.  Stage 2 pins the full event list, including the two events that
+    /// the smoke tier omits: `Started` and `Stopped`.
+    ///
+    /// Note: non-exhaustive transition coverage is intentional in this fixture;
+    /// `assert_v05_document_symbols` does not require zero type errors.
+    #[test]
+    fn v05_machine_states_document_symbols_include_all_events() {
+        let source = include_str!("../../tests/fixtures/v05_machine_states.hew");
+        assert_v05_document_symbols(
+            "v05_machine_states",
+            source,
+            &[
+                "Traffic", "Start", "Stop", "Started", "Stopped", "Idle", "Running",
+            ],
+        );
+    }
+
+    /// Pin the complete machine-level symbol tree for `Turnstile`.  The smoke
+    /// test only checks symbols that appear in `expected_symbols`; Stage 2 pins
+    /// every event and state name.
+    ///
+    /// Note: non-exhaustive event coverage is intentional in this fixture.
+    #[test]
+    fn v05_machine_methods_document_symbols_include_machine_and_all_events() {
+        let source = include_str!("../../tests/fixtures/v05_machine_methods.hew");
+        assert_v05_document_symbols(
+            "v05_machine_methods",
+            source,
+            &["Turnstile", "Coin", "Push", "Locked", "Unlocked"],
+        );
+    }
+
+    // ── Group F: Canonical primitives — integer-literal hover ────────────────
+
+    /// An untyped integer literal (`7` in `AutoRecord { count: 7, … }`) must
+    /// materialise to `i64` — the default integer width — when hovered.
+    /// This exercises `ResolvedTy::materialize_literal_defaults` through the
+    /// `hover_type_display` → `ResolvedTy::user_facing()` chain.
+    #[test]
+    fn v05_record_decl_integer_literal_hover_materializes_to_i64() {
+        let source = include_str!("../../tests/fixtures/v05_record_decl.hew");
+        // Offset of the `7` literal inside `AutoRecord { count: 7, name: "ok" }`.
+        let offset = source
+            .find("count: 7")
+            .expect("count: 7 literal in record constructor")
+            + "count: ".len();
+        assert_v05_hover_contains("v05_record_decl", source, offset, "i64");
+    }
+
+    // ── Group G: Result/Option constructors — enum-variant goto-definition ────
+    //
+    // Stage 2 targeted coverage for the `v05_result_option_ctors` fixture.
+    // The Stage 0/1 smoke test (`v05_result_option_ctors_lsp_coverage`) only
+    // probes the sentinel function `result_option_probe`.  These tests prove
+    // that enum variant constructors at their call sites are navigable via
+    // goto-definition.
+    //
+    // Substrate note: `enum Result<T, E>` and `enum Option<T>` are both parsed
+    // as `Item::TypeDecl(TypeDeclKind::Enum)`; their variant names are
+    // `TypeBodyItem::Variant` nodes that `find_definition_in_ast` (via
+    // `hew_analysis::definition::find_definition`) locates by name.
+    // `rfind` therefore navigates from the last call-site occurrence of each
+    // variant name to the variant declaration in the enum body.
+
+    /// `Result::Ok(…)` call site (last "Ok") must navigate to the `Ok(T);`
+    /// variant declaration in `enum Result`.
+    #[test]
+    fn v05_result_option_ctors_ok_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        // rfind("Ok") = Result::Ok(result_option_probe()) constructor call site
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Ok");
+    }
+
+    /// `Result::Err(true)` call site (last "Err") must navigate to the `Err(E);`
+    /// variant declaration in `enum Result`.
+    #[test]
+    fn v05_result_option_ctors_err_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Err");
+    }
+
+    /// `Option::Some(…)` call site (last "Some") must navigate to the `Some(T);`
+    /// variant declaration in `enum Option`.
+    #[test]
+    fn v05_result_option_ctors_some_constructor_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        assert_v05_goto_definition("v05_result_option_ctors", source, "Some");
+    }
+
+    /// `Option::None` unit-variant site (last "None") must navigate to the
+    /// `None;` variant declaration in `enum Option`.
+    #[test]
+    fn v05_result_option_ctors_none_unit_variant_has_goto_definition() {
+        let source = include_str!("../../tests/fixtures/v05_result_option_ctors.hew");
+        // rfind("None") = Option::None; unit variant — no payload, still navigable
+        assert_v05_goto_definition("v05_result_option_ctors", source, "None");
+    }
+
+    // ── Debounce version-counter logic ──────────────────────────────
+
+    #[test]
+    fn debounce_version_counter_increments_on_each_edit() {
+        // The debounce mechanism uses a per-URI generation counter to decide
+        // whether a spawned task is still the most recent edit.  Each call to
+        // `reanalyze` must increment the counter so that the previous task
+        // sees a stale value and exits without publishing diagnostics.
+        //
+        // This test exercises the counter directly (no async runtime needed)
+        // since the correctness invariant is: "a task started for version N
+        // bails if the counter has already advanced past N".
+        let versions: DashMap<Url, u64> = DashMap::new();
+        let uri = Url::parse("file:///test.hew").unwrap();
+
+        // First edit: counter goes from absent → 1.
+        let v1 = {
+            let mut entry = versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        assert_eq!(v1, 1, "first edit should produce version 1");
+        assert_eq!(versions.get(&uri).map(|v| *v), Some(1));
+
+        // Second edit: counter advances to 2; first task's version (1) is now stale.
+        let v2 = {
+            let mut entry = versions.entry(uri.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        assert_eq!(v2, 2, "second edit should produce version 2");
+        // The first task checks: versions.get(&uri) != Some(1) → true → it bails.
+        assert_ne!(
+            versions.get(&uri).map(|v| *v),
+            Some(v1),
+            "version counter must have advanced past the first task's snapshot"
+        );
+        // The second task checks: versions.get(&uri) == Some(2) → it proceeds.
+        assert_eq!(
+            versions.get(&uri).map(|v| *v),
+            Some(v2),
+            "second task's version must still be current"
+        );
+    }
+
+    // ── Documentation field wiring (LSP layer) ──────────────────────
+
+    #[test]
+    fn to_lsp_completion_propagates_doc_comment_as_markdown() {
+        // `to_lsp_completion` must map `CompletionItem.documentation` to
+        // `lsp_types::Documentation::MarkupContent` with `MarkupKind::Markdown`.
+        let item = hew_analysis::CompletionItem {
+            label: "greet".to_string(),
+            kind: CompletionKind::Function,
+            detail: Some("fn greet(name: string)".to_string()),
+            documentation: Some("Greets the named entity.".to_string()),
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        };
+        let lsp_item = to_lsp_completion(item);
+        let doc = lsp_item
+            .documentation
+            .expect("documentation field must be populated");
+        match doc {
+            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
+                assert_eq!(
+                    markup.kind,
+                    tower_lsp::lsp_types::MarkupKind::Markdown,
+                    "documentation kind must be Markdown"
+                );
+                assert_eq!(markup.value, "Greets the named entity.");
+            }
+            tower_lsp::lsp_types::Documentation::String(s) => {
+                panic!("expected MarkupContent, got plain String({s:?})")
+            }
+        }
+    }
+
+    #[test]
+    fn to_lsp_completion_none_doc_comment_yields_none_documentation() {
+        // A completion item with no documentation must yield `None` on the LSP
+        // response — not an empty MarkupContent.
+        let item = hew_analysis::CompletionItem {
+            label: "bare".to_string(),
+            kind: CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        };
+        let lsp_item = to_lsp_completion(item);
+        assert!(
+            lsp_item.documentation.is_none(),
+            "completion item with no documentation must yield None"
+        );
+    }
+
+    #[test]
+    fn lsp_signature_help_propagates_doc_comment_as_markdown() {
+        // `lsp_signature_help_from_analysis` must map `SignatureInfo.documentation`
+        // to `SignatureInformation.documentation` as Markdown.
+        let result = hew_analysis::SignatureHelpResult {
+            signatures: vec![hew_analysis::SignatureInfo {
+                label: "fn add(a: i64, b: i64) -> i64".to_string(),
+                documentation: Some("Returns the sum of a and b.".to_string()),
+                parameters: vec![],
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(0),
+        };
+        let sig_help = lsp_signature_help_from_analysis(result);
+        let sig = &sig_help.signatures[0];
+        let doc = sig
+            .documentation
+            .as_ref()
+            .expect("documentation must be propagated");
+        match doc {
+            tower_lsp::lsp_types::Documentation::MarkupContent(markup) => {
+                assert_eq!(markup.kind, tower_lsp::lsp_types::MarkupKind::Markdown);
+                assert_eq!(markup.value, "Returns the sum of a and b.");
+            }
+            tower_lsp::lsp_types::Documentation::String(s) => {
+                panic!("expected MarkupContent, got plain String({s:?})")
+            }
+        }
     }
 }

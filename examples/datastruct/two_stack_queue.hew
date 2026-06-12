@@ -1,36 +1,36 @@
 // Two-Stack Queue - Queue implemented with two stacks
 // inbox: push here, outbox: pop from here
 // When outbox empty, transfer all from inbox to outbox (reverses order = FIFO)
-fn transfer(inbox: Vec<int>, outbox: Vec<int>) {
+fn transfer(inbox: Vec<i64>, outbox: Vec<i64>) {
     while inbox.len() > 0 {
         let val = inbox.pop();
         outbox.push(val);
     }
 }
 
-fn tsq_enqueue(inbox: Vec<int>, val: int) {
+fn tsq_enqueue(inbox: Vec<i64>, val: i64) {
     inbox.push(val);
 }
 
-fn tsq_dequeue(inbox: Vec<int>, outbox: Vec<int>) -> int {
+fn tsq_dequeue(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
     if outbox.len() == 0 {
         transfer(inbox, outbox);
     }
     outbox.pop()
 }
 
-fn tsq_peek(inbox: Vec<int>, outbox: Vec<int>) -> int {
+fn tsq_peek(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
     if outbox.len() == 0 {
         transfer(inbox, outbox);
     }
     outbox.get(outbox.len() - 1)
 }
 
-fn tsq_size(inbox: Vec<int>, outbox: Vec<int>) -> int {
+fn tsq_size(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
     inbox.len() + outbox.len()
 }
 
-fn tsq_is_empty(inbox: Vec<int>, outbox: Vec<int>) -> int {
+fn tsq_is_empty(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
     if tsq_size(inbox, outbox) == 0 {
         1
     } else {
@@ -38,7 +38,7 @@ fn tsq_is_empty(inbox: Vec<int>, outbox: Vec<int>) -> int {
     }
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {
@@ -50,8 +50,8 @@ fn run_test(name: String, passed: int) -> int {
 fn main() {
     var total = 0;
     var passed = 0;
-    let inbox: Vec<int> = Vec::new();
-    let outbox: Vec<int> = Vec::new();
+    let inbox: Vec<i64> = Vec::new();
+    let outbox: Vec<i64> = Vec::new();
     // Test 1: empty
     total = total + 1;
     let r1 = if tsq_is_empty(inbox, outbox) == 1 {
@@ -126,8 +126,8 @@ fn main() {
 
     // Test 7: many elements
     total = total + 1;
-    let in2: Vec<int> = Vec::new();
-    let out2: Vec<int> = Vec::new();
+    let in2: Vec<i64> = Vec::new();
+    let out2: Vec<i64> = Vec::new();
     for i in 0 .. 50 {
         tsq_enqueue(in2, i);
     }

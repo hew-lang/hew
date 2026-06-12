@@ -1,0 +1,45 @@
+// Runnable fixture: TCP handshake state machine executed end-to-end.
+machine TcpHandshake {
+    events {
+        Syn;
+        Ack;
+        Reset;
+    }
+
+    state Closed;
+    state SynReceived;
+    state Established;
+
+    on Syn: Closed => SynReceived {
+        SynReceived
+    }
+    on Ack: Closed => Closed reenter {
+        Closed
+    }
+    on Syn: SynReceived => SynReceived reenter {
+        SynReceived
+    }
+    on Ack: SynReceived => Established {
+        Established
+    }
+    on Syn: Established => Established reenter {
+        Established
+    }
+    on Ack: Established => Established reenter {
+        Established
+    }
+    on Reset: _ => Closed {
+        Closed
+    }
+}
+
+fn main() {
+    var tcp = Closed;
+    println(tcp.state_name());
+    tcp.step(Syn);
+    println(tcp.state_name());
+    tcp.step(Ack);
+    println(tcp.state_name());
+    tcp.step(Reset);
+    println(tcp.state_name());
+}

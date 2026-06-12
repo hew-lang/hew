@@ -1,0 +1,25 @@
+// Regression fixture for the MIR fuzz crash where
+// `link()`/`monitor()` after four `spawn Probe` bindings triggered the
+// `build_lifo_drops` invariant panic.
+//
+// The reproducer omits the `actor Probe { ... }` declaration. The
+// checker accepts this (LocalPid<Probe> is treated as referencing an
+// unresolved actor name), so HIR lowering proceeds. MIR's
+// `lower_spawn_actor` then returns `None` because `actor_layouts` has
+// no entry for `Probe`, leaving each `let p = spawn Probe;` binding
+// without an entry in `binding_locals`. Before the fix, the binding
+// was still added to `owned_locals` (LocalPid is not BitCopy), and the
+// drop-elaboration pass panicked.
+
+fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+
+fn main() -> i64 {
+    let p = spawn Probe;
+    let q = spawn Probe;
+    let r = spawn Probe;
+    let s = spawn Probe;
+    link(p, q);
+    monitor(r, s);
+    0
+}

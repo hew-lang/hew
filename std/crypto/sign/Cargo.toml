@@ -1,0 +1,21 @@
+[package]
+name = "hew-std-crypto-sign"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::crypto::sign — Ed25519 key-pair generation, signing, and verification"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+ring = "0.17"
+libc.workspace = true
+
+[lints]
+workspace = true

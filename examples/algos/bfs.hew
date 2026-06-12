@@ -44,16 +44,16 @@ fn main() {
     queue.push(0);
     var front = 0;
     while front < queue.len() {
-        let u = queue.get(front);
+        let u: i64 = queue.get(front) as i64;
         front = front + 1;
-        let start = adj_offsets.get(u);
-        let end = adj_offsets.get(u + 1);
-        var idx = start;
+        let start: i64 = adj_offsets.get(u) as i64;
+        let end: i64 = adj_offsets.get(u + 1) as i64;
+        var idx: i64 = start;
         while idx < end {
-            let v = adj_nodes.get(idx);
+            let v: i64 = adj_nodes.get(idx) as i64;
             if dist.get(v) == 0 - 1 {
                 dist.set(v, dist.get(u) + 1);
-                queue.push(v);
+                queue.push(v as i32);
             }
             idx = idx + 1;
         }

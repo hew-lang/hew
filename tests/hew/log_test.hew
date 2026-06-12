@@ -1,0 +1,265 @@
+//! Tests for std::misc::log — structured logging API.
+//!
+//! Tests cover: level/format constants, field builders, Logger construction
+//! (via accessors), global level/format round-trips, and filtering behaviour.
+//!
+//! The visual output shape (coloured text / NDJSON) is verified by the
+//! integration probes in examples/log/ which are run with `hew run`.
+
+import std::misc::log;
+
+import std::testing;
+
+// ── Level and format constants ────────────────────────────────────────────────
+#[test]
+fn test_level_constants_have_correct_values() {
+    testing.assert_eq(log.ERROR, 0);
+    testing.assert_eq(log.WARN, 1);
+    testing.assert_eq(log.INFO, 2);
+    testing.assert_eq(log.DEBUG, 3);
+    testing.assert_eq(log.TRACE, 4);
+}
+
+#[test]
+fn test_format_constants_have_correct_values() {
+    testing.assert_eq(log.TEXT, 0);
+    testing.assert_eq(log.JSON, 1);
+}
+
+// ── Field builders ────────────────────────────────────────────────────────────
+#[test]
+fn test_field_produces_key_equals_value_string() {
+    testing.assert_eq_str(log.field("env", "prod"), "env=prod");
+    testing.assert_eq_str(log.field("path", "/api/v1"), "path=/api/v1");
+    testing.assert_eq_str(log.field("k", "v"), "k=v");
+}
+
+#[test]
+fn test_field_int_formats_positive_and_negative_values() {
+    testing.assert_eq_str(log.field_int("port", 8080), "port=8080");
+    testing.assert_eq_str(log.field_int("code", 0), "code=0");
+    testing.assert_eq_str(log.field_int("offset", -1), "offset=-1");
+}
+
+#[test]
+fn test_field_float_formats_decimal_values() {
+    testing.assert_eq_str(log.field_float("ratio", 0.5), "ratio=0.5");
+    testing.assert_eq_str(log.field_float("latency_ms", 1.234), "latency_ms=1.234");
+}
+
+#[test]
+fn test_field_bool_formats_true_and_false() {
+    testing.assert_eq_str(log.field_bool("debug", true), "debug=true");
+    testing.assert_eq_str(log.field_bool("healthy", false), "healthy=false");
+}
+
+// ── Field value encoding: values with special characters ─────────────────────
+#[test]
+fn test_field_value_with_space_is_quoted() {
+    let f = log.field("user", "John Doe");
+    // Wire form must begin with the key and contain the full value.
+    testing.assert_true(f.starts_with("user="));
+    testing.assert_true(f.contains("John Doe"));
+    // The value must be quoted so the space is preserved (not a bare token).
+    testing.assert_true(f.contains("\""));
+}
+
+#[test]
+fn test_field_value_without_space_is_not_quoted() {
+    // Simple values must not get unnecessary quotes.
+    testing.assert_eq_str(log.field("env", "prod"), "env=prod");
+    testing.assert_eq_str(log.field("status", "200"), "status=200");
+}
+
+#[test]
+fn test_field_value_with_embedded_quote_is_encoded() {
+    let f = log.field("msg", "say \"hi\"");
+    testing.assert_true(f.starts_with("msg="));
+    // The original quote character must survive in some form.
+    testing.assert_true(f.contains("say"));
+    testing.assert_true(f.contains("hi"));
+}
+
+#[test]
+fn test_field_value_path_with_spaces_roundtrips() {
+    let f = log.field("path", "/home/john doe/file.txt");
+    testing.assert_true(f.starts_with("path="));
+    testing.assert_true(f.contains("/home/john doe/file.txt"));
+}
+
+#[test]
+fn test_field_value_with_equals_sign_passes_through() {
+    // `=` in the value does not require quoting; it is only structural
+    // at the first `=` (key delimiter).
+    let f = log.field("expr", "a=b");
+    testing.assert_eq_str(f, "expr=a=b");
+}
+
+#[test]
+fn test_field_int_is_never_quoted() {
+    // Numeric values never contain spaces; no quoting should occur.
+    testing.assert_eq_str(log.field_int("port", 8080), "port=8080");
+    testing.assert_eq_str(log.field_int("n", -1), "n=-1");
+}
+
+#[test]
+fn test_field_bool_is_never_quoted() {
+    testing.assert_eq_str(log.field_bool("ok", true), "ok=true");
+    testing.assert_eq_str(log.field_bool("ok", false), "ok=false");
+}
+
+// ── Edge cases: empty fields and boundary values ──────────────────────────────
+#[test]
+fn test_field_empty_key_and_empty_value_produce_separator() {
+    testing.assert_eq_str(log.field("", ""), "=");
+    testing.assert_eq_str(log.field("key", ""), "key=");
+    testing.assert_eq_str(log.field("", "val"), "=val");
+}
+
+#[test]
+fn test_field_int_zero_formats_correctly() {
+    testing.assert_eq_str(log.field_int("n", 0), "n=0");
+}
+
+#[test]
+fn test_field_float_negative_value_includes_sign() {
+    let f = log.field_float("delta", -3.5);
+    testing.assert_true(f.starts_with("delta="));
+    testing.assert_true(f.contains("-3.5"));
+}
+
+#[test]
+fn test_field_bool_result_starts_with_key() {
+    let f = log.field_bool("flag", true);
+    testing.assert_true(f.starts_with("flag="));
+    testing.assert_true(f.ends_with("true"));
+}
+
+// ── Logger construction via accessors ────────────────────────────────────────
+//
+// Direct field reads on imported stdlib record types are not yet supported
+// by the MIR.  `log.logger_level` / `log.logger_format` are the accessors
+// that provide equivalent observable coverage.
+#[test]
+fn test_new_logger_stores_debug_level_and_json_format() {
+    let lg = log.new_logger(log.DEBUG, log.JSON);
+    testing.assert_eq(log.logger_level(lg), log.DEBUG);
+    testing.assert_eq(log.logger_format(lg), log.JSON);
+}
+
+#[test]
+fn test_new_logger_stores_info_level_and_text_format() {
+    let lg = log.new_logger(log.INFO, log.TEXT);
+    testing.assert_eq(log.logger_level(lg), log.INFO);
+    testing.assert_eq(log.logger_format(lg), log.TEXT);
+}
+
+#[test]
+fn test_new_logger_error_level_is_below_info() {
+    let strict = log.new_logger(log.ERROR, log.TEXT);
+    testing.assert_eq(log.logger_level(strict), log.ERROR);
+    // INFO (2) > ERROR (0): INFO messages would be filtered
+    testing.assert_true(log.INFO > log.logger_level(strict));
+}
+
+#[test]
+fn test_new_logger_trace_level_passes_all_severities() {
+    let verbose = log.new_logger(log.TRACE, log.TEXT);
+    testing.assert_eq(log.logger_level(verbose), log.TRACE);
+    testing.assert_true(log.ERROR <= log.logger_level(verbose));
+    testing.assert_true(log.TRACE <= log.logger_level(verbose));
+}
+
+// ── Global level / format round-trips ────────────────────────────────────────
+#[test]
+fn test_set_level_and_get_level_round_trip() {
+    let saved = log.get_level();
+    log.set_level(log.DEBUG);
+    testing.assert_eq(log.get_level(), log.DEBUG);
+    log.set_level(log.ERROR);
+    testing.assert_eq(log.get_level(), log.ERROR);
+    log.set_level(saved);
+}
+
+#[test]
+fn test_set_format_and_get_format_round_trip() {
+    let saved = log.get_format();
+    log.set_format(log.JSON);
+    testing.assert_eq(log.get_format(), log.JSON);
+    log.set_format(log.TEXT);
+    testing.assert_eq(log.get_format(), log.TEXT);
+    log.set_format(saved);
+}
+
+// ── Logger emit: does not crash, filtering is respected ──────────────────────
+//
+// These tests verify that the emit path executes without panic.  The actual
+// output goes to stderr and is checked in the integration probes.
+#[test]
+fn test_logger_info_does_not_crash() {
+    log.setup();
+    let lg = log.new_logger(log.INFO, log.TEXT);
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field("k", "v"));
+    log.logger_info(lg, "test message", fields);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_logger_with_empty_fields_does_not_crash() {
+    log.setup();
+    let lg = log.new_logger(log.INFO, log.TEXT);
+    let empty: Vec<string> = Vec::new();
+    log.logger_info(lg, "no fields", empty);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_logger_debug_filtered_at_info_level_does_not_crash() {
+    log.setup();
+    let lg = log.new_logger(log.INFO, log.TEXT);
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field("should_not_appear", "true"));
+    log.logger_debug(lg, "filtered message", fields);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_logger_json_format_does_not_crash() {
+    log.setup();
+    let lg = log.new_logger(log.INFO, log.JSON);
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field("svc", "auth"));
+    fields.push(log.field_int("uid", 42));
+    log.logger_info(lg, "json output", fields);
+    testing.assert_true(true);
+}
+
+// ── Module-level with-fields emit: does not crash ────────────────────────────
+#[test]
+fn test_info_with_does_not_crash() {
+    log.setup();
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field_int("port", 8080));
+    fields.push(log.field("env", "test"));
+    log.info_with("module level", fields);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_error_with_does_not_crash() {
+    log.setup();
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field_int("status", 500));
+    log.error_with("request failed", fields);
+    testing.assert_true(true);
+}
+
+#[test]
+fn test_debug_with_filtered_at_info_level_does_not_crash() {
+    log.set_level(log.INFO);
+    let fields: Vec<string> = Vec::new();
+    fields.push(log.field("key", "x"));
+    log.debug_with("should be filtered", fields);
+    testing.assert_true(true);
+}

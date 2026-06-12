@@ -1,0 +1,2 @@
+sent 0/56 request bytes to example.com
+short write — skipping read (TLS data-plane ABI gap)

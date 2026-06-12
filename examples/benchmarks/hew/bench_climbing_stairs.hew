@@ -1,5 +1,5 @@
-fn climbing_stairs(n: int) -> int {
-    let dp: Vec<int> = Vec::new();
+fn climbing_stairs(n: i64) -> i64 {
+    let dp: Vec<i64> = Vec::new();
     for idx in 0 .. n + 1 {
         dp.push(0);
     }
@@ -11,7 +11,7 @@ fn climbing_stairs(n: int) -> int {
     dp.get(n)
 }
 
-const ITERS: int = 5000000;
+const ITERS: i64 = 5000000;
 
 fn main() {
     let n = 50;

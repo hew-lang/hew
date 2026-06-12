@@ -1,6 +1,6 @@
 // Counting Map - Frequency counter using hash map
 // Counts occurrences of integer keys
-fn hash(key: int, capacity: int) -> int {
+fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
         h + capacity
@@ -9,8 +9,8 @@ fn hash(key: int, capacity: int) -> int {
     }
 }
 
-fn make_keys(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_keys(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -18,15 +18,15 @@ fn make_keys(capacity: int) -> Vec<int> {
     v
 }
 
-fn make_vals(capacity: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_vals(capacity: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. capacity {
         v.push(0);
     }
     v
 }
 
-fn cm_find_slot(keys: Vec<int>, key: int) -> int {
+fn cm_find_slot(keys: Vec<i64>, key: i64) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
@@ -45,7 +45,7 @@ fn cm_find_slot(keys: Vec<int>, key: int) -> int {
     0 - 1
 }
 
-fn cm_increment(keys: Vec<int>, vals: Vec<int>, key: int) {
+fn cm_increment(keys: Vec<i64>, vals: Vec<i64>, key: i64) {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
@@ -60,7 +60,7 @@ fn cm_increment(keys: Vec<int>, vals: Vec<int>, key: int) {
     }
 }
 
-fn cm_get_count(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
+fn cm_get_count(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
@@ -72,7 +72,7 @@ fn cm_get_count(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
     0
 }
 
-fn cm_most_frequent(keys: Vec<int>, vals: Vec<int>) -> int {
+fn cm_most_frequent(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     let capacity = keys.len();
     let EMPTY = 0 - 1;
     var best_key = 0;

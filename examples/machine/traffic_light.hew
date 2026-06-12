@@ -1,0 +1,46 @@
+// Traffic light — Moore machine (outputs depend only on current state).
+//
+// Each state owns its signal colour; transitions are driven by a single
+// Tick event.  Entry blocks are used to log the state change; there are
+// no transition bodies, so effect-parity is trivially satisfied.
+//
+// Run:
+//   hew machine diagram examples/machine/traffic_light.hew
+//   hew machine diagram examples/machine/traffic_light.hew --format graphviz
+//   hew machine diagram examples/machine/traffic_light.hew --format json
+machine TrafficLight {
+    events {
+        Tick;
+    }
+
+    state Red {
+        entry {
+            println("signal: RED — stop");
+        }
+        exit {
+            println("leaving red");
+        }
+    }
+    state Green {
+        entry {
+            println("signal: GREEN — go");
+        }
+    }
+    state Yellow {
+        entry {
+            println("signal: YELLOW — prepare to stop");
+        }
+    }
+
+    on Tick: Red => Green {
+
+        // Red → Green → Yellow → Red cycle
+        Green
+    }
+    on Tick: Green => Yellow {
+        Yellow
+    }
+    on Tick: Yellow => Red {
+        Red
+    }
+}

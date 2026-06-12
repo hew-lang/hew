@@ -224,7 +224,7 @@ pub unsafe extern "C" fn hew_cidr_free(s: *mut c_char) {
         return;
     }
     // SAFETY: s was allocated with libc::malloc in str_to_malloc.
-    unsafe { libc::free(s.cast()) };
+    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc output)
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
         s
     }
 

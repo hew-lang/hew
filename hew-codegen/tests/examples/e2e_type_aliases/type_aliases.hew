@@ -1,6 +1,0 @@
-fn main() {
-    let a: int = 42;
-    let d: float = 3.14;
-    println(a);
-    println(d);
-}

@@ -91,16 +91,6 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
                     span: span.clone(),
                 });
             }
-            Expr::Send { target, .. } => {
-                let send_name = match &target.0 {
-                    Expr::Identifier(name) => format!("{name}.send"),
-                    _ => "send".to_string(),
-                };
-                self.calls.push(CallSite {
-                    name: send_name,
-                    span: span.clone(),
-                });
-            }
             _ => {}
         }
     }
@@ -110,6 +100,9 @@ impl<'ast> AstVisitor<'ast> for CallCollector {
 pub fn collect_calls_in_block(block: &Block, calls: &mut Vec<CallSite>) {
     for (stmt, _span) in &block.stmts {
         collect_calls_in_stmt(stmt, calls);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        collect_calls_in_expr(trailing, calls);
     }
 }
 
@@ -235,24 +228,11 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_block(block, calls);
             }
         }
-        Expr::Send { target, message } => {
-            // Actor message sends are treated as call edges.
-            let send_name = match &target.as_ref().0 {
-                Expr::Identifier(name) => format!("{name}.send"),
-                _ => "send".to_string(),
-            };
-            calls.push(CallSite {
-                name: send_name,
-                span: expr_span.clone(),
-            });
-            collect_calls_in_expr(target.as_ref(), calls);
-            collect_calls_in_expr(message.as_ref(), calls);
-        }
         Expr::Binary { left, right, .. } => {
             collect_calls_in_expr(left.as_ref(), calls);
             collect_calls_in_expr(right.as_ref(), calls);
         }
-        Expr::Unary { operand, .. } => {
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_calls_in_expr(operand.as_ref(), calls);
         }
         Expr::Await(a) => {
@@ -288,7 +268,8 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(&arm.body, calls);
             }
         }
-        Expr::Block(b) | Expr::Unsafe(b) => collect_calls_in_block(b, calls),
+        Expr::Block(b) => collect_calls_in_block(b, calls),
+        Expr::UnsafeBlock(b) => collect_calls_in_block(b, calls),
         Expr::Index { object, index, .. } => {
             collect_calls_in_expr(object.as_ref(), calls);
             collect_calls_in_expr(index.as_ref(), calls);
@@ -329,10 +310,11 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 }
             }
         }
-        Expr::Scope { body, .. }
-        | Expr::ScopeLaunch(body)
-        | Expr::ScopeSpawn(body)
-        | Expr::Fork { body } => {
+        Expr::Scope { body } | Expr::ForkBlock { body } | Expr::GenBlock { body } => {
+            collect_calls_in_block(body, calls);
+        }
+        Expr::ScopeDeadline { duration, body } => {
+            collect_calls_in_expr(duration.as_ref(), calls);
             collect_calls_in_block(body, calls);
         }
         Expr::ForkChild { expr, .. } => collect_calls_in_expr(expr, calls),
@@ -345,12 +327,12 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(tc.body.as_ref(), calls);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, v) in fields {
                 collect_calls_in_expr(v, calls);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_calls_in_expr(target.as_ref(), calls);
             for (_, a) in args {
                 collect_calls_in_expr(a, calls);
@@ -360,10 +342,12 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(expr.as_ref(), calls);
             collect_calls_in_expr(duration.as_ref(), calls);
         }
+        Expr::Is { lhs, rhs } => {
+            collect_calls_in_expr(lhs.as_ref(), calls);
+            collect_calls_in_expr(rhs.as_ref(), calls);
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
-        | Expr::Cooperate
-        | Expr::ScopeCancel
         | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)

@@ -1,0 +1,48 @@
+// Accept (W5.020) DOUBLE-FREE guard. Each iteration constructs a fresh heap
+// `string` inside an `Err` payload, returns the composite across the function
+// boundary, and matches it; both arms run (alternating Ok(i64) and
+// Err(string)) so the Ok no-op drop path and the Err string-release drop path
+// are both exercised many times.
+//
+// The P0 property under test is NO DOUBLE-FREE: the caller-side tag-aware
+// in-place drop releases the active payload through `hew_string_drop`, and a
+// double-free would trip the runtime's `free_cstring` header-sentinel guard
+// (SIGABRT) or fault under guard malloc. A clean exit across all iterations is
+// the behavioural proof. The structural single-drop / no-escape proof lives in
+// the MIR `derive_enum_composite_drop_allowed` derivation.
+//
+// NOTE on leaks: like the landed W5.011 `string` value-class drop, a loop-body
+// composite is released at FUNCTION-scope exit, not per loop iteration
+// (`enumerate_exits` narrows drops to `Return` exits), so this loop leaks one
+// buffer per iteration — exactly as `let s = string_concat(..)` in a loop does
+// today. Per-iteration loop-scope drop is a shared, pre-existing limitation
+// tracked separately; it is NOT a double-free and NOT a W5.020 regression. A
+// non-loop handler (see `result_handler_heap_oracle`) is fully leak-free.
+fn handle(n: i64) -> Result<i64, string> {
+    if n >= 0 {
+        Ok(n * 2)
+    } else {
+        Err(string_concat("neg-", "input"))
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var acc: i64 = 0;
+    while i < 50000 {
+        let n = if i % 2 == 0 {
+            1
+        } else {
+            0 - 1
+        };
+        let r = handle(n);
+        let v = match r {
+            Ok(x) => x,
+            Err(e) => 0,
+        };
+        acc = acc + v;
+        i = i + 1;
+    }
+    println("done");
+    0
+}

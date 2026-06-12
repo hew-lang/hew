@@ -17,17 +17,17 @@
 //   - closure's capture mode shown in report as CaptureIntoClosure: read
 //   - the outer binding is still valid after the closure is constructed
 
-fn apply_to_greeting(f: fn(int) -> String) -> String {
+fn apply_to_greeting(f: fn(i64) -> string) -> string {
     f(42)
 }
 
 fn main() {
-    let prefix = "hello";       // CowValue<String>
-    let sep = ", ";             // CowValue<String>
+    let prefix = "hello";       // CowValue<string>
+    let sep = ", ";             // CowValue<string>
 
     // Both `prefix` and `sep` are captured as read (borrow_read) because
     // the closure only reads them.  No copy needed.
-    let greeter = fn(n: int) -> String {
+    let greeter = fn(n: i64) -> string {
         prefix + sep + n.to_string()
     };
 

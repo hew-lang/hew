@@ -9,6 +9,10 @@
 //! codegen-emitted calls resolve transparently on both targets. The
 //! `#[no_mangle]` attribute is only applied on `wasm32` to avoid symbol
 //! conflicts with the native mailbox when running tests on the host.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 #[cfg(test)]
 use std::cell::Cell;

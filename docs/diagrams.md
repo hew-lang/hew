@@ -1,14 +1,22 @@
 # Hew Compiler & Runtime Diagrams
 
-Visual documentation of the Hew compilation pipeline, runtime architecture, and protocol formats using Mermaid diagrams. These diagrams reflect the actual codebase structure — function names, module names, constants, and data types are taken directly from source.
+Visual documentation of Hew runtime architecture and protocol formats using
+Mermaid diagrams. The runtime diagrams reflect the current codebase; the
+compilation-pipeline diagrams below are retained as historical context and are
+not current architecture.
+
+> **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
+> Sections 1 and 3 describe the retired v0.4 compilation pipeline. The runtime,
+> capability, and stdlib sections are unaffected.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
 ---
 
-## 1. Compilation Pipeline
+## 1. Historical compilation pipeline
 
-The compiler keeps the Rust frontend (lexer → parser → type checker → serializer) and C++ backend (MLIR generation → lowering → LLVM → native code), but the backend is now embedded inside the `hew` process. The Rust frontend serializes the typed program to MessagePack and hands it to the C++ layer through the embedded C API.
+This sequence documents the retired C++ backend. Current v0.5 builds lower
+through Rust HIR/MIR and emit LLVM directly through `hew-codegen-rs`.
 
 ```mermaid
 sequenceDiagram
@@ -45,12 +53,14 @@ sequenceDiagram
     Note over Linker: native executable
 ```
 
-**Compiler flags for partial pipeline:**
+**Current v0.5 inspection commands:**
 
-- `--no-typecheck` — skip type checking
-- `--emit-mlir` — stop after MLIR generation
-- `--emit-llvm` — stop after LLVM IR translation
-- `--emit-obj` — stop after object file emission
+- `hew compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
+- `hew compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
+- `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
+- `hew machine list <file.hew>` — list machines, states, and events
+
+The retired C++/MLIR flags (`--emit-mlir`, `--emit-llvm`, `--emit-obj`) are not available in v0.5.
 
 ---
 
@@ -82,8 +92,8 @@ stateDiagram-v2
 | Level             | Budget                                       | Mechanism                                                          |
 | ----------------- | -------------------------------------------- | ------------------------------------------------------------------ |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages             |
-| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` calls at loop headers and call sites |
-| Cooperative yield | Per-coroutine                                | `coro_switch` on `await` within `s.launch` tasks                   |
+| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges |
+| Cooperative yield | Per-coroutine                                | `coro_switch` on `await` of a `fork`-spawned task in a `scope` block |
 
 **Actor dispatch signature** (§9.1.1):
 
@@ -93,9 +103,10 @@ void (*dispatch)(void* state, int msg_type, void* data, size_t data_size);
 
 ---
 
-## 3. MLIR Lowering Pipeline
+## 3. Historical MLIR lowering pipeline
 
-The codegen pipeline in `hew-codegen/src/codegen.cpp` performs progressive lowering through multiple stages. The Hew dialect defines ~50 custom operations across actor, collection, generator, scope, and trait categories.
+This pipeline lived in the retired C++ backend and is kept only to explain old
+design notes and release archaeology.
 
 ```mermaid
 flowchart TD
@@ -229,9 +240,8 @@ block-beta
     end
 
     block:L3["<b>L3: Actors & Supervision</b>"]
-        columns 4
+        columns 3
         actor["actor.rs<br/>HewActor<br/>HewActorState (6 states)"]
-        scope["scope.rs<br/>HewScope<br/>MAX_ACTORS=64"]
         actor_group["actor_group.rs<br/>Actor Groups"]
         supervisor["supervisor.rs<br/>HewChildSpec<br/>OneForOne/OneForAll/RestForOne"]
     end
@@ -273,7 +283,6 @@ block-beta
 | `HEW_MSG_BUDGET`         | 256    | `actor.rs`     |
 | `HEW_DEFAULT_REDUCTIONS` | 4000   | `actor.rs`     |
 | `HEW_MAX_WORKERS`        | 256    | `actor.rs`     |
-| `HEW_SCOPE_MAX_ACTORS`   | 64     | `scope.rs`     |
 | `MAX_CONNS`              | 64     | `transport.rs` |
 | `MAX_FRAME_SIZE`         | 16 MiB | `transport.rs` |
 | `PARK_TIMEOUT`           | 10 ms  | `scheduler.rs` |
@@ -440,7 +449,7 @@ stateDiagram-v2
 
 ## Cross-References
 
-- **Language specification:** [`docs/specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — §8 (Compilation Model), §9 (Runtime Model)
+- **Language specification:** [`docs/specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md) — §8 (Compilation Model), §9 (Runtime Model)
 - **Runtime source:** [`hew-runtime/src/`](../hew-runtime/src/)
-- **Codegen source:** [`hew-codegen/src/`](../hew-codegen/src/)
-- **Wire format spec:** HEW-SPEC.md §7.3.1 (HBF encoding)
+- **Codegen source:** [`hew-codegen-rs/src/`](../hew-codegen-rs/src/)
+- **Wire format spec:** HEW-SPEC-2026.md §7.3.1 (HBF encoding)

@@ -1,0 +1,21 @@
+// Regression: negative integer literal range bounds (`-5..5`) must lower
+// correctly when the loop variable is narrowed to a concrete integer type.
+//
+// Before the fix, `apply_deferred_range_bound_types` re-recorded the outer
+// `-5` span with the narrowed type (i32) but left the inner literal `5`
+// span with the `IntLiteral`→`I64` materialized default.  HIR's
+// `lower_unary_expr` then saw `operand_ty=i64` vs `result_ty=i32`, and MIR
+// codegen rejected `IntNegChecked` because dest (i32) ≠ operand (i64).
+//
+// `for i in -5..5` with `i` used as i32 sums {-5,-4,-3,-2,-1,0,1,2,3,4}
+// = -5.  The exit code is truncated to u8: 256 + (-5) = 251.
+
+fn id_i32(x: i32) -> i32 { x }
+
+fn main() -> i32 {
+    var sum: i32 = 0;
+    for i in -5..5 {
+        sum = sum + id_i32(i);
+    }
+    sum
+}

@@ -1,0 +1,12 @@
+#[resource]
+type File { fd: i64; }
+
+impl File {
+    fn close(file: File) { }
+}
+
+fn main() -> i64 {
+    let file = File { fd: 1 };
+    let _pair = (file, 1);
+    file.fd
+}

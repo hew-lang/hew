@@ -4,10 +4,11 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionParams, CompletionResponse, Diagnostic, DocumentFormattingParams, DocumentLink,
-    DocumentLinkParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, FoldingRange,
-    FoldingRangeKind, FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint,
-    InlayHintKind, InlayHintLabel, InlayHintParams, InlayHintTooltip, MarkupContent, MarkupKind,
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
+    DocumentFormattingParams, DocumentLink, DocumentLinkParams, DocumentSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, Documentation, FoldingRange, FoldingRangeKind,
+    FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintParams, InlayHintTooltip, InsertTextFormat, MarkupContent, MarkupKind,
     ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
     SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit, Url,
     WorkspaceEdit,
@@ -80,9 +81,15 @@ pub(crate) fn lsp_signature_help_from_analysis(
                     documentation: None,
                 })
                 .collect();
+            let documentation = sig.documentation.map(|doc| {
+                Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: doc,
+                })
+            });
             SignatureInformation {
                 label: sig.label,
-                documentation: None,
+                documentation,
                 parameters: Some(params),
                 active_parameter,
             }
@@ -201,11 +208,106 @@ pub(crate) fn completion(
                 doc.type_output.as_ref(),
                 offset,
             );
-            analysis_items.into_iter().map(to_lsp_completion).collect()
+            let mut items: Vec<_> = analysis_items.into_iter().map(to_lsp_completion).collect();
+            append_concurrency_snippets(&mut items, &doc.source, offset);
+            items
         }
         None => vec![],
     };
     CompletionResponse::Array(items)
+}
+
+pub(super) fn append_concurrency_snippets(
+    items: &mut Vec<CompletionItem>,
+    source: &str,
+    offset: usize,
+) {
+    if !should_offer_concurrency_snippets(source, offset) {
+        return;
+    }
+    for (label, insert_text, detail) in [
+        (
+            "channel.new...",
+            "let (${1:tx}, ${2:rx}): (channel.Sender<${3:string}>, channel.Receiver<${3:string}>) = channel.new(${4:capacity});",
+            "let (tx, rx) = channel.new(capacity);",
+        ),
+        (
+            "await rx.recv...",
+            "match await ${1:rx}.recv() {\n\tSome(${2:value}) => ${3:expr},\n\tNone => ${0:closed_expr},\n}",
+            "await rx.recv()",
+        ),
+        (
+            "select rx.recv...",
+            "select {\n\t${1:item} from ${2:rx}.recv() => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
+            "select { item from rx.recv() => ..., after duration => ... }",
+        ),
+    ] {
+        if items.iter().any(|item| item.label == label) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: label.to_string(),
+            kind: Some(CompletionItemKind::SNIPPET),
+            detail: Some(detail.to_string()),
+            insert_text: Some(insert_text.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            sort_text: Some(format!("0_{label}")),
+            ..Default::default()
+        });
+    }
+}
+
+fn should_offer_concurrency_snippets(source: &str, offset: usize) -> bool {
+    if offset > source.len() {
+        return false;
+    }
+
+    let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
+    let prefix = &source[line_start..offset];
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut chars = prefix.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            return false;
+        }
+    }
+    if in_string {
+        return false;
+    }
+
+    let trimmed = prefix.trim_end();
+    let mut boundary = trimmed.len();
+    while boundary > 0 {
+        let ch = trimmed[..boundary]
+            .chars()
+            .next_back()
+            .expect("boundary is not empty");
+        if ch == '_' || ch.is_ascii_alphanumeric() {
+            boundary -= ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    trimmed[..boundary]
+        .chars()
+        .next_back()
+        .is_none_or(|ch| ch != '.')
 }
 
 pub(crate) fn hover(server: &HewLanguageServer, params: &HoverParams) -> Option<Hover> {
@@ -387,4 +489,53 @@ pub(crate) fn formatting(
         range,
         new_text: formatted,
     }])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrency_snippets_cover_channel_recv_and_select_surfaces() {
+        let mut items = Vec::new();
+        append_concurrency_snippets(&mut items, "", 0);
+
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"channel.new..."));
+        assert!(labels.contains(&"await rx.recv..."));
+        assert!(labels.contains(&"select rx.recv..."));
+
+        let snippets: Vec<_> = items
+            .iter()
+            .map(|item| item.insert_text.as_deref().unwrap_or_default())
+            .collect();
+        assert!(snippets.iter().any(|text| text.contains("channel.new(")));
+        assert!(snippets
+            .iter()
+            .any(|text| text.contains("await ${1:rx}.recv()")));
+        assert!(snippets
+            .iter()
+            .any(|text| text.contains("from ${2:rx}.recv()")));
+
+        let original_len = items.len();
+        append_concurrency_snippets(&mut items, "", 0);
+        assert_eq!(items.len(), original_len, "snippets must not duplicate");
+    }
+
+    #[test]
+    fn concurrency_snippets_skip_member_string_and_comment_contexts() {
+        for (source, offset) in [
+            ("fn main() { rx. }", "fn main() { rx.".len()),
+            ("fn main() { rx.rec }", "fn main() { rx.rec".len()),
+            ("fn main() { \"rx", "fn main() { \"rx".len()),
+            ("fn main() { // rx", "fn main() { // rx".len()),
+        ] {
+            let mut items = Vec::new();
+            append_concurrency_snippets(&mut items, source, offset);
+            assert!(
+                items.is_empty(),
+                "concurrency snippets should be gated out at offset {offset} in {source:?}"
+            );
+        }
+    }
 }

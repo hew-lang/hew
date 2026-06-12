@@ -1,0 +1,29 @@
+//! Status: runnable (v0.5 std::text::template parse/render surface)
+//! Description: Go-style text/template — parse a template then render it against a flat Ctx.
+//!
+//! Builds a flat context with scalar (`ctx_set_str` / `ctx_set_int` /
+//! `ctx_set_bool`) and list (`ctx_set_list`) bindings, parses a template using
+//! `{{.key}}` substitution, an `{{if .key}}…{{end}}` conditional, and a
+//! `{{range .key}}…{{end}}` loop, then renders with `render_try` and matches the
+//! `Result`. Method-style `t.render(ctx)` is deferred in v0.5, so the
+//! free-function `template.render_try(t, ctx)` form is used.
+
+import std::text::template;
+
+fn main() {
+    let ctx = template.new_ctx();
+    template.ctx_set_str(ctx, "name", "Ada");
+    template.ctx_set_int(ctx, "commits", 7);
+    template.ctx_set_bool(ctx, "member", true);
+    let tags: Vec<string> = Vec::new();
+    tags.push("compiler");
+    tags.push("runtime");
+    tags.push("docs");
+    template.ctx_set_list(ctx, "tags", tags);
+    let src = "Hi {{.name}} — {{.commits}} commits{{if .member}} (core member){{end}}.\nTags:{{range .tags}} #{{.}}{{end}}";
+    let tmpl = template.parse(src);
+    match template.render_try(tmpl, ctx) {
+        Ok(rendered) => println(rendered),
+        Err(_) => println("template render failed"),
+    }
+}

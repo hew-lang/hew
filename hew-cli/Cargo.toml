@@ -15,6 +15,7 @@ name = "hew"
 path = "src/main.rs"
 
 [dependencies]
+hew-analysis = { path = "../hew-analysis" }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
@@ -22,13 +23,13 @@ hew-mir = { path = "../hew-mir" }
 hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-hew-serialize = { path = "../hew-serialize" }
 # Pulls the runtime rlib into the hew binary so dlsym can resolve C-ABI symbols
 # at JIT session startup. The anchor module (generated at build time from
 # kStableJitHostSymbols) keeps all 653 symbols alive through LTO. The staticlib
 # half of hew-runtime is consumed by hew-lib for AOT programs; this dep only
 # uses the rlib half.
 hew-runtime = { path = "../hew-runtime" }
+adze-cli = { path = "../adze-cli" }
 clap.workspace = true
 clap_complete.workspace = true
 pulldown-cmark = "0.13"
@@ -39,12 +40,14 @@ serde.workspace = true
 serde_json.workspace = true
 notify = "8"
 dirs.workspace = true
+wasmparser = "0.244"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
 [dev-dependencies]
 fd-lock = "4"
+hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
 
 [lints]

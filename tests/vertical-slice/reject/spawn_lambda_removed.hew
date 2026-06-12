@@ -1,0 +1,10 @@
+// Reject fixture: E_SPAWN_LAMBDA_SYNTAX_REMOVED
+// The `spawn (params) => body` lambda-actor syntax was removed in v0.5.
+// Expected: parse error containing "E_SPAWN_LAMBDA_SYNTAX_REMOVED"
+// Use `actor |params| { body }` instead.
+fn main() {
+    let w = spawn (x: i64) => {
+        println(x);
+    };
+    w.send(1);
+}

@@ -1,0 +1,11 @@
+//! Status: stable
+//! Description: A non-resolver-recording method call (`clear`) on a
+//! `HashSet<f64>` must still surface as `BoundsNotSatisfied(T: Hash, f64)`
+//! rather than escaping to HIR lowering as `MethodCallNoRewrite`. Regression
+//! guard for the admissibility fail-closed path covering HashSet arms that
+//! bypass `record_resolved_hashset_call`.
+
+fn main() {
+    let s: HashSet<f64> = HashSet::new();
+    s.clear();
+}

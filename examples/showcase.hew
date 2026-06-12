@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Language Showcase - All Core Features
+
 // Hew Language Showcase - All Core Features
 // Demonstrates: types, actors, pattern matching, enums, options, interpolation
 type Vec2 {
@@ -29,7 +32,7 @@ fn describe_shape(s: Shape) {
     }
 }
 
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -37,7 +40,7 @@ fn fib(n: int) -> int {
     }
 }
 
-fn divide(a: int, b: int) -> Result<int, String> {
+fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -46,11 +49,11 @@ fn divide(a: int, b: int) -> Result<int, String> {
 }
 
 actor Counter {
-    let count: int;
+    var count: i64;
     receive fn increment() {
         count = count + 1;
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
 }
@@ -85,7 +88,7 @@ fn main() {
     }
     // 4. Lambdas
     println("4. Lambdas:");
-    let square = (n: int) => n * n;
+    let square = |n: i64| n * n;
     println("  Lambda defined");
 
     // 5. Fibonacci
@@ -99,8 +102,8 @@ fn main() {
     let r2 = divide(10, 0);
     println("  divide(10,3) and divide(10,0) computed");
 
-    // 7. String interpolation
-    println("7. String interpolation:");
+    // 7. string interpolation
+    println("7. string interpolation:");
     let name = "Hew";
     let version = 1;
     let msg = f"{name} v{version} is running!";
@@ -117,9 +120,11 @@ fn main() {
     c.increment();
     c.increment();
     c.increment();
-    let count = await c.get_count();
-    println(f"  Counter after 3 increments: {count}");
-
+    let r = await c.get_count();
+    match r {
+        Ok(count) => println(f"  Counter after 3 increments: {count}"),
+        Err(_) => println("  Counter: ask failed"),
+    }
     // 10. Boolean operators
     println("10. Boolean operators:");
     let a = true;

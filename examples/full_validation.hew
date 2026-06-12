@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Full validation test - exercises all implemented features
+
 // Full validation test - exercises all implemented features
 
 // 1. Boolean operators
@@ -29,7 +32,7 @@ fn test_pattern_match() {
 
 // 3. Lambda
 fn test_lambda() {
-    let dbl = (x) => x * 2;
+    let dbl = |x| x * 2;
     println("PASS: lambda")
 }
 
@@ -44,7 +47,7 @@ fn test_loops() {
     }
 }
 
-// 5. String operations
+// 5. string operations
 fn test_strings() {
     println("PASS: strings")
 }

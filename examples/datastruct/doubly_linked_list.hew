@@ -1,27 +1,27 @@
-// Doubly Linked List using Vec<int> with index-based pointers
+// Doubly Linked List using Vec<i64> with index-based pointers
 // Node layout: nodes[i*3] = value, nodes[i*3+1] = prev, nodes[i*3+2] = next
 // NIL = -1
-fn node_val(n: Vec<int>, i: int) -> int {
+fn node_val(n: Vec<i64>, i: i64) -> i64 {
     n.get(i * 3)
 }
 
-fn node_prev(n: Vec<int>, i: int) -> int {
+fn node_prev(n: Vec<i64>, i: i64) -> i64 {
     n.get(i * 3 + 1)
 }
 
-fn node_next(n: Vec<int>, i: int) -> int {
+fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n.get(i * 3 + 2)
 }
 
-fn set_prev(n: Vec<int>, i: int, p: int) {
+fn set_prev(n: Vec<i64>, i: i64, p: i64) {
     n.set(i * 3 + 1, p);
 }
 
-fn set_next(n: Vec<int>, i: int, nx: int) {
+fn set_next(n: Vec<i64>, i: i64, nx: i64) {
     n.set(i * 3 + 2, nx);
 }
 
-fn alloc_node(n: Vec<int>, val: int) -> int {
+fn alloc_node(n: Vec<i64>, val: i64) -> i64 {
     let idx = n.len() / 3;
     n.push(val);
     n.push(-1);
@@ -30,7 +30,7 @@ fn alloc_node(n: Vec<int>, val: int) -> int {
 }
 
 // Insert at front, returns new head
-fn insert_front(n: Vec<int>, head: int, val: int) -> int {
+fn insert_front(n: Vec<i64>, head: i64, val: i64) -> i64 {
     let nd = alloc_node(n, val);
     if head != -1 {
         set_next(n, nd, head);
@@ -40,7 +40,7 @@ fn insert_front(n: Vec<int>, head: int, val: int) -> int {
 }
 
 // Insert at back, returns new head
-fn insert_back(n: Vec<int>, head: int, val: int) -> int {
+fn insert_back(n: Vec<i64>, head: i64, val: i64) -> i64 {
     let nd = alloc_node(n, val);
     if head == -1 {
         return nd;
@@ -55,7 +55,7 @@ fn insert_back(n: Vec<int>, head: int, val: int) -> int {
 }
 
 // Delete node with given value, returns new head
-fn delete_val(n: Vec<int>, head: int, val: int) -> int {
+fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
     var curr = head;
     var new_head = head;
     var found = 0;
@@ -80,7 +80,7 @@ fn delete_val(n: Vec<int>, head: int, val: int) -> int {
     new_head
 }
 
-fn traverse_forward(n: Vec<int>, head: int, result: Vec<int>) {
+fn traverse_forward(n: Vec<i64>, head: i64, result: Vec<i64>) {
     var curr = head;
     while curr != -1 {
         result.push(node_val(n, curr));
@@ -88,7 +88,7 @@ fn traverse_forward(n: Vec<int>, head: int, result: Vec<int>) {
     }
 }
 
-fn traverse_backward(n: Vec<int>, head: int, result: Vec<int>) {
+fn traverse_backward(n: Vec<i64>, head: i64, result: Vec<i64>) {
     if head == -1 {
         return;
     }
@@ -102,7 +102,7 @@ fn traverse_backward(n: Vec<int>, head: int, result: Vec<int>) {
     }
 }
 
-fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
+fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     if a.len() != b.len() {
         return 0;
     }
@@ -114,15 +114,15 @@ fn vecs_equal(a: Vec<int>, b: Vec<int>) -> int {
     1
 }
 
-fn test_insert_front() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_insert_front() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_front(n, head, 30);
     head = insert_front(n, head, 20);
     head = insert_front(n, head, 10);
-    let r: Vec<int> = Vec::new();
+    let r: Vec<i64> = Vec::new();
     traverse_forward(n, head, r);
-    let e: Vec<int> = Vec::new();
+    let e: Vec<i64> = Vec::new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -134,15 +134,15 @@ fn test_insert_front() -> int {
     0
 }
 
-fn test_insert_back() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_insert_back() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
-    let r: Vec<int> = Vec::new();
+    let r: Vec<i64> = Vec::new();
     traverse_forward(n, head, r);
-    let e: Vec<int> = Vec::new();
+    let e: Vec<i64> = Vec::new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -154,15 +154,15 @@ fn test_insert_back() -> int {
     0
 }
 
-fn test_backward_traverse() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_backward_traverse() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
-    let r: Vec<int> = Vec::new();
+    let r: Vec<i64> = Vec::new();
     traverse_backward(n, head, r);
-    let e: Vec<int> = Vec::new();
+    let e: Vec<i64> = Vec::new();
     e.push(30);
     e.push(20);
     e.push(10);
@@ -174,21 +174,21 @@ fn test_backward_traverse() -> int {
     0
 }
 
-fn test_delete() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_delete() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = insert_back(n, head, 30);
     head = delete_val(n, head, 20);
-    let fwd: Vec<int> = Vec::new();
+    let fwd: Vec<i64> = Vec::new();
     traverse_forward(n, head, fwd);
-    let ef: Vec<int> = Vec::new();
+    let ef: Vec<i64> = Vec::new();
     ef.push(10);
     ef.push(30);
-    let bwd: Vec<int> = Vec::new();
+    let bwd: Vec<i64> = Vec::new();
     traverse_backward(n, head, bwd);
-    let eb: Vec<int> = Vec::new();
+    let eb: Vec<i64> = Vec::new();
     eb.push(30);
     eb.push(10);
     if vecs_equal(fwd, ef) == 1 {
@@ -201,8 +201,8 @@ fn test_delete() -> int {
     0
 }
 
-fn test_delete_head() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_delete_head() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
@@ -217,13 +217,13 @@ fn test_delete_head() -> int {
     0
 }
 
-fn test_delete_tail() -> int {
-    let n: Vec<int> = Vec::new();
+fn test_delete_tail() -> i64 {
+    let n: Vec<i64> = Vec::new();
     var head = -1;
     head = insert_back(n, head, 10);
     head = insert_back(n, head, 20);
     head = delete_val(n, head, 20);
-    let r: Vec<int> = Vec::new();
+    let r: Vec<i64> = Vec::new();
     traverse_forward(n, head, r);
     if r.len() == 1 {
         if r.get(0) == 10 {

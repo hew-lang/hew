@@ -1,0 +1,41 @@
+// MIR-corpus fixture: Option/Result unwrap runtime helpers.
+//
+// Pins the numeric-width unwrap entries (`hew_option_unwrap_{i32,i64,f64}`,
+// `hew_result_unwrap_{i32,i64,f64}`) and the unwrap-or peers
+// (`hew_option_unwrap_or_*`, `hew_result_unwrap_or_{i32,i64}`), plus the
+// Result tag predicates (`hew_result_is_ok` / `hew_result_is_err`).
+//
+// Compile-only corpus fixture: `.unwrap()` is exercised deliberately
+// here because it IS the runtime surface under pin; user-facing code
+// matches instead.
+fn main() -> i64 {
+    let a: Option<i64> = Some(9);
+    println(a.unwrap());
+    let b: Option<f64> = Some(1.5);
+    println(b.unwrap());
+    let c: Option<i32> = Some(3);
+    let cv = c.unwrap();
+    let d: Option<i64> = Some(9);
+    println(d.unwrap_or(0));
+    let e: Option<f64> = Some(2.5);
+    println(e.unwrap_or(0.0));
+    let g: Option<i32> = Some(4);
+    let gv = g.unwrap_or(7);
+    let r: Result<i64, string> = Ok(7);
+    println(r.unwrap());
+    let rf: Result<f64, string> = Ok(1.0);
+    println(rf.unwrap());
+    let ri: Result<i32, string> = Ok(2);
+    let riv = ri.unwrap();
+    let ru: Result<i64, string> = Ok(8);
+    println(ru.unwrap_or(0));
+    let rv: Result<i32, string> = Ok(8);
+    let rvv = rv.unwrap_or(0);
+    let p: Result<i64, string> = Ok(7);
+    let ok = p.is_ok();
+    let err = p.is_err();
+    println(f"{ok} {err}");
+    let keep = cv as i64 + gv as i64 + riv as i64 + rvv as i64;
+    println(keep);
+    0
+}

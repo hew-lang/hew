@@ -5,8 +5,8 @@
 //! all behave correctly.
 
 use hew_parser::ast::{
-    ActorDecl, Block, ConstDecl, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
-    Literal, Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
+    ActorDecl, Block, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item, Literal,
+    Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::{SpanKey, TypeDefKind};
@@ -23,7 +23,6 @@ fn make_pub_fn(name: &str) -> FnDecl {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params: vec![],
@@ -48,23 +47,7 @@ fn make_pub_fn(name: &str) -> FnDecl {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
-    }
-}
-
-fn make_named_type(name: &str, type_args: Option<Vec<Spanned<TypeExpr>>>) -> TypeExpr {
-    TypeExpr::Named {
-        name: name.to_string(),
-        type_args,
-    }
-}
-
-fn make_pub_const(name: &str, ty: TypeExpr) -> ConstDecl {
-    ConstDecl {
-        visibility: Visibility::Pub,
-        name: name.to_string(),
-        ty: (ty, 0..0),
-        value: (Expr::Literal(Literal::Bool(false)), 0..0),
-        doc_comment: None,
+        intrinsic: None,
     }
 }
 
@@ -215,70 +198,6 @@ fn test_glob_import_resolution() {
     );
 }
 
-#[test]
-fn test_file_import_const_annotation_rejects_unsupported_hashset() {
-    let import = make_user_import(
-        &[],
-        None,
-        vec![(
-            Item::Const(make_pub_const(
-                "FLAGS",
-                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
-            )),
-            0..0,
-        )],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        }),
-        "file import pub const annotation should reject unsupported HashSet, got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn test_user_module_const_annotation_rejects_unsupported_hashset() {
-    let import = make_user_import(
-        &["myapp", "utils"],
-        None,
-        vec![(
-            Item::Const(make_pub_const(
-                "FLAGS",
-                make_named_type("HashSet", Some(vec![(make_named_type("bool", None), 0..0)])),
-            )),
-            0..0,
-        )],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        }),
-        "user-module pub const annotation should reject unsupported HashSet, got: {:?}",
-        output.errors
-    );
-}
-
 // ── named import (selective) ──────────────────────────────────────────────────
 
 #[test]
@@ -326,26 +245,26 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     let root_source = r#"
         import myapp::widgets::*;
 
-        fn main() -> String {
+        fn main() -> string {
             describe(Label { text: "hello" })
         }
     "#;
     let module_source = r"
         pub trait Describable {
-            fn describe(val: Self) -> String;
+            fn describe(val: Self) -> string;
         }
 
         pub type Label {
-            text: String;
+            text: string;
         }
 
         impl Describable for Label {
-            fn describe(label: Label) -> String {
+            fn describe(label: Label) -> string {
                 label.text
             }
         }
 
-        pub fn describe<T: Describable>(item: T) -> String {
+        pub fn describe<T: Describable>(item: T) -> string {
             item.describe()
         }
     ";
@@ -411,6 +330,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     assert_eq!(
         inferred,
         &vec![Ty::Named {
+            builtin: None,
             name: "Label".to_string(),
             args: vec![],
         }]
@@ -428,7 +348,6 @@ fn test_private_items_not_visible() {
         is_async: false,
         is_generator: false,
         visibility: Visibility::Private, // private
-        is_pure: false,
         name: "private_fn".to_string(),
         type_params: None,
         params: vec![],
@@ -441,6 +360,7 @@ fn test_private_items_not_visible() {
         doc_comment: None,
         decl_span: 0..0,
         fn_span: 0..0,
+        intrinsic: None,
     };
     let public_fn = make_pub_fn("public_fn");
 
@@ -491,6 +411,7 @@ fn test_pub_type_accessible_qualified() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let import = make_user_import(
@@ -518,7 +439,12 @@ fn test_pub_type_accessible_qualified() {
 }
 
 #[test]
-fn test_pub_type_import_conflicting_with_local_type_errors() {
+fn test_pub_type_import_coexists_with_local_same_name() {
+    // Per-module type namespacing (R313): a local `Config` and an imported
+    // `config.Config` are distinct types keyed by their defining module, so
+    // they coexist. The local def is reachable bare; the imported def is
+    // reachable through its qualifier. This is NOT a duplicate definition —
+    // the collision is only between two declarations *in the same module*.
     let local_type = TypeDecl {
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
@@ -530,6 +456,7 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let imported_type = TypeDecl {
@@ -543,6 +470,7 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
         wire: None,
         is_indirect: false,
         resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
         consuming_methods: Vec::new(),
     };
     let import = make_user_import(
@@ -563,11 +491,290 @@ fn test_pub_type_import_conflicting_with_local_type_errors() {
     let output = checker.check_program(&program);
 
     assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "local and imported same-named types must coexist, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.type_defs.contains_key("Config"),
+        "local type must be reachable bare as `Config`"
+    );
+    assert!(
+        output.type_defs.contains_key("config.Config"),
+        "imported type must be reachable qualified as `config.Config`"
+    );
+}
+
+// ── per-module type namespacing (R313) ────────────────────────────────────────
+
+fn pub_struct(name: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+#[test]
+fn two_modules_export_same_type_name_coexist() {
+    // VC4: importing two modules that each export a `Value` must not produce a
+    // duplicate-definition error; both defs are reachable under their qualifier.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "same-named types from different modules must coexist, got: {:?}",
+        output.errors
+    );
+    assert!(
+        output.type_defs.contains_key("alpha.Value"),
+        "alpha.Value must be registered"
+    );
+    assert!(
+        output.type_defs.contains_key("beta.Value"),
+        "beta.Value must be registered"
+    );
+}
+
+#[test]
+fn same_module_duplicate_type_name_still_errors() {
+    // VC3: the per-module scoping must NOT weaken same-module uniqueness. Two
+    // `Value` declarations *in one module* are still a duplicate definition.
+    let import = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![
+            (Item::TypeDecl(pub_struct("Value")), 0..0),
+            (Item::TypeDecl(pub_struct("Value")), 10..20),
+        ],
+    );
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
         output
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
-        "expected DuplicateDefinition, got errors: {:?}",
+        "two `Value` decls in one module must still be a DuplicateDefinition, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn qualified_same_name_types_resolve_to_own_module_def() {
+    // VC5: `alpha.Value` and `beta.Value` must each carry their own module's
+    // export entry, guarding against first-wins mis-resolution.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    // Both qualified keys resolve to distinct, present type defs.
+    assert!(
+        output.type_defs.contains_key("alpha.Value") && output.type_defs.contains_key("beta.Value"),
+        "both qualified defs must resolve, got keys: {:?}",
+        output.type_defs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn qualified_param_type_carries_module_into_resolved_sig() {
+    // Slice 4 (downstream identity): a parameter typed `alpha.Value` must
+    // resolve to `Ty::Named { name: "alpha.Value" }`, so the qualified name —
+    // not the last-write-wins bare `Value` — is the identity carried into
+    // HIR/MIR layout, mangle, and vtable keys. Two co-imported `Value`s would
+    // otherwise collide under one bare key downstream.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let consumer = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Pub,
+        name: "take_alpha".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "v".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "alpha.Value".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            is_mutable: false,
+        }],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    };
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+            (Item::Function(consumer), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    let sig = output
+        .fn_sigs
+        .get("take_alpha")
+        .expect("take_alpha sig must be registered");
+    let param = sig.params.first().expect("take_alpha has one param");
+    match param {
+        Ty::Named { name, .. } => assert_eq!(
+            name, "alpha.Value",
+            "param type must carry the module qualifier into the resolved sig"
+        ),
+        other => panic!("expected Ty::Named, got {other:?}"),
+    }
+}
+
+#[test]
+fn unqualified_ambiguous_type_is_typed_error() {
+    // VC6: a bare reference to a type exported by two imported modules must be a
+    // typed AmbiguousType error, not a silent first-wins pick.
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    // A function signature referencing bare `Value`.
+    let consumer = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        name: "use_value".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "v".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "Value".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            is_mutable: false,
+        }],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    };
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+            (Item::Function(consumer), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousType),
+        "bare `Value` with two exporters must be AmbiguousType, got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
+        "ambiguity must not be reported as DuplicateDefinition, got: {:?}",
         output.errors
     );
 }
@@ -660,6 +867,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
     ActorDecl {
         visibility: Visibility::Pub,
         name: name.to_string(),
+        type_params: vec![],
         super_traits: None,
         init: None,
         fields: vec![],
@@ -669,6 +877,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
         overflow_policy: None,
         is_isolated: false,
         doc_comment: None,
+        max_heap_bytes: None,
     }
 }
 
@@ -676,7 +885,6 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
 fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> ReceiveFnDecl {
     ReceiveFnDecl {
         is_generator: false,
-        is_pure: false,
         name: name.to_string(),
         type_params: None,
         params: params
@@ -718,7 +926,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
 #[test]
 fn test_actor_bare_import_registers_type_and_methods() {
     // `import mymod;` with an actor → should register qualified type + methods
-    let recv_ping = make_receive_fn("ping", &[("msg", "String")], Some("String"));
+    let recv_ping = make_receive_fn("ping", &[("msg", "string")], Some("string"));
     let actor = make_actor("MyActor", vec![recv_ping]);
 
     let import = make_user_import(
@@ -741,35 +949,41 @@ fn test_actor_bare_import_registers_type_and_methods() {
         output.errors
     );
 
-    // Actor type should be registered (both qualified and unqualified)
-    assert!(
-        output.type_defs.contains_key("MyActor"),
-        "actor type 'MyActor' should be registered"
-    );
+    // The dotted `{module}.{name}` key is the actor's primary identity; the
+    // bare key is never written for module actors so a second same-named
+    // import cannot clobber another module's actor.
     assert!(
         output.type_defs.contains_key("mymod.MyActor"),
         "qualified 'mymod.MyActor' should be registered"
     );
+    assert!(
+        !output.type_defs.contains_key("MyActor"),
+        "bare 'MyActor' must not be registered for a module actor"
+    );
 
-    // Actor type should have the Actor kind
-    let def = output.type_defs.get("MyActor").unwrap();
+    // Actor type should have the Actor kind under its qualified identity
+    let def = output.type_defs.get("mymod.MyActor").unwrap();
     assert!(
         matches!(def.kind, TypeDefKind::Actor),
-        "MyActor should be TypeDefKind::Actor, got {:?}",
+        "mymod.MyActor should be TypeDefKind::Actor, got {:?}",
         def.kind
     );
 
-    // Receive fn should be registered as "MyActor::ping"
+    // Receive fn should be registered under the dotted actor identity
     assert!(
-        output.fn_sigs.contains_key("MyActor::ping"),
-        "receive fn should be registered as 'MyActor::ping'"
+        output.fn_sigs.contains_key("mymod.MyActor::ping"),
+        "receive fn should be registered as 'mymod.MyActor::ping'"
+    );
+    assert!(
+        !output.fn_sigs.contains_key("MyActor::ping"),
+        "bare 'MyActor::ping' must not be registered for a module actor"
     );
 }
 
 #[test]
 fn test_actor_glob_import_registers_unqualified() {
     // `import mymod::*;` → actor should be accessible unqualified
-    let recv_greet = make_receive_fn("greet", &[("name", "String")], Some("String"));
+    let recv_greet = make_receive_fn("greet", &[("name", "string")], Some("string"));
     let actor = make_actor("Greeter", vec![recv_greet]);
 
     let import = make_user_import(
@@ -792,10 +1006,13 @@ fn test_actor_glob_import_registers_unqualified() {
         output.errors
     );
 
-    // Both qualified and unqualified access
-    assert!(output.type_defs.contains_key("Greeter"));
+    // The dotted key is the actor's identity even under a glob import;
+    // unqualified ACCESS resolves through the local-first bare-name
+    // resolution at spawn/annotation sites, not a bare registry copy.
     assert!(output.type_defs.contains_key("mymod.Greeter"));
-    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+    assert!(!output.type_defs.contains_key("Greeter"));
+    assert!(output.fn_sigs.contains_key("mymod.Greeter::greet"));
+    assert!(!output.fn_sigs.contains_key("Greeter::greet"));
 }
 
 #[test]
@@ -831,22 +1048,24 @@ fn test_actor_named_import_selective() {
         output.errors
     );
 
-    // Counter should be accessible qualified and unqualified
-    assert!(output.type_defs.contains_key("Counter"));
+    // Both actors register under their dotted identity only; the named
+    // import binding ("Counter") resolves through `unqualified_to_module`
+    // at reference sites rather than a bare registry copy.
     assert!(output.type_defs.contains_key("mymod.Counter"));
-    assert!(output.fn_sigs.contains_key("Counter::increment"));
+    assert!(!output.type_defs.contains_key("Counter"));
+    assert!(output.fn_sigs.contains_key("mymod.Counter::increment"));
+    assert!(!output.fn_sigs.contains_key("Counter::increment"));
 
-    // Timer should be qualified only (not named in import spec)
     assert!(output.type_defs.contains_key("mymod.Timer"));
-    assert!(output.type_defs.contains_key("Timer"));
+    assert!(!output.type_defs.contains_key("Timer"));
 }
 
 #[test]
 fn test_actor_multiple_receive_fns() {
     // Actor with multiple receive fns — all should be registered
-    let recv_get = make_receive_fn("get", &[("key", "String")], Some("String"));
-    let recv_set = make_receive_fn("set", &[("key", "String"), ("val", "String")], None);
-    let recv_del = make_receive_fn("delete", &[("key", "String")], Some("bool"));
+    let recv_get = make_receive_fn("get", &[("key", "string")], Some("string"));
+    let recv_set = make_receive_fn("set", &[("key", "string"), ("val", "string")], None);
+    let recv_del = make_receive_fn("delete", &[("key", "string")], Some("bool"));
     let actor = make_actor("Cache", vec![recv_get, recv_set, recv_del]);
 
     let import = make_user_import(
@@ -869,9 +1088,9 @@ fn test_actor_multiple_receive_fns() {
         output.errors
     );
 
-    assert!(output.fn_sigs.contains_key("Cache::get"));
-    assert!(output.fn_sigs.contains_key("Cache::set"));
-    assert!(output.fn_sigs.contains_key("Cache::delete"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::get"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::set"));
+    assert!(output.fn_sigs.contains_key("cache.Cache::delete"));
 }
 
 #[test]
@@ -901,11 +1120,11 @@ fn test_actor_and_function_coexist_in_module() {
         output.errors
     );
 
-    // Actor registered
-    assert!(output.type_defs.contains_key("Worker"));
-    assert!(output.fn_sigs.contains_key("Worker::run"));
+    // Actor registered under its dotted identity
+    assert!(output.type_defs.contains_key("workers.Worker"));
+    assert!(output.fn_sigs.contains_key("workers.Worker::run"));
 
-    // Function registered
+    // Function registered (functions keep their bare glob-import binding)
     assert!(output.fn_sigs.contains_key("create_worker"));
     assert!(output.fn_sigs.contains_key("workers.create_worker"));
 }

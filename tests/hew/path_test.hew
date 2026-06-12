@@ -98,7 +98,7 @@ fn test_extension_uses_basename_for_full_path() {
 
 // ── heap-string regression tests ────────────────────────────────────────
 //
-// The tests below construct their String inputs via concatenation so the
+// The tests below construct their string inputs via concatenation so the
 // values are heap-allocated, NOT static literals.  Static literals are
 // skipped by hew_string_drop (runtime/src/string.rs:1095 — is_static_string
 // check), which means duplicate-drop bugs are invisible to literal-only tests.

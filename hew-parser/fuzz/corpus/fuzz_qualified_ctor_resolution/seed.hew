@@ -1,0 +1,9 @@
+import std::fs;
+
+fn seed_qualified_ctor_resolution() -> i64 {
+    let err = fs.IoError::TimedOut(42);
+    match err {
+        IoError::TimedOut(code) => code,
+        _ => 0,
+    }
+}

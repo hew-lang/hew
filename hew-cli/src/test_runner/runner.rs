@@ -1,6 +1,7 @@
 //! Execute discovered test cases via the native compilation pipeline.
 
 use super::discovery::TestCase;
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -47,7 +48,7 @@ pub struct TestSummary {
 
 /// Run a set of test cases.
 ///
-/// Each test is compiled to a native binary via the `hew build` pipeline and
+/// Each test is compiled to a native binary via the `hew compile` pipeline and
 /// executed as a child process for isolation.
 #[must_use]
 pub fn run_tests(
@@ -127,15 +128,22 @@ pub fn run_tests(
     }
 }
 
+struct CompiledTestArtifact {
+    _source: tempfile::NamedTempFile,
+    _emit_dir: tempfile::TempDir,
+    binary_path: PathBuf,
+}
+
 /// Compile a synthetic test program to a native binary.
-///
-/// Returns the paths to the temp source and binary on success, or an error
-/// message on failure.
 fn compile_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
-) -> Result<(tempfile::NamedTempFile, tempfile::TempPath), String> {
+) -> Result<CompiledTestArtifact, String> {
+    if ffi_lib.is_some() {
+        return Err("hew test FFI libraries are unavailable on the v0.5 compile path".to_string());
+    }
+
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
         name = test.name,
@@ -156,24 +164,25 @@ fn compile_test(
     std::fs::write(tmp_source.path(), &synthetic)
         .map_err(|e| format!("cannot write temp file: {e}"))?;
 
-    let tmp_binary = tempfile::Builder::new()
-        .prefix("hew_test_bin_")
-        .suffix(crate::platform::exe_suffix())
-        .tempfile_in(test_dir)
-        .map_err(|e| format!("cannot create temp binary: {e}"))?
-        .into_temp_path();
+    let emit_dir = tempfile::Builder::new()
+        .prefix("hew_test_emit_")
+        .tempdir_in(test_dir)
+        .map_err(|e| format!("cannot create temp emit dir: {e}"))?;
+
+    let binary_name = tmp_source
+        .path()
+        .file_stem()
+        .ok_or_else(|| "temp source path has no file stem".to_string())?;
+    let binary_path = emit_dir.path().join(binary_name);
 
     let mut cmd = Command::new(&hew_binary);
-    cmd.arg("build")
+    cmd.arg("compile")
         .arg(tmp_source.path())
-        .arg("-o")
-        .arg(&tmp_binary);
-    if let Some(lib) = ffi_lib {
-        cmd.arg("--link-lib").arg(lib);
-    }
+        .arg("--emit-dir")
+        .arg(emit_dir.path());
     let compile_output = cmd
         .output()
-        .map_err(|e| format!("cannot invoke hew build: {e}"))?;
+        .map_err(|e| format!("cannot invoke hew compile: {e}"))?;
 
     if !compile_output.status.success() {
         let stderr = String::from_utf8_lossy(&compile_output.stderr);
@@ -186,7 +195,11 @@ fn compile_test(
         return Err(msg);
     }
 
-    Ok((tmp_source, tmp_binary))
+    Ok(CompiledTestArtifact {
+        _source: tmp_source,
+        _emit_dir: emit_dir,
+        binary_path,
+    })
 }
 
 /// Build a synthetic program that calls the test function, compile it natively,
@@ -199,8 +212,8 @@ fn run_single_test(
 ) -> TestResult {
     let start = std::time::Instant::now();
 
-    let tmp_binary = match compile_test(source, test, ffi_lib) {
-        Ok((_src, bin)) => bin,
+    let artifact = match compile_test(source, test, ffi_lib) {
+        Ok(artifact) => artifact,
         Err(msg) => {
             let outcome = if test.should_panic {
                 TestOutcome::Failed(format!(
@@ -219,7 +232,7 @@ fn run_single_test(
     };
 
     // Execute the compiled binary with a timeout.
-    let run_result = crate::process::run_binary_with_timeout(&tmp_binary, timeout);
+    let run_result = crate::process::run_binary_with_timeout(&artifact.binary_path, timeout);
 
     let duration = start.elapsed();
     match run_result {
@@ -288,8 +301,8 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    /// Skip tests that require the linked native backend when this crate was
-    /// built without the embedded MLIR/LLVM bridge.
+    /// Skip tests that require the linked native execution substrate while
+    /// `hew test` is still blocked by the v0.5 cutover guard.
     fn require_codegen() -> bool {
         ensure_test_toolchain() && crate::util::find_hew_binary().is_ok()
     }

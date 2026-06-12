@@ -1,0 +1,6 @@
+// Reject fixture: yield expressions with incompatible types.
+// `yield 1` infers Yield=i64; `yield "x"` tries to unify string with i64.
+// Expected: type mismatch error (not EmptyGenerator).
+fn main() {
+    let _g = gen { yield 1; yield "x"; };
+}

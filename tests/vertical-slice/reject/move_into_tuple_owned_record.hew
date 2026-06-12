@@ -1,0 +1,7 @@
+type Owned { value: string; }
+
+fn main() -> string {
+    let item = Owned { value: "hello" };
+    let _pair = (item, 1);
+    item.value
+}

@@ -15,7 +15,7 @@
 //   - Crashed workers restart automatically — no recovery code needed
 //
 // This is the "scatter/gather" pattern that every backend service uses.
-fn fib(n: int) -> int {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -24,9 +24,9 @@ fn fib(n: int) -> int {
 }
 
 actor Worker {
-    let id: int;
-    let jobs_done: int;
-    receive fn compute(n: int) -> int {
+    let id: i64;
+    var jobs_done: i64;
+    receive fn compute(n: i64) -> i64 {
         jobs_done = jobs_done + 1;
         let result = fib(n);
         println(f"  [worker {id}] fib({n}) = {result}  (job #{jobs_done})");
@@ -42,24 +42,23 @@ actor Worker {
 // Budget: up to 10 restarts in 60 seconds before giving up.
 supervisor Pool {
     strategy: one_for_one;
-    max_restarts: 10;
-    window: 60;
+    intensity: 10 within 60s;
 
-    child w0: Worker(0, 0);
-    child w1: Worker(1, 0);
-    child w2: Worker(2, 0);
-    child w3: Worker(3, 0);
+    child w0: Worker(id: 0, jobs_done: 0);
+    child w1: Worker(id: 1, jobs_done: 0);
+    child w2: Worker(id: 2, jobs_done: 0);
+    child w3: Worker(id: 3, jobs_done: 0);
 }
 
 fn main() {
     println("=== Supervised Worker Pool ===");
     println("");
-    let pool = spawn Pool;
+    let sup = spawn Pool;
     sleep_ms(30);
-    let w0 = supervisor_child(pool, 0);
-    let w1 = supervisor_child(pool, 1);
-    let w2 = supervisor_child(pool, 2);
-    let w3 = supervisor_child(pool, 3);
+    let w0 = sup.w0;
+    let w1 = sup.w1;
+    let w2 = sup.w2;
+    let w3 = sup.w3;
     // ── Fan-out: distribute work, collect all results ──
     println("--- Fan-out: 4 jobs across 4 workers ---");
     let (r0, r1, r2, r3) = join {
@@ -89,7 +88,7 @@ fn main() {
     sleep_ms(200);
 
     // Supervisor has already restarted worker 2 — get the fresh handle
-    let w2_new = supervisor_child(pool, 2);
+    let w2_new = sup.w2;
     println("--- Post-crash fan-out ---");
     let (p, q, r, s) = join {
         w0.compute(5),

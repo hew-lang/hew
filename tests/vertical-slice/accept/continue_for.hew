@@ -1,0 +1,23 @@
+// `continue` inside a `for`-range MUST advance the loop counter (Risk 1).
+//
+// The for-range lowering routes `continue` to a dedicated increment block
+// (`inc_bb`) that runs `counter = counter + 1` and re-checks the bound, NOT
+// straight back to the bounds-check header. Threading `continue` to the
+// header would skip the increment, `i` would stay pinned at the skipped
+// value, and the loop would spin forever.
+//
+// Here `i` ranges over 0,1,2,3,4 and the iteration where `i == 2` is skipped
+// via `continue`. The accumulated sum is 0 + 1 + 3 + 4 = 8. Observing exit
+// code 8 proves the counter advanced past the skipped iteration; the
+// regression (continue → header) would hang at `i == 2` and trip the
+// harness timeout instead.
+fn main() -> i64 {
+    var sum: i64 = 0;
+    for i in 0 .. 5 {
+        if i == 2 {
+            continue;
+        }
+        sum = sum + i;
+    }
+    sum
+}

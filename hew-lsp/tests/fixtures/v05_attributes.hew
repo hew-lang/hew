@@ -1,0 +1,16 @@
+#[max_heap(4096)]
+actor AttributeActor {
+    receive fn ping(value: i32) -> i32 {
+        value
+    }
+}
+
+#[on(crash)]
+fn attribute_crash_probe() -> i32 {
+    7
+}
+
+#[on(upgrade)]
+fn attribute_upgrade_probe() -> i32 {
+    attribute_crash_probe()
+}

@@ -1,0 +1,16 @@
+import std::text::template;
+
+fn main() {
+    let ctx = template.new_ctx();
+    template.ctx_set_str(ctx, "name", "Ada");
+    let t = template.parse("hello {{.name}}");
+    println(template.render_template(t, ctx));
+
+    let ctx_try = template.new_ctx();
+    template.ctx_set_bool(ctx_try, "ok", true);
+    let t_try = template.parse("{{if .ok}}free-ok{{end}}");
+    match template.render_try(t_try, ctx_try) {
+        Ok(s) => println(s),
+        Err(_) => println("free-error"),
+    }
+}

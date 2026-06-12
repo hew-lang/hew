@@ -15,23 +15,23 @@
 // annotations.
 //
 // Value-model rules exercised:
-//   - string slice (View into a String) via a method call
+//   - string slice (View into a string) via a method call
 //   - View is read-only; the compiler rejects mutation through a View
-//   - the underlying String is still valid while the View exists
+//   - the underlying string is still valid while the View exists
 //   - iterator element as View (Map::keys() returns a View iterator)
 //   - View's lifetime is proven bounded: it cannot escape its producer's scope
 
-fn first_word(s: String) -> String {
+fn first_word(s: string) -> string {
     // The compiler treats the return of split() elements as Views into s.
-    // For return purposes the View is materialized into a new CowValue String
+    // For return purposes the View is materialized into a new CowValue string
     // (a substring copy) — the report shows materialize at the return site.
     let parts = s.split(" ");
     parts.first().unwrap_or("")
 }
 
 fn iterate_keys() {
-    let map: Map<String, int> = {"alice": 1, "bob": 2};
-    // map.keys() yields View<String> elements.  Each key is a read-only
+    let map: Map<string, i64> = {"alice": 1, "bob": 2};
+    // map.keys() yields View<string> elements.  Each key is a read-only
     // window; no cow_share, no ensure_unique.
     for key in map.keys() {
         let _ = key;  // key is a View; borrow_read only

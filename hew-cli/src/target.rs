@@ -13,7 +13,15 @@ pub enum TargetOs {
     Linux,
     FreeBsd,
     Windows,
+    /// WASI (wasm32-wasip1 / wasm32-wasi): wasm32 with the WASI system-call
+    /// interface. Targets `wasi_snapshot_preview1` imports, resolved via a
+    /// WASI sysroot and the `wasmtime` runtime.
     Wasi,
+    /// Bare wasm32 (wasm32-unknown-unknown): no OS, no WASI syscalls. LLVM
+    /// emits a standalone module that `wasmtime --invoke main` can run
+    /// directly without a WASI import layer. Distinct from `Wasi` — the two
+    /// have different runtime contracts and different sysroot search paths.
+    WasmFreestanding,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +40,6 @@ pub enum ExecutionTargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetSpec {
-    #[cfg(hew_embedded_codegen)]
-    requested_triple: Option<String>,
     normalized_triple: String,
     arch: TargetArch,
     os: TargetOs,
@@ -100,8 +106,6 @@ impl TargetSpec {
         let parsed = ParsedTarget::parse(&normalized_triple)?;
 
         Ok(Self {
-            #[cfg(hew_embedded_codegen)]
-            requested_triple: requested.map(str::to_owned),
             normalized_triple,
             arch: parsed.arch,
             os: parsed.os,
@@ -114,21 +118,18 @@ impl TargetSpec {
         &self.normalized_triple
     }
 
-    #[cfg(hew_embedded_codegen)]
-    pub fn codegen_triple(&self) -> Option<&str> {
-        self.requested_triple
-            .as_ref()
-            .map(|_| self.normalized_triple())
-    }
-
     pub fn executable_suffix(&self) -> &'static str {
         match self.os {
             TargetOs::Windows => ".exe",
-            TargetOs::Wasi => ".wasm",
+            TargetOs::Wasi | TargetOs::WasmFreestanding => ".wasm",
             TargetOs::Darwin | TargetOs::Linux | TargetOs::FreeBsd => "",
         }
     }
 
+    /// File extension for a relocatable object file on this target.
+    ///
+    /// COFF targets use `.obj`; ELF/Mach-O/Wasm targets use `.o`. Drives the
+    /// `hew build --emit-obj` output name.
     pub fn object_suffix(&self) -> &'static str {
         match self.object_format {
             ObjectFormat::Coff => ".obj",
@@ -144,7 +145,7 @@ impl TargetSpec {
     }
 
     pub fn is_wasm(&self) -> bool {
-        self.os == TargetOs::Wasi
+        self.arch == TargetArch::Wasm32
     }
 
     /// Returns the target-driven native link plan for this target.
@@ -207,6 +208,9 @@ impl TargetSpec {
                     "-lbcrypt",
                     "-lntdll",
                     "-ladvapi32",
+                    // rustls-platform-verifier in the embedded runtime walks
+                    // the Windows certificate store (CertOpenStore et al.).
+                    "-lcrypt32",
                 ],
                 needs_darwin_sdk: false,
                 // Clang defaults to the static CRT (libcmt) but the Rust-compiled
@@ -214,7 +218,7 @@ impl TargetSpec {
                 needs_windows_crt_fixup: true,
                 needs_dsymutil: false,
             },
-            TargetOs::Wasi => NativeLinkPlan {
+            TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
                 strip_flags: &[],
                 platform_libs: &[],
@@ -305,7 +309,8 @@ impl TargetSpec {
     pub fn cross_target_run_error(&self, verb: &str) -> String {
         format!(
             "Error: cannot {verb} target {} on this host. Cross-target executable {verb} is not \
-             supported yet; use `hew build --target {} --emit-obj` instead.",
+             supported. To produce a cross-target object on this host, use \
+             `hew build --target {} --emit-obj`.",
             self.normalized_triple(),
             self.normalized_triple(),
         )
@@ -314,8 +319,8 @@ impl TargetSpec {
     pub fn unsupported_native_link_error(&self) -> String {
         format!(
             "Error: target {} can emit objects, but native executable linking is only supported \
-             for the host target right now. Use `hew build --target {} --emit-obj` for this \
-             target.",
+             for the host target right now. To produce a cross-target object on this host, use \
+             `hew build --target {} --emit-obj`.",
             self.normalized_triple(),
             self.normalized_triple(),
         )
@@ -373,6 +378,22 @@ impl ParsedTarget {
                 arch,
                 os: TargetOs::Wasi,
                 env: Some("wasip1".to_string()),
+                object_format: ObjectFormat::Wasm,
+            });
+        }
+
+        // Bare wasm32: `wasm32-unknown-unknown`.  No OS, no WASI syscalls.
+        // Codegen targets this triple directly (see hew-codegen-rs/src/llvm.rs);
+        // kept distinct from `TargetOs::Wasi` because the two have different
+        // runtime contracts (no WASI import layer, no sysroot search).
+        if arch == TargetArch::Wasm32
+            && parts.get(1).copied() == Some("unknown")
+            && parts.get(2).copied() == Some("unknown")
+        {
+            return Ok(Self {
+                arch,
+                os: TargetOs::WasmFreestanding,
+                env: None,
                 object_format: ObjectFormat::Wasm,
             });
         }
@@ -470,6 +491,9 @@ fn host_triple() -> String {
             platform.env.as_deref().unwrap_or("msvc")
         ),
         TargetOs::Wasi => "wasm32-wasip1".to_string(),
+        // WasmFreestanding is never a host OS; this arm is unreachable in
+        // practice but required by the exhaustive match.
+        TargetOs::WasmFreestanding => "wasm32-unknown-unknown".to_string(),
     }
 }
 
@@ -552,6 +576,7 @@ impl ExecutionTarget {
         self.spec.executable_suffix()
     }
 
+    #[cfg(test)]
     pub fn is_native(&self) -> bool {
         self.kind == ExecutionTargetKind::Native
     }
@@ -901,6 +926,7 @@ mod tests {
         assert!(libs.contains(&"-lbcrypt"));
         assert!(libs.contains(&"-lntdll"));
         assert!(libs.contains(&"-ladvapi32"));
+        assert!(libs.contains(&"-lcrypt32"));
     }
 
     #[test]
@@ -915,6 +941,49 @@ mod tests {
     #[test]
     fn wasm_link_plan_is_empty() {
         let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(plan.gc_flags.is_empty());
+        assert!(plan.strip_flags.is_empty());
+        assert!(plan.platform_libs.is_empty());
+        assert!(!plan.needs_darwin_sdk);
+        assert!(!plan.needs_dsymutil);
+        assert!(!plan.needs_windows_crt_fixup);
+    }
+
+    // ── wasm32-unknown-unknown (bare wasm / WasmFreestanding) ──────────
+
+    #[test]
+    fn wasm32_unknown_unknown_parses_as_wasm_freestanding() {
+        let spec = TargetSpec::from_requested(Some("wasm32-unknown-unknown")).expect("target");
+        assert_eq!(spec.normalized_triple(), "wasm32-unknown-unknown");
+        assert_eq!(spec.os(), TargetOs::WasmFreestanding);
+        assert_eq!(spec.object_format(), ObjectFormat::Wasm);
+        assert_eq!(spec.executable_suffix(), ".wasm");
+        assert!(
+            spec.is_wasm(),
+            "wasm32-unknown-unknown must be a WASM target"
+        );
+    }
+
+    #[test]
+    fn wasm32_unknown_unknown_is_distinct_from_wasi() {
+        let bare = TargetSpec::from_requested(Some("wasm32-unknown-unknown")).expect("target");
+        let wasi = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
+        assert_ne!(
+            bare.os(),
+            wasi.os(),
+            "bare wasm and WASI must be distinct OS variants"
+        );
+        // Both are wasm targets; neither can run on a native host.
+        assert!(bare.is_wasm());
+        assert!(wasi.is_wasm());
+        assert!(!bare.can_run_on_host());
+        assert!(!wasi.can_run_on_host());
+    }
+
+    #[test]
+    fn wasm32_unknown_unknown_link_plan_is_empty() {
+        let spec = TargetSpec::from_requested(Some("wasm32-unknown-unknown")).expect("target");
         let plan = spec.native_link_plan();
         assert!(plan.gc_flags.is_empty());
         assert!(plan.strip_flags.is_empty());

@@ -1,5 +1,5 @@
 // Counting Sort - for small non-negative integers
-fn counting_sort(v: Vec<int>) {
+fn counting_sort(v: Vec<i64>) {
     let n = v.len();
     if n >= 2 {
         // Find max value
@@ -12,7 +12,7 @@ fn counting_sort(v: Vec<int>) {
             i = i + 1;
         }
         // Build count array
-        let count: Vec<int> = Vec::new();
+        let count: Vec<i64> = Vec::new();
         var c = 0;
         while c <= max_val {
             count.push(0);
@@ -39,7 +39,7 @@ fn counting_sort(v: Vec<int>) {
     }
 }
 
-fn vec_eq(a: Vec<int>, b: Vec<int>) -> int {
+fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     if a.len() != b.len() {
         return 0;
     }
@@ -53,8 +53,8 @@ fn vec_eq(a: Vec<int>, b: Vec<int>) -> int {
     1
 }
 
-fn make_vec_5(a: int, b: int, c: int, d: int, e: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     v.push(a);
     v.push(b);
     v.push(c);
@@ -63,7 +63,7 @@ fn make_vec_5(a: int, b: int, c: int, d: int, e: int) -> Vec<int> {
     v
 }
 
-fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
+fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
     counting_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
@@ -86,14 +86,14 @@ fn main() {
     total = total + 1;
     passed = passed + run_test("zeros", make_vec_5(0, 0, 0, 0, 0), make_vec_5(0, 0, 0, 0, 0));
     total = total + 1;
-    let single: Vec<int> = Vec::new();
+    let single: Vec<i64> = Vec::new();
     single.push(42);
-    let exp_single: Vec<int> = Vec::new();
+    let exp_single: Vec<i64> = Vec::new();
     exp_single.push(42);
     passed = passed + run_test("single", single, exp_single);
     total = total + 1;
-    let empty: Vec<int> = Vec::new();
-    let exp_empty: Vec<int> = Vec::new();
+    let empty: Vec<i64> = Vec::new();
+    let exp_empty: Vec<i64> = Vec::new();
     passed = passed + run_test("empty", empty, exp_empty);
     println(f"{passed}/{total} tests passed");
     if passed == total {

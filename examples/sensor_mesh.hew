@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Sensor mesh — distributed actor service pattern
+
 // Sensor mesh — distributed actor service pattern
 //
 // A temperature monitoring system with three actor types:
@@ -9,8 +12,25 @@
 // Node::start/shutdown/register/lookup typecheck today; other Node APIs
 // (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
 actor Logger {
-    let count: i32;
-    receive fn log_event(source: String, msg: String) {
+
+    // Simulate temperature with variation
+
+    // ── In distributed mode, each of these would be on a different node:
+    // Node::start("0.0.0.0:9000");  // logger node
+
+    // Node::register("logger", logger);
+
+    // Node::start("0.0.0.0:9001");  // monitor node
+    // let logger = Node::lookup("logger");
+
+    // Node::register("monitor", monitor);
+
+    // Node::start("0.0.0.0:9002");  // sensor node
+    // let monitor = Node::lookup("monitor");
+
+    // Simulate 6 ticks
+    var count: i32;
+    receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
     }
@@ -18,17 +38,17 @@ actor Logger {
 
 actor Monitor {
     let readings: Vec<i32>;
-    let logger: ActorRef<Logger>;
+    let logger: LocalPid<Logger>;
     let threshold: i32;
-    receive fn reading(sensor_id: String, temp: i32) {
+    receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
             logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
         if readings.len() % 3 == 0 {
-            var sum = 0;
+            var sum: i64 = 0;
             for i in 0 .. readings.len() {
-                sum = sum + readings.get(i);
+                sum = sum + readings.get(i) as i64;
             }
             let avg = sum / readings.len();
             logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
@@ -37,12 +57,10 @@ actor Monitor {
 }
 
 actor Sensor {
-    let sensor_id: String;
-    let monitor: ActorRef<Monitor>;
+    let sensor_id: string;
+    let monitor: LocalPid<Monitor>;
     let base_temp: i32;
     receive fn tick(cycle: i32) {
-
-        // Simulate temperature with variation
         let temp = base_temp + cycle % 5 - 2;
         monitor.reading(sensor_id, temp);
     }
@@ -50,23 +68,11 @@ actor Sensor {
 
 fn main() {
     println("=== Sensor Mesh Demo ===");
-
-    // ── In distributed mode, each of these would be on a different node:
-    // Node::start("0.0.0.0:9000");  // logger node
-    let logger = spawn Logger;
-    // Node::register("logger", logger);
-
-    // Node::start("0.0.0.0:9001");  // monitor node
-    // let logger = Node::lookup("logger");
+    let logger = spawn Logger(count: 0);
     let empty: Vec<i32> = Vec::new();
     let monitor = spawn Monitor(readings: empty, logger: logger, threshold: 30);
-    // Node::register("monitor", monitor);
-
-    // Node::start("0.0.0.0:9002");  // sensor node
-    // let monitor = Node::lookup("monitor");
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
-    // Simulate 6 ticks
     for cycle in 0 .. 6 {
         s1.tick(cycle);
         s2.tick(cycle);

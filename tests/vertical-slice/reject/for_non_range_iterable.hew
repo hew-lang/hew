@@ -1,0 +1,19 @@
+// Reject fixture: for_non_range_iterable — `for x in int_expr` over a non-iterable.
+//
+// Vec<T> now lowers through IntoIterator. This fixture preserves the
+// fail-closed boundary with a value that implements neither Range nor
+// IntoIterator.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-types/src/check/statements.rs (for iterable type gate)
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - "type is not iterable"
+
+fn main() -> i64 {
+    for x in 5 {
+        return x;
+    }
+    return 0;
+}

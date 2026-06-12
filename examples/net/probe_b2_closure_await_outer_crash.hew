@@ -1,0 +1,56 @@
+// SEC-2 load-bearing regression fixture: an outer handler that CRASHES DURING a
+// child suspending-closure await.
+//
+// `Reader.go` is an ASK handler. Inside it, `read_once` is a suspending closure
+// (it `await`s the captured Connection). The closure body panics on its first
+// statement — i.e. WHILE the driver's reply-channel swap is open, inside the
+// synchronous ramp call, before the await parks. The panic longjmps to the
+// scheduler crash-recovery frame.
+//
+// Pre-fix: the swap was never unwound on the crash edge, so the outer context
+// was left pointing at the driver channel; crash cleanup replied to the driver
+// channel and nulled the real outer reply channel, so `await reader.go(0)` hung
+// forever (the bounded test runner turns that into a failure).
+//
+// Post-fix: the crash-recovery edge unwinds the open swap first, restoring the
+// outer reply routing and tearing the driver channel down, so the outer ask
+// resolves to `Err` (the empty crash fallback) and the program completes. The
+// `trigger` parameter is a runtime value so the panic is not statically
+// unreachable ahead of the await (the closure still classifies as suspending).
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Reader {
+    let addr: string;
+    receive fn go(trigger: i64) -> i64 {
+        sleep_ms(200);
+        let conn = net.connect(addr);
+        let read_once = || {
+            if trigger >= 0 {
+                panic("reader crashed mid suspending-closure await");
+            }
+            await conn.read_string()
+        };
+        let body = read_once();
+        println(f"reader-received: {body}");
+        let _ = conn.close();
+        7
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    let r = await reader.go(0);
+    match r {
+        Ok(v) => println(f"reader-returned: {v}"),
+        Err(_) => println("reader-crash-fallback"),
+    }
+    println("main-done");
+}

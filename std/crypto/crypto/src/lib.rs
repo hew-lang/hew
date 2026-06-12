@@ -13,6 +13,35 @@ use ring::digest;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
 
+type BytesTriple = hew_runtime::bytes::BytesTriple;
+
+fn abort_crypto_failure() -> ! {
+    // SAFETY: abort terminates fail-closed; no fabricated crypto bytes escape.
+    unsafe { libc::abort() }
+}
+
+unsafe fn bytes_parts_to_vec(ptr: *mut u8, offset: u32, len: u32) -> Option<Vec<u8>> {
+    let len = usize::try_from(len).ok()?;
+    if len == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    let offset = usize::try_from(offset).ok()?;
+    // SAFETY: caller guarantees the parts represent a valid Hew `bytes` value.
+    let ptr = unsafe { ptr.add(offset) };
+    // SAFETY: caller guarantees the active `bytes` region is valid for `len` bytes.
+    Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
+}
+
+fn bytes_from_slice(bytes: &[u8]) -> BytesTriple {
+    let len = u32::try_from(bytes.len()).unwrap_or_else(|_| abort_crypto_failure());
+    // SAFETY: `bytes` is valid for `len` bytes; `hew_bytes_from_static` copies it
+    // into a fresh, refcount-1 bytes allocation owned by the Hew caller.
+    unsafe { hew_runtime::bytes::hew_bytes_from_static(bytes.as_ptr(), len) }
+}
+
 /// Compute the SHA-256 hash of `data` and write the 32-byte digest to `out`.
 ///
 /// # Safety
@@ -129,7 +158,9 @@ pub unsafe extern "C" fn hew_random_bytes(buf: *mut u8, len: usize) {
     // SAFETY: buf is valid for writing len bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf, len) };
     let rng = SystemRandom::new();
-    let _ = rng.fill(slice);
+    if rng.fill(slice).is_err() {
+        abort_crypto_failure();
+    }
 }
 
 /// Perform a constant-time comparison of two byte buffers.
@@ -158,77 +189,90 @@ pub unsafe extern "C" fn hew_constant_time_eq(a: *const u8, b: *const u8, len: u
 }
 
 // ---------------------------------------------------------------------------
-// HewVec-ABI wrappers (used by std/crypto.hew)
+// BytesTriple-ABI wrappers (used by std/crypto.hew)
 // ---------------------------------------------------------------------------
 
-/// Compute SHA-256 of a `bytes` `HewVec`, returning a 32-byte `bytes` `HewVec`.
+/// Compute SHA-256 of a `bytes` value, returning a 32-byte `bytes` value.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `(data_ptr, data_offset, data_len)` must be a valid Hew `bytes` value.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha256_hew(
-    data: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: data validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+) -> BytesTriple {
+    // SAFETY: caller guarantees a valid Hew `bytes` value.
+    let input = unsafe { bytes_parts_to_vec(data_ptr, data_offset, data_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
     let mut out = [0u8; 32];
     // SAFETY: input slice is valid; out is a 32-byte writable buffer.
     unsafe { hew_sha256(input.as_ptr(), input.len(), out.as_mut_ptr()) };
-    // SAFETY: out is valid for 32 bytes.
-    unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
+    bytes_from_slice(&out)
 }
 
-/// Compute SHA-384 of a `bytes` `HewVec`, returning a 48-byte `bytes` `HewVec`.
+/// Compute SHA-384 of a `bytes` value, returning a 48-byte `bytes` value.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `(data_ptr, data_offset, data_len)` must be a valid Hew `bytes` value.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha384_hew(
-    data: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: data validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+) -> BytesTriple {
+    // SAFETY: caller guarantees a valid Hew `bytes` value.
+    let input = unsafe { bytes_parts_to_vec(data_ptr, data_offset, data_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
     let mut out = [0u8; 48];
     // SAFETY: input slice is valid; out is a 48-byte writable buffer.
     unsafe { hew_sha384(input.as_ptr(), input.len(), out.as_mut_ptr()) };
-    // SAFETY: out is valid for 48 bytes.
-    unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
+    bytes_from_slice(&out)
 }
 
-/// Compute SHA-512 of a `bytes` `HewVec`, returning a 64-byte `bytes` `HewVec`.
+/// Compute SHA-512 of a `bytes` value, returning a 64-byte `bytes` value.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `(data_ptr, data_offset, data_len)` must be a valid Hew `bytes` value.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha512_hew(
-    data: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: data validity forwarded to hwvec_to_u8.
-    let input = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+) -> BytesTriple {
+    // SAFETY: caller guarantees a valid Hew `bytes` value.
+    let input = unsafe { bytes_parts_to_vec(data_ptr, data_offset, data_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
     let mut out = [0u8; 64];
     // SAFETY: input slice is valid; out is a 64-byte writable buffer.
     unsafe { hew_sha512(input.as_ptr(), input.len(), out.as_mut_ptr()) };
-    // SAFETY: out is valid for 64 bytes.
-    unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
+    bytes_from_slice(&out)
 }
 
-/// Compute HMAC-SHA-256 with key/data `HewVecs`, returning a 32-byte `bytes` `HewVec`.
+/// Compute HMAC-SHA-256 with key/data `bytes`, returning a 32-byte `bytes` value.
 ///
 /// # Safety
 ///
-/// Both `key` and `data` must be valid, non-null pointers to `HewVecs` (i32 elements).
+/// Both `(key_ptr, key_offset, key_len)` and `(data_ptr, data_offset, data_len)`
+/// must be valid Hew `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hmac_sha256_hew(
-    key: *mut hew_cabi::vec::HewVec,
-    data: *mut hew_cabi::vec::HewVec,
-) -> *mut hew_cabi::vec::HewVec {
-    // SAFETY: key/data validity forwarded to hwvec_to_u8.
-    let key_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(key) };
-    // SAFETY: data validity forwarded to hwvec_to_u8.
-    let data_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+) -> BytesTriple {
+    // SAFETY: caller guarantees valid Hew `bytes` values.
+    let key_bytes = unsafe { bytes_parts_to_vec(key_ptr, key_offset, key_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
+    // SAFETY: caller guarantees valid Hew `bytes` values.
+    let data_bytes = unsafe { bytes_parts_to_vec(data_ptr, data_offset, data_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
     let mut out = [0u8; 32];
     // SAFETY: key_bytes and data_bytes slices are valid; out is a 32-byte buffer.
     unsafe {
@@ -240,48 +284,166 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
             out.as_mut_ptr(),
         );
     };
-    // SAFETY: out is valid for 32 bytes.
-    unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
+    bytes_from_slice(&out)
 }
 
-/// Fill and return a `bytes` `HewVec` of `len` cryptographically random bytes.
+/// Fill and return a `bytes` value of `len` cryptographically random bytes.
 ///
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
 #[no_mangle]
-pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> *mut hew_cabi::vec::HewVec {
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "len > 0 checked; practical buffer sizes fit in usize"
-    )]
-    let n = if len > 0 { len as usize } else { 0 };
+pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> BytesTriple {
+    let n = if len <= 0 {
+        0
+    } else {
+        usize::try_from(len).unwrap_or_else(|_| abort_crypto_failure())
+    };
+    if u32::try_from(n).is_err() {
+        abort_crypto_failure();
+    }
     let mut buf = vec![0u8; n];
     if n > 0 {
         // SAFETY: buf is valid for n bytes.
         unsafe { hew_random_bytes(buf.as_mut_ptr(), n) };
     }
-    // SAFETY: buf slice is valid.
-    unsafe { hew_cabi::vec::u8_to_hwvec(&buf) }
+    bytes_from_slice(&buf)
 }
 
-/// Compare two `bytes` `HewVecs` in constant time.
+// ---------------------------------------------------------------------------
+// BytesTriple `_raw` out-pointer variants (Windows x64 MSVC sret fix)
+// ---------------------------------------------------------------------------
+// On Windows x64, MSVC ABI returns 16-byte structs via a hidden sret in RCX.
+// Hew codegen emits `[2 x i64]` return (SysV/AAPCS two-eightbyte pair) which
+// doesn't match — the callee writes to RCX (the connection handle), corrupting
+// the stack. These `_raw` variants take an explicit out-pointer and return void,
+// sidestepping the mismatch entirely. Codegen emits calls to `_raw` on all
+// platforms for these producers.
+
+/// Out-pointer variant of [`hew_sha256_hew`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_sha256_hew`].
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sha256_hew_raw(
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_sha256_hew(data_ptr, data_offset, data_len) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Out-pointer variant of [`hew_sha384_hew`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_sha384_hew`].
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sha384_hew_raw(
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_sha384_hew(data_ptr, data_offset, data_len) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Out-pointer variant of [`hew_sha512_hew`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_sha512_hew`].
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sha512_hew_raw(
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_sha512_hew(data_ptr, data_offset, data_len) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Out-pointer variant of [`hew_hmac_sha256_hew`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_hmac_sha256_hew`].
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hmac_sha256_hew_raw(
+    key_ptr: *mut u8,
+    key_offset: u32,
+    key_len: u32,
+    data_ptr: *mut u8,
+    data_offset: u32,
+    data_len: u32,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe {
+        hew_hmac_sha256_hew(
+            key_ptr,
+            key_offset,
+            key_len,
+            data_ptr,
+            data_offset,
+            data_len,
+        )
+    };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Out-pointer variant of [`hew_random_bytes_hew`] for Windows x64 MSVC sret fix.
+///
+/// # Safety
+///
+/// `out` must point to a valid, writable `BytesTriple` slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_random_bytes_hew_raw(len: i64, out: *mut BytesTriple) {
+    // SAFETY: preconditions forwarded from caller contract above.
+    let triple = unsafe { hew_random_bytes_hew(len) };
+    // SAFETY: caller guarantees `out` is a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Compare two `bytes` values in constant time.
 ///
 /// Returns 1 if equal, 0 if different or different lengths.
 ///
 /// # Safety
 ///
-/// Both `a` and `b` must be valid, non-null pointers to `HewVecs` (i32 elements).
+/// Both `(a_ptr, a_offset, a_len)` and `(b_ptr, b_offset, b_len)` must be valid
+/// Hew `bytes` values.
 #[no_mangle]
 pub unsafe extern "C" fn hew_constant_time_eq_hew(
-    a: *mut hew_cabi::vec::HewVec,
-    b: *mut hew_cabi::vec::HewVec,
+    a_ptr: *mut u8,
+    a_offset: u32,
+    a_len: u32,
+    b_ptr: *mut u8,
+    b_offset: u32,
+    b_len: u32,
 ) -> i32 {
-    // SAFETY: a validity forwarded to hwvec_to_u8.
-    let a_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(a) };
-    // SAFETY: b validity forwarded to hwvec_to_u8.
-    let b_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(b) };
+    // SAFETY: caller guarantees valid Hew `bytes` values.
+    let a_bytes = unsafe { bytes_parts_to_vec(a_ptr, a_offset, a_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
+    // SAFETY: caller guarantees valid Hew `bytes` values.
+    let b_bytes = unsafe { bytes_parts_to_vec(b_ptr, b_offset, b_len) }
+        .unwrap_or_else(|| abort_crypto_failure());
     if a_bytes.len() != b_bytes.len() {
         return 0;
     }

@@ -35,6 +35,27 @@ target = "wasm32-unknown-unknown"
 toolchain = "wasm-bindgen"
 use_case = "Browser playground, editor analysis, in-browser type checking"
 runnable = false
+capability = "analysis-only"
+
+[[tier]]
+id = "sandbox-vm-export"
+name = "sandbox-vm-export"
+crate = "hew-sandbox-wasm"
+target = "wasm32-unknown-unknown"
+toolchain = "wasm-bindgen"
+use_case = "Browser sandbox bytecode export for the educational VM"
+runnable = false
+capability = "sandbox-vm-export"
+
+[[tier]]
+id = "sandbox-vm"
+name = "sandbox-vm"
+crate = "hew-sandbox-vm"
+target = "browser-worker"
+toolchain = "typescript"
+use_case = "Browser educational sandbox execution for deterministic sequential bytecode"
+runnable = true
+capability = "sandbox-vm"
 
 [[tier]]
 id = "tier2"
@@ -46,7 +67,7 @@ use_case = "WASI execution — `hew build --target=wasm32-wasi`"
 runnable = true
 
 # ---------------------------------------------------------------------------
-# Feature disposition table (29 rows; mirror of the markdown table).
+# Feature disposition table (30 rows; mirror of the markdown table).
 # Row order matches docs/wasm-capability-matrix.md top-to-bottom.
 # ---------------------------------------------------------------------------
 
@@ -81,6 +102,15 @@ checker = "pass"
 runtime = "implemented"
 runtime_status = "Implemented"
 categories = ["stdlib", "collections"]
+
+[[feature]]
+id = "layout-hashmap-hashset"
+label = "Layout-backed `HashMap` / `HashSet`"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime"
+categories = ["stdlib", "collections"]
+tracking = "#1820"
 
 [[feature]]
 id = "actor-ask-reply"

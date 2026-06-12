@@ -8,7 +8,7 @@ url="https://hew.sh"
 license=('MIT' 'Apache-2.0')
 provides=('hew' 'adze')
 conflicts=('hew' 'hew-git')
-# Rust binaries link only glibc; LLVM/MLIR is embedded in the hew binary.
+# Rust binaries link only glibc; LLVM is statically linked into the hew binary.
 # glibc is in Arch's base but listed explicitly to document the requirement.
 depends=('glibc')
 options=('!strip')  # binaries are pre-stripped

@@ -1,0 +1,29 @@
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Session {
+    let conn: Connection;
+
+    receive fn pump(unused: i64) {
+        let body = conn.read_string();
+        println(f"session-received: {body}");
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let conn = net.connect(f"127.0.0.1:{port}");
+    let session = spawn Session(conn: conn);
+    session.pump(0);
+    let client = listener.accept();
+    client.write_string("hello");
+    sleep_ms(300);
+    let _ = client.close();
+    println("server-done");
+}

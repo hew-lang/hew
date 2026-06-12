@@ -1,26 +1,26 @@
-// Stack - LIFO data structure using Vec<int>
-fn stack_new() -> Vec<int> {
-    let s: Vec<int> = Vec::new();
+// Stack - LIFO data structure using Vec<i64>
+fn stack_new() -> Vec<i64> {
+    let s: Vec<i64> = Vec::new();
     s
 }
 
-fn stack_push(s: Vec<int>, val: int) {
+fn stack_push(s: Vec<i64>, val: i64) {
     s.push(val);
 }
 
-fn stack_pop(s: Vec<int>) -> int {
+fn stack_pop(s: Vec<i64>) -> i64 {
     s.pop()
 }
 
-fn stack_peek(s: Vec<int>) -> int {
+fn stack_peek(s: Vec<i64>) -> i64 {
     s.get(s.len() - 1)
 }
 
-fn stack_size(s: Vec<int>) -> int {
+fn stack_size(s: Vec<i64>) -> i64 {
     s.len()
 }
 
-fn stack_is_empty(s: Vec<int>) -> int {
+fn stack_is_empty(s: Vec<i64>) -> i64 {
     if s.len() == 0 {
         1
     } else {
@@ -28,7 +28,7 @@ fn stack_is_empty(s: Vec<int>) -> int {
     }
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

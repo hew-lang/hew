@@ -4,7 +4,7 @@ This document is the **authoritative** source for which Hew features are
 available on each WASM target tier.  It is referenced by the type checker
 (`hew-types/src/check/types.rs :: WasmUnsupportedFeature`), the runtime stubs
 (`hew-runtime/src/lib.rs :: wasm_stubs`), and the spec
-(`docs/specs/HEW-SPEC.md §8.0`).
+(`docs/specs/HEW-SPEC-2026.md §8.0`).
 
 When a feature is listed as **Reject** or **Warn**, the type checker enforces
 that disposition at compile time before any code reaches LLVM/WASM codegen.
@@ -16,10 +16,43 @@ that disposition at compile time before any code reaches LLVM/WASM codegen.
 | Tier | Crate / Target | Use case |
 |------|----------------|----------|
 | **Tier 1** | `hew-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser playground, editor analysis, in-browser type checking |
+| **sandbox-vm-export** | `hew-sandbox-wasm` compiled to `wasm32-unknown-unknown` via `wasm-bindgen` | Browser sandbox bytecode export for the educational VM |
+| **sandbox-vm** | `hew-sandbox-vm` TypeScript worker | Browser educational sandbox execution for deterministic sequential bytecode |
 | **Tier 2** | `hew-runtime` compiled to `wasm32-wasip1` (formerly `wasm32-wasi`) | WASI execution — `hew build --target=wasm32-wasi` |
 
 **Tier 1** is analysis-only: lexer, parser, and type checker only.  It never
 executes Hew programs; it only provides diagnostics.
+
+**sandbox-vm-export** sits alongside Tier 1 rather than replacing it.  The
+`hew-sandbox-wasm` crate runs parse, type-check, explicit sandbox profile
+admission, and deterministic bytecode package emission for browser callers.  It
+does not execute Hew programs.
+
+**sandbox-vm** executes admitted sandbox bytecode in a Web Worker.  The current
+interpreter covers deterministic sequential code, checked arithmetic, records,
+enums, lowered match dispatch, direct monomorphized calls, strings, vectors, an
+educational JavaScript `RegExp` subset for curated regex fixtures, the M4
+single-threaded actor scheduler (`spawn`, `send`, `receive`, root `ask/reply`,
+actor crash hooks, bounded mailboxes, seeded chaos scheduling, and replay via
+trace inputs), and the M5 educational coordination subset: bounded in-memory
+channels, in-memory stream/sink/duplex handles layered on those channels,
+async task spawn/await, structured scopes with cancellation observation at await
+and channel boundaries, deterministic `select`, virtual-time timer arms, and
+the M6 educational failure-philosophy subset: declarative supervisor specs,
+visible child slots, deterministic one-for-one / one-for-all / rest-for-one
+restart decisions, virtual-time restart windows, linked exit messages, monitor
+notifications, and `#[on(crash)]` observation before supervisor decisions.
+M7 adds a machine-readable sandbox stdlib profile, conservative pure/page-I/O
+shims, virtual-clock `time.now` / `time.sleep` / `time.deadline` shims, typed
+fail-closed diagnostics for unsupported stdlib symbols, and a DOM-free
+playground JSON contract for diagnostics, trace views, controls, share links,
+lesson virtual files, and trace export.
+This is intentionally reduced sandbox semantics rather than production runtime
+parity: link-to-dead traps fail closed, monitor-to-dead fires immediately, and
+supervisor restart budget exhaustion escalates through typed runtime failures.
+Machine runtime parity, file-backed streams, network-backed streams, and broader
+host I/O remain fail-closed with structured `unsupported_instruction` runtime
+failures for the post-M7/native-runtime milestones.
 
 **Tier 2** is a genuine execution runtime on top of the WASI ABI.  It uses a
 single-threaded cooperative actor scheduler and provides a meaningful subset of
@@ -41,14 +74,15 @@ The **Checker disposition** column documents what the type checker emits when
 | Feature | Checker disposition | Runtime status | Tracking |
 |---------|-------------------|----------------|----------|
 | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | ✅ Pass | Implemented | — |
-| Generators / async streams | ✅ Pass | Implemented | — |
+| Generators / async streams | ⚠️ WASM-TODO (not checker-gated; codegen fail-closed at `hew_gen_yield`) | Scoped for v0.5; generator substrate wasm parity is in progress, not passing today | WASM-TODO(#1451) |
 | Pattern matching, ADTs, generics | ✅ Pass | Implemented | — |
-| Standard collections, arithmetic | ✅ Pass | Implemented | — |
+| Arithmetic and wasm-safe collection surfaces | ✅ Pass | Implemented | — |
+| Layout-backed `HashMap` / `HashSet` | ✅ Pass | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
 | Actor ask/reply (`reply_channel_wasm`) | ✅ Pass | Implemented | — |
 | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | ⚠️ WASM-TODO (not checker-gated) | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO |
 | `select {}` (any timeout expression, any arm count) | ✅ Pass | Implemented | — |
-| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Native-only runtime module | WASM-TODO |
-| Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Native-only runtime module | WASM-TODO |
+| Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | 🚫 Error (`SupervisionTrees`) | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | M6 |
+| Actor `link` / `unlink` / `monitor` / `demonitor` | 🚫 Error (`LinkMonitor`) | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | M6 |
 | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | 🚫 Error (`StructuredConcurrency`) | Native-only runtime module | WASM-TODO |
 | Scope-spawned `Task` handles | 🚫 Error (`Tasks`) | Native-only runtime module | WASM-TODO |
 | **`channel.new`, `Sender<T>::send/clone/close`, `Receiver<T>::try_recv/close`** | ✅ Pass | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
@@ -98,11 +132,12 @@ no coherent runtime support for them and allowing them through the checker
 would otherwise end in a trap or linker failure:
 
 - **Supervision trees / link-monitor / structured concurrency / tasks**: the
-  corresponding runtime modules are gated behind
-  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  Codegen
-  still lowers these operations, so warning-only checker behavior leaks through
-  to undefined-symbol linker failures.  Rejecting at check time gives users a
-  direct, feature-specific diagnostic instead.
+  production runtime modules are gated behind
+  `#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`.  The
+  sandbox VM separately teaches reduced M6 supervision/link/monitor semantics
+  with deterministic virtual time and typed fail-closed traps; Tier 2 still
+  rejects the production surface at check time to avoid undefined-symbol linker
+  failures.
 
 - **Channels (bounded subset)**: `channel.new`, sender clone/close,
   `Receiver::try_recv`, and typed `send` are available on wasm32 via the
@@ -182,14 +217,14 @@ dedicated checker warning/error for them.
 
 ## Generators on WASM — note
 
-The spec previously implied generators might be unsupported on WASM.  As of the
-current implementation, **basic generator syntax and the cooperative scheduler
-do work on Tier 2**.  Generators that depend on blocking I/O (e.g. a generator
-that calls `stream.next()` internally) will encounter the Streams reject above
-at the point of the stream call, not at the generator declaration itself.
+The checker currently admits basic generator syntax for Tier 2, but wasm
+codegen still fail-closes when the lowered program reaches the native-only
+`hew_gen_yield` substrate. Generator parity is scoped for v0.5 under
+WASM-TODO(#1451), so this is an in-progress gap rather than a supported PASS.
 
-If a generator is purely computational (no I/O, no blocking calls), it works
-on WASM unchanged.
+Generators that depend on blocking I/O (e.g. a generator that calls
+`stream.next()` internally) are additionally covered by the Streams reject
+above at the point of the stream call.
 
 ---
 
@@ -248,6 +283,18 @@ These gaps are explicitly deferred and tracked here:
 | Actor link/monitor fault propagation | OS-thread-free exit propagation | `WASM-TODO: link-monitor` |
 | Structured concurrency scopes | Thread-free scope scheduler | `WASM-TODO: scope` |
 
+> **Stackless suspension substrate (R326/R327, W6.007).** The cooperative
+> yield/resume mechanism the `scope` and blocking-`recv` rows above need is now
+> BUILT — an LLVM `llvm.coro.*` switched-resume continuation driven by ONE
+> poll/resume executor, identical IR on native + wasm32 (see
+> `docs/internal/v05-ir-ladder.md` §2.4 "Stackless suspend carrier"). It is
+> **production-capable but dormant**: no source construct emits a suspend point
+> yet, so these gates stay CLOSED (a relaxed gate with no readiness waker is
+> fail-OPEN). The per-construct relaxation lands with the source-to-suspend flip
+> + readiness waker (NEW-3); on wasm32 the `hew_sched_run` drain then drives
+> resume of parked continuations cooperatively. Until then the gated behaviour
+> is unchanged.
+
 ---
 
 ## Playground capability contract
@@ -278,11 +325,12 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | Example | `capabilities.wasi` | Reason |
 |---------|---------------------|--------|
 | `basics/*` (4 entries) | `runnable` | No WASM-limited features |
-| `concurrency/actor_pipeline` | `runnable` | Basic actors supported |
-| `concurrency/async_await` | `runnable` | Async/await supported |
-| `concurrency/counter_actor` | `runnable` | Basic actors supported |
+| `concurrency/actor_pipeline` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
+| `concurrency/async_await` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
+| `concurrency/counter_actor` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
 | `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Reject disposition |
-| `types/*` (3 entries) | `runnable` | No WASM-limited features |
+| `types/collections`, `types/pattern_matching`, `types/structural_bounds` | `runnable` | No WASM-limited features |
+| `types/wire_types` | `unsupported` | Wire enum lowering is not implemented on WASI (#1822) |
 
 The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the
 single source of truth for these per-entry values.  Entries absent from that

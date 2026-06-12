@@ -1,0 +1,5 @@
+fn main() -> string {
+    let s = "hello";
+    let _values = [s, "anchor"];
+    s
+}

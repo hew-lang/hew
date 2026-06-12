@@ -1,0 +1,35 @@
+// Acceptance fixture: multiple #[on(stop)] hooks on the same actor compile
+// and run without ActorHandlerSymbolCollision.
+//
+// Two hooks on the same actor previously triggered a collision at MIR
+// lowering and were rejected. After the fix, each hook is emitted as a
+// distinct indexed MIR symbol (<Actor>__on_stop__<i>), and codegen
+// synthesises a fan-out terminate trampoline that calls them in lexical order.
+//
+// This fixture proves the fix at the compile+run level. The MIR and codegen
+// unit tests prove lexical ordering and per-symbol emission separately.
+actor Sequencer {
+    var counter: i64;
+    init(start: i64) {
+        counter = start;
+    }
+    receive fn value() -> i64 {
+        counter
+    }
+    #[on(stop)]
+    fn cleanup_a() {
+        counter = counter + 1;
+    }
+    #[on(stop)]
+    fn cleanup_b() {
+        counter = counter + 10;
+    }
+}
+
+fn main() -> i64 {
+    let s = spawn Sequencer(start: 0);
+    match await s.value() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

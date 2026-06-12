@@ -104,12 +104,10 @@ fn fmt_generic_function_with_bounds() {
 }
 
 #[test]
-fn fmt_pure_function() {
-    let src = r"pure fn checksum(x: i32) -> i32 {
-    x
-}";
+fn fmt_mutable_self_receiver_preserves_var() {
+    let src = "impl Counter {\n    fn next(var self) -> i64 {\n        1\n    }\n}\n";
     let out = roundtrip(src);
-    assert!(out.contains("pure fn checksum"), "output: {out}");
+    assert!(out.contains("fn next(var self) -> i64"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -603,15 +601,15 @@ fn fmt_actor_on_stop_and_receive_attributes_roundtrip() {
 }
 
 #[test]
-fn fmt_actor_pure_method_without_preamble() {
+fn fmt_actor_method_without_preamble() {
     let src = r"actor Counter {
-    pure fn current() -> i32 {
+    fn current() -> i32 {
         0
     }
 }";
     let out = roundtrip(src);
     assert!(
-        out.contains("actor Counter {\n    pure fn current() -> i32 {"),
+        out.contains("actor Counter {\n    fn current() -> i32 {"),
         "output: {out}"
     );
 }
@@ -629,25 +627,48 @@ fn fmt_this_expr_roundtrip() {
 
 #[test]
 fn fmt_lambda_with_types() {
-    let src = "fn main() { let f = (x: i32) -> i32 => x + 1; }";
+    let src = "fn main() { let f = |x: i32| -> i32 { x + 1 }; }";
     let out = roundtrip(src);
-    assert!(out.contains("(x: i32) -> i32 => x + 1"), "output: {out}");
+    assert!(out.contains("|x: i32| -> i32 {"), "output: {out}");
 }
 
 #[test]
 fn fmt_multi_param_lambda() {
-    let src = "fn main() { let add = (a, b) => a + b; }";
+    let src = "fn main() { let add = |a, b| a + b; }";
     let out = roundtrip(src);
-    assert!(out.contains("(a, b) => a + b"), "output: {out}");
+    assert!(out.contains("|a, b| a + b"), "output: {out}");
+}
+
+// Generic `<T>(params) => body` lambda syntax was removed in v0.5; the
+// formatter no longer needs a roundtrip test for it.  Pipe-closure tests
+// below cover `|params| body` formatting instead.
+
+#[test]
+fn fmt_gen_block_expression() {
+    // Generator block in expression position: `gen { yield ...; }`.
+    let src = "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n    };\n}\n";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("gen {"),
+        "formatted output should contain `gen {{`: {out}"
+    );
+    assert!(
+        out.contains("yield 1"),
+        "formatted output should contain `yield 1`: {out}"
+    );
 }
 
 #[test]
-fn fmt_generic_lambda_type_params() {
-    let src = "fn main() { let id = <T: Display>(x: T) -> T => x; }";
-    let out = roundtrip(src);
-    assert!(
-        out.contains("<T: Display>(x: T) -> T => x"),
-        "output: {out}"
+fn fmt_gen_block_compact_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let yields = gen { yield 1; yield 2; };\n    let returns = gen { yield 1; 2 };\n    let explicit = gen { return 1; };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_gen_block_multiline_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let g = gen {\n        yield 1;\n        yield 2;\n        3\n    };\n}\n",
     );
 }
 
@@ -1448,61 +1469,44 @@ fn fmt_array_repeat_roundtrip() {
 }
 
 #[test]
-fn fmt_scope_launch_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    scope |s| {\n        let task = s.launch {\n            1\n        };\n    };\n}\n",
+fn fmt_scope_block_roundtrip() {
+    exact_roundtrip("fn main() {\n    scope {\n        fork child = run();\n    };\n}\n");
+}
+
+#[test]
+fn parse_rejects_explicit_cooperate_expression() {
+    let result = parse("fn main() {\n    cooperate;\n}\n");
+    assert!(
+        result.errors.iter().any(|error| error.message.contains(
+            "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
+        )),
+        "expected explicit cooperate parse rejection, got: {:?}",
+        result.errors
     );
 }
 
 #[test]
-fn fmt_scope_spawn_roundtrip() {
-    exact_roundtrip(
-        "fn main() {\n    scope |s| {\n        s.spawn {\n            println(1);\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_cancel_roundtrip() {
-    exact_roundtrip("fn main() {\n    scope |s| {\n        s.cancel();\n    };\n}\n");
-}
-
-#[test]
-fn fmt_scope_launch_non_default_binding() {
-    exact_roundtrip(
-        "fn main() {\n    scope |handle| {\n        let task = handle.launch {\n            1\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_spawn_non_default_binding() {
-    exact_roundtrip(
-        "fn main() {\n    scope |handle| {\n        handle.spawn {\n            println(1);\n        };\n    };\n}\n",
-    );
-}
-
-#[test]
-fn fmt_scope_cancel_non_default_binding() {
-    exact_roundtrip("fn main() {\n    scope |handle| {\n        handle.cancel();\n    };\n}\n");
-}
-
-#[test]
-fn fmt_cooperate_roundtrip() {
-    exact_roundtrip("fn main() {\n    cooperate;\n}\n");
-}
-
-#[test]
-fn fmt_spawn_lambda_actor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let worker = spawn (x: int) => x + 1;\n}\n");
+fn fmt_lambda_actor_roundtrip() {
+    exact_roundtrip("fn main() {\n    let worker = actor |x: int| {\n        x + 1\n    };\n}\n");
 }
 
 #[test]
 fn fmt_move_lambda_roundtrip() {
-    exact_roundtrip("fn main() {\n    let f = move (x: i32) -> i32 => x + 1;\n}\n");
+    exact_roundtrip("fn main() {\n    let f = move |x: i32| -> i32 {\n        x + 1\n    };\n}\n");
 }
 
 #[test]
-fn fmt_spawn_move_lambda_actor_roundtrip() {
-    exact_roundtrip("fn main() {\n    let worker = spawn move (x: int) => x + 1;\n}\n");
+fn fmt_move_lambda_call_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    scope {\n        (move || {\n            let _ = r;\n        })();\n    };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_move_lambda_actor_roundtrip() {
+    exact_roundtrip(
+        "fn main() {\n    let worker = actor move |x: int| {\n        x + 1\n    };\n}\n",
+    );
 }
 
 #[test]
@@ -1529,9 +1533,16 @@ fn fmt_timeout_roundtrip() {
     exact_roundtrip("fn main() {\n    let value = await task | after 5s;\n}\n");
 }
 
+/// The `<-` operator was removed in v0.5.  Verify the parser rejects it
+/// rather than producing a silent no-op.  Pairs with the accept path in
+/// `parser_error_recovery.rs` (`left_arrow_send_operator_is_rejected`).
 #[test]
-fn fmt_send_roundtrip() {
-    exact_roundtrip("fn main() {\n    worker <- 42;\n}\n");
+fn fmt_send_operator_removed_rejects() {
+    let result = hew_parser::parse("fn main() {\n    worker <- 42;\n}\n");
+    assert!(
+        !result.errors.is_empty(),
+        "expected `<-` to be rejected (E_OPERATOR_REMOVED), got clean parse"
+    );
 }
 
 #[test]
@@ -1562,14 +1573,70 @@ fn fmt_trait_object_type_roundtrip() {
 }
 
 #[test]
+fn fmt_trait_object_assoc_binding_roundtrip() {
+    exact_roundtrip("fn use_iter(iter: dyn Iterator<Item = i32>) {\n}\n");
+}
+
+#[test]
+fn fmt_trait_implicit_self_roundtrip() {
+    exact_roundtrip(
+        "trait Iterator {\n    type Item;\n\n    fn next(self) -> Option<Self::Item>;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_trait_object_multiple_assoc_bindings_roundtrip() {
+    exact_roundtrip("fn use_pair(pair: dyn Pair<Left = i32, Right = string>) {\n}\n");
+}
+
+#[test]
+fn fmt_trait_object_type_args_and_assoc_bindings_roundtrip() {
+    exact_roundtrip(
+        "fn use_mapper(mapper: dyn Mapper<i32, string, Key = i32, Value = string>) {\n}\n",
+    );
+}
+
+#[test]
 fn fmt_trait_associated_type_roundtrip() {
     exact_roundtrip("trait Container {\n    type Item;\n\n    fn get(c: Self) -> Self::Item;\n}\n");
+}
+
+#[test]
+fn fmt_trait_associated_type_bound_default_and_interleaved_fns_roundtrip() {
+    exact_roundtrip(
+        "trait AssocForms {\n    type Plain;\n\n    fn make(c: Self) -> Self::Plain;\n\n    type Bounded: Display;\n\n    type Defaulted = i32;\n\n    fn show(c: Self) -> Self::Bounded;\n\n    type BoundedDefault: Display = string;\n}\n",
+    );
 }
 
 #[test]
 fn fmt_impl_associated_type_binding_roundtrip() {
     exact_roundtrip(
         "impl Container for Vec<i32> {\n    type Item = i32;\n\n    fn get(c: Vec<i32>) -> i32 {\n        c[0]\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_impl_associated_type_bindings_before_methods_roundtrip() {
+    let formatted = roundtrip_no_comments(
+        "impl Container for Widget {\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n\n    type Item = i32;\n}\n",
+    );
+    assert_eq!(
+        formatted,
+        "impl Container for Widget {\n    type Item = i32;\n\n    fn get(c: Widget) -> Self::Item {\n        1\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_projection_in_generic_where_position_roundtrip() {
+    exact_roundtrip(
+        "fn collect<I: Iterator>(it: I) -> Vec<I::Item> where I::Item: Display {\n    empty()\n}\n",
+    );
+}
+
+#[test]
+fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
+    exact_roundtrip(
+        "fn collect_display<I>(it: I) -> Vec<I::Item> where I: Iterator<Item = string>, I::Item: Display {\n    empty()\n}\n",
     );
 }
 
@@ -1581,51 +1648,133 @@ fn fmt_wire_declarations_roundtrip() {
 }
 
 #[test]
+fn fmt_wire_attr_enum_roundtrip() {
+    // `#[wire] enum` is the canonical (attribute) form for wire-annotated
+    // enums; verify the formatter round-trips unit, tuple, and struct
+    // variant payloads while preserving the `#[wire]` attribute.
+    exact_roundtrip(
+        "#[wire]\nenum Command {\n    Start;\n    Push(i64);\n    Move { x: i32, y: i32 };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_wire_attr_enum_with_version_roundtrip() {
+    // `#[wire(version = N, min_version = M)]` on an enum.
+    exact_roundtrip("#[wire(version = 2, min_version = 1)]\nenum Packet {\n    V1;\n    V2;\n}\n");
+}
+
+#[test]
 fn fmt_machine_decl_roundtrip() {
     exact_roundtrip(
-        "machine Light {\n    state Off;\n    state On;\n\n    event Toggle;\n\n    on Toggle: Off -> On;\n    on Toggle: On -> Off;\n}\n",
+        "machine Light {\n    events {\n        Toggle;\n    }\n\n    state Off;\n    state On;\n\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_state_with_fields_roundtrip() {
     exact_roundtrip(
-        "machine Bucket {\n    state Full { tokens: Int; }\n    state Empty;\n\n    event Drain;\n\n    on Drain: Full -> Empty;\n    on Drain: Empty -> Empty;\n}\n",
+        "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_event_with_payload_roundtrip() {
     exact_roundtrip(
-        "machine Bank {\n    state Open;\n\n    event Deposit { amount: Int; }\n\n    on Deposit: Open -> Open;\n}\n",
+        "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_emits_manifest_roundtrip() {
+    exact_roundtrip(
+        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready {};\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_implicit_body_roundtrip() {
     exact_roundtrip(
-        "machine Gate {\n    state Locked;\n    state Open;\n\n    event Try;\n\n    on Try: Locked -> Locked when flag;\n    on Try: Locked -> Open;\n}\n",
+        "machine Gate {\n    events {\n        Try;\n    }\n\n    state Locked;\n    state Open;\n\n    on Try: Locked => Locked when flag;\n    on Try: Locked => Open;\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_transition_with_guard_and_body_roundtrip() {
     exact_roundtrip(
-        "machine Counter {\n    state Active { n: Int; }\n\n    event Inc;\n\n    on Inc: Active -> Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active when active {\n        Active { n: active.n + 1 }\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_transition_with_reenter_roundtrip() {
+    exact_roundtrip(
+        "machine Counter {\n    events {\n        Inc;\n    }\n\n    state Active { n: Int; }\n\n    on Inc: Active => Active reenter {\n        Active { n: active.n + 1 }\n    }\n}\n",
     );
 }
 
 #[test]
 fn fmt_machine_default_clause_roundtrip() {
     exact_roundtrip(
-        "machine Safe {\n    state On;\n    state Off;\n\n    event Toggle;\n\n    on Toggle: On -> Off;\n\n    default { state }\n}\n",
+        "machine Safe {\n    events {\n        Toggle;\n    }\n\n    state On;\n    state Off;\n\n    on Toggle: On => Off;\n\n    default { state }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_single_generic_param_roundtrip() {
+    exact_roundtrip(
+        "machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_multiple_generic_params_roundtrip() {
+    exact_roundtrip(
+        "machine Pair<K, V> {\n    events {\n        Insert;\n    }\n\n    state Empty;\n    state Filled;\n\n    on Insert: Empty => Filled;\n    on Insert: Filled => Filled;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_pub_generic_param_roundtrip() {
+    exact_roundtrip(
+        "pub machine Lifecycle<T> {\n    events {\n        Start;\n    }\n\n    state Created;\n    state Running;\n\n    on Start: Created => Running;\n    on Start: Running => Running;\n}\n",
     );
 }
 
 #[test]
 fn fmt_supervisor_decl_roundtrip() {
+    // Flat reliability fields: fused `intensity:`, named init args, and the
+    // explicit `strategy:` the formatter always materializes.
     exact_roundtrip(
-        "supervisor Pool {\n    strategy: one_for_one;\n    max_restarts: 5;\n    window: 30;\n\n    child worker: Worker(1);\n}\n",
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child worker: Worker(id: 1);\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_default_strategy_written_explicitly() {
+    // A declaration that omits `strategy:` is canonicalised to the explicit
+    // default so the restart contract is never silently defaulted.
+    let formatted = roundtrip_no_comments(
+        "supervisor Pool {\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
+    );
+    assert_eq!(
+        formatted,
+        "supervisor Pool {\n    strategy: one_for_one;\n    intensity: 5 within 30s;\n\n    child w: Worker(id: 1);\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_pool_and_clauses_roundtrip() {
+    // Exercises every previously-lossy field: `pool` vs `child`, `wired_to:`,
+    // `restart:`, and `shutdown:` — all must round-trip exactly.
+    exact_roundtrip(
+        "supervisor ServiceStack {\n    strategy: rest_for_one;\n    intensity: 5 within 60s;\n\n    child db: Database(connections: 4) restart: permanent shutdown: 10s;\n    child api: ApiHandler(port: 8080) restart: transient shutdown: brutal_kill wired_to: { backend: db };\n}\n",
+    );
+}
+
+#[test]
+fn fmt_supervisor_pool_keyword_roundtrip() {
+    exact_roundtrip(
+        "supervisor ConnectionPool {\n    strategy: simple_one_for_one;\n    intensity: 20 within 60s;\n\n    pool handler: ApiHandler(port: 8080);\n}\n",
     );
 }
 
@@ -1665,12 +1814,12 @@ fn fmt_const_decl_roundtrip() {
 
 #[test]
 fn fmt_extern_immutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *u8;\n}\n");
+    exact_roundtrip("extern \"C\" {\n    fn malloc(n: i32) -> *const u8;\n}\n");
 }
 
 #[test]
 fn fmt_extern_mutable_pointer_type_roundtrip() {
-    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *var u8);\n}\n");
+    exact_roundtrip("extern \"C\" {\n    fn free(ptr: *mut u8);\n}\n");
 }
 
 #[test]
@@ -1709,5 +1858,245 @@ fn fmt_trait_multi_item_blank_lines_canonicalize_with_comments() {
 fn fmt_contextual_keywords_as_identifiers_roundtrip() {
     exact_roundtrip(
         "fn test_contextual_keywords_as_identifiers() {\n    let wire = 5;\n    let event = \"hello\";\n    let state = true;\n    let join = 42;\n    let after = 0;\n}\n",
+    );
+}
+
+// -----------------------------------------------------------------------
+// v0.5 surface constructs
+// -----------------------------------------------------------------------
+
+// --- actor |params| { body } lambda-actor form --------------------------
+
+#[test]
+fn fmt_actor_lambda_multi_param_roundtrip() {
+    // Multi-parameter lambda-actor with a typed return annotation.
+    exact_roundtrip(
+        "fn main() {\n    let adder = actor |x: int, y: int| {\n        x + y\n    };\n}\n",
+    );
+}
+
+// --- Duplex<S, R> / Sink<T> / Stream<T> type annotations ---------------
+
+#[test]
+fn fmt_duplex_type_annotation_roundtrip() {
+    // Duplex<S, R> in a parameter and return type position.
+    exact_roundtrip("fn make_channel() -> Duplex<int, string> {\n    duplex_pair(16)\n}\n");
+}
+
+#[test]
+fn fmt_sink_stream_type_annotation_roundtrip() {
+    // Sink<T> and Stream<T> in function parameter and return position.
+    exact_roundtrip(
+        "fn pipe(src: Stream<string>, dst: Sink<string>) {\n    forward(src, dst);\n}\n",
+    );
+}
+
+// --- Channel method calls -----------------------------------------------
+
+#[test]
+fn fmt_channel_send_recv_roundtrip() {
+    // .send(), .recv(), .try_send(), .try_recv(), .close() method calls
+    // are plain MethodCall nodes; verify the formatter emits them unchanged.
+    exact_roundtrip(
+        "fn main() {\n    ch.send(42);\n    let v = ch.recv();\n    ch.try_send(1);\n    let r = ch.try_recv();\n    ch.close();\n}\n",
+    );
+}
+
+#[test]
+fn fmt_channel_half_handle_roundtrip() {
+    // .send_half() and .recv_half() split a Duplex into directional halves.
+    exact_roundtrip(
+        "fn main() {\n    let sink = ch.send_half();\n    let stream = ch.recv_half();\n}\n",
+    );
+}
+
+// --- scope { fork name = call(); } structured concurrency ---------------
+
+#[test]
+fn fmt_scope_fork_named_binding_roundtrip() {
+    // scope block with a named fork binding — the canonical structured-concurrency form.
+    exact_roundtrip(
+        "fn main() {\n    let result = scope {\n        fork worker = compute();\n        fork auditor = audit();\n        worker\n    };\n}\n",
+    );
+}
+
+// --- Lifecycle attributes: #[on(start/stop/restart/crash/upgrade)] ------
+
+#[test]
+fn fmt_actor_on_start_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn (methods follow receive fns).
+    exact_roundtrip(
+        "actor Logger {\n    let label: string;\n\n    receive fn log(msg: string) {\n        println(f\"[{label}] {msg}\");\n    }\n\n    #[on(start)]\n    fn init() {\n        println(f\"[{label}] started\");\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_restart_hook_roundtrip() {
+    // #[on(restart)] uses the same Attribute/AttributeArg::Positional path as
+    // #[on(stop)] and #[on(start)]; this test locks in the canonical spelling.
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Worker {\n    receive fn work() {\n        do_work();\n    }\n\n    #[on(restart)]\n    fn handle_restart() {\n        reset();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_crash_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Guard {\n    receive fn run() {\n        execute();\n    }\n\n    #[on(crash)]\n    fn on_crash() {\n        log_error();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_on_upgrade_hook_roundtrip() {
+    // Canonical order: receive fn before lifecycle-hook fn.
+    exact_roundtrip(
+        "actor Service {\n    receive fn handle() {\n        process();\n    }\n\n    #[on(upgrade)]\n    fn migrate() {\n        migrate_state();\n    }\n}\n\nfn main() {\n}\n",
+    );
+}
+
+// --- let (a, b) = duplex_pair<S, R>(N) tuple-destructure + generic call --
+
+#[test]
+fn fmt_tuple_destructure_generic_call_roundtrip() {
+    // Tuple pattern on the left, generic-argument call on the right.
+    exact_roundtrip("fn main() {\n    let (tx, rx) = duplex_pair<int, string>(16);\n}\n");
+}
+
+// --- &T borrow-marker type syntax (M-COW P0) ----------------------------
+
+#[test]
+fn fmt_borrow_type_in_param_roundtrip() {
+    // `&T` in a function parameter — canonical borrow-marker placement.
+    exact_roundtrip("fn foo(x: &string) -> i32 {\n    return 0;\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_nested_generic_roundtrip() {
+    // `&Vec<i32>` — borrow over a generic type must round-trip without
+    // collapsing to `*const Vec<i32>`.
+    exact_roundtrip("fn bar(x: &Vec<i32>) -> i32 {\n    return 0;\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_return_position_roundtrip() {
+    // `&T` is valid in return-type position as well.
+    exact_roundtrip("fn baz() -> &string {\n    return \"\";\n}\n");
+}
+
+#[test]
+fn fmt_borrow_type_preserved_distinct_from_pointer() {
+    // `&T` must NOT be re-formatted as `*const T` — the two are distinct
+    // surface forms and the formatter must preserve each.
+    let borrow_fmt = roundtrip("fn f(x: &i32) -> i32 { return 0; }");
+    assert!(
+        borrow_fmt.contains("&i32"),
+        "borrow type must be formatted as `&i32`, got: {borrow_fmt}",
+    );
+    assert!(
+        !borrow_fmt.contains("*const"),
+        "formatter must not coerce `&T` to `*const T`, got: {borrow_fmt}",
+    );
+}
+
+// -----------------------------------------------------------------------
+// Receiver parenthesisation (postfix precedence)
+// -----------------------------------------------------------------------
+
+#[test]
+fn fmt_binary_receiver_of_method_call_is_parenthesised() {
+    // `("p-" + "q").len()` — the binary expr is receiver of a method call.
+    // Without parens the formatter would emit `"p-" + "q".len()`, which
+    // reparses as `"p-" + ("q".len())` — a different AST.
+    exact_roundtrip("fn f() -> i64 {\n    let _b = (\"p-\" + \"q\").len();\n    0\n}\n");
+}
+
+#[test]
+fn fmt_binary_receiver_of_field_access_is_parenthesised() {
+    // `(a + b).x` — binary expr as object of a field access.
+    exact_roundtrip("fn f(a: Point, b: Point) -> i64 {\n    (a + b).x\n}\n");
+}
+
+#[test]
+fn fmt_unary_receiver_of_method_call_is_parenthesised() {
+    // `(-x).abs()` — unary negate as receiver; without parens `-(x.abs())`
+    // is a different AST.
+    exact_roundtrip("fn f(x: i64) -> i64 {\n    (-x).abs()\n}\n");
+}
+
+#[test]
+fn fmt_method_chain_on_plain_binary_receiver_roundtrips() {
+    // Multi-level: `("left-" + "right").len()` with AST-equality check.
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+    let src = "fn f() -> i64 {\n    let _a = (\"left-\" + \"right\").len();\n    0\n}\n";
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty());
+    let formatted = format_program(&p1.program);
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse failed: {:?}", p2.errors);
+    assert!(
+        program_eq_ignoring_spans(&p1.program, &p2.program),
+        "AST mismatch after format.\nFormatted:\n{formatted}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Actor field mutability (var vs let)
+// -----------------------------------------------------------------------
+
+#[test]
+fn fmt_actor_var_field_preserved_not_rewritten_to_let() {
+    // Regression: formatter was silently rewriting `var` actor fields to `let`,
+    // a semantic mutation — `var` fields are mutable in handlers, `let` are not.
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("var count: i64 = 0;"),
+        "formatter must not rewrite `var` field to `let`; output:\n{out}"
+    );
+    assert!(
+        !out.contains("let count:"),
+        "output must not contain `let count:` when field was declared `var`; output:\n{out}"
+    );
+}
+
+#[test]
+fn fmt_actor_let_field_stays_let() {
+    // A `let` field (immutable actor state) must stay `let` — not promoted to `var`.
+    let src = "actor Frozen {\n    let x: i64 = 0;\n\n    receive fn noop() {}\n}\n";
+    let out = roundtrip(src);
+    assert!(
+        out.contains("let x: i64 = 0;"),
+        "formatter must preserve `let` field; output:\n{out}"
+    );
+    assert!(
+        !out.contains("var x:"),
+        "formatter must not promote `let` field to `var`; output:\n{out}"
+    );
+}
+
+#[test]
+fn fmt_actor_mixed_var_and_let_fields_roundtrip() {
+    // Actor with both mutable and immutable fields — each must keep its keyword.
+    exact_roundtrip(
+        "actor Mixed {\n    let id: i64 = 0;\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n",
+    );
+}
+
+#[test]
+fn fmt_actor_var_field_ast_equality_after_format() {
+    // AST-equality check: parse(format(parse(src))) must equal parse(src)
+    // including the is_mutable flag on FieldDecl.
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+    let src = "actor Counter {\n    var count: i64 = 0;\n\n    receive fn increment() {\n        count = count + 1;\n    }\n}\n";
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+    let formatted = format_program(&p1.program);
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    assert!(
+        program_eq_ignoring_spans(&p1.program, &p2.program),
+        "AST mismatch: var-field mutability lost after format+reparse.\nFormatted:\n{formatted}"
     );
 }

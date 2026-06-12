@@ -1,11 +1,14 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: Test: Actors and Messaging
+
 // Test: Actors and Messaging
 // Exercises: actor definition, receive fn, spawn, message send, actor state, stop
 actor Counter {
-    let count: int;
-    receive fn increment(amount: int) {
+    var count: i64;
+    receive fn increment(amount: i64) {
         count = count + amount;
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
     receive fn reset() {
@@ -14,77 +17,100 @@ actor Counter {
 }
 
 actor Printer {
-    let prefix: int;
-    receive fn print_msg(value: int) -> int {
+    let prefix: i64;
+    receive fn print_msg(value: i64) -> i64 {
         println(f"  [Printer {prefix}] got: {value}");
         value
     }
 }
 
-fn test_basic_actor() -> int {
+fn test_basic_actor() -> i64 {
     println("--- test_basic_actor ---");
     let counter = spawn Counter(count: 0);
     counter.increment(10);
     counter.increment(20);
     counter.increment(12);
-    let count = await counter.get_count();
-    stop(counter);
-    if count == 42 {
-        println("PASS: basic actor spawn + messaging");
-        1
-    } else {
-        println("FAIL: basic actor spawn + messaging");
-        0
+    let count_result = await counter.get_count();
+    match count_result {
+        Ok(count) => {
+            if count == 42 {
+                println("PASS: basic actor spawn + messaging");
+                1
+            } else {
+                println("FAIL: basic actor spawn + messaging");
+                0
+            }
+        },
+        Err(_) => {
+            println("FAIL: basic actor spawn + messaging");
+            0
+        },
     }
 }
 
-fn test_multiple_actors() -> int {
+fn test_multiple_actors() -> i64 {
     println("--- test_multiple_actors ---");
     let p1 = spawn Printer(prefix: 1);
     let p2 = spawn Printer(prefix: 2);
-    let first = p1.print_msg(100);
-    let second = p2.print_msg(200);
-    let third = p1.print_msg(300);
-    await first;
-    await second;
-    await third;
+    let first = await p1.print_msg(100);
+    match first {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
+    let second = await p2.print_msg(200);
+    match second {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
+    let third = await p1.print_msg(300);
+    match third {
+        Ok(_) => {},
+        Err(_) => {
+            println("FAIL: multiple actors");
+            return 0;
+        },
+    }
     println("PASS: multiple actors");
-    stop(p1);
-    stop(p2);
     1
 }
 
-fn test_lambda_actor() -> int {
+fn test_lambda_actor() -> i64 {
     println("--- test_lambda_actor ---");
-    let doubler = spawn (x: int) => {
+    let doubler = actor |x: i64| {
         println(f"  doubled: {x * 2}");
     };
     doubler.send(21);
     doubler.send(5);
-    await close(doubler);
+    await doubler.close();
     println("PASS: lambda actor");
     1
 }
 
-fn test_actor_factory() -> int {
+fn test_actor_factory() -> i64 {
     println("--- test_actor_factory ---");
     let m = make_multiplier(3);
     m.send(10);
     m.send(7);
-    await close(m);
+    await m.close();
     println("PASS: actor factory");
     1
 }
 
-fn make_multiplier(factor: int) -> Actor<int> {
-    spawn (x: int) => {
+fn make_multiplier(factor: i64) -> Duplex<i64, ()> {
+    actor |x: i64| {
         println(f"  multiplied: {x * factor}");
     }
 }
 
-fn test_complex_lambda() -> int {
+fn test_complex_lambda() -> i64 {
     println("--- test_complex_lambda ---");
-    let processor = spawn (n: int) => {
+    let processor = actor |n: i64| {
         if n > 10 {
             println(f"  large: {n}");
         } else {
@@ -93,15 +119,15 @@ fn test_complex_lambda() -> int {
     };
     processor.send(5);
     processor.send(15);
-    await close(processor);
+    await processor.close();
     println("PASS: complex lambda actor");
     1
 }
 
-fn main() -> int {
+fn main() -> i64 {
     println("=== Test: Actors & Messaging ===");
-    var passed: int = 0;
-    let total: int = 5;
+    var passed: i64 = 0;
+    let total: i64 = 5;
     passed = passed + test_basic_actor();
     passed = passed + test_multiple_actors();
     passed = passed + test_lambda_actor();

@@ -1,0 +1,29 @@
+// Acceptance fixture: guard over a constructor-payload binding.
+// The guard references the binding introduced by the arm's own constructor
+// pattern, which requires that payload bindings are inserted into scope before
+// the guard expression is evaluated.
+// Oracle: "positive" for Some(n) where n > 0, "non-positive" for Some(n)
+//         where n <= 0, "absent" for None.
+enum MyOpt {
+    Some(i64);
+    None;
+}
+
+fn describe(v: MyOpt) -> string {
+    match v {
+        MyOpt::Some(n) if n > 0 => "positive",
+        MyOpt::Some(_) => "non-positive",
+        MyOpt::None => "absent",
+    }
+}
+
+fn main() {
+    print(describe(MyOpt::Some(5)));
+    print("\n");
+    print(describe(MyOpt::Some(0)));
+    print("\n");
+    print(describe(MyOpt::Some(-3)));
+    print("\n");
+    print(describe(MyOpt::None));
+    print("\n");
+}

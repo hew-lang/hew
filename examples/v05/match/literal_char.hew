@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    let c = 'a';
+    return match c {
+        'a' => 1,
+        _ => 0,
+    };
+}

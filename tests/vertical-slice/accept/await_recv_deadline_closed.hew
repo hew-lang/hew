@@ -1,0 +1,34 @@
+// Accept fixture (NEW-7): `await rx.recv() | after d` — the channel is closed
+// (sender dropped) before the deadline fires, so the recv resolves to `Ok(None)`.
+//
+// The sender sends nothing and is explicitly dropped via `close(tx)` before the
+// actor awaits. Because the channel is already closed at the recv site, the
+// runtime completes immediately with `Ok(None)` — the deadline timer never fires.
+//
+// Exit-code contract: Ok(None) arm → 5.
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        tx.close();
+        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after 5000ms;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(v) => v,
+                    None => 5,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

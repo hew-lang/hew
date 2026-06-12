@@ -1,21 +1,21 @@
-// Queue - FIFO data structure using Vec<int> with head index
+// Queue - FIFO data structure using Vec<i64> with head index
 // Index 0 = head pointer, rest is data starting at index 1
-fn queue_new() -> Vec<int> {
-    let q: Vec<int> = Vec::new();
+fn queue_new() -> Vec<i64> {
+    let q: Vec<i64> = Vec::new();
     q.push(0); // head index (relative to data start at 1)
     q
 }
 
-fn queue_enqueue(q: Vec<int>, val: int) {
+fn queue_enqueue(q: Vec<i64>, val: i64) {
     q.push(val);
 }
 
-fn queue_size(q: Vec<int>) -> int {
+fn queue_size(q: Vec<i64>) -> i64 {
     let head = q.get(0);
     q.len() - 1 - head
 }
 
-fn queue_is_empty(q: Vec<int>) -> int {
+fn queue_is_empty(q: Vec<i64>) -> i64 {
     if queue_size(q) == 0 {
         1
     } else {
@@ -23,19 +23,19 @@ fn queue_is_empty(q: Vec<int>) -> int {
     }
 }
 
-fn queue_peek(q: Vec<int>) -> int {
+fn queue_peek(q: Vec<i64>) -> i64 {
     let head = q.get(0);
     q.get(head + 1)
 }
 
-fn queue_dequeue(q: Vec<int>) -> int {
+fn queue_dequeue(q: Vec<i64>) -> i64 {
     let head = q.get(0);
     let val = q.get(head + 1);
     q.set(0, head + 1);
     val
 }
 
-fn run_test(name: String, passed: int) -> int {
+fn run_test(name: string, passed: i64) -> i64 {
     if passed == 1 {
         println(f"PASS: {name}");
     } else {

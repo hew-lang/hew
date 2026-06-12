@@ -31,6 +31,10 @@
 //! - [`hew_connmgr_set_outbound_capacity`] — Legacy API (returns error).
 //! - [`hew_connmgr_count`] — Number of active connections.
 //! - [`hew_connmgr_broadcast`] — Send to all connections.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -42,16 +46,19 @@ use rand::rng;
 use rand::RngExt;
 
 use crate::cluster::HewCluster;
+use crate::envelope::{
+    decode_registry_gossip_payload, decode_swim_payload, decode_wire_frame, encode_control_frame,
+    encode_envelope_frame_from_raw_parts, encode_registry_gossip_payload, encode_swim_payload,
+    ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
+    CTRL_REGISTRY_GOSSIP, CTRL_SWIM, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
+    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+};
 use crate::lifetime::poison_safe::PoisonSafe;
+use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::util::MutexExt;
-use crate::wire::{
-    hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
-    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope, HBF_FLAG_COMPRESSED, HBF_MAGIC,
-    HBF_VERSION, HEW_WIRE_FIXED32, HEW_WIRE_LENGTH_DELIMITED, HEW_WIRE_VARINT,
-};
 
 // ── Connection states ──────────────────────────────────────────────────
 
@@ -77,6 +84,7 @@ const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 /// reply envelopes.  A node MUST only send the rejection sentinel to peers that
 /// advertise this flag; old nodes would misinterpret it as a void-success reply.
 pub(crate) const HEW_FEATURE_SUPPORTS_ASK_REJECTION: u32 = 1 << 3;
+const MAX_REGISTRY_GOSSIP_FLUSH_EVENTS: usize = 64;
 const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
 const FNV1A32_PRIME: u32 = 16_777_619;
 
@@ -412,6 +420,7 @@ fn publish_connection_established(
     mgr: &HewConnMgr,
     peer_node_id: u16,
     conn_id: c_int,
+    peer_feature_flags: u32,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
@@ -450,6 +459,8 @@ fn publish_connection_established(
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
     }
+
+    flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
 }
 
 fn retire_connection_publication(
@@ -645,6 +656,10 @@ pub(crate) fn supports_ask_rejection(flags: u32) -> bool {
     flags & HEW_FEATURE_SUPPORTS_ASK_REJECTION != 0
 }
 
+pub(crate) fn supports_gossip(flags: u32) -> bool {
+    flags & HEW_FEATURE_SUPPORTS_GOSSIP != 0
+}
+
 fn is_ask_rejection_reply(msg_type: i32, peer_feature_flags: u32) -> bool {
     msg_type == crate::hew_node::HEW_REPLY_REJECT_MSG_TYPE
         && supports_ask_rejection(peer_feature_flags)
@@ -660,12 +675,10 @@ fn local_schema_hash() -> u32 {
     }
 
     let mut hash = FNV1A32_OFFSET_BASIS;
-    hash = fnv1a32_update(hash, &HBF_MAGIC);
-    hash = fnv1a32_update(hash, &[HBF_VERSION]);
-    hash = fnv1a32_update(hash, &[HBF_FLAG_COMPRESSED]);
-    hash = fnv1a32_update(hash, &HEW_WIRE_VARINT.to_le_bytes());
-    hash = fnv1a32_update(hash, &HEW_WIRE_LENGTH_DELIMITED.to_le_bytes());
-    fnv1a32_update(hash, &HEW_WIRE_FIXED32.to_le_bytes())
+    hash = fnv1a32_update(hash, b"CBOR-ENVELOPE");
+    hash = fnv1a32_update(hash, &[WIRE_VERSION]);
+    hash = fnv1a32_update(hash, &[FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE]);
+    fnv1a32_update(hash, &[1, 2, 3, 4, 5, 6, 7, 8])
 }
 
 fn local_handshake(
@@ -858,32 +871,416 @@ unsafe fn encode_envelope(
     msg_type: i32,
     payload: *mut u8,
     payload_len: usize,
+    payload_class: u8,
+    cancel_token_handle: u64,
 ) -> Option<Vec<u8>> {
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    let env = HewWireEnvelope {
-        target_actor_id,
-        source_actor_id: 0,
-        msg_type,
-        payload_size: payload_len as u32,
-        payload,
-        request_id: 0,
-        source_node_id: 0,
-    };
-    // SAFETY: zeroed is valid for HewWireBuf.
-    let mut wire_buf: HewWireBuf = unsafe { std::mem::zeroed() };
-    // SAFETY: wire_buf is a valid stack allocation.
-    unsafe { hew_wire_buf_init(&raw mut wire_buf) };
-    // SAFETY: pointers are valid for the duration of the call.
-    if unsafe { hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
-        // SAFETY: wire_buf was initialised above.
-        unsafe { hew_wire_buf_free(&raw mut wire_buf) };
-        return None;
+    // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
+    // profiles via set_last_error + return None, not debug_assert).
+    validate_cross_node_send_params(payload_class, cancel_token_handle)?;
+    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
+    match unsafe {
+        encode_envelope_frame_from_raw_parts(
+            target_actor_id,
+            0,
+            msg_type,
+            payload.cast_const(),
+            payload_len,
+            0,
+            0,
+        )
+    } {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!("hew_connmgr_send: {err}"));
+            None
+        }
     }
-    // SAFETY: wire_buf.data points to wire_buf.len readable bytes until free.
-    let bytes = unsafe { std::slice::from_raw_parts(wire_buf.data, wire_buf.len) }.to_vec();
-    // SAFETY: wire_buf was initialised above.
-    unsafe { hew_wire_buf_free(&raw mut wire_buf) };
-    Some(bytes)
+}
+
+fn encode_registry_gossip_control(name: &str, actor_id: u64, is_add: bool) -> Option<Vec<u8>> {
+    let op = if is_add {
+        crate::cluster::GOSSIP_REGISTRY_ADD
+    } else {
+        crate::cluster::GOSSIP_REGISTRY_REMOVE
+    };
+    let payload = RegistryGossipPayload {
+        op,
+        name: name.to_owned(),
+        actor_id,
+    };
+    let payload = match encode_registry_gossip_payload(&payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "registry gossip control payload encode failure: {err}"
+            ));
+            return None;
+        }
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_REGISTRY_GOSSIP,
+        payload,
+    };
+    match encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!(
+                "registry gossip control frame encode failure: {err}"
+            ));
+            None
+        }
+    }
+}
+
+fn handle_control_frame(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    control: &ControlFrame,
+) {
+    match control.ctrl_kind {
+        CTRL_REGISTRY_GOSSIP => {}
+        CTRL_SWIM => {
+            handle_swim_control_frame(mgr, peer_feature_flags, conn_id, control);
+            return;
+        }
+        other => {
+            set_last_error(format!(
+                "connection reader unknown control frame kind {other}"
+            ));
+            return;
+        }
+    }
+    if !supports_gossip(peer_feature_flags) {
+        set_last_error("connection reader rejected registry gossip from non-gossip peer");
+        return;
+    }
+
+    let payload = match decode_registry_gossip_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader registry gossip payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    let is_add = match payload.op {
+        REGISTRY_GOSSIP_OP_ADD => true,
+        REGISTRY_GOSSIP_OP_REMOVE => false,
+        op => {
+            set_last_error(format!("connection reader registry gossip unknown op {op}"));
+            return;
+        }
+    };
+    if mgr.is_null() {
+        set_last_error("connection reader registry gossip missing manager");
+        return;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        set_last_error("connection reader registry gossip missing cluster");
+        return;
+    }
+    // SAFETY: cluster pointer is owned by the live node/manager and remains
+    // valid while the reader thread is running.
+    unsafe {
+        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.actor_id, is_add);
+    }
+}
+
+fn active_gossip_connection_ids(mgr: &HewConnMgr) -> Vec<c_int> {
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| {
+                c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && supports_gossip(c.peer_feature_flags)
+            })
+            .map(|c| c.conn_id)
+            .collect()
+    })
+}
+
+fn flush_registry_gossip_to_connection(mgr: &HewConnMgr, conn_id: c_int, peer_feature_flags: u32) {
+    if !supports_gossip(peer_feature_flags) || mgr.cluster.is_null() {
+        return;
+    }
+
+    // SAFETY: cluster pointer belongs to this live connection manager.
+    let events = unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) };
+    for event in events {
+        let Some(bytes) = encode_registry_gossip_control(&event.name, event.actor_id, event.is_add)
+        else {
+            continue;
+        };
+        // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
+        if unsafe { send_preencoded_on_manager(mgr, conn_id, bytes.as_ptr(), bytes.len()) } != 0 {
+            set_last_error(format!(
+                "registry gossip flush send failed for conn {conn_id}"
+            ));
+        }
+    }
+}
+
+// ── SWIM failure-detection transport ────────────────────────────────────
+
+/// Resolve the authenticated peer node ID for an active connection.
+///
+/// Returns `0` if the connection is not active or is not registered. SWIM
+/// uses this to cross-check a frame's claimed `from_node` against the identity
+/// established during the handshake.
+fn peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_int) -> u16 {
+    mgr.connections.access(|conns| {
+        conns
+            .iter()
+            .find(|c| c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
+            .map_or(0, |c| c.peer_node_id)
+    })
+}
+
+/// Encode a SWIM control frame from a payload.
+fn encode_swim_control(payload: &SwimControlPayload) -> Option<Vec<u8>> {
+    let payload_bytes = match encode_swim_payload(payload) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!("SWIM control payload encode failure: {err}"));
+            return None;
+        }
+    };
+    let frame = ControlFrame {
+        version: WIRE_VERSION,
+        ctrl_kind: CTRL_SWIM,
+        payload: payload_bytes,
+    };
+    match encode_control_frame(&frame) {
+        Ok(bytes) => Some(bytes),
+        Err(err) => {
+            set_last_error(format!("SWIM control frame encode failure: {err}"));
+            None
+        }
+    }
+}
+
+/// Drain the cluster's pending membership gossip as wire entries for
+/// piggybacking on an outbound SWIM frame (C6).
+fn collect_swim_gossip(cluster: &HewCluster) -> Vec<SwimGossipEntry> {
+    cluster
+        .take_swim_gossip(cluster.max_gossip_per_msg())
+        .into_iter()
+        .map(|(node_id, state, incarnation)| SwimGossipEntry {
+            node_id,
+            state,
+            incarnation,
+        })
+        .collect()
+}
+
+/// Build a SWIM frame of `msg_type` to `target_node`, stamped with the local
+/// node's identity and incarnation, carrying a fresh piggybacked gossip batch.
+fn build_swim_frame(
+    mgr: &HewConnMgr,
+    cluster: &HewCluster,
+    msg_type: i32,
+    target_node: u16,
+) -> Option<Vec<u8>> {
+    let payload = SwimControlPayload {
+        msg_type,
+        from_node: mgr.local_node_id,
+        incarnation: cluster.local_incarnation(),
+        target_node,
+        gossip: collect_swim_gossip(cluster),
+    };
+    encode_swim_control(&payload)
+}
+
+/// Send a single SWIM protocol message to a specific peer node.
+///
+/// Used by the SWIM driver to issue direct PINGs and by the indirect-probe
+/// path (C4) to relay `PING` / `PING_REQ`. `target_node` is the
+/// indirect-probe subject for `PING_REQ` frames; `0` for direct PING / ACK.
+///
+/// Returns `0` on a successful send, `-1` if no active gossip-capable
+/// connection to `peer_node_id` exists or the send failed.
+///
+/// # Safety
+///
+/// `mgr` must be a valid connection manager pointer for the duration of the
+/// call when non-null.
+pub(crate) unsafe fn hew_connmgr_send_swim(
+    mgr: *mut HewConnMgr,
+    peer_node_id: u16,
+    msg_type: i32,
+    target_node: u16,
+) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees manager pointer validity for this call.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        return -1;
+    }
+
+    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
+    let conn_id = unsafe { hew_connmgr_conn_id_for_node(mgr, peer_node_id) };
+    if conn_id < 0 {
+        return -1;
+    }
+    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
+    let flags = unsafe { hew_connmgr_feature_flags_for_node(mgr, peer_node_id) };
+    if !supports_gossip(flags) {
+        return -1;
+    }
+
+    // SAFETY: cluster pointer is owned by the live manager.
+    let cluster = unsafe { &*mgr_ref.cluster };
+    let Some(bytes) = build_swim_frame(mgr_ref, cluster, msg_type, target_node) else {
+        return -1;
+    };
+    // SAFETY: manager is live, bytes is a complete encoded control frame.
+    if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Return the node IDs of all active gossip-capable peer connections.
+///
+/// The SWIM driver uses this to choose indirect-probe relays (K random peers
+/// excluding the probe target).
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer for the duration of the call.
+pub(crate) unsafe fn hew_connmgr_active_swim_peers(mgr: *const HewConnMgr) -> Vec<u16> {
+    if mgr.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr_ref = unsafe { &*mgr };
+    mgr_ref.connections.access(|conns| {
+        conns
+            .iter()
+            .filter(|c| {
+                c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && supports_gossip(c.peer_feature_flags)
+                    && c.peer_node_id != 0
+            })
+            .map(|c| c.peer_node_id)
+            .collect()
+    })
+}
+
+/// Handle an inbound SWIM control frame.
+///
+/// 1. Decode + bound the payload (fail-closed).
+/// 2. Reject cross-attribution: the claimed `from_node` MUST match the
+///    handshake-authenticated identity of the connection it arrived on.
+/// 3. Apply piggybacked membership gossip (C6 import) and run incarnation
+///    self-refutation (C5).
+/// 4. Run the SWIM state machine via `process_message`.
+/// 5. Respond per message type: PING -> ACK; `PING_REQ` -> forward a real PING
+///    to the indirect-probe target (C4); ACK -> no response.
+fn handle_swim_control_frame(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    control: &ControlFrame,
+) {
+    if !supports_gossip(peer_feature_flags) {
+        set_last_error("connection reader rejected SWIM frame from non-gossip peer");
+        return;
+    }
+    let payload = match decode_swim_payload(&control.payload) {
+        Ok(payload) => payload,
+        Err(err) => {
+            set_last_error(format!(
+                "connection reader SWIM payload decode failure: {err}"
+            ));
+            return;
+        }
+    };
+    if mgr.is_null() {
+        set_last_error("connection reader SWIM frame missing manager");
+        return;
+    }
+    // SAFETY: reader_loop owns a live manager pointer for this connection.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.cluster.is_null() {
+        set_last_error("connection reader SWIM frame missing cluster");
+        return;
+    }
+
+    // Cross-attribution defence: the frame's claimed sender must equal the
+    // authenticated handshake identity of the connection it arrived on.
+    let authenticated = peer_node_id_for_conn(mgr_ref, conn_id);
+    if authenticated == 0 || authenticated != payload.from_node {
+        set_last_error(format!(
+            "connection reader SWIM frame from_node {} does not match authenticated peer {authenticated}",
+            payload.from_node
+        ));
+        return;
+    }
+
+    let gossip: Vec<(u16, i32, u64)> = payload
+        .gossip
+        .iter()
+        .map(|e| (e.node_id, e.state, e.incarnation))
+        .collect();
+
+    // SAFETY: cluster pointer is owned by the live node/manager and remains
+    // valid while the reader thread is running. All driven methods
+    // (apply_swim_gossip / refute_if_suspected / process_message) take &self
+    // and synchronize internally via Mutex/Atomic, so a shared reference is
+    // sound even with the SWIM driver thread concurrently calling tick().
+    let cluster = unsafe { &*mgr_ref.cluster };
+
+    // C6: fold piggybacked membership gossip into our view.
+    cluster.apply_swim_gossip(&gossip);
+    // C5: if any gossip suspects us, refute by bumping our incarnation. The
+    // refutation rides out on our next PING/ACK as an ALIVE-about-self event.
+    let _ = cluster.refute_if_suspected(&gossip);
+
+    // Run the SWIM state machine for this message. The authenticated peer ID
+    // is supplied as the source-connection identity so the cluster's
+    // source-mismatch guard validates the claim.
+    cluster.process_message(
+        payload.msg_type,
+        payload.from_node,
+        payload.incarnation,
+        authenticated,
+    );
+
+    // Respond per message type.
+    match payload.msg_type {
+        crate::cluster::SWIM_MSG_PING => {
+            // Direct probe: ACK the sender.
+            // SAFETY: manager is live for this call.
+            let _ = unsafe {
+                hew_connmgr_send_swim(mgr, payload.from_node, crate::cluster::SWIM_MSG_ACK, 0)
+            };
+        }
+        crate::cluster::SWIM_MSG_PING_REQ
+            if payload.target_node != 0 && payload.target_node != mgr_ref.local_node_id =>
+        {
+            // C4 indirect probing: forward a real PING to the probe target so
+            // the relay actually exercises the target's liveness, then the
+            // target's ACK propagates membership back via gossip. A no-op if
+            // we have no active connection to the target.
+            // SAFETY: manager is live for this call.
+            let _ = unsafe {
+                hew_connmgr_send_swim(mgr, payload.target_node, crate::cluster::SWIM_MSG_PING, 0)
+            };
+        }
+        _ => {
+            // ACK (and any other type) requires no response; state already
+            // updated via process_message above.
+        }
+    }
 }
 
 #[cfg(feature = "encryption")]
@@ -1093,74 +1490,81 @@ fn reader_loop(
         let now = unsafe { crate::io_time::hew_now_ms() };
         last_activity.store(now, Ordering::Release);
 
-        // Decode envelope and route.
-        if let Some(router_fn) = router {
-            // SAFETY: buf contains `read_len` valid bytes from recv.
-            unsafe {
-                let mut wire_buf: HewWireBuf = std::mem::zeroed();
-                hew_wire_buf_init_read(&raw mut wire_buf, payload_ptr.cast(), payload_len);
+        // Decode CBOR wire frame and route.
+        // SAFETY: buf contains `payload_len` valid bytes from recv/decrypt.
+        let frame_bytes =
+            unsafe { std::slice::from_raw_parts(payload_ptr.cast_const(), payload_len) };
+        let wire_frame = match decode_wire_frame(frame_bytes) {
+            Ok(frame) => frame,
+            Err(err) => {
+                set_last_error(format!(
+                    "connection reader CBOR wire-frame decode failure: {err}"
+                ));
+                continue;
+            }
+        };
 
-                let mut envelope: HewWireEnvelope = std::mem::zeroed();
-                let rc = hew_wire_decode_envelope(&raw mut wire_buf, &raw mut envelope);
-                if rc == 0 {
-                    // Reply envelopes (request_id > 0, source_node_id == 0) are
-                    // deposited directly into the reply routing table, bypassing
-                    // the normal inbound router.
-                    if envelope.request_id > 0 && envelope.source_node_id == 0 {
-                        if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
-                            let reason_payload =
-                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                    std::slice::from_raw_parts(
-                                        envelope.payload,
-                                        envelope.payload_size as usize,
-                                    )
-                                } else {
-                                    &[]
-                                };
-                            // Rejection reply: the remote node hit its inbound
-                            // ask path and sent an encoded AskError reason.
-                            // Mark the pending ask as failed so the originating
-                            // caller gets the precise remote rejection reason.
-                            //
-                            // The `supports_ask_rejection` guard ensures that
-                            // old nodes (which never send this sentinel) cannot
-                            // accidentally trigger this path even if they happen
-                            // to send a message with msg_type = 65535.
-                            crate::hew_node::fail_remote_reply(envelope.request_id, reason_payload);
-                        } else {
-                            let reply_payload =
-                                if envelope.payload_size > 0 && !envelope.payload.is_null() {
-                                    std::slice::from_raw_parts(
-                                        envelope.payload,
-                                        envelope.payload_size as usize,
-                                    )
-                                } else {
-                                    &[]
-                                };
-                            crate::hew_node::complete_remote_reply(
-                                envelope.request_id,
-                                reply_payload,
-                            );
-                        }
+        match wire_frame {
+            WireFrame::Control(control) => {
+                handle_control_frame(mgr, peer_feature_flags, conn_id, &control);
+            }
+            WireFrame::Envelope(mut envelope) => {
+                let Some(router_fn) = router else {
+                    continue;
+                };
+
+                // Reply envelopes (request_id > 0, source_node_id == 0) are
+                // deposited directly into the reply routing table, bypassing
+                // the normal inbound router.
+                if envelope.request_id > 0 && envelope.source_node_id == 0 {
+                    if is_ask_rejection_reply(envelope.msg_type, peer_feature_flags) {
+                        // Rejection reply: the remote node hit its inbound
+                        // ask path and sent an encoded AskError reason.
+                        // Mark the pending ask as failed so the originating
+                        // caller gets the precise remote rejection reason.
+                        //
+                        // The `supports_ask_rejection` guard ensures that
+                        // old nodes (which never send this sentinel) cannot
+                        // accidentally trigger this path even if they happen
+                        // to send a message with msg_type = 65535.
+                        crate::hew_node::fail_remote_reply(
+                            envelope.request_id,
+                            envelope.payload.as_slice(),
+                        );
                     } else {
-                        // I/O recv span: bracket the router call so the
-                        // mailbox enqueue captures the io_recv span as the
-                        // parent of the actor-dispatch span.
-                        // Fast path: `io_recv_span_begin` returns None when
-                        // tracing is disabled (a single atomic load).
-                        let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
+                        crate::hew_node::complete_remote_reply(
+                            envelope.request_id,
+                            envelope.payload.as_slice(),
+                        );
+                    }
+                } else {
+                    // I/O recv span: bracket the router call so the
+                    // mailbox enqueue captures the io_recv span as the
+                    // parent of the actor-dispatch span.
+                    // Fast path: `io_recv_span_begin` returns None when
+                    // tracing is disabled (a single atomic load).
+                    let saved_ctx = crate::tracing::io_recv_span_begin(conn_id);
+                    let payload_ptr = if envelope.payload.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        envelope.payload.as_mut_ptr()
+                    };
+                    // SAFETY: router_fn is the manager's configured inbound
+                    // router; payload_ptr is null for empty payloads or points
+                    // at envelope-owned bytes valid for this call.
+                    unsafe {
                         router_fn(
                             envelope.target_actor_id,
                             envelope.msg_type,
-                            envelope.payload,
-                            envelope.payload_size as usize,
+                            payload_ptr,
+                            envelope.payload.len(),
                             envelope.request_id,
                             envelope.source_node_id,
                             mgr,
                         );
-                        if let Some(saved) = saved_ctx {
-                            crate::tracing::io_recv_span_end(saved);
-                        }
+                    }
+                    if let Some(saved) = saved_ctx {
+                        crate::tracing::io_recv_span_end(saved);
                     }
                 }
             }
@@ -1466,7 +1870,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         {
             // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
             // SAFETY: mgr.transport is valid while the connection manager is alive.
-            unsafe { crate::quic_transport::hew_transport_is_quic(mgr.transport) }
+            unsafe {
+                crate::quic_transport::hew_transport_is_quic(mgr.transport)
+                    || crate::quic_mesh::hew_transport_is_quic_mesh(mgr.transport)
+            }
         }
         #[cfg(not(feature = "quic"))]
         {
@@ -1606,6 +2013,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         mgr,
         peer_hs.node_id,
         conn_id,
+        peer_hs.feature_flags,
         publication_token,
         &publication_sync,
         &publication_removed,
@@ -1735,7 +2143,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // Verify connection exists, is active, and targets the correct peer node.
     // The peer_node_id check prevents sends to recycled conn_ids that now
     // belong to a different node (conn_id reuse safety).
-    let target_node_id = (target_actor_id >> 48) as u16;
+    let target_node_id = crate::pid::hew_pid_node(target_actor_id);
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -1769,8 +2177,16 @@ pub unsafe extern "C" fn hew_connmgr_send(
     #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
         // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
-        let Some(encoded) = (unsafe { encode_envelope(target_actor_id, msg_type, data, size) })
-        else {
+        let Some(encoded) = (unsafe {
+            encode_envelope(
+                target_actor_id,
+                msg_type,
+                data,
+                size,
+                MailboxPayloadClass::SerializedCrossNode as u8,
+                0,
+            )
+        }) else {
             return -1;
         };
         let mut maybe_ciphertext = None;
@@ -1801,6 +2217,18 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
     }
 
+    // Fix 5: guard the plaintext send path with the same validator that the
+    // encrypted branch runs inside `encode_envelope`.  Callers of
+    // `hew_connmgr_send` must already have serialised the payload (enforced at
+    // the `hew_node_send` level), so the class is truthfully SerializedCrossNode.
+    if validate_cross_node_send_params(
+        MailboxPayloadClass::SerializedCrossNode as u8,
+        crate::mailbox_envelope::CANCEL_TOKEN_NONE,
+    )
+    .is_none()
+    {
+        return -1;
+    }
     // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above;
     //         data is valid for size bytes per caller contract.
     let rc = unsafe {
@@ -1821,30 +2249,12 @@ pub unsafe extern "C" fn hew_connmgr_send(
     }
 }
 
-/// Send a pre-encoded wire frame over a specific connection, applying noise
-/// encryption when the connection is encrypted.
-///
-/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
-/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
-/// only transformation applied is noise encryption (when enabled).
-///
-/// Returns 0 on success, -1 on failure.
-///
-/// # Safety
-///
-/// - `mgr` must be a valid pointer for the duration of the call.
-/// - `data` must point to at least `len` readable bytes.
-pub(crate) unsafe fn hew_connmgr_send_preencoded(
-    mgr: *mut HewConnMgr,
+unsafe fn send_preencoded_on_manager(
+    mgr_ref: &HewConnMgr,
     conn_id: c_int,
     data: *const u8,
     len: usize,
 ) -> c_int {
-    if mgr.is_null() {
-        return -1;
-    }
-    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
-    let mgr_ref = unsafe { &*mgr };
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -1912,6 +2322,73 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded(
     } else {
         -1
     }
+}
+
+/// Send a pre-encoded wire frame over a specific connection, applying noise
+/// encryption when the connection is encrypted.
+///
+/// Unlike [`hew_connmgr_send`], this function takes bytes that are already
+/// encoded into the Hew wire format (e.g., a full ask/reply envelope). The
+/// only transformation applied is noise encryption (when enabled).
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer for the duration of the call.
+/// - `data` must point to at least `len` readable bytes.
+pub(crate) unsafe fn hew_connmgr_send_preencoded(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    data: *const u8,
+    len: usize,
+) -> c_int {
+    if mgr.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    // SAFETY: forwarded caller contract.
+    unsafe { send_preencoded_on_manager(mgr_ref, conn_id, data, len) }
+}
+
+/// Broadcast a registry-gossip control frame to active gossip-capable peers.
+///
+/// Returns the number of successful sends.
+///
+/// # Safety
+///
+/// `mgr` must be a valid connection manager pointer for the duration of the
+/// call when non-null.
+pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
+    mgr: *mut HewConnMgr,
+    name: &str,
+    actor_id: u64,
+    is_add: bool,
+) -> c_int {
+    if mgr.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees manager pointer validity.
+    let mgr_ref = unsafe { &*mgr };
+    let Some(bytes) = encode_registry_gossip_control(name, actor_id, is_add) else {
+        return 0;
+    };
+
+    let conn_ids = active_gossip_connection_ids(mgr_ref);
+    let mut success_count: c_int = 0;
+    for conn_id in conn_ids {
+        // SAFETY: manager is live and bytes is a complete encoded control frame.
+        if unsafe { send_preencoded_on_manager(mgr_ref, conn_id, bytes.as_ptr(), bytes.len()) } == 0
+        {
+            success_count += 1;
+        } else {
+            set_last_error(format!(
+                "registry gossip broadcast send failed for conn {conn_id}"
+            ));
+        }
+    }
+    success_count
 }
 
 /// Return the connection ID of the first active connection whose handshake
@@ -2202,6 +2679,300 @@ mod tests {
             !is_ask_rejection_reply(0, HEW_FEATURE_SUPPORTS_ASK_REJECTION),
             "normal replies must not be reclassified as rejections"
         );
+    }
+
+    unsafe extern "C" fn record_registry_gossip_send(
+        impl_ptr: *mut std::ffi::c_void,
+        conn_id: c_int,
+        data: *const std::ffi::c_void,
+        len: usize,
+    ) -> c_int {
+        // SAFETY: test installs a Mutex<Vec<_>> as the transport impl payload.
+        let sends = unsafe { &*(impl_ptr.cast::<Mutex<Vec<(c_int, Vec<u8>)>>>()) };
+        // SAFETY: send_preencoded_on_manager passes an encoded frame valid for len bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) }.to_vec();
+        sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((conn_id, bytes));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "test payload lengths fit c_int"
+        )]
+        {
+            len as c_int
+        }
+    }
+
+    #[test]
+    fn registry_gossip_broadcast_targets_only_active_gossip_peers() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup below.
+        unsafe {
+            let mgr = hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            );
+            assert!(!mgr.is_null());
+
+            let mut gossip_peer = ConnectionActor::new(10);
+            gossip_peer.peer_node_id = 2;
+            gossip_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            gossip_peer
+                .state
+                .store(CONN_STATE_ACTIVE, Ordering::Release);
+
+            let mut old_peer = ConnectionActor::new(11);
+            old_peer.peer_node_id = 3;
+            old_peer.peer_feature_flags = 0;
+            old_peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+
+            let mut draining_peer = ConnectionActor::new(12);
+            draining_peer.peer_node_id = 4;
+            draining_peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            draining_peer
+                .state
+                .store(CONN_STATE_DRAINING, Ordering::Release);
+
+            (&*mgr).connections.access(|conns| {
+                conns.push(gossip_peer);
+                conns.push(old_peer);
+                conns.push(draining_peer);
+            });
+
+            let actor_id = crate::pid::hew_pid_make(2, 0x42);
+            assert_eq!(
+                hew_connmgr_broadcast_registry_gossip(mgr, "worker", actor_id, true),
+                1
+            );
+
+            {
+                let sends_ref = &*sends;
+                let sends_guard = sends_ref
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(sends_guard.len(), 1);
+                assert_eq!(sends_guard[0].0, 10);
+                let WireFrame::Control(control) =
+                    decode_wire_frame(&sends_guard[0].1).expect("control frame")
+                else {
+                    panic!("registry gossip broadcast must send a control frame");
+                };
+                assert_eq!(control.ctrl_kind, CTRL_REGISTRY_GOSSIP);
+                let payload =
+                    decode_registry_gossip_payload(&control.payload).expect("gossip payload");
+                assert_eq!(payload.op, crate::cluster::GOSSIP_REGISTRY_ADD);
+                assert_eq!(payload.name, "worker");
+                assert_eq!(payload.actor_id, actor_id);
+            }
+
+            hew_connmgr_free(mgr);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
+    }
+
+    /// Build a SWIM control frame as it would arrive on the wire.
+    fn swim_control_frame_bytes(payload: &SwimControlPayload) -> Vec<u8> {
+        encode_swim_control(payload).expect("swim control frame should encode")
+    }
+
+    /// A PING SWIM frame is answered with an ACK, and the cross-attribution
+    /// guard rejects a frame whose `from_node` does not match the handshake
+    /// identity of the connection it arrived on.
+    #[test]
+    fn swim_ping_is_acked_and_cross_attribution_is_rejected() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            // Active gossip-capable peer node 2 on conn 10.
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+
+            // Honest PING from node 2 (matches the conn's authenticated id).
+            let ping = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_PING,
+                from_node: 2,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![],
+            };
+            let frame = decode_wire_frame(&swim_control_frame_bytes(&ping)).expect("frame");
+            let WireFrame::Control(control) = frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+
+            // An ACK must have been sent back on conn 10.
+            {
+                let guard = (&*sends)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(guard.len(), 1, "PING must produce exactly one ACK send");
+                assert_eq!(guard[0].0, 10);
+                let WireFrame::Control(ctrl) = decode_wire_frame(&guard[0].1).expect("ack frame")
+                else {
+                    panic!("ack must be a control frame");
+                };
+                assert_eq!(ctrl.ctrl_kind, CTRL_SWIM);
+                let ack = decode_swim_payload(&ctrl.payload).expect("ack payload");
+                assert_eq!(ack.msg_type, crate::cluster::SWIM_MSG_ACK);
+                assert_eq!(ack.from_node, 1, "ACK is stamped with our local node id");
+            }
+
+            // Spoofed PING claiming to be node 9 on node 2's connection is
+            // rejected — no further send.
+            let spoof = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_PING,
+                from_node: 9,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![],
+            };
+            let spoof_frame = decode_wire_frame(&swim_control_frame_bytes(&spoof)).expect("frame");
+            let WireFrame::Control(spoof_control) = spoof_frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &spoof_control);
+            {
+                let guard = (&*sends)
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                assert_eq!(
+                    guard.len(),
+                    1,
+                    "cross-attributed PING must be dropped without an ACK"
+                );
+            }
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
+    }
+
+    /// An inbound SWIM frame carrying piggybacked DEAD gossip about a third
+    /// node folds that transition into the local membership view (C6 import).
+    #[test]
+    fn swim_frame_imports_piggybacked_gossip() {
+        let sends = Box::into_raw(Box::new(Mutex::new(Vec::<(c_int, Vec<u8>)>::new())));
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: Some(record_registry_gossip_send),
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport_ptr = Box::into_raw(Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: sends.cast(),
+        }));
+
+        let cfg = crate::cluster::ClusterConfig {
+            local_node_id: 1,
+            ..crate::cluster::ClusterConfig::default()
+        };
+        // SAFETY: cfg valid for the call.
+        let cluster = unsafe { crate::cluster::hew_cluster_new(&raw const cfg) };
+        assert!(!cluster.is_null());
+
+        // SAFETY: test-owned pointers remain valid until the explicit cleanup.
+        unsafe {
+            // Pre-seed node 3 as ALIVE so the gossip can transition it.
+            let addr = std::ffi::CString::new("10.0.0.3:9000").unwrap();
+            crate::cluster::hew_cluster_join(cluster, 3, addr.as_ptr());
+
+            let mgr = hew_connmgr_new(transport_ptr, None, std::ptr::null_mut(), cluster, 1);
+            assert!(!mgr.is_null());
+
+            let mut peer = ConnectionActor::new(10);
+            peer.peer_node_id = 2;
+            peer.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            peer.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr).connections.access(|conns| conns.push(peer));
+
+            // ACK from node 2 carrying DEAD-about-node-3 gossip.
+            let ack = SwimControlPayload {
+                msg_type: crate::cluster::SWIM_MSG_ACK,
+                from_node: 2,
+                incarnation: 1,
+                target_node: 0,
+                gossip: vec![SwimGossipEntry {
+                    node_id: 3,
+                    state: crate::cluster::MEMBER_DEAD,
+                    incarnation: 5,
+                }],
+            };
+            let frame = decode_wire_frame(&swim_control_frame_bytes(&ack)).expect("frame");
+            let WireFrame::Control(control) = frame else {
+                panic!("expected control frame");
+            };
+            handle_swim_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, &control);
+
+            // Node 3 must now be DEAD in our membership view.
+            assert_eq!(
+                crate::cluster::hew_cluster_member_state(cluster, 3),
+                crate::cluster::MEMBER_DEAD,
+                "piggybacked DEAD gossip must transition node 3 to DEAD"
+            );
+
+            hew_connmgr_free(mgr);
+            crate::cluster::hew_cluster_free(cluster);
+            drop(Box::from_raw(transport_ptr));
+            drop(Box::from_raw(sends));
+        }
+        drop(ops);
     }
 
     /// Defense-in-depth: `ConnectionActor::drop` must close the transport
@@ -2608,6 +3379,7 @@ mod tests {
                 &*mgr,
                 2,
                 11,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 old_token,
                 &old_publication_sync,
                 &old_publication_removed,
@@ -2676,6 +3448,7 @@ mod tests {
                 &*mgr,
                 2,
                 22,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 replacement_token,
                 &replacement_publication_sync,
                 &replacement_publication_removed,
@@ -2778,6 +3551,7 @@ mod tests {
                 &*mgr,
                 2,
                 31,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 publication_token,
                 &publication_sync,
                 &publication_removed,
@@ -2928,6 +3702,7 @@ mod tests {
                     &*mgr.0,
                     2,
                     22,
+                    HEW_FEATURE_SUPPORTS_GOSSIP,
                     2,
                     &publication_sync,
                     &publication_removed,
@@ -3113,6 +3888,7 @@ mod tests {
                 &*mgr,
                 2,
                 44,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
                 publication_token,
                 &publication_sync,
                 &publication_removed,

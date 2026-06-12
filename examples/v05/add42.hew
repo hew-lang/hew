@@ -1,7 +1,7 @@
 // Companion to hello_int.hew that proves the exit code is *computed* —
 // the lowering emits a real Instr::IntAdd rather than a hard-coded ConstI64.
 // The binary returns 42 on both native and wasm targets.
-fn main() -> int {
+fn main() -> i64 {
     let a = 10;
     let b = 32;
     a + b

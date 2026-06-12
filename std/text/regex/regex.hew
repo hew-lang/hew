@@ -21,7 +21,17 @@
 ///
 /// Created by `regex.new(pattern)`. Call `free()` before the value goes out of
 /// scope; dropping without `free()` is a resource leak.
-type Pattern {
+#[opaque]
+pub type Pattern {
+}
+
+/// Flat row-major capture results for `captures` and `find_all_submatch`.
+///
+/// Each match row has `group_count` entries. Group 0 is the whole match and
+/// groups 1..n are capture groups. Missing optional groups are stored as "".
+pub type CaptureMatches {
+    groups: Vec<string>;
+    group_count: i64;
 }
 
 /// Methods available on a compiled `Pattern`.
@@ -35,18 +45,18 @@ trait PatternMethods {
     /// assert(re.is_match("hello"));
     /// re.free();
     /// ```
-    fn is_match(pat: Pattern, input: String) -> bool;
+    fn is_match(self, input: string) -> bool;
 
     /// Ergonomic alias for `is_match`. Returns `true` when the pattern matches
     /// anywhere in `input`. Provided so call sites can read as
     /// `pattern.matches(text)` — a one-to-one replacement for the removed
     /// `text =~ pattern` operator.
-    fn matches(pat: Pattern, input: String) -> bool;
+    fn matches(self, input: string) -> bool;
 
     /// Find the first match of the pattern in the input string.
     ///
     /// Returns the matched substring, or an empty string if no match.
-    fn find(pat: Pattern, input: String) -> String;
+    fn find(self, input: string) -> string;
 
     /// Replace all occurrences of the pattern with the replacement string.
     ///
@@ -58,44 +68,115 @@ trait PatternMethods {
     /// // result == "abcNdefN"
     /// re.free();
     /// ```
-    fn replace(pat: Pattern, input: String, replacement: String) -> String;
+    fn replace(self, input: string, replacement: string) -> string;
+
+    /// Find all non-overlapping matches in the input string.
+    ///
+    /// Returns an empty vector when there are no matches.
+    fn find_all(self, input: string) -> Vec<string>;
+
+    /// Return the indexed capture from the first match.
+    ///
+    /// Group 0 is the whole match. Returns `None` for no match, an invalid
+    /// group, or a non-participating optional group.
+    fn capture(self, input: string, group: i64) -> Option<string>;
+
+    /// Return the named capture from the first match.
+    ///
+    /// Returns `None` for no match, unknown name, or non-participating optional
+    /// group.
+    fn capture_named(self, input: string, name: string) -> Option<string>;
+
+    /// Return first-match submatches as one flat row.
+    fn captures(self, input: string) -> CaptureMatches;
+
+    /// Return all matches' submatches as row-major flat results.
+    fn find_all_submatch(self, input: string) -> CaptureMatches;
 
     /// Clone the compiled pattern, producing an independent copy.
     ///
     /// Each clone must be dropped or freed independently.
-    fn clone(pat: Pattern) -> Pattern;
+    fn clone(self) -> Pattern;
 
     /// Canonical release path for `Pattern`.
     ///
     /// Callers MUST invoke `free()` before the value goes out of scope;
     /// dropping without `free()` is a resource leak.
-    fn free(pat: Pattern);
+    fn free(self);
 }
 
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
-    fn is_match(pat: Pattern, input: String) -> bool {
+    fn is_match(pat: Pattern, input: string) -> bool {
         unsafe {
             hew_regex_is_match(pat, input)
         }
     }
     /// Ergonomic alias for `is_match`.
-    fn matches(pat: Pattern, input: String) -> bool {
+    fn matches(pat: Pattern, input: string) -> bool {
         unsafe {
             hew_regex_is_match(pat, input)
         }
     }
     /// Find the first match of the pattern in the input string.
-    fn find(pat: Pattern, input: String) -> String {
+    fn find(pat: Pattern, input: string) -> string {
         unsafe {
             hew_regex_find(pat, input)
         }
     }
     /// Replace all occurrences of the pattern with the replacement string.
-    fn replace(pat: Pattern, input: String, replacement: String) -> String {
+    fn replace(pat: Pattern, input: string, replacement: string) -> string {
         unsafe {
             hew_regex_replace(pat, input, replacement)
         }
+    }
+    /// Find all non-overlapping matches in the input string.
+    fn find_all(pat: Pattern, input: string) -> Vec<string> {
+        unsafe {
+            hew_regex_find_all(pat, input)
+        }
+    }
+    /// Return the indexed capture from the first match.
+    fn capture(pat: Pattern, input: string, group: i64) -> Option<string> {
+        let values = unsafe {
+            hew_regex_capture_index_one(pat, input, group)
+        };
+        if values.len() == 0 {
+            None
+        } else {
+            Some(values.get(0))
+        }
+    }
+    /// Return the named capture from the first match.
+    fn capture_named(pat: Pattern, input: string, name: string) -> Option<string> {
+        let values = unsafe {
+            hew_regex_capture_name_one(pat, input, name)
+        };
+        if values.len() == 0 {
+            None
+        } else {
+            Some(values.get(0))
+        }
+    }
+    /// Return first-match submatches as one flat row.
+    fn captures(pat: Pattern, input: string) -> CaptureMatches {
+        let groups = unsafe {
+            hew_regex_captures_flat(pat, input)
+        };
+        let group_count = unsafe {
+            hew_regex_capture_width(pat)
+        };
+        CaptureMatches { groups: groups, group_count: group_count }
+    }
+    /// Return all matches' submatches as row-major flat results.
+    fn find_all_submatch(pat: Pattern, input: string) -> CaptureMatches {
+        let groups = unsafe {
+            hew_regex_find_all_submatch_flat(pat, input)
+        };
+        let group_count = unsafe {
+            hew_regex_capture_width(pat)
+        };
+        CaptureMatches { groups: groups, group_count: group_count }
     }
     /// Clone the compiled pattern, producing an independent copy.
     fn clone(pat: Pattern) -> Pattern {
@@ -114,6 +195,57 @@ impl PatternMethods for Pattern {
     }
 }
 
+/// Methods available on flat capture results.
+trait CaptureMatchesMethods {
+    /// Return the number of match rows.
+    fn len(self) -> i64;
+
+    /// Return true when there are no match rows.
+    fn is_empty(self) -> bool;
+
+    /// Return the number of groups in each row, including group 0.
+    fn width(self) -> i64;
+
+    /// Return a capture by match row and group index.
+    fn group(self, match_index: i64, group_index: i64) -> Option<string>;
+
+    /// Return group 0 for the requested match row.
+    fn whole(self, match_index: i64) -> Option<string>;
+}
+
+impl CaptureMatchesMethods for CaptureMatches {
+    /// Return the number of match rows.
+    fn len(rows: CaptureMatches) -> i64 {
+        if rows.group_count <= 0 {
+            return 0;
+        }
+        rows.groups.len() / rows.group_count
+    }
+    /// Return true when there are no match rows.
+    fn is_empty(rows: CaptureMatches) -> bool {
+        rows.len() == 0
+    }
+    /// Return the number of groups in each row, including group 0.
+    fn width(rows: CaptureMatches) -> i64 {
+        rows.group_count
+    }
+    /// Return a capture by match row and group index.
+    fn group(rows: CaptureMatches, match_index: i64, group_index: i64) -> Option<string> {
+        if match_index < 0 || group_index < 0 || group_index >= rows.group_count {
+            return None;
+        }
+        let row_count = rows.len();
+        if match_index >= row_count {
+            return None;
+        }
+        Some(rows.groups.get(match_index * rows.group_count + group_index))
+    }
+    /// Return group 0 for the requested match row.
+    fn whole(rows: CaptureMatches, match_index: i64) -> Option<string> {
+        rows.group(match_index, 0)
+    }
+}
+
 // ── Module-level functions ────────────────────────────────────────────
 /// Compile a regular expression pattern.
 ///
@@ -125,7 +257,7 @@ impl PatternMethods for Pattern {
 /// let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
 /// email_re.free();
 /// ```
-pub fn new(pattern: String) -> Pattern {
+pub fn new(pattern: string) -> Pattern {
     unsafe {
         hew_regex_new(pattern)
     }
@@ -133,10 +265,16 @@ pub fn new(pattern: String) -> Pattern {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_regex_new(pattern: String) -> Pattern;
-    fn hew_regex_is_match(re: Pattern, input: String) -> bool;
-    fn hew_regex_find(re: Pattern, input: String) -> String;
-    fn hew_regex_replace(re: Pattern, input: String, replacement: String) -> String;
+    fn hew_regex_new(pattern: string) -> Pattern;
+    fn hew_regex_is_match(re: Pattern, input: string) -> bool;
+    fn hew_regex_find(re: Pattern, input: string) -> string;
+    fn hew_regex_replace(re: Pattern, input: string, replacement: string) -> string;
+    fn hew_regex_find_all(re: Pattern, input: string) -> Vec<string>;
+    fn hew_regex_capture_index_one(re: Pattern, input: string, group: i64) -> Vec<string>;
+    fn hew_regex_capture_name_one(re: Pattern, input: string, name: string) -> Vec<string>;
+    fn hew_regex_captures_flat(re: Pattern, input: string) -> Vec<string>;
+    fn hew_regex_find_all_submatch_flat(re: Pattern, input: string) -> Vec<string>;
+    fn hew_regex_capture_width(re: Pattern) -> i64;
     fn hew_regex_clone(re: Pattern) -> Pattern;
     fn hew_regex_free(re: Pattern);
 }

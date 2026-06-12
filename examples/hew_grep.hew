@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: hew_grep.hew — A grep-like search tool
+
 // hew_grep.hew — A grep-like search tool
 // Searches for a pattern in files and prints matching lines.
 //
@@ -8,7 +11,7 @@ import std::fs;
 
 import std::string;
 
-fn search_file(filename: String, pattern: String, nl: String) -> i32 {
+fn search_file(filename: string, pattern: string, nl: string) -> i32 {
     if !fs.exists(filename) {
         println(f"hew_grep: {filename}: No such file");
         return 0;
@@ -28,7 +31,7 @@ fn search_file(filename: String, pattern: String, nl: String) -> i32 {
         let line = content.slice(pos, line_end);
         let found = line.find(pattern);
         if found >= 0 {
-            let num_str = string_from_int(linenum);
+            let num_str = string.from_int(linenum);
             println(f"{filename}:{num_str}: {line}");
             matches = matches + 1;
         }

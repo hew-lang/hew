@@ -1,6 +1,6 @@
 #![no_main]
 
-use arbitrary::Arbitrary;
+use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
 #[derive(Debug, Arbitrary)]
@@ -13,8 +13,6 @@ struct HewProgram {
 #[derive(Debug, Clone, Copy, Arbitrary)]
 enum ImportChoice {
     String,
-    Fs,
-    Net,
     Time,
     Json,
 }
@@ -22,12 +20,14 @@ enum ImportChoice {
 #[derive(Debug, Arbitrary)]
 enum HewItem {
     Function(FunctionSpec),
-    Struct(StructSpec),
+    Record(RecordSpec),
     Enum(EnumSpec),
     Trait(TraitSpec),
     Impl(ImplSpec),
     Actor(ActorSpec),
     Generator(GeneratorSpec),
+    Wire(WireSpec),
+    Surface(SurfaceSpec),
 }
 
 #[derive(Debug, Arbitrary)]
@@ -36,7 +36,7 @@ struct FunctionSpec {
 }
 
 #[derive(Debug, Arbitrary)]
-struct StructSpec {
+struct RecordSpec {
     fields: u8,
 }
 
@@ -58,7 +58,7 @@ struct ImplSpec {
 
 #[derive(Debug, Arbitrary)]
 struct ActorSpec {
-    with_gen: bool,
+    lifecycle: bool,
 }
 
 #[derive(Debug, Arbitrary)]
@@ -66,10 +66,19 @@ struct GeneratorSpec {
     count: u8,
 }
 
+#[derive(Debug, Arbitrary)]
+struct WireSpec {
+    fields: u8,
+}
+
+#[derive(Debug, Arbitrary)]
+struct SurfaceSpec {
+    variant: u8,
+}
+
 impl HewProgram {
     fn to_source(&self) -> String {
         let mut out = String::new();
-
         let imports = if self.imports.is_empty() {
             vec![ImportChoice::String]
         } else {
@@ -79,53 +88,47 @@ impl HewProgram {
             out.push_str(import.as_source());
             out.push('\n');
         }
-        out.push('\n');
 
         out.push_str(
-            r#"type CoreType {
-    value: int;
+            r#"
+record CoreType {
+    value: i64,
 }
 
 enum CoreChoice {
     Zero;
-    Num(int);
+    Num(i64);
 }
 
 trait CoreTrait {
-    fn apply(self: Self, x: int) -> int;
+    fn apply(self: Self, x: i64) -> i64;
 }
 
 impl CoreTrait for CoreType {
-    fn apply(self: CoreType, x: int) -> int {
+    fn apply(self: CoreType, x: i64) -> i64 {
         self.value + x
     }
 }
 
 actor CoreActor {
-    let count: int;
+    let count: i64;
 
-    receive fn add(n: int) -> int {
-        self.count = self.count + n;
-        self.count
+    init(initial: i64) {
+        count = initial;
     }
 
-    receive fn current() -> int {
-        self.count
+    receive fn add(n: i64) -> i64 {
+        count = count + n;
+        count
     }
 
-    receive gen fn stream() -> int {
-        var i = 0;
-        while i < 3 {
-            yield i;
-            i = i + 1;
-        }
+    receive fn current() -> i64 {
+        count
     }
 }
 
-gen fn core_numbers() -> int {
-    yield 1;
-    yield 2;
-    yield 3;
+fn core_numbers() {
+    let _g = gen { yield 1; yield 2; 3 };
 }
 "#,
         );
@@ -139,14 +142,13 @@ gen fn core_numbers() -> int {
 
         out.push_str(
             r#"
-fn main() -> Result<int, int> {
+fn main() -> Result<i64, i64> {
     let total = core_pipeline(2)?;
     let summary = f"main {total}";
     Ok(total)
 }
 "#,
         );
-
         out
     }
 
@@ -154,7 +156,7 @@ fn main() -> Result<int, int> {
         let loop_limit = i32::from(self.flavour % 4) + 2;
         format!(
             r#"
-fn core_div(a: int, b: int) -> Result<int, int> {{
+fn core_div(a: i64, b: i64) -> Result<i64, i64> {{
     if b == 0 {{
         Err(1)
     }} else {{
@@ -162,24 +164,14 @@ fn core_div(a: int, b: int) -> Result<int, int> {{
     }}
 }}
 
-fn core_pipeline(seed: int) -> Result<int, int> {{
-    let closure = (x) => x + seed;
-    let thunk = () => closure(1);
-
-    let nums: Vec<int> = Vec::new();
-    nums.push(closure(1));
-    nums.push(closure(2));
-
-    let table: HashMap<String, int> = HashMap::new();
-    table.insert("first", nums.get(0));
-    table.insert("second", nums.get(1));
-
+fn core_pipeline(seed: i64) -> Result<i64, i64> {{
+    let closure = |x| x + seed;
+    let thunk = || closure(1);
     let maybe = Some(thunk());
     let picked = match maybe {{
         Some(v) => v,
         None => 0,
     }};
-
     let r = core_div(picked + seed, 1)?;
     let mut_sum = match CoreChoice::Num(r) {{
         CoreChoice::Zero => 0,
@@ -193,24 +185,13 @@ fn core_pipeline(seed: int) -> Result<int, int> {{
         i = i + 1;
     }}
 
-    loop {{
-        acc = acc + 1;
-        break;
-    }}
-
-    for j in 0 .. 3 {{
-        acc = acc + j;
-    }}
-
-    let scoped = scope |s| {{
-        let task = s.launch {{
-            closure(3)
-        }};
-        acc + 1
+    let same = seed is seed;
+    let guarded = unsafe {{
+        if same {{ acc }} else {{ 0 }}
     }};
-
-    let interp = f"seed {{seed}} value {{scoped}}";
-    Ok(mut_sum + scoped)
+    let pat = re"^[a-z]+$";
+    let blob = bytes[1, 2, 3];
+    Ok(mut_sum + guarded)
 }}
 "#
         )
@@ -220,13 +201,15 @@ fn core_pipeline(seed: int) -> Result<int, int> {{
 impl HewItem {
     fn to_source(&self, idx: usize) -> String {
         match self {
-            HewItem::Function(spec) => spec.to_source(idx),
-            HewItem::Struct(spec) => spec.to_source(idx),
-            HewItem::Enum(spec) => spec.to_source(idx),
-            HewItem::Trait(spec) => spec.to_source(idx),
-            HewItem::Impl(spec) => spec.to_source(),
-            HewItem::Actor(spec) => spec.to_source(idx),
-            HewItem::Generator(spec) => spec.to_source(idx),
+            Self::Function(spec) => spec.to_source(idx),
+            Self::Record(spec) => spec.to_source(idx),
+            Self::Enum(spec) => spec.to_source(idx),
+            Self::Trait(spec) => spec.to_source(idx),
+            Self::Impl(spec) => spec.to_source(),
+            Self::Actor(spec) => spec.to_source(idx),
+            Self::Generator(spec) => spec.to_source(idx),
+            Self::Wire(spec) => spec.to_source(idx),
+            Self::Surface(spec) => spec.to_source(idx),
         }
     }
 }
@@ -234,11 +217,9 @@ impl HewItem {
 impl ImportChoice {
     fn as_source(self) -> &'static str {
         match self {
-            ImportChoice::String => "import std::string;",
-            ImportChoice::Fs => "import std::fs;",
-            ImportChoice::Net => "import std::net;",
-            ImportChoice::Time => "import std::time;",
-            ImportChoice::Json => "import std::encoding::json;",
+            Self::String => "import std::string;",
+            Self::Time => "import std::time;",
+            Self::Json => "import std::encoding::json;",
         }
     }
 }
@@ -247,8 +228,8 @@ impl FunctionSpec {
     fn to_source(&self, idx: usize) -> String {
         let v = i32::from(self.seed % 5) + 1;
         format!(
-            r#"fn fuzz_fn_{idx}(input: int) -> Result<int, int> {{
-    let mapper = (x) => x + {v};
+            r#"fn fuzz_fn_{idx}(input: i64) -> Result<i64, i64> {{
+    let mapper = |x| x + {v};
     let mapped = mapper(input);
     let result = core_div(mapped, 1)?;
     Ok(result)
@@ -258,18 +239,18 @@ impl FunctionSpec {
     }
 }
 
-impl StructSpec {
+impl RecordSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.fields % 3) + 1;
         let mut out = format!("type FuzzType{idx} {{\n");
         for i in 0..count {
-            let ty = match i % 4 {
-                0 => "int",
-                1 => "String",
-                2 => "Vec<int>",
-                _ => "HashMap<String, int>",
+            let ty = match i % 3 {
+                0 => "i64",
+                1 => "string",
+                _ => "bool",
             };
-            out.push_str(&format!("    field{i}: {ty};\n"));
+            let sep = if i + 1 == count { "" } else { "," };
+            out.push_str(&format!("    field{i}: {ty}{sep}\n"));
         }
         out.push_str("}\n");
         out
@@ -279,9 +260,7 @@ impl StructSpec {
 impl EnumSpec {
     fn to_source(&self, idx: usize) -> String {
         if self.with_payload {
-            format!(
-                "enum FuzzEnum{idx} {{\n    Empty;\n    One(int);\n    Pair(int, int);\n}}\n"
-            )
+            format!("enum FuzzEnum{idx} {{\n    Empty;\n    One(i64);\n    Pair(i64, i64);\n}}\n")
         } else {
             format!("enum FuzzEnum{idx} {{\n    A;\n    B;\n    C;\n}}\n")
         }
@@ -293,9 +272,7 @@ impl TraitSpec {
         let methods = usize::from(self.methods % 2) + 1;
         let mut out = format!("trait FuzzTrait{idx} {{\n");
         for m in 0..methods {
-            out.push_str(&format!(
-                "    fn method_{m}(self: Self, x: int) -> int;\n"
-            ));
+            out.push_str(&format!("    fn method_{m}(self: Self, x: i64) -> i64;\n"));
         }
         out.push_str("}\n");
         out
@@ -308,7 +285,7 @@ impl ImplSpec {
         if self.with_loop {
             format!(
                 r#"impl FuzzTrait{n} for FuzzType{n} {{
-    fn method_0(self: FuzzType{n}, x: int) -> int {{
+    fn method_0(self: FuzzType{n}, x: i64) -> i64 {{
         var i = 0;
         var sum = x;
         while i < 2 {{
@@ -323,7 +300,7 @@ impl ImplSpec {
         } else {
             format!(
                 r#"impl FuzzTrait{n} for FuzzType{n} {{
-    fn method_0(self: FuzzType{n}, x: int) -> int {{
+    fn method_0(self: FuzzType{n}, x: i64) -> i64 {{
         match x {{
             0 => 0,
             _ => x,
@@ -340,27 +317,20 @@ impl ActorSpec {
     fn to_source(&self, idx: usize) -> String {
         let mut out = format!(
             r#"actor FuzzActor{idx} {{
-    let total: int;
+    let total: i64;
 
-    receive fn bump(v: int) -> int {{
-        self.total = self.total + v;
-        self.total
-    }}
-    
-    receive fn show() -> String {{
-        f"actor {idx} {{self.total}}"
+    receive fn bump(v: i64) -> i64 {{
+        total = total + v;
+        total
     }}
 "#
         );
-        if self.with_gen {
+        if self.lifecycle {
             out.push_str(
                 r#"
-    receive gen fn iter() -> int {
-        var i = 0;
-        while i < 2 {
-            yield i;
-            i = i + 1;
-        }
+    #[on(start)]
+    fn boot() {
+        total += 1;
     }
 "#,
             );
@@ -373,16 +343,73 @@ impl ActorSpec {
 impl GeneratorSpec {
     fn to_source(&self, idx: usize) -> String {
         let count = usize::from(self.count % 4) + 1;
-        let mut out = format!("gen fn fuzz_gen_{idx}() -> int {{\n");
+        let mut out = format!("fn fuzz_gen_{idx}() {{\n    let _g = gen {{\n");
         for i in 0..count {
-            out.push_str(&format!("    yield {i};\n"));
+            out.push_str(&format!("        yield {i};\n"));
+        }
+        out.push_str("        0\n    };\n}\n");
+        out
+    }
+}
+
+impl WireSpec {
+    fn to_source(&self, idx: usize) -> String {
+        let count = usize::from(self.fields % 3) + 1;
+        let mut out = format!("#[wire]\nstruct FuzzWire{idx} {{\n");
+        for i in 0..count {
+            let ty = match i % 5 {
+                0 => "i64",
+                1 => "string",
+                2 => "u8",
+                3 => "bool",
+                _ => "duration",
+            };
+            let sep = if i + 1 == count { "" } else { "," };
+            out.push_str(&format!("    field{i}: {ty} @{}{sep}\n", i + 1));
         }
         out.push_str("}\n");
         out
     }
 }
 
-fuzz_target!(|program: HewProgram| {
-    let source = program.to_source();
-    let _ = hew_parser::parse(&source);
+impl SurfaceSpec {
+    fn to_source(&self, idx: usize) -> String {
+        match self.variant % 4 {
+            0 => format!(
+                r#"fn fuzz_surface_is_{idx}(x: i64) -> bool {{
+    x is x
+}}
+"#
+            ),
+            1 => format!(
+                r#"fn fuzz_surface_unsafe_{idx}(x: i64) -> i64 {{
+    unsafe {{ x + 1 }}
+}}
+"#
+            ),
+            2 => format!(
+                r#"#[intrinsic("fuzz.surface.{idx}")]
+fn fuzz_intrinsic_{idx}(x: i64) -> i64 {{}}
+"#
+            ),
+            _ => format!(
+                r#"fn fuzz_surface_literals_{idx}() -> i64 {{
+    let pat = re"^[a-z]+$";
+    let blob = bytes[1, 2, 3];
+    1
+}}
+"#
+            ),
+        }
+    }
+}
+
+fuzz_target!(|data: &[u8]| {
+    if let Ok(source) = std::str::from_utf8(data) {
+        let _ = hew_parser::parse(source);
+    }
+    if let Ok(program) = HewProgram::arbitrary(&mut Unstructured::new(data)) {
+        let source = program.to_source();
+        let _ = hew_parser::parse(&source);
+    }
 });

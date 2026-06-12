@@ -1,5 +1,14 @@
 # hew-std-encoding-wire
 
+> **Retired-by-doctrine note (v0.5):** The legacy HBF byte-layout helpers
+> (`encode_header`, framing) in this module are no longer on the
+> inter-process hot path. The runtime's CBOR envelope substrate replaced
+> them in commit `04bfb422`. New code must not call these helpers. The
+> migration story and obsolescence commitment are in
+> [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
+> §5 §S1 ("std::encoding::wire — legacy HBF helpers") and §4 anti-pattern
+> A4. The opaque `Value` contract described below remains active.
+
 `std::encoding::wire` holds low-level wire helpers plus the canonical opaque
 `Value` contract shared by the stdlib encoding modules.
 

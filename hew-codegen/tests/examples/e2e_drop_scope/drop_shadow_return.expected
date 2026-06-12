@@ -1,8 +1,0 @@
-inner scope
-drop 2
-outer 1
-early inner
-drop 10
-inner 20
-drop 20
-drop 1

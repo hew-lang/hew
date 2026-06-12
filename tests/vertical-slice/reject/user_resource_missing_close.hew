@@ -1,0 +1,12 @@
+// W3.030 V10 — `#[resource]` declared without any `close` body
+// (neither inline nor sibling inherent-impl) must fail at HIR with
+// `ResourceMissingClose`. The implicit drop contract has no method to
+// dispatch and silent acceptance would leak the resource.
+#[resource]
+type Sock {
+    fd: i64
+}
+
+fn main() -> i64 {
+    0
+}

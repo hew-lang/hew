@@ -57,6 +57,96 @@ pub(crate) fn emit_plain_diagnostic_line(s: &str) {
     diag_println(s);
 }
 
+const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
+    "source context unavailable: root source not attached to frontend diagnostic";
+
+/// Map an HIR diagnostic kind to a user-visible prefix string.
+pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
+        _ => "E_HIR",
+    }
+}
+
+/// Stable, user-facing string identifier for an HIR diagnostic kind.
+///
+/// Returns the variant name (e.g. `NotYetImplemented`, `UnresolvedSymbol`)
+/// without any of the Rust `{:?}` struct payload. Used as the `code` field in
+/// JSON diagnostics and matches the LSP's `hir_diagnostic_kind_string`.
+pub(crate) fn hir_diagnostic_kind_string(kind: &hew_hir::HirDiagnosticKind) -> String {
+    let debug = format!("{kind:?}");
+    let end = debug.find([' ', '{', '(']).unwrap_or(debug.len());
+    debug[..end].to_string()
+}
+
+/// Build the user-facing message for an HIR diagnostic.
+///
+/// For a `NotYetImplemented` gap, the message frames the gap as a current
+/// compiler limitation — not a problem with the user's code — and never leaks
+/// the Rust `{:?}` field names (`construct`, `owning_pass`). Other kinds fall
+/// back to the stable prefix plus any attached note.
+pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    if let hew_hir::HirDiagnosticKind::NotYetImplemented { construct, .. } = &diagnostic.kind {
+        let mut message = format!(
+            "`{construct}` is not yet supported by the Hew compiler \
+             (this is a current Hew limitation, not your code)"
+        );
+        if !diagnostic.note.is_empty() {
+            message.push_str(": ");
+            message.push_str(&diagnostic.note);
+        }
+        return message;
+    }
+
+    let prefix = hir_diagnostic_prefix(&diagnostic.kind);
+    if diagnostic.note.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {}", diagnostic.note)
+    }
+}
+
+/// Map a MIR diagnostic kind to the stable CLI diagnostic family.
+pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { .. }
+        | hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. }
+        | hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
+        | hew_mir::MirDiagnosticKind::MustConsume { .. }
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "E_MIR_CHECK",
+        hew_mir::MirDiagnosticKind::NotYetImplemented { .. }
+        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
+            "E_NOT_YET_IMPLEMENTED"
+        }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => {
+            "E_REMOTE_PAYLOAD_UNSUPPORTED"
+        }
+        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedPlace { .. }
+        | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. }
+        | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
+        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
+        | hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => "E_MIR",
+    }
+}
+
+pub(crate) fn render_codegen_front_diagnostic(error: &hew_codegen_rs::CodegenError) {
+    emit_plain_diagnostic_line(&format!(
+        "E_CODEGEN_FRONT: codegen-front validation failed: {error}"
+    ));
+}
+
 // ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
 const YELLOW: &str = "\x1b[1;33m";
@@ -265,7 +355,7 @@ fn stack_hint_alloc_class_label(class: &hew_types::check::AllocationClass) -> &'
     // but we render them defensively rather than panicking.
     match class {
         AllocationClass::Vec => "Vec",
-        AllocationClass::String => "String",
+        AllocationClass::String => "string",
         AllocationClass::HashMap => "HashMap",
         AllocationClass::HashSet => "HashSet",
         AllocationClass::Rc => "Rc",
@@ -348,6 +438,486 @@ pub(crate) fn build_module_source_map(program: &hew_parser::ast::Program) -> Mod
     map
 }
 
+fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
+    match kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { .. } => "UseAfterConsume",
+        hew_mir::MirDiagnosticKind::InitialisedBeforeUse { .. } => "InitialisedBeforeUse",
+        hew_mir::MirDiagnosticKind::DecisionMapTotal { .. } => "DecisionMapTotal",
+        hew_mir::MirDiagnosticKind::MustConsume { .. } => "MustConsume",
+        hew_mir::MirDiagnosticKind::UnknownType { .. } => "UnknownType",
+        hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. } => {
+            "UnsupportedUserRecordValueClass"
+        }
+        hew_mir::MirDiagnosticKind::UnsupportedNode { .. } => "UnsupportedNode",
+        hew_mir::MirDiagnosticKind::SelectArmNotImplemented { .. } => "SelectArmNotImplemented",
+        hew_mir::MirDiagnosticKind::NotYetImplemented { .. } => "NotYetImplemented",
+        hew_mir::MirDiagnosticKind::UnresolvedPlace { .. } => "UnresolvedPlace",
+        hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { .. } => {
+            "CannotMaterializeClosureCapture"
+        }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => "RemotePayloadUnsupported",
+        hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. } => "DropPlanUndetermined",
+        hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
+        hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
+        hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
+        hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. } => {
+            "ActorHandlerSymbolCollision"
+        }
+        hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. } => {
+            "ActorStateCloneClassificationFailed"
+        }
+        hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { .. } => {
+            "UnresolvedStaticDispatchSubstitution"
+        }
+        hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { .. } => {
+            "StaticDispatchImplNotFound"
+        }
+        hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { .. } => {
+            "StaticDispatchMonomorphisationMissing"
+        }
+        hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. } => {
+            "TraitObjectStorageUndetermined"
+        }
+        hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {
+            "CallTraitMethodSignatureUnresolved"
+        }
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => {
+            "OwnedHandleAggregateExtractionUnsupported"
+        }
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { .. } => "ClosurePairBorrowedStore",
+    }
+}
+
+fn mir_place_label(place: &hew_mir::Place) -> String {
+    match place {
+        hew_mir::Place::Local(local) => format!("local {local}"),
+        hew_mir::Place::ReturnSlot => "return slot".to_string(),
+        hew_mir::Place::DuplexHandle(local) => format!("duplex handle local {local}"),
+        hew_mir::Place::LambdaActorHandle(local) => format!("lambda actor handle local {local}"),
+        hew_mir::Place::ActorHandle(local) => format!("actor handle local {local}"),
+        hew_mir::Place::SendHalf(local) => format!("duplex send-half local {local}"),
+        hew_mir::Place::RecvHalf(local) => format!("duplex recv-half local {local}"),
+        hew_mir::Place::MachineTag(local) => format!("machine tag local {local}"),
+        hew_mir::Place::MachineVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } => format!("machine local {local} variant {variant_idx} field {field_idx}"),
+        hew_mir::Place::EnumTag(local) => format!("enum tag local {local}"),
+        hew_mir::Place::EnumVariant {
+            local,
+            variant_idx,
+            field_idx,
+        } => format!("enum local {local} variant {variant_idx} field {field_idx}"),
+        hew_mir::Place::GenState { local, field } => {
+            format!("generator state local {local} field {field}")
+        }
+    }
+}
+
+fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId> {
+    match kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { used_at, .. } => Some(*used_at),
+        hew_mir::MirDiagnosticKind::InitialisedBeforeUse { use_site, .. } => Some(*use_site),
+        hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
+            offending_sites.first().copied()
+        }
+        hew_mir::MirDiagnosticKind::MustConsume { exit_site, .. } => Some(*exit_site),
+        hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
+        | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
+        | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { site, .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { site, .. }
+        | hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => Some(*site),
+        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::DropPlanUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. }
+        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. }
+        | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
+        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { .. }
+        | hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. } => None,
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive match over all MIR diagnostic variants"
+)]
+fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
+    let message = match &diagnostic.kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { name, .. } => {
+            format!("binding `{name}` is used after it was consumed")
+        }
+        hew_mir::MirDiagnosticKind::InitialisedBeforeUse { name, .. } => {
+            format!("binding `{name}` may be read before it is initialized")
+        }
+        hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => format!(
+            "MIR decision map contains {} unresolved site decision(s)",
+            offending_sites.len()
+        ),
+        hew_mir::MirDiagnosticKind::MustConsume { name, ty, .. } => format!(
+            "linear binding `{name}` of type `{}` must be consumed before this exit",
+            ty.user_facing()
+        ),
+        hew_mir::MirDiagnosticKind::UnknownType { name } => {
+            format!("unknown type `{name}` at the MIR boundary")
+        }
+        hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. } => format!(
+            "record type `{name}` has a value class that MIR cannot lower yet"
+        ),
+        hew_mir::MirDiagnosticKind::UnsupportedNode { reason } => {
+            format!("unsupported HIR node reached MIR lowering: {reason}")
+        }
+        hew_mir::MirDiagnosticKind::SelectArmNotImplemented {
+            arm_kind,
+            deferred_by,
+            ..
+        } => format!("select arm `{arm_kind}` is not implemented in MIR yet ({deferred_by})"),
+        hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. } => {
+            format!("MIR lowering for {construct} is not implemented yet")
+        }
+        hew_mir::MirDiagnosticKind::UnresolvedPlace { name, .. } => {
+            format!("could not resolve binding `{name}` to an MIR place")
+        }
+        hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { name, .. } => {
+            format!("could not materialize closure capture `{name}` in MIR")
+        }
+        hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { actor, handler, .. } => format!(
+            "remote dispatch to multi-parameter receive fn `{handler}` on actor `{actor}` \
+             is not supported: the cross-node codec carries single-value payloads only"
+        ),
+        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, reason } => {
+            format!("drop plan for MIR block {block} could not be determined: {reason}")
+        }
+        hew_mir::MirDiagnosticKind::ContextBoundaryViolation {
+            function,
+            kind,
+            reason,
+            ..
+        } => {
+            format!("context boundary violation in `{function}` ({kind}): {reason}")
+        }
+        hew_mir::MirDiagnosticKind::ContextBindingEscapes { place, block } => format!(
+            "context-bound place `{}` escapes from MIR block {block}",
+            mir_place_label(place)
+        ),
+        hew_mir::MirDiagnosticKind::UnknownActorStateField { actor, field } => {
+            format!("actor `{actor}` has no state field `{field}`")
+        }
+        hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision {
+            symbol,
+            existing,
+            duplicate,
+        } => format!(
+            "actor handler symbol `{symbol}` is produced by both {existing} and {duplicate}"
+        ),
+        hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed {
+            actor,
+            field_name,
+            reason,
+            ..
+        } => format!(
+            "could not classify actor `{actor}` state field `{field_name}` for clone lowering: {reason}"
+        ),
+        hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution {
+            receiver_type_param,
+            declaring_trait,
+            method_name,
+            ..
+        } => format!(
+            "static dispatch for `{declaring_trait}.{method_name}` still references unresolved type parameter `{receiver_type_param}`"
+        ),
+        hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound {
+            declaring_trait,
+            self_type_name,
+            method_name,
+            ..
+        } => format!(
+            "no implementation found for static dispatch `{declaring_trait}.{method_name}` on `{self_type_name}`"
+        ),
+        hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
+            method_symbol,
+            mangled,
+            ..
+        } => format!(
+            "static dispatch target `{method_symbol}` was not monomorphized as `{mangled}`"
+        ),
+        hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { name, reason, .. } => {
+            format!(
+                "cannot determine TraitObjectStorage for dyn Trait binding `{name}` ({reason})"
+            )
+        }
+        hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved {
+            trait_name,
+            method_name,
+            reason,
+            ..
+        } => format!(
+            "dyn-trait method dispatch `{trait_name}::{method_name}` reached MIR with an \
+             unresolved caller-side signature ({reason})"
+        ),
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+            name,
+            handle_ty,
+        } => format!(
+            "extracting an owned handle (`{name}`: {handle_ty}) out of an aggregate in this \
+             shape is not yet supported in v0.5 — iterate or consume the handle directly, or \
+             return it without re-aggregating (full support lands in v0.5.1)"
+        ),
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { name, .. } => {
+            let what = name.as_ref().map_or_else(
+                || "this function value".to_string(),
+                |n| format!("the function value `{n}`"),
+            );
+            format!(
+                "cannot store {what} here: it borrows a closure environment owned \
+                 elsewhere (a parameter, collection element, or record-field read), \
+                 and storing it would create a second owner of that environment — \
+                 store a closure literal, a fresh call result, or a binding that \
+                 owns its closure instead"
+            )
+        }
+    };
+    format!("{}: {message}", mir_diagnostic_prefix(&diagnostic.kind))
+}
+
+fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
+    let mut notes = Vec::new();
+    notes.push(format!("MIR kind: {}", mir_kind_name(&diagnostic.kind)));
+    match &diagnostic.kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume {
+            binding,
+            consumed_at,
+            used_at,
+            ..
+        } => {
+            notes.push(format!("binding id: {binding}"));
+            notes.push(format!("consumed at site: {consumed_at}"));
+            notes.push(format!("used at site: {used_at}"));
+        }
+        hew_mir::MirDiagnosticKind::InitialisedBeforeUse {
+            binding, use_site, ..
+        } => {
+            notes.push(format!("binding id: {binding}"));
+            notes.push(format!("use site: {use_site}"));
+        }
+        hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
+            let sites = offending_sites
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            notes.push(format!("offending sites: {sites}"));
+        }
+        hew_mir::MirDiagnosticKind::MustConsume {
+            binding, exit_site, ..
+        } => {
+            notes.push(format!("binding id: {binding}"));
+            notes.push(format!("exit site: {exit_site}"));
+        }
+        hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { reason, .. } => {
+            notes.push(format!("reason: {reason}"));
+        }
+        hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
+        | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
+        | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
+        | hew_mir::MirDiagnosticKind::UnresolvedStaticDispatchSubstitution { site, .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchImplNotFound { site, .. }
+        | hew_mir::MirDiagnosticKind::StaticDispatchMonomorphisationMissing { site, .. } => {
+            notes.push(format!("site: {site}"));
+        }
+        hew_mir::MirDiagnosticKind::DropPlanUndetermined { block, .. }
+        | hew_mir::MirDiagnosticKind::ContextBoundaryViolation { block, .. }
+        | hew_mir::MirDiagnosticKind::ContextBindingEscapes { block, .. } => {
+            notes.push(format!("block: {block}"));
+        }
+        hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { field_index, .. } => {
+            notes.push(format!("field index: {field_index}"));
+        }
+        hew_mir::MirDiagnosticKind::UnknownType { .. }
+        | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
+        | hew_mir::MirDiagnosticKind::UnknownActorStateField { .. }
+        | hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. }
+        | hew_mir::MirDiagnosticKind::TraitObjectStorageUndetermined { .. }
+        | hew_mir::MirDiagnosticKind::CallTraitMethodSignatureUnresolved { .. } => {}
+        hew_mir::MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported {
+            handle_ty, ..
+        } => {
+            notes.push(format!("handle type: {handle_ty}"));
+        }
+        hew_mir::MirDiagnosticKind::ClosurePairBorrowedStore { site, .. } => {
+            notes.push(format!("store site: {site}"));
+        }
+    }
+    if !diagnostic.note.is_empty() {
+        notes.push(diagnostic.note.clone());
+    }
+    notes
+}
+
+fn site_source<'a>(
+    root_source: &'a str,
+    root_filename: &'a str,
+    module_source_map: &'a ModuleSourceMap,
+    site: &hew_hir::HirSiteSource,
+) -> Option<(&'a str, &'a str)> {
+    match site.source_module.as_deref() {
+        None => Some((root_source, root_filename)),
+        Some(module) => module_source_map
+            .get(module)
+            .map(|(source, filename)| (source.as_str(), filename.as_str())),
+    }
+}
+
+fn mir_source_context_unavailable_note(site: &hew_hir::HirSiteSource) -> String {
+    site.source_module.as_ref().map_or_else(
+        || ROOT_SOURCE_CONTEXT_UNAVAILABLE.to_string(),
+        |module| format!("source context unavailable: module '{module}' not in module_source_map"),
+    )
+}
+
+fn mir_secondary_spans(
+    diagnostic: &hew_mir::MirDiagnostic,
+    primary_site: &hew_hir::HirSiteSource,
+    site_spans: &HashMap<hew_hir::SiteId, hew_hir::HirSiteSource>,
+) -> Vec<(Range<usize>, String)> {
+    let mut spans = Vec::new();
+    match &diagnostic.kind {
+        hew_mir::MirDiagnosticKind::UseAfterConsume { consumed_at, .. } => {
+            if let Some(site) = site_spans.get(consumed_at) {
+                if site.source_module == primary_site.source_module {
+                    spans.push((site.span.clone(), "binding consumed here".to_string()));
+                }
+            }
+        }
+        hew_mir::MirDiagnosticKind::DecisionMapTotal { offending_sites } => {
+            for site_id in offending_sites.iter().skip(1) {
+                if let Some(site) = site_spans.get(site_id) {
+                    if site.source_module == primary_site.source_module {
+                        spans.push((site.span.clone(), format!("offending MIR site {site_id}")));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    spans
+}
+
+fn render_mir_diagnostic_without_source(
+    diagnostic: &hew_mir::MirDiagnostic,
+    site: Option<&hew_hir::HirSiteSource>,
+) {
+    emit_plain_diagnostic_line(&format!("error: {}", mir_diagnostic_message(diagnostic)));
+    for note in mir_context_notes(diagnostic) {
+        emit_plain_diagnostic_line(&format!("  = note: {note}"));
+    }
+    if let Some(site) = site {
+        emit_plain_diagnostic_line(&format!(
+            "  = note: {}",
+            mir_source_context_unavailable_note(site)
+        ));
+    }
+}
+
+/// Render MIR diagnostics for the deep gates without exposing Rust `Debug`
+/// payloads.
+///
+/// Routes through the JSON sink when `--format=json` is active so MIR
+/// diagnostics participate in machine-readable output identically to frontend
+/// diagnostics. The user-facing message is always the `mir_diagnostic_message`
+/// rendering — never the raw `MirDiagnostic` `{:?}` payload.
+pub(crate) fn render_mir_diagnostics(
+    root_source: &str,
+    root_filename: &str,
+    module_source_map: &ModuleSourceMap,
+    site_spans: &HashMap<hew_hir::SiteId, hew_hir::HirSiteSource>,
+    diagnostics: &[hew_mir::MirDiagnostic],
+) {
+    let json = crate::diagnostic_json::json_output_active();
+    for diagnostic in diagnostics {
+        let primary_site = mir_primary_site(&diagnostic.kind)
+            .and_then(|site| site_spans.get(&site).map(|source| (site, source)));
+        let Some((_, site)) = primary_site else {
+            if json {
+                push_mir_json_diagnostic(diagnostic, None, None, &[]);
+            } else {
+                render_mir_diagnostic_without_source(diagnostic, None);
+            }
+            continue;
+        };
+        let Some((source, filename)) =
+            site_source(root_source, root_filename, module_source_map, site)
+        else {
+            if json {
+                push_mir_json_diagnostic(diagnostic, None, None, &[]);
+            } else {
+                render_mir_diagnostic_without_source(diagnostic, Some(site));
+            }
+            continue;
+        };
+        let secondary_spans = mir_secondary_spans(diagnostic, site, site_spans);
+        let suggestions = mir_context_notes(diagnostic);
+        if json {
+            push_mir_json_diagnostic(
+                diagnostic,
+                Some((source, filename)),
+                Some(&site.span),
+                &secondary_spans,
+            );
+        } else {
+            render_diagnostic_with_raw_notes(
+                source,
+                filename,
+                &site.span,
+                &mir_diagnostic_message(diagnostic),
+                &secondary_spans,
+                &suggestions,
+            );
+        }
+    }
+}
+
+/// Push a MIR diagnostic into the JSON sink, stripping the `E_*` prefix from
+/// the message (the prefix lives in the `code`/`source` fields in JSON).
+fn push_mir_json_diagnostic(
+    diagnostic: &hew_mir::MirDiagnostic,
+    source_and_filename: Option<(&str, &str)>,
+    span: Option<&Range<usize>>,
+    secondary_spans: &[(Range<usize>, String)],
+) {
+    let prefixed = mir_diagnostic_message(diagnostic);
+    // `mir_diagnostic_message` prepends `E_MIR: ` / `E_NOT_YET_IMPLEMENTED: `;
+    // strip it so the JSON `message` is clean prose and the family lives in
+    // `code`.
+    let message = prefixed
+        .split_once(": ")
+        .map_or(prefixed.as_str(), |(_, rest)| rest);
+    let (source, filename) = match source_and_filename {
+        Some((source, filename)) => (Some(source), Some(filename)),
+        None => (None, None),
+    };
+    crate::diagnostic_json::push_json_diagnostic(crate::diagnostic_json::from_mir_diagnostic(
+        source,
+        filename,
+        span,
+        mir_kind_name(&diagnostic.kind),
+        message,
+        secondary_spans,
+        &mir_context_notes(diagnostic),
+    ));
+}
+
 fn type_diagnostic_source<'a>(
     root_source: &'a str,
     root_filename: &'a str,
@@ -412,6 +982,81 @@ pub(crate) fn render_type_diagnostics_with_sources(
                 &diagnostic.suggestions,
             ),
         }
+    }
+}
+
+fn hir_source_context_unavailable_note(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    diagnostic.source_module.as_ref().map_or_else(
+        || ROOT_SOURCE_CONTEXT_UNAVAILABLE.to_string(),
+        |module| format!("source context unavailable: module '{module}' not in module_source_map"),
+    )
+}
+
+fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
+    // For a `NotYetImplemented` gap, keep the stable `E_NOT_YET_IMPLEMENTED`
+    // family code (grep-able by tooling) but use the limitation-framed body and
+    // never leak the Rust `{:?}` field names. Other kinds fall back to the
+    // stable prefix plus any attached note.
+    if matches!(
+        diagnostic.kind,
+        hew_hir::HirDiagnosticKind::NotYetImplemented { .. }
+    ) {
+        return format!(
+            "{}: {}",
+            hir_diagnostic_prefix(&diagnostic.kind),
+            hir_diagnostic_user_message(diagnostic)
+        );
+    }
+    let prefix = hir_diagnostic_prefix(&diagnostic.kind);
+    if diagnostic.note.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}: {}", diagnostic.note)
+    }
+}
+
+/// Render a HIR diagnostic using source context when the frontend was able to
+/// resolve the diagnostic's source module. Non-root source-map misses are
+/// rendered explicitly rather than falling back to the root file.
+///
+/// Routes through the JSON sink when `--format=json` is active. The `HIR kind`
+/// note uses the stable kind string (never the Rust `{:?}` struct payload), so
+/// no Debug payload reaches user output on either path.
+pub(crate) fn render_hir_diagnostic(
+    source: Option<&str>,
+    filename: Option<&str>,
+    diagnostic: &hew_hir::HirDiagnostic,
+) {
+    if crate::diagnostic_json::json_output_active() {
+        crate::diagnostic_json::push_json_diagnostic(crate::diagnostic_json::from_hir_diagnostic(
+            source, filename, diagnostic,
+        ));
+        return;
+    }
+
+    let message = hir_diagnostic_message(diagnostic);
+    let kind_note = format!("HIR kind: {}", hir_diagnostic_kind_string(&diagnostic.kind));
+    if let (Some(source), Some(filename)) = (source, filename) {
+        let suggestions = [kind_note];
+        render_diagnostic_with_raw_notes(
+            source,
+            filename,
+            &diagnostic.span,
+            &message,
+            &diagnostic.secondary_spans,
+            &suggestions,
+        );
+        return;
+    }
+
+    emit_plain_diagnostic_line(&format!("error: {message}"));
+    emit_plain_diagnostic_line(&format!("  = note: {kind_note}"));
+    emit_plain_diagnostic_line(&format!(
+        "  = note: {}",
+        hir_source_context_unavailable_note(diagnostic)
+    ));
+    for (_, label) in &diagnostic.secondary_spans {
+        emit_plain_diagnostic_line(&format!("  = note: {label}"));
     }
 }
 
@@ -596,6 +1241,47 @@ mod tests {
             "captured diagnostics must not contain ANSI escapes: {captured:?}"
         );
         assert!(captured.contains("main.hew:1:1: error: bad call"));
+    }
+
+    #[test]
+    fn hir_source_map_miss_reports_unavailable_note() {
+        let diagnostic = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
+            0..1,
+            "probe",
+        )
+        .with_source_module(Some("dep".to_string()));
+
+        start_diagnostic_capture();
+        render_hir_diagnostic(None, None, &diagnostic);
+        let captured = finish_diagnostic_capture();
+
+        assert!(captured.contains("error: E_HIR: probe"));
+        assert!(captured.contains("HIR kind: UnresolvedInferenceVar"));
+        assert!(
+            captured.contains("source context unavailable: module 'dep' not in module_source_map")
+        );
+    }
+
+    #[test]
+    fn hir_secondary_spans_use_primary_source_context() {
+        let diagnostic = hew_hir::HirDiagnostic::new(
+            hew_hir::HirDiagnosticKind::UnresolvedInferenceVar,
+            0..4,
+            "primary",
+        )
+        .with_secondary_spans(vec![(
+            5..9,
+            "secondary uses primary source module".to_string(),
+        )]);
+
+        start_diagnostic_capture();
+        render_hir_diagnostic(Some("abcd\nefgh\n"), Some("dep.hew"), &diagnostic);
+        let captured = finish_diagnostic_capture();
+
+        assert!(captured.contains("dep.hew:1:1: error: E_HIR: primary"));
+        assert!(captured.contains("dep.hew:2:1: note: secondary uses primary source module"));
+        assert!(captured.contains("efgh"));
     }
 
     #[test]

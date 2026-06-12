@@ -1,9 +1,14 @@
-fn compute(n: i32) -> i32 {
-    let result = fib(n);
-    result
+//! Status: runnable
+//! Description: Actor call-reply demo.
+
+actor Calculator {
+    receive fn compute(n: i64) -> i64 {
+        let result = fib(n);
+        result
+    }
 }
 
-fn fib(n: i32) -> i32 {
+fn fib(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -12,7 +17,10 @@ fn fib(n: i32) -> i32 {
 }
 
 fn main() {
-    let future = compute(10);
-    let result = await future;
-    println(result);
+    let calculator = spawn Calculator;
+    let r = await calculator.compute(10);
+    match r {
+        Ok(result) => println(result),
+        Err(_) => println(-1),
+    }
 }

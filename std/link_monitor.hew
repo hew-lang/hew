@@ -1,15 +1,32 @@
-//! Actor monitor handle helpers.
+//! Actor monitor / link handle helpers.
 //!
-//! Import `std::link_monitor` when you want to name `MonitorRef` explicitly.
-//! The `monitor(actor)` builtin returns this handle type.
+//! Import `std::link_monitor` when you want to name `MonitorRef` or
+//! `LinkError` explicitly.  The `monitor(actor)` builtin returns `MonitorRef`;
+//! the `link(actor)` builtin returns `Result<(), LinkError>`.
+//!
+//! v0.5 link/monitor builtins return through the Cluster 2 composite-return
+//! spine, which lands in v0.6. The runtime symbols exist (`hew_actor_link`,
+//! `hew_actor_monitor`), but the user-source surface fails closed today. See
+//! commit `1698840f` for the explicit deferral.
 
 import std::io::closable;
 
-// WASM-TODO(#1451): `MonitorRef` depends on the native actor monitor runtime.
-// The checker rejects `monitor()` on wasm32 via the existing Link/monitor gate.
+// WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
+// monitor / link runtime. The checker rejects `monitor()` and `link()` on
+// wasm32 via the existing Link/monitor gate.
+/// Error returned by `link(handle)`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
+/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
+/// has already exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 /// A handle to an active monitor registration.
 pub type MonitorRef {
-    ref_id: int;
+    ref_id: i64;
 }
 
 impl Closable for MonitorRef {
@@ -17,7 +34,7 @@ impl Closable for MonitorRef {
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
     /// so actor-free close paths also resolve to `Ok(())`.
-    fn close(monitor_ref: MonitorRef) -> Result<(), closable.CloseError> {
+    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
         unsafe {
             hew_actor_demonitor(monitor_ref.ref_id)
         };
@@ -35,5 +52,5 @@ impl Drop for MonitorRef {
 }
 
 extern "C" {
-    fn hew_actor_demonitor(ref_id: int);
+    fn hew_actor_demonitor(ref_id: i64);
 }

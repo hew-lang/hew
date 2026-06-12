@@ -5,12 +5,12 @@
 //!
 //! Contract slice frozen here:
 //! - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class foundation
-//! - `Stream<String>` / `Sink<String>` are convenience text ABI wrappers
-//! - EOF means end-of-stream only; zero-length `bytes` and empty `String`
+//! - `Stream<string>` / `Sink<string>` are convenience text ABI wrappers
+//! - EOF means end-of-stream only; zero-length `bytes` and empty `string`
 //!   values are valid items
 //! - `sink.close()` or drop yields graceful EOF; `stream.close()` or drop is a
 //!   local cancel/discard of unread items
-//! - Core `.next()` / `.write()` operations are blocking and backpressured; no
+//! - Core `.recv()` / `.write()` operations are blocking and backpressured; no
 //!   nonblocking semantics are promised here
 //! - Stage-1 errors cover constructor/open failures only; transport/runtime
 //!   read/write errors remain wrapper-specific and out of scope
@@ -18,8 +18,8 @@
 //! Current stdlib scope:
 //! - `bytes_pipe()` is the canonical in-memory constructor
 //! - `pipe()` remains the text convenience constructor
-//! - `from_file()` / `to_file()` remain `Stream<String>` / `Sink<String>`
-//! - `lines()` remains a `Stream<String>` adapter today
+//! - `from_file()` / `to_file()` remain `Stream<string>` / `Sink<string>`
+//! - `lines()` remains a `Stream<string>` adapter today
 //!
 //! # Example
 //!
@@ -52,12 +52,12 @@ type Sink<T> {
 // ── Stream<T> methods ─────────────────────────────────────────────────
 //
 // Method resolution is handled by the compiler intrinsic in
-// `hew-types/src/stdlib.rs`.  The enricher dispatches `.next()` and
+// `hew-types/src/stdlib.rs`.  The enricher dispatches `.recv()` and
 // other methods to the correct C symbol based on `T`.
 
 // ── Sink<T> methods ───────────────────────────────────────────────────
 //
-// `.write(value)` dispatches to `hew_sink_write_string` for String
+// `.write(value)` dispatches to `hew_sink_write_string` for string
 // or `hew_sink_write_bytes` for bytes.  `.flush()` and `.close()`
 // are element-type-independent.
 
@@ -66,8 +66,8 @@ type Sink<T> {
 ///
 /// This is the convenience text ABI lane over the same bounded, blocking,
 /// backpressured contract as `bytes_pipe()`.
-/// Returns a `(Sink<String>, Stream<String>)` pair for writing and reading.
-pub fn pipe(capacity: int) -> (Sink<String>, Stream<String>) {
+/// Returns a `(Sink<string>, Stream<string>)` pair for writing and reading.
+pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {
     unsafe {
         let pair = hew_stream_channel(capacity as i64);
         let sink = hew_stream_pair_sink(pair);
@@ -81,7 +81,7 @@ pub fn pipe(capacity: int) -> (Sink<String>, Stream<String>) {
 ///
 /// This is the canonical first-class Stream/Sink foundation for binary items.
 /// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
-pub fn bytes_pipe(capacity: int) -> (Sink<bytes>, Stream<bytes>) {
+pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     unsafe {
         let pair = hew_stream_channel(capacity as i64);
         let sink = hew_stream_pair_sink_bytes(pair);
@@ -91,13 +91,13 @@ pub fn bytes_pipe(capacity: int) -> (Sink<bytes>, Stream<bytes>) {
     }
 }
 
-/// Open a file as a readable Stream<String>.
+/// Open a file as a readable Stream<string>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be opened.
 /// This stage only freezes constructor/open errors; read-time failures after a
 /// stream is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
-/// Prefer `try_from_file` for a structured `Result<Stream<String>, fs.IoError>`.
+/// Prefer `try_from_file` for a structured `Result<Stream<string>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
@@ -106,7 +106,7 @@ pub fn bytes_pipe(capacity: int) -> (Sink<bytes>, Stream<bytes>) {
 /// let file = stream.from_file("data.txt")?;
 /// for await line in file.lines() { println(line); }
 /// ```
-pub fn from_file(path: String) -> Result<Stream<String>, String> {
+pub fn from_file(path: string) -> Result<Stream<string>, string> {
     unsafe {
         let s = hew_stream_from_file_read(path);
         if hew_stream_is_valid(s) {
@@ -117,13 +117,13 @@ pub fn from_file(path: String) -> Result<Stream<String>, String> {
     }
 }
 
-/// Open a file as a readable `Stream<String>`.
+/// Open a file as a readable `Stream<string>`.
 ///
 /// This preserves `from_file`'s runtime behaviour while returning `fs.IoError`
 /// instead of a raw OS message string. Import `std::fs` when matching on the
 /// returned error value so you can use the existing unqualified
 /// `IoError::Variant(...)` constructor/pattern style.
-pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
+pub fn try_from_file(path: string) -> Result<Stream<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_read(path);
         if hew_stream_is_valid(s) {
@@ -131,18 +131,18 @@ pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
 
-/// Open a file as a writable Sink<String>.
+/// Open a file as a writable Sink<string>.
 ///
 /// Returns `Err` with the OS error message if the file cannot be created.
 /// This stage only freezes constructor/open errors; write-time failures after a
 /// sink is opened remain wrapper-specific and out of scope for the core
 /// Stream/Sink contract.
-/// Prefer `try_to_file` for a structured `Result<Sink<String>, fs.IoError>`.
+/// Prefer `try_to_file` for a structured `Result<Sink<string>, fs.IoError>`.
 /// Import `std::fs` as well if you want to match on `IoError` variants.
 ///
 /// # Examples
@@ -152,7 +152,7 @@ pub fn try_from_file(path: String) -> Result<Stream<String>, fs.IoError> {
 /// sink.write("hello");
 /// // sink auto-closes when dropped
 /// ```
-pub fn to_file(path: String) -> Result<Sink<String>, String> {
+pub fn to_file(path: string) -> Result<Sink<string>, string> {
     unsafe {
         let s = hew_stream_from_file_write(path);
         if hew_sink_is_valid(s) {
@@ -163,13 +163,13 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
     }
 }
 
-/// Open a file as a writable `Sink<String>`.
+/// Open a file as a writable `Sink<string>`.
 ///
 /// This preserves `to_file`'s runtime behaviour while returning `fs.IoError`
 /// instead of a raw OS message string. Import `std::fs` when matching on the
 /// returned error value so you can use the existing unqualified
 /// `IoError::Variant(...)` constructor/pattern style.
-pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
+pub fn try_to_file(path: string) -> Result<Sink<string>, fs.IoError> {
     unsafe {
         let s = hew_stream_from_file_write(path);
         if hew_sink_is_valid(s) {
@@ -177,7 +177,7 @@ pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
         } else {
             let errno = hew_stream_last_errno();
             let _ = hew_stream_last_error();
-            Err(fs.io_error_from_errno(errno))
+            Err(fs.io_error_from_errno(errno as i64))
         }
     }
 }
@@ -194,7 +194,7 @@ pub fn try_to_file(path: String) -> Result<Sink<String>, fs.IoError> {
 /// let body = req.respond_stream(200, "text/plain")?;
 /// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```
-pub fn forward(source: Stream<String>, dest: Sink<String>) {
+pub fn forward(source: Stream<string>, dest: Sink<string>) {
     unsafe {
         hew_stream_pipe(source, dest)
     };
@@ -202,36 +202,38 @@ pub fn forward(source: Stream<String>, dest: Sink<String>) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 /// Internal paired channel handle.
-type StreamPair {
+#[opaque]
+pub type StreamPair {
 }
 
 extern "C" {
     fn hew_stream_channel(capacity: i64) -> StreamPair;
-    fn hew_stream_pair_sink(pair: StreamPair) -> Sink<String>;
-    fn hew_stream_pair_stream(pair: StreamPair) -> Stream<String>;
+    fn hew_stream_pair_sink(pair: StreamPair) -> Sink<string>;
+    fn hew_stream_pair_stream(pair: StreamPair) -> Stream<string>;
     fn hew_stream_pair_free(pair: StreamPair);
-    fn hew_stream_from_file_read(path: String) -> Stream<String>;
-    fn hew_stream_from_file_write(path: String) -> Sink<String>;
-    fn hew_stream_is_valid(stream: Stream<String>) -> bool;
-    fn hew_sink_is_valid(sink: Sink<String>) -> bool;
-    fn hew_stream_last_error() -> String;
+    fn hew_stream_from_file_read(path: string) -> Stream<string>;
+    fn hew_stream_from_file_write(path: string) -> Sink<string>;
+    fn hew_stream_is_valid(stream: Stream<string>) -> bool;
+    fn hew_sink_is_valid(sink: Sink<string>) -> bool;
+    fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
-    fn hew_stream_close(stream: Stream<String>);
-    fn hew_stream_lines(stream: Stream<String>) -> Stream<String>;
-    fn hew_stream_chunks(stream: Stream<String>, size: i64) -> Stream<String>;
-    fn hew_stream_pipe(source: Stream<String>, dest: Sink<String>);
-    fn hew_stream_take(stream: Stream<String>, n: i64) -> Stream<String>;
-    fn hew_sink_flush(sink: Sink<String>);
-    fn hew_sink_close(sink: Sink<String>);
+    fn hew_stream_close(stream: Stream<string>);
+    fn hew_stream_lines(stream: Stream<string>) -> Stream<string>;
+    fn hew_stream_chunks(stream: Stream<string>, size: i64) -> Stream<string>;
+    fn hew_stream_pipe(source: Stream<string>, dest: Sink<string>);
+    fn hew_stream_take(stream: Stream<string>, n: i64) -> Stream<string>;
+    fn hew_sink_flush(sink: Sink<string>);
+    fn hew_sink_close(sink: Sink<string>);
 
     // Element-type-specific runtime functions used by enricher dispatch.
-    // String element operations
-    fn hew_stream_next(stream: Stream<String>) -> String;
-    fn hew_stream_collect_string(stream: Stream<String>) -> String;
-    fn hew_sink_write_string(sink: Sink<String>, data: String);
+    // string element operations
+    // hew_stream_next_layout / hew_stream_try_next_layout carry an
+    // out-parameter + element-layout witness ABI and are declared by
+    // codegen with the correct calling convention.
+    fn hew_stream_collect_string(stream: Stream<string>) -> string;
+    fn hew_sink_write_string(sink: Sink<string>, data: string);
 
     // Bytes element operations
-    fn hew_stream_next_bytes(stream: Stream<bytes>) -> bytes;
     fn hew_sink_write_bytes(sink: Sink<bytes>, data: bytes);
 
     // Bytes-typed pair extractors (same underlying handle, typed for the checker)

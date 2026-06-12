@@ -1,8 +1,11 @@
 //! Application state for the TUI observer.
 
 use std::cmp::Reverse;
+#[cfg(unix)]
 use std::path::Path;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::client::{
     ActorInfo, ClientError, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
@@ -66,6 +69,10 @@ pub struct CrashEntry {
     pub time_s: f64,
     pub actor_id: u64,
     pub signal: i32,
+    /// Human-readable trap kind from the runtime (e.g. `"DivideByZero"`,
+    /// `"IntegerOverflow"`, `"Signal"`, `"Normal"`). Empty string when
+    /// the profiler predates this field.
+    pub trap_kind: String,
     pub msg_type: i32,
     pub fault_addr: u64,
 }
@@ -99,6 +106,7 @@ impl From<ClientCrashEntry> for CrashEntry {
             time_s: entry.time_s,
             actor_id: entry.actor_id,
             signal: entry.signal,
+            trap_kind: entry.trap_kind,
             msg_type: entry.msg_type,
             fault_addr: entry.fault_addr,
         }
@@ -172,7 +180,9 @@ pub struct App {
 
     /// When true, periodically re-scan the discovery directory and
     /// reconnect if the current profiler is gone or a new one appears.
+    #[cfg_attr(not(unix), allow(dead_code))]
     auto_discover: bool,
+    #[cfg_attr(not(unix), allow(dead_code))]
     last_discovery_scan: Instant,
 
     prev_messages_sent: u64,
@@ -922,7 +932,7 @@ impl App {
                 id: 3,
                 pid: 102,
                 actor_type: "Logger".to_owned(),
-                state: "blocked".to_owned(),
+                state: "runnable".to_owned(),
                 msgs: 920,
                 time_ns: 450_000_000,
                 mbox_depth: 15,
@@ -965,6 +975,7 @@ impl App {
                 time_s: 41.2,
                 actor_id: 4,
                 signal: 11,
+                trap_kind: "Signal".to_owned(),
                 msg_type: 3,
                 fault_addr: 0x0000_0000_DEAD_BEEF,
             },
@@ -972,6 +983,7 @@ impl App {
                 time_s: 38.7,
                 actor_id: 4,
                 signal: 11,
+                trap_kind: "DivideByZero".to_owned(),
                 msg_type: 1,
                 fault_addr: 0x0000_0000_0000_0000,
             },
@@ -979,6 +991,7 @@ impl App {
                 time_s: 22.1,
                 actor_id: 7,
                 signal: 6,
+                trap_kind: "IntegerOverflow".to_owned(),
                 msg_type: 2,
                 fault_addr: 0x0000_0000_CAFE_BABE,
             },
@@ -1237,6 +1250,8 @@ mod tests {
         Arc, Mutex,
     };
     use std::thread::{self, JoinHandle};
+    #[cfg(not(unix))]
+    use std::time::Duration;
 
     struct TestTraceServer {
         addr: String,
@@ -1261,9 +1276,17 @@ mod tests {
             Self::from_listener(listener, trace_responses, metrics_timestamp)
         }
 
-        fn bind_at(addr: &str, trace_responses: Vec<String>, metrics_timestamp: f64) -> Self {
-            let listener = TcpListener::bind(addr).expect("bind trace test server");
-            Self::from_listener(listener, trace_responses, metrics_timestamp)
+        /// Promote a held `dead_addr_guard()` listener into a live server
+        /// without releasing and re-binding the port.  The same `TcpListener`
+        /// that was keeping the port dead is handed directly to the server
+        /// loop, so there is no TOCTOU window between "release dead guard" and
+        /// "bind live server" that a sibling test could exploit.
+        fn from_dead_guard(
+            guard: TcpListener,
+            trace_responses: Vec<String>,
+            metrics_timestamp: f64,
+        ) -> Self {
+            Self::from_listener(guard, trace_responses, metrics_timestamp)
         }
 
         fn from_listener(
@@ -1360,7 +1383,14 @@ mod tests {
             .split_whitespace()
             .nth(1)
             .expect("extract trace request path");
-        let body = trace_response_body(path, state);
+        let inner = trace_response_body(path, state);
+        // Wrap in the canonical observe envelope so the production
+        // ProfilerClient (which unwraps `{schema_version, data}`) can parse
+        // these test responses. Mirrors hew_runtime::profiler::server::envelope_json.
+        let body = format!(
+            r#"{{"schema_version":"{}","data":{inner}}}"#,
+            crate::client::OBSERVE_SCHEMA_VERSION,
+        );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -1428,12 +1458,22 @@ mod tests {
             .collect()
     }
 
-    fn unused_tcp_addr() -> String {
-        TcpListener::bind("127.0.0.1:0")
-            .expect("bind unused tcp addr")
+    /// Return a guaranteed-dead TCP address by binding an ephemeral port and
+    /// *holding* the listener as a guard.  The caller must keep the returned
+    /// `TcpListener` alive for the duration of the test; dropping it releases
+    /// the port and ends the exclusion.
+    ///
+    /// This eliminates the TOCTOU race that `unused_tcp_addr` (bind-then-drop)
+    /// has: because the OS cannot assign the port to another socket while our
+    /// listener holds it, no sibling test can sneak in and make the "dead" slot
+    /// appear live.
+    fn dead_addr_guard() -> (String, TcpListener) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind dead-addr guard");
+        let addr = listener
             .local_addr()
-            .expect("read unused tcp addr")
-            .to_string()
+            .expect("read dead-addr guard local addr")
+            .to_string();
+        (addr, listener)
     }
 
     /// Pressing `/` to re-activate filter mode must NOT clear an existing filter.
@@ -1549,7 +1589,7 @@ mod tests {
     #[test]
     fn refresh_uses_first_connected_node_when_primary_is_down() {
         let live = TestTraceServer::new(Vec::new());
-        let dead_addr = unused_tcp_addr();
+        let (dead_addr, _dead_guard) = dead_addr_guard();
         let live_addr = live.addr();
         let mut app =
             App::new_tcp(&[dead_addr.clone(), live_addr.clone()]).expect("tcp app should build");
@@ -1602,7 +1642,7 @@ mod tests {
     fn switch_active_node_skips_disconnected_nodes_and_refreshes() {
         let alpha = TestTraceServer::with_metrics(Vec::new(), 1.0);
         let beta = TestTraceServer::with_metrics(Vec::new(), 2.0);
-        let dead_addr = unused_tcp_addr();
+        let (dead_addr, _dead_guard) = dead_addr_guard();
         let alpha_addr = alpha.addr();
         let beta_addr = beta.addr();
         let mut app = App::new_tcp(&[alpha_addr.clone(), dead_addr, beta_addr.clone()])
@@ -1624,7 +1664,7 @@ mod tests {
     #[test]
     fn refresh_does_not_snap_back_to_recovered_first_node() {
         let fallback = TestTraceServer::with_metrics(Vec::new(), 2.0);
-        let recovering_addr = unused_tcp_addr();
+        let (recovering_addr, recovering_guard) = dead_addr_guard();
         let fallback_addr = fallback.addr();
         let mut app = App::new_tcp(&[recovering_addr.clone(), fallback_addr.clone()])
             .expect("tcp app should build");
@@ -1633,7 +1673,9 @@ mod tests {
         assert_eq!(app.active_node_label(), fallback_addr);
         assert!((app.metrics.timestamp_secs - 2.0).abs() < f64::EPSILON);
 
-        let _recovered = TestTraceServer::bind_at(&recovering_addr, Vec::new(), 1.0);
+        // Promote the guard listener directly into a live server — no
+        // release-and-rebind gap, so no sibling test can steal the port.
+        let _recovered = TestTraceServer::from_dead_guard(recovering_guard, Vec::new(), 1.0);
         app.refresh();
 
         assert_eq!(

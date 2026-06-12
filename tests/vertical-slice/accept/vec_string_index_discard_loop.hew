@@ -1,0 +1,43 @@
+// vec-generic-index (security-review follow-on): DISCARDED `Vec<string>` scalar
+// index in a loop, over HEAP strings, is a NO-DOUBLE-FREE / NO-LEAK guard.
+//
+// `xs[i];` in statement position lowers to `hew_vec_get_str`, which returns a
+// FRESH retained owner (a real refcount bump for heap strings — string LITERALS
+// are immortal rodata whose retain/drop are no-ops, so this fixture deliberately
+// builds heap strings via interpolation to exercise the real refcount path). The
+// discarded result is never bound, read, or aliased, so the lowerer balances the
+// retain with one inline `hew_string_drop` emitted immediately after the getter,
+// inside the loop body — released per iteration, not at function scope.
+//
+// The P0 property under test is NO DOUBLE-FREE and NO CORRUPTION:
+//   * If the inline drop over-released (double-free), the Vec's own element
+//     reference would be freed underneath it; the post-loop re-index + len would
+//     read freed memory and fault (SIGABRT/SIGSEGV) or return garbage.
+//   * If indexing moved out of the Vec instead of cloning, the re-index would
+//     read a hole.
+// A clean, deterministic exit is the behavioural proof. (The structural proof
+// that the per-iteration drop is EMITTED — i.e. no leak — lives in the MIR
+// canary `vec_string_discarded_scalar_index_in_loop_emits_one_drop_site`.)
+//
+// xs = ["item0","item1","item2","item3"] (4 heap strings, each len 5).
+// 1000 outer iterations × 4 discards = 4000 retained-then-dropped owners.
+// After the loop the Vec is reused: a = xs[0] ("item0", len 5), n = len (4).
+//   a.len() + n = 5 + 4 = 9  →  exit 9
+fn main() -> i64 {
+    let xs: Vec<string> = Vec::new();
+    for k in 0 .. 4 {
+        xs.push(f"item{k}"); // heap strings: interpolation allocates a fresh buffer
+    }
+
+    for _r in 0 .. 1000 {
+        for j in 0 .. 4 {
+            xs[j]; // discarded retained owner — balanced by an inline per-iteration drop
+        }
+    }
+
+    // The Vec must still be intact and usable after the discard loop: a
+    // double-free or move-out would corrupt these reads.
+    let a = xs[0];
+    let n = xs.len();
+    a.len() + n
+}

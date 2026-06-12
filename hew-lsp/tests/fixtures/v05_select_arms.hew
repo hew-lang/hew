@@ -1,0 +1,28 @@
+import std::channel::channel;
+
+actor Responder {
+    receive fn ask(value: i32) -> i32 {
+        value
+    }
+}
+
+fn select_probe() -> i32 {
+    7
+}
+
+fn select_arms() -> i32 {
+    let recipient = spawn Responder;
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx.send("ping");
+    let result = select {
+        reply from recipient.ask(1) => reply,
+        msg from rx.recv() => {
+            match msg {
+                Some(value) => select_probe(),
+                None => 0,
+            }
+        },
+        after 1s => select_probe(),
+    };
+    result
+}

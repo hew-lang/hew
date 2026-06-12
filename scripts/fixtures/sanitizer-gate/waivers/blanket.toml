@@ -1,0 +1,6 @@
+[[waiver]]
+axis = "*"
+reason = "blanket waiver must be rejected"
+tracking = "https://github.com/hew-lang/hew/issues/0000"
+commit = "0123456789abcdef0123456789abcdef01234567"
+expires = "2999-12-31"

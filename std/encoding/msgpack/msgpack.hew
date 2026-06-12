@@ -21,7 +21,7 @@
 /// Encode a JSON string to MessagePack binary.
 ///
 /// Returns an empty `bytes` buffer on invalid JSON.
-pub fn from_json(json: String) -> bytes {
+pub fn from_json(json: string) -> bytes {
     unsafe {
         hew_msgpack_from_json_hew(json)
     }
@@ -30,21 +30,21 @@ pub fn from_json(json: String) -> bytes {
 /// Decode a MessagePack `bytes` buffer to a JSON string.
 ///
 /// Returns an empty string on error.
-pub fn to_json(data: bytes) -> String {
+pub fn to_json(data: bytes) -> string {
     unsafe {
         hew_msgpack_to_json_hew(data)
     }
 }
 
 /// Encode an integer as a MessagePack varint.
-pub fn encode_int(val: int) -> bytes {
+pub fn encode_int(val: i64) -> bytes {
     unsafe {
         hew_msgpack_encode_int_hew(val as i64)
     } // INTERNAL-ABI: C ABI takes i64
 }
 
 /// Encode a string as MessagePack str.
-pub fn encode_string(s: String) -> bytes {
+pub fn encode_string(s: string) -> bytes {
     unsafe {
         hew_msgpack_encode_string_hew(s)
     }
@@ -59,9 +59,9 @@ pub fn encode_bytes(data: bytes) -> bytes {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_msgpack_from_json_hew(json: String) -> bytes;
-    fn hew_msgpack_to_json_hew(data: bytes) -> String;
+    fn hew_msgpack_from_json_hew(json: string) -> bytes;
+    fn hew_msgpack_to_json_hew(data: bytes) -> string;
     fn hew_msgpack_encode_int_hew(val: i64) -> bytes;
-    fn hew_msgpack_encode_string_hew(s: String) -> bytes;
+    fn hew_msgpack_encode_string_hew(s: string) -> bytes;
     fn hew_msgpack_encode_bytes_hew(data: bytes) -> bytes;
 }

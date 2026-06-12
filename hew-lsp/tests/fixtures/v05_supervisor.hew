@@ -1,0 +1,20 @@
+actor LogWorker {
+    receive fn process(msg: i64) -> i64 {
+        msg
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child logger: LogWorker;
+}
+
+fn supervisor_probe() -> i64 {
+    7
+}
+
+fn supervisor_use() -> i64 {
+    supervisor_probe()
+}

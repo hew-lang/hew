@@ -1,0 +1,3 @@
+actor Sink { receive fn collect(value: i64) { println(value); } }
+actor Doubler { receive fn process(next: Sink, value: i64) { next.collect(value * 2); } }
+fn main() { let sink = spawn Sink; let doubler = spawn Doubler; doubler.process(sink, 21); }

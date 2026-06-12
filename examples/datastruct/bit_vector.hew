@@ -1,7 +1,7 @@
-// Bit Vector using Vec<int> where each int stores 32 bits
+// Bit Vector using Vec<i64> where each i64 stores 32 bits
 // Operations: set_bit, clear_bit, get_bit, count_ones
-fn bv_create(num_bits: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn bv_create(num_bits: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     let num_words = (num_bits + 31) / 32;
     for i in 0 .. num_words {
         v.push(0);
@@ -9,7 +9,7 @@ fn bv_create(num_bits: int) -> Vec<int> {
     v
 }
 
-fn bv_set_bit(bv: Vec<int>, bit: int) -> int {
+fn bv_set_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
@@ -18,7 +18,7 @@ fn bv_set_bit(bv: Vec<int>, bit: int) -> int {
     1
 }
 
-fn bv_clear_bit(bv: Vec<int>, bit: int) -> int {
+fn bv_clear_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
@@ -30,7 +30,7 @@ fn bv_clear_bit(bv: Vec<int>, bit: int) -> int {
     1
 }
 
-fn bv_get_bit(bv: Vec<int>, bit: int) -> int {
+fn bv_get_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
@@ -43,7 +43,7 @@ fn bv_get_bit(bv: Vec<int>, bit: int) -> int {
 }
 
 // Shift left by repeated doubling
-fn bv_shl(val: int, shift: int) -> int {
+fn bv_shl(val: i64, shift: i64) -> i64 {
     var result = val;
     for i in 0 .. shift {
         result = result * 2;
@@ -52,7 +52,7 @@ fn bv_shl(val: int, shift: int) -> int {
 }
 
 // Bitwise AND via bit-by-bit extraction
-fn bv_and(a: int, b: int) -> int {
+fn bv_and(a: i64, b: i64) -> i64 {
     var result = 0;
     for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
@@ -67,7 +67,7 @@ fn bv_and(a: int, b: int) -> int {
 }
 
 // Bitwise OR via bit-by-bit
-fn bv_or(a: int, b: int) -> int {
+fn bv_or(a: i64, b: i64) -> i64 {
     var result = 0;
     for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
@@ -82,7 +82,7 @@ fn bv_or(a: int, b: int) -> int {
 }
 
 // Bitwise XOR via bit-by-bit
-fn bv_xor(a: int, b: int) -> int {
+fn bv_xor(a: i64, b: i64) -> i64 {
     var result = 0;
     for i in 0 .. 32 {
         let bit_a = bv_get_ith_bit(a, i);
@@ -95,13 +95,13 @@ fn bv_xor(a: int, b: int) -> int {
 }
 
 // Extract i-th bit from val using division
-fn bv_get_ith_bit(val: int, i: int) -> int {
+fn bv_get_ith_bit(val: i64, i: i64) -> i64 {
     let shifted = val / bv_shl(1, i);
     shifted % 2
 }
 
 // Count set bits across entire bit vector
-fn bv_count_ones(bv: Vec<int>) -> int {
+fn bv_count_ones(bv: Vec<i64>) -> i64 {
     var count = 0;
     let num_words = bv.len();
     for w in 0 .. num_words {

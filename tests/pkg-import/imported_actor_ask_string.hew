@@ -1,0 +1,10 @@
+// Imported-actor ask replying an owned string crossing the FFI boundary.
+import hew::testffi;
+
+fn main() {
+    let db = spawn testffi.Db(seed: 42);
+    match await db.name() {
+        Ok(n) => println(f"name={n}"),
+        Err(_) => println("ask failed"),
+    }
+}

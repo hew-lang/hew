@@ -3,6 +3,10 @@
 //! In Erlang-style actor systems, monitors are unidirectional: when actor A
 //! monitors actor B, if B dies, A receives a DOWN message but does NOT crash.
 //! This module implements the monitor table and death notification logic.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -411,19 +415,21 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr};
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
-            pid: id,
             state: std::ptr::null_mut(),
             state_size: 0,
             dispatch: None,
@@ -435,6 +441,7 @@ mod tests {
             coalesce_key_fn: None,
             terminate_fn: None,
             state_drop_fn: None,
+            state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -448,6 +455,11 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: std::ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -687,6 +699,22 @@ mod tests {
             let notify = std::thread::spawn(move || notify_monitors_on_death(target_id, 77));
             entered.wait();
 
+            // The DOWN message has now been delivered: `notify` is parked in
+            // the hook still holding the LIVE_ACTORS lock. Verify delivery
+            // from the main thread *before* spawning the free thread, so the
+            // thread-spawn happens-before edge orders this read + node free
+            // ahead of the free thread's mailbox teardown (rather than racing
+            // its drain through the TSan-invisible std `Barrier`).
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
+            let payload = &*((*node).data.cast::<DownMessage>());
+            assert_eq!(payload.monitored_actor_id, target_id);
+            assert_eq!(payload.ref_id, ref_id);
+            assert_eq!(payload.reason, 77);
+            mailbox::hew_msg_node_free(node);
+
             (*watcher).actor_state.store(
                 HewActorState::Idle as i32,
                 std::sync::atomic::Ordering::Release,
@@ -707,16 +735,6 @@ mod tests {
             while !free_started.load(std::sync::atomic::Ordering::Acquire) {
                 std::thread::yield_now();
             }
-
-            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
-            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_DOWN);
-            let payload = &*((*node).data.cast::<DownMessage>());
-            assert_eq!(payload.monitored_actor_id, target_id);
-            assert_eq!(payload.ref_id, ref_id);
-            assert_eq!(payload.reason, 77);
-            mailbox::hew_msg_node_free(node);
 
             std::thread::sleep(std::time::Duration::from_millis(50));
             assert!(

@@ -1,6 +1,0 @@
-import std::net::http;
-
-fn main() {
-    let server = http.listen(":8080");
-    server.close();
-}

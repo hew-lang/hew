@@ -4,6 +4,11 @@
 //! operations.  They use `match` on the built-in `Option` type and avoid
 //! FFI calls entirely for the supported element types.
 //!
+//! v0.5 supports user functions returning `Option<T>` for bitcopy payloads
+//! (i64, f64, bool, and other non-heap-owning types). Composite returns of
+//! heap-owning payloads (e.g. `Option<string>`) are rejected at compile time
+//! until tag-aware drop is implemented.
+//!
 //! # Examples
 //!
 //! ```
@@ -14,7 +19,7 @@
 //!     println(option.is_some_int(x));        // true
 //!     println(option.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Option<int> = None;
+//!     let y: Option<i64> = None;
 //!     println(option.is_none_int(y));         // true
 //!     println(option.unwrap_or_int(y, -1));   // -1
 //! }
@@ -22,7 +27,7 @@
 
 // ── Predicates ──────────────────────────────────────────────────────
 /// Returns `true` if the option contains a value.
-pub fn is_some_int(opt: Option<int>) -> bool {
+pub fn is_some_int(opt: Option<i64>) -> bool {
     match opt {
         Some(_) => true,
         None => false,
@@ -30,7 +35,7 @@ pub fn is_some_int(opt: Option<int>) -> bool {
 }
 
 /// Returns `true` if the option is `None`.
-pub fn is_none_int(opt: Option<int>) -> bool {
+pub fn is_none_int(opt: Option<i64>) -> bool {
     match opt {
         Some(_) => false,
         None => true,
@@ -38,8 +43,8 @@ pub fn is_none_int(opt: Option<int>) -> bool {
 }
 
 // ── Unwrap ──────────────────────────────────────────────────────────
-/// Unwrap the `int` value.  Panics if the option is `None`.
-pub fn unwrap_int(opt: Option<int>) -> int {
+/// Unwrap the `i64` value.  Panics if the option is `None`.
+pub fn unwrap_int(opt: Option<i64>) -> i64 {
     match opt {
         Some(v) => v,
         None => {
@@ -49,8 +54,8 @@ pub fn unwrap_int(opt: Option<int>) -> int {
     }
 }
 
-/// Unwrap the `int` value, or return `fallback` if `None`.
-pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
+/// Unwrap the `i64` value, or return `fallback` if `None`.
+pub fn unwrap_or_int(opt: Option<i64>, fallback: i64) -> i64 {
     match opt {
         Some(v) => v,
         None => fallback,
@@ -58,8 +63,8 @@ pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
 }
 
 // ── Map ─────────────────────────────────────────────────────────────
-/// Apply `f` to the contained `int` value, or return `None` if empty.
-pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
+/// Apply `f` to the contained `i64` value, or return `None` if empty.
+pub fn map_int(opt: Option<i64>, f: fn(i64) -> i64) -> Option<i64> {
     match opt {
         Some(v) => Some(f(v)),
         None => None,
@@ -68,16 +73,16 @@ pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
 
 // ── Contains ────────────────────────────────────────────────────────
 /// Returns `true` if the option contains `needle`.
-pub fn contains_int(opt: Option<int>, needle: int) -> bool {
+pub fn contains_int(opt: Option<i64>, needle: i64) -> bool {
     match opt {
         Some(v) => v == needle,
         None => false,
     }
 }
 
-// ── String variants ────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────
 /// Returns `true` if the option contains a value.
-pub fn is_some_str(opt: Option<String>) -> bool {
+pub fn is_some_str(opt: Option<string>) -> bool {
     match opt {
         Some(_) => true,
         None => false,
@@ -85,15 +90,15 @@ pub fn is_some_str(opt: Option<String>) -> bool {
 }
 
 /// Returns `true` if the option is `None`.
-pub fn is_none_str(opt: Option<String>) -> bool {
+pub fn is_none_str(opt: Option<string>) -> bool {
     match opt {
         Some(_) => false,
         None => true,
     }
 }
 
-/// Unwrap the `String` value.  Panics if the option is `None`.
-pub fn unwrap_str(opt: Option<String>) -> String {
+/// Unwrap the `string` value.  Panics if the option is `None`.
+pub fn unwrap_str(opt: Option<string>) -> string {
     match opt {
         Some(v) => v,
         None => {
@@ -103,16 +108,18 @@ pub fn unwrap_str(opt: Option<String>) -> String {
     }
 }
 
-/// Unwrap the `String` value, or return `fallback` if `None`.
-pub fn unwrap_or_str(opt: Option<String>, fallback: String) -> String {
+/// Unwrap the `string` value, or return `fallback` if `None`.
+pub fn unwrap_or_str(opt: Option<string>, fallback: string) -> string {
     match opt {
         Some(v) => v,
         None => fallback,
     }
 }
 
-/// Apply `f` to the contained `String` value, or return `None` if empty.
-pub fn map_str(opt: Option<String>, f: fn(String) -> String) -> Option<String> {
+/// Apply `f` to the contained `string` value, or return `None` if empty.
+/// NOTE: This function is currently blocked by the heap-owning composite return
+/// boundary. It will become usable once tag-aware drop is implemented.
+pub fn map_str(opt: Option<string>, f: fn(string) -> string) -> Option<string> {
     match opt {
         Some(v) => Some(f(v)),
         None => None,
@@ -120,7 +127,7 @@ pub fn map_str(opt: Option<String>, f: fn(String) -> String) -> Option<String> {
 }
 
 /// Returns `true` if the option contains `needle`.
-pub fn contains_str(opt: Option<String>, needle: String) -> bool {
+pub fn contains_str(opt: Option<string>, needle: string) -> bool {
     match opt {
         Some(v) => v == needle,
         None => false,
@@ -176,5 +183,25 @@ pub fn contains_f64(opt: Option<f64>, needle: f64) -> bool {
     match opt {
         Some(v) => v == needle,
         None => false,
+    }
+}
+
+// ── Declarative receiver FFI ─────────────────────────────────────────
+impl<T> Option<T> {
+    #[extern_symbol(hew_option_is_some)]
+    fn is_some(opt: Option<T>) -> bool {
+        panic("hew_option_is_some: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol(hew_option_is_none)]
+    fn is_none(opt: Option<T>) -> bool {
+        panic("hew_option_is_none: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol("hew_option_unwrap_{T}")]
+    fn unwrap(opt: Option<T>) -> T {
+        panic("hew_option_unwrap: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol("hew_option_unwrap_or_{T}")]
+    fn unwrap_or(opt: Option<T>, fallback: T) -> T {
+        panic("hew_option_unwrap_or: declarative FFI body reached without rewrite")
     }
 }

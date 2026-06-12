@@ -1,0 +1,29 @@
+// Runnable fixture: exercises qualified-path machine state and event
+// constructors. Mirrors `run_traffic_light.hew` but uses the explicit
+// `Counter::Idle` and `CounterEvent::Tick` forms instead of bare names,
+// so the HIR module-scope ctor-resolution path is exercised through
+// the qualified registry entry rather than the unambiguous-bare one.
+machine Counter {
+    events {
+        Tick;
+    }
+
+    state Idle;
+    state Running;
+
+    on Tick: Idle => Running {
+        Running
+    }
+    on Tick: Running => Running reenter {
+        Running
+    }
+}
+
+fn main() {
+    var c: Counter = Counter::Idle;
+    println(c.state_name());
+    c.step(CounterEvent::Tick);
+    println(c.state_name());
+    c.step(CounterEvent::Tick);
+    println(c.state_name());
+}

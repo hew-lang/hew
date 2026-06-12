@@ -1,0 +1,20 @@
+// `break @outer` inside an inner loop exits the labeled outer loop, then
+// continues with code after the labeled loop.
+//
+// The first outer iteration contributes 10. The first inner iteration
+// contributes 1, then `break @outer` exits both loops. The rest of the inner
+// loop and the `+1000` after the inner loop must not run. The post-loop `+5`
+// must run. Exit code: 10 + 1 + 5 = 16.
+fn main() -> i64 {
+    var total: i64 = 0;
+    @outer: for i in 0 .. 3 {
+        total = total + 10;
+        for j in 0 .. 3 {
+            total = total + 1;
+            break @outer;
+        }
+        total = total + 1000;
+    }
+    total = total + 5;
+    total
+}

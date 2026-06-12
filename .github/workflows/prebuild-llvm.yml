@@ -1,23 +1,22 @@
-# Publish and pre-build LLVM+MLIR toolchain artifacts.
+# Publish and pre-build LLVM toolchain artifacts.
 #
-# Windows toolchain: builds LLVM+MLIR 22.1.0 from source on a windows-2022
+# Windows toolchain: builds LLVM 22.1.0 from source on a windows-2022
 # runner using MSVC + Ninja, installs to C:\llvm-22, packages as a Hew-owned
 # toolchain archive (.tar.gz), generates a SHA-256 checksum, and publishes to
-# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v1). The
-# official LLVM Windows binary archive omits MLIR cmake package files
-# (lib/cmake/mlir/MLIRConfig.cmake); a source build is required. release.yml
-# downloads and verifies that asset instead of building LLVM at release time.
+# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v3).
+# release.yml downloads and verifies that asset instead of building LLVM at
+# release time.
 # The publish step is idempotent — it skips if the versioned asset already
 # exists (immutable once published; bump TOOLCHAIN_TAG to republish).
 #
-# FreeBSD: builds LLVM+MLIR from source and warms the GitHub Actions cache used
+# FreeBSD: builds LLVM from source and warms the GitHub Actions cache used
 # by the FreeBSD release path (tier-2, continue-on-error). This job is
 # independent of the Windows publish job. force_rebuild only affects this job.
 #
 # Runs weekly on Sunday 04:00 UTC and can be triggered manually.
 # Can also be triggered automatically when this workflow file changes.
 
-name: Pre-build LLVM+MLIR
+name: Pre-build LLVM
 
 on:
   schedule:
@@ -41,19 +40,18 @@ env:
   # IMPORTANT: when bumping LLVM, update LLVM_TAG here and the corresponding
   # toolchain asset name/tag (TOOLCHAIN_TAG, ASSET_NAME) consumed by release.yml.
   LLVM_TAG: "llvmorg-22.1.0"
-  LLVM_CACHE_KEY_BSD: "llvm-mlir-22.1.0-freebsd15-amd64-v1"
+  LLVM_CACHE_KEY_BSD: "llvm-22.1.0-freebsd15-amd64-v2"
   # Versioned toolchain release tag and asset name for the Hew-owned Windows
   # LLVM package. Bump the v-suffix (v2, v3, …) when the packaging or layout
   # changes without a LLVM version bump. Must match release.yml exactly.
-  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v1"
-  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v3"
+  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Windows toolchain: build LLVM+MLIR from source on windows-2022 with
+  # Windows toolchain: build LLVM from source on windows-2022 with
   # MSVC + Ninja, install to C:\llvm-22, and publish as a Hew-owned
-  # toolchain archive consumed by release.yml. The official upstream binary
-  # archive lacks MLIR cmake package files; a source build is required.
+  # toolchain archive consumed by release.yml.
   # ─────────────────────────────────────────────────────────────────────
   publish-windows-toolchain:
     runs-on: windows-2022
@@ -252,11 +250,11 @@ jobs:
             https://github.com/llvm/llvm-project.git D:\llvm-src
           Set-Location D:\llvm-src
           # clang and lld are required for clang.exe and lld-link.exe;
-          # mlir is required for MLIRConfig.cmake. LLD's unified driver also
-          # builds Mach-O support on Windows, which includes libunwind's
+          # LLD's unified driver builds Mach-O support on Windows, which
+          # includes libunwind's
           # mach-o headers, so keep libunwind in the sparse checkout even
           # though it is not an enabled LLVM project.
-          git sparse-checkout set llvm clang lld mlir libunwind cmake third-party
+          git sparse-checkout set llvm clang lld libunwind cmake third-party
           $machOUnwindHeader = "D:\llvm-src\libunwind\include\mach-o\compact_unwind_encoding.h"
           if (-not (Test-Path $machOUnwindHeader)) {
             Write-Host "::error::Required LLD Mach-O unwind header missing: $machOUnwindHeader"
@@ -265,7 +263,7 @@ jobs:
           Write-Host "OK: $machOUnwindHeader"
           Write-Host "Source tree ready at D:\llvm-src"
 
-      - name: Configure LLVM+MLIR with CMake (MSVC, Ninja, static libs)
+      - name: Configure LLVM with CMake (MSVC, Ninja, static libs)
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
@@ -274,8 +272,8 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
-            -DLLVM_ENABLE_PROJECTS="clang;lld;mlir" `
-            -DLLVM_TARGETS_TO_BUILD="X86" `
+            -DLLVM_ENABLE_PROJECTS="clang;lld" `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;WebAssembly" `
             -DLLVM_BUILD_TOOLS=ON `
             -DLLVM_BUILD_UTILS=ON `
             -DLLVM_INSTALL_UTILS=ON `
@@ -287,17 +285,15 @@ jobs:
             -DLLVM_ENABLE_ZLIB=OFF `
             -DLLVM_ENABLE_ZSTD=OFF `
             -DLLVM_BUILD_LLVM_DYLIB=OFF `
-            -DBUILD_SHARED_LIBS=OFF `
-            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
-            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+            -DBUILD_SHARED_LIBS=OFF
 
-      - name: Build and install LLVM+MLIR to C:\llvm-22
+      - name: Build and install LLVM to C:\llvm-22
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
           cmake --build D:\llvm-build --target install `
             --parallel $env:NUMBER_OF_PROCESSORS
-          Write-Host "LLVM+MLIR installed to C:\llvm-22"
+          Write-Host "LLVM installed to C:\llvm-22"
 
       - name: Clean build tree to free disk space
         if: steps.check.outputs.skip != 'true'
@@ -307,7 +303,7 @@ jobs:
             -ErrorAction SilentlyContinue
           Write-Host "Build tree cleaned"
 
-      - name: Validate installed LLVM+MLIR layout
+      - name: Validate installed LLVM layout
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
@@ -316,8 +312,7 @@ jobs:
           # the same paths.
           $required = @(
             "C:\llvm-22\bin\clang.exe",
-            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
-            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake"
           )
           foreach ($path in $required) {
             if (-not (Test-Path $path)) {
@@ -374,8 +369,8 @@ jobs:
                --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
             gh release create "$TOOLCHAIN_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "LLVM 22.1.0 Windows MSVC toolchain (v1)" \
-              --notes "Source-built LLVM+MLIR 22.1.0 for Hew Windows release builds. Layout: llvm-22/. Not a Hew product release." \
+              --title "LLVM 22.1.0 Windows MSVC toolchain (v2)" \
+              --notes "Source-built LLVM 22.1.0 for Hew Windows release builds. Layout: llvm-22/. Not a Hew product release." \
               --latest=false \
               --prerelease
             echo "Created toolchain release: $TOOLCHAIN_TAG"
@@ -463,27 +458,24 @@ jobs:
             git clone --depth 1 --branch "${LLVM_BRANCH}" \
               --filter=blob:none --sparse \
               https://github.com/llvm/llvm-project.git /tmp/llvm-src
-            (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
+              (cd /tmp/llvm-src && git sparse-checkout set llvm cmake third-party)
 
             cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-              -DLLVM_ENABLE_PROJECTS="mlir" \
-              -DLLVM_TARGETS_TO_BUILD="X86" \
-              -DLLVM_BUILD_TOOLS=ON \
-              -DLLVM_BUILD_UTILS=ON \
+                -DLLVM_TARGETS_TO_BUILD="X86" \
+                -DLLVM_BUILD_TOOLS=ON \
+                -DLLVM_BUILD_UTILS=ON \
               -DLLVM_INSTALL_UTILS=ON \
               -DLLVM_INCLUDE_TESTS=OFF \
               -DLLVM_INCLUDE_BENCHMARKS=OFF \
               -DLLVM_INCLUDE_EXAMPLES=OFF \
-              -DLLVM_INCLUDE_DOCS=OFF \
-              -DLLVM_ENABLE_BINDINGS=OFF \
-              -DLLVM_ENABLE_ZLIB=ON \
-              -DLLVM_ENABLE_ZSTD=OFF \
-              -DLLVM_BUILD_LLVM_DYLIB=OFF \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
-              -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+                -DLLVM_INCLUDE_DOCS=OFF \
+                -DLLVM_ENABLE_BINDINGS=OFF \
+                -DLLVM_ENABLE_ZLIB=ON \
+                -DLLVM_ENABLE_ZSTD=OFF \
+                -DLLVM_BUILD_LLVM_DYLIB=OFF \
+                -DBUILD_SHARED_LIBS=OFF
 
             cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
             cmake --install /tmp/llvm-build

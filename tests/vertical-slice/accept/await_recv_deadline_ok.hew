@@ -1,0 +1,38 @@
+// Accept fixture (NEW-7): `await rx.recv() | after d` — the item arrives before
+// the deadline, so the suspending recv resolves to `Ok(Some(v))`.
+//
+// The channel holds capacity 1; the sender deposits 42 before the actor parks.
+// The long `after 5000ms` deadline never fires. Proves the deadline-vs-recv race
+// in the direction where the item wins, and that a prompt recv disarms the timer.
+//
+// Match pattern: two-level match required in v0.5 (nested constructor subpatterns
+// are not yet supported). Outer match on `Result`, inner match on `Option<i64>`.
+//
+// Exit-code contract: Ok(Some(42)) → 42.
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        tx.send(42);
+        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after 5000ms;
+        let _ = tx;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(v) => v,
+                    None => -1,
+                }
+            },
+            Err(_) => -2,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

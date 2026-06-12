@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: ─────────────────────────────────────────────────────────────────
+
 // ─────────────────────────────────────────────────────────────────
 // Hew Supervisor: Language Comparison
 // ─────────────────────────────────────────────────────────────────
@@ -85,20 +88,19 @@ actor ConnWorker {
 // This IS the supervision tree. 6 lines.
 supervisor ConnectionPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
-    child reader: ConnWorker(0, 8080);
-    child writer: ConnWorker(1, 8081);
+    child reader: ConnWorker(role: 0, port: 8080);
+    child writer: ConnWorker(role: 1, port: 8081);
 }
 
 fn main() {
     println("─── Connection Pool Demo ───");
     println("");
-    let pool = spawn ConnectionPool;
+    let sup = spawn ConnectionPool;
     sleep_ms(30);
-    let reader = supervisor_child(pool, 0);
-    let writer = supervisor_child(pool, 1);
+    let reader = sup.reader;
+    let writer = sup.writer;
     // Normal operation
     reader.handle(1);
     sleep_ms(10);
@@ -116,7 +118,7 @@ fn main() {
     // New reader is already running (supervisor restarted it)
     println("");
     println("After automatic restart:");
-    let reader2 = supervisor_child(pool, 0);
+    let reader2 = sup.reader;
     reader2.handle(4);
     sleep_ms(10);
     writer.handle(5);

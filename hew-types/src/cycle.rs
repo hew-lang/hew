@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::check::TypeDef;
+use crate::check::{TypeDef, TypeDefKind, VariantDef};
 use crate::ty::Ty;
 
 /// Result of cycle detection: the set of cycle-capable actor names and a list
@@ -68,6 +68,416 @@ pub fn detect_actor_ref_cycles(
     (cycle_capable, cycles)
 }
 
+/// One value-typed field edge that participates in an infinitely-sized type
+/// cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueTypeCycleEdge {
+    /// Type whose field/variant payload contains `to` by value.
+    pub from: String,
+    /// Type reached by value from `from`.
+    pub to: String,
+    /// User-facing member description, e.g. `variant `Node`` or `field `next``.
+    pub member_desc: String,
+}
+
+/// A recursive value-typed SCC plus the representative edge to diagnose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueTypeCycle {
+    /// All value types in the SCC, sorted for deterministic diagnostics.
+    pub type_names: Vec<String>,
+    /// Edge from one member of the SCC to another member of the SCC.
+    pub edge: ValueTypeCycleEdge,
+}
+
+/// Detect infinitely-sized value types.
+///
+/// The graph contains non-indirect user value types (`enum`, `record`, and
+/// layout-backed `struct`) and edges for field/payload containment by value.
+/// Pointer/borrow/heap-handle containers break the chain; `Option`/`Result`,
+/// tuples, arrays, and generic value-type wrappers are walked because they
+/// store payloads inline.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "only called with std HashMap internally"
+)]
+pub fn detect_recursive_value_type_cycles(
+    type_defs: &HashMap<String, TypeDef>,
+) -> Vec<ValueTypeCycle> {
+    let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut edges: HashMap<(String, String), ValueTypeCycleEdge> = HashMap::new();
+    let mut direct_edges: HashSet<(String, String)> = HashSet::new();
+
+    let mut value_type_names: Vec<&str> = type_defs
+        .values()
+        .filter(|td| is_value_type_node(td))
+        .map(|td| td.name.as_str())
+        .collect();
+    value_type_names.sort_unstable();
+
+    for name in &value_type_names {
+        let td = &type_defs[*name];
+        let mut refs = HashSet::new();
+        collect_value_type_edges_for_def(td, type_defs, &mut refs, &mut edges, &mut direct_edges);
+        adj.insert(td.name.as_str(), refs);
+    }
+
+    let sccs = tarjan_scc(&value_type_names, &adj);
+    let mut cycles = Vec::new();
+
+    for scc in &sccs {
+        let is_cycle = if scc.len() >= 2 {
+            true
+        } else if scc.len() == 1 {
+            let name = scc[0];
+            adj.get(name).is_some_and(|refs| refs.contains(name))
+        } else {
+            false
+        };
+        if !is_cycle {
+            continue;
+        }
+
+        let mut type_names: Vec<String> = scc.iter().map(|name| (*name).to_string()).collect();
+        type_names.sort();
+        let scc_members: HashSet<&str> = scc.iter().copied().collect();
+
+        for from in &type_names {
+            if let Some(edge) =
+                representative_value_cycle_edge(from, &scc_members, &adj, &edges, &direct_edges)
+            {
+                cycles.push(ValueTypeCycle {
+                    type_names: type_names.clone(),
+                    edge,
+                });
+            }
+        }
+    }
+
+    cycles.sort_by(|a, b| {
+        a.edge
+            .from
+            .cmp(&b.edge.from)
+            .then_with(|| a.edge.to.cmp(&b.edge.to))
+    });
+    cycles
+}
+
+fn representative_value_cycle_edge(
+    from: &str,
+    scc_members: &HashSet<&str>,
+    adj: &HashMap<&str, HashSet<&str>>,
+    edges: &HashMap<(String, String), ValueTypeCycleEdge>,
+    direct_edges: &HashSet<(String, String)>,
+) -> Option<ValueTypeCycleEdge> {
+    let mut targets: Vec<&str> = adj
+        .get(from)?
+        .iter()
+        .copied()
+        .filter(|to| scc_members.contains(to))
+        .collect();
+    targets.sort_unstable();
+    if let Some(edge) = targets.iter().find_map(|to| {
+        let key = (from.to_string(), (*to).to_string());
+        direct_edges
+            .contains(&key)
+            .then(|| edges.get(&key).cloned())
+            .flatten()
+    }) {
+        return Some(edge);
+    }
+    targets
+        .into_iter()
+        .find_map(|to| edges.get(&(from.to_string(), to.to_string())).cloned())
+}
+
+fn collect_value_type_edges_for_def<'a>(
+    td: &'a TypeDef,
+    type_defs: &'a HashMap<String, TypeDef>,
+    refs: &mut HashSet<&'a str>,
+    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(String, String)>,
+) {
+    match td.kind {
+        TypeDefKind::Enum => {
+            let mut variants: Vec<_> = td.variants.iter().collect();
+            variants.sort_by_key(|(name, _)| *name);
+            for (variant_name, variant) in variants {
+                match variant {
+                    VariantDef::Unit => {}
+                    VariantDef::Tuple(fields) => {
+                        let member_desc = format!("variant `{variant_name}`");
+                        for field_ty in fields {
+                            collect_value_type_refs(
+                                field_ty,
+                                type_defs,
+                                refs,
+                                edges,
+                                direct_edges,
+                                &td.name,
+                                &member_desc,
+                                true,
+                                &mut HashSet::new(),
+                            );
+                        }
+                    }
+                    VariantDef::Struct(fields) => {
+                        let mut fields = fields.iter().collect::<Vec<_>>();
+                        fields.sort_by_key(|(name, _)| name.clone());
+                        for (field_name, field_ty) in fields {
+                            let member_desc =
+                                format!("variant `{variant_name}` field `{field_name}`");
+                            collect_value_type_refs(
+                                field_ty,
+                                type_defs,
+                                refs,
+                                edges,
+                                direct_edges,
+                                &td.name,
+                                &member_desc,
+                                true,
+                                &mut HashSet::new(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        TypeDefKind::Struct | TypeDefKind::Record => {
+            for (field_name, field_ty) in ordered_type_fields(td) {
+                let member_desc = format!("field `{field_name}`");
+                collect_value_type_refs(
+                    field_ty,
+                    type_defs,
+                    refs,
+                    edges,
+                    direct_edges,
+                    &td.name,
+                    &member_desc,
+                    true,
+                    &mut HashSet::new(),
+                );
+            }
+        }
+        TypeDefKind::Actor | TypeDefKind::Machine => {}
+    }
+}
+
+fn ordered_type_fields(td: &TypeDef) -> Vec<(&str, &Ty)> {
+    if td.field_order.is_empty() {
+        let mut fields = td
+            .fields
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty))
+            .collect::<Vec<_>>();
+        fields.sort_by_key(|(name, _)| *name);
+        return fields;
+    }
+
+    td.field_order
+        .iter()
+        .filter_map(|name| td.fields.get(name).map(|ty| (name.as_str(), ty)))
+        .collect()
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive graph walk carries shared edge collection state"
+)]
+fn collect_value_type_refs<'a>(
+    ty: &Ty,
+    type_defs: &'a HashMap<String, TypeDef>,
+    out: &mut HashSet<&'a str>,
+    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(String, String)>,
+    from: &str,
+    member_desc: &str,
+    is_direct_edge: bool,
+    visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
+) {
+    match ty {
+        Ty::Tuple(elems) => {
+            for elem in elems {
+                collect_value_type_refs(
+                    elem,
+                    type_defs,
+                    out,
+                    edges,
+                    direct_edges,
+                    from,
+                    member_desc,
+                    is_direct_edge,
+                    visited_value_types,
+                );
+            }
+        }
+        Ty::Array(inner, len) if *len != 0 => {
+            collect_value_type_refs(
+                inner,
+                type_defs,
+                out,
+                edges,
+                direct_edges,
+                from,
+                member_desc,
+                is_direct_edge,
+                visited_value_types,
+            );
+        }
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        } => match builtin {
+            Some(crate::BuiltinType::Option | crate::BuiltinType::Result) => {
+                for arg in args {
+                    collect_value_type_refs(
+                        arg,
+                        type_defs,
+                        out,
+                        edges,
+                        direct_edges,
+                        from,
+                        member_desc,
+                        is_direct_edge,
+                        visited_value_types,
+                    );
+                }
+            }
+            Some(_) => {}
+            None => {
+                let Some(target_def) = type_defs.get(name) else {
+                    return;
+                };
+                if !is_value_type_node(target_def) {
+                    return;
+                }
+
+                out.insert(target_def.name.as_str());
+                let edge_key = (from.to_string(), target_def.name.clone());
+                if is_direct_edge {
+                    direct_edges.insert(edge_key.clone());
+                }
+                edges.entry(edge_key).or_insert_with(|| ValueTypeCycleEdge {
+                    from: from.to_string(),
+                    to: target_def.name.clone(),
+                    member_desc: member_desc.to_string(),
+                });
+
+                let key = (target_def.name.clone(), args.clone());
+                if !visited_value_types.insert(key) {
+                    return;
+                }
+                collect_instantiated_value_type_fields(
+                    target_def,
+                    args,
+                    type_defs,
+                    out,
+                    edges,
+                    direct_edges,
+                    from,
+                    member_desc,
+                    visited_value_types,
+                );
+            }
+        },
+        _ => {}
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "recursive graph walk carries shared edge collection state"
+)]
+fn collect_instantiated_value_type_fields<'a>(
+    td: &TypeDef,
+    args: &[Ty],
+    type_defs: &'a HashMap<String, TypeDef>,
+    out: &mut HashSet<&'a str>,
+    edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
+    direct_edges: &mut HashSet<(String, String)>,
+    from: &str,
+    member_desc: &str,
+    visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
+) {
+    match td.kind {
+        TypeDefKind::Enum => {
+            for variant in td.variants.values() {
+                match variant {
+                    VariantDef::Unit => {}
+                    VariantDef::Tuple(fields) => {
+                        for field_ty in fields {
+                            let instantiated = instantiate_value_field_ty(field_ty, td, args);
+                            collect_value_type_refs(
+                                &instantiated,
+                                type_defs,
+                                out,
+                                edges,
+                                direct_edges,
+                                from,
+                                member_desc,
+                                false,
+                                visited_value_types,
+                            );
+                        }
+                    }
+                    VariantDef::Struct(fields) => {
+                        for (_, field_ty) in fields {
+                            let instantiated = instantiate_value_field_ty(field_ty, td, args);
+                            collect_value_type_refs(
+                                &instantiated,
+                                type_defs,
+                                out,
+                                edges,
+                                direct_edges,
+                                from,
+                                member_desc,
+                                false,
+                                visited_value_types,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        TypeDefKind::Struct | TypeDefKind::Record => {
+            for (_, field_ty) in ordered_type_fields(td) {
+                let instantiated = instantiate_value_field_ty(field_ty, td, args);
+                collect_value_type_refs(
+                    &instantiated,
+                    type_defs,
+                    out,
+                    edges,
+                    direct_edges,
+                    from,
+                    member_desc,
+                    false,
+                    visited_value_types,
+                );
+            }
+        }
+        TypeDefKind::Actor | TypeDefKind::Machine => {}
+    }
+}
+
+fn instantiate_value_field_ty(field_ty: &Ty, td: &TypeDef, args: &[Ty]) -> Ty {
+    let map: HashMap<String, Ty> = td
+        .type_params
+        .iter()
+        .zip(args.iter())
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect();
+    field_ty.substitute_named_params_parallel(&map)
+}
+
+fn is_value_type_node(td: &TypeDef) -> bool {
+    !td.is_indirect
+        && matches!(
+            td.kind,
+            TypeDefKind::Struct | TypeDefKind::Enum | TypeDefKind::Record
+        )
+}
+
 /// Recursively collect actor names referenced via `ActorRef<X>` in a type,
 /// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
@@ -86,9 +496,16 @@ fn collect_actor_refs<'a>(
                 collect_actor_refs(elem, type_defs, out, visited_structs);
             }
         }
-        Ty::Named { name, args } => {
-            if name == "ActorRef" {
-                // ActorRef<X> — record X if it's a known actor
+        Ty::Named {
+            name,
+            args,
+            builtin,
+        } => {
+            if matches!(
+                builtin,
+                Some(crate::BuiltinType::ActorRef | crate::BuiltinType::LocalPid)
+            ) {
+                // ActorRef<X> / LocalPid<X> — record X if it's a known actor
                 if let Some(Ty::Named {
                     name: actor_name, ..
                 }) = args.first()
@@ -102,18 +519,20 @@ fn collect_actor_refs<'a>(
                 if let Some(td) = type_defs.get(name) {
                     let struct_name = td.name.as_str();
                     let key = (struct_name.to_string(), args.clone());
-                    if td.kind == crate::check::TypeDefKind::Struct
+                    if (td.kind == crate::check::TypeDefKind::Struct
+                        || td.kind == crate::check::TypeDefKind::Record)
                         && !visited_structs.contains(&key)
                     {
                         visited_structs.insert(key);
+                        let param_map: HashMap<String, Ty> = td
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .collect();
                         for field_ty in td.fields.values() {
-                            let instantiated_field = td
-                                .type_params
-                                .iter()
-                                .zip(args.iter())
-                                .fold(field_ty.clone(), |field, (param, arg)| {
-                                    field.substitute_named_param(param, arg)
-                                });
+                            let instantiated_field =
+                                field_ty.substitute_named_params_parallel(&param_map);
                             collect_actor_refs(
                                 &instantiated_field,
                                 type_defs,
@@ -214,7 +633,6 @@ fn tarjan_scc<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::TypeDefKind;
 
     fn make_actor(name: &str, fields: HashMap<String, Ty>) -> (String, TypeDef) {
         (
@@ -227,6 +645,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )
@@ -243,6 +662,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )
@@ -250,9 +670,52 @@ mod tests {
 
     fn actor_ref(name: &str) -> Ty {
         Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: name.to_string(),
             args: vec![],
         })
+    }
+
+    fn named_type(name: &str) -> Ty {
+        Ty::named(name, vec![])
+    }
+
+    fn make_enum(name: &str, variants: HashMap<String, VariantDef>) -> (String, TypeDef) {
+        (
+            name.to_string(),
+            TypeDef {
+                kind: TypeDefKind::Enum,
+                name: name.to_string(),
+                type_params: vec![],
+                fields: HashMap::new(),
+                variants,
+                methods: HashMap::new(),
+                doc_comment: None,
+                field_order: vec![],
+                is_indirect: false,
+            },
+        )
+    }
+
+    fn make_record(
+        name: &str,
+        type_params: Vec<String>,
+        fields: HashMap<String, Ty>,
+    ) -> (String, TypeDef) {
+        (
+            name.to_string(),
+            TypeDef {
+                kind: TypeDefKind::Record,
+                name: name.to_string(),
+                type_params,
+                fields,
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                field_order: vec![],
+                is_indirect: false,
+            },
+        )
     }
 
     #[test]
@@ -276,6 +739,149 @@ mod tests {
 
         let (capable, cycles) = detect_actor_ref_cycles(&type_defs);
         assert!(capable.is_empty());
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn recursive_value_type_detects_self_recursive_enum() {
+        let type_defs: HashMap<String, TypeDef> = [make_enum(
+            "Tree",
+            HashMap::from([
+                ("Leaf".to_string(), VariantDef::Unit),
+                (
+                    "Node".to_string(),
+                    VariantDef::Tuple(vec![Ty::I64, named_type("Tree"), named_type("Tree")]),
+                ),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].edge.from, "Tree");
+        assert_eq!(cycles[0].edge.to, "Tree");
+        assert_eq!(cycles[0].edge.member_desc, "variant `Node`");
+    }
+
+    #[test]
+    fn recursive_value_type_detects_mutual_enum_cycle() {
+        let type_defs: HashMap<String, TypeDef> = [
+            make_enum(
+                "A",
+                HashMap::from([("A1".to_string(), VariantDef::Tuple(vec![named_type("B")]))]),
+            ),
+            make_enum(
+                "B",
+                HashMap::from([("B1".to_string(), VariantDef::Tuple(vec![named_type("A")]))]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        let cycle_froms: HashSet<_> = cycles
+            .iter()
+            .map(|cycle| cycle.edge.from.as_str())
+            .collect();
+
+        assert_eq!(cycles.len(), 2);
+        assert!(cycle_froms.contains("A"));
+        assert!(cycle_froms.contains("B"));
+    }
+
+    #[test]
+    fn recursive_value_type_allows_nested_non_recursive_enum() {
+        let type_defs: HashMap<String, TypeDef> = [
+            make_enum(
+                "Inner",
+                HashMap::from([
+                    ("A".to_string(), VariantDef::Unit),
+                    ("B".to_string(), VariantDef::Tuple(vec![Ty::I64])),
+                ]),
+            ),
+            make_enum(
+                "Outer",
+                HashMap::from([(
+                    "D".to_string(),
+                    VariantDef::Tuple(vec![named_type("Inner")]),
+                )]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn recursive_value_type_detects_generic_value_wrapper_cycle() {
+        let type_defs: HashMap<String, TypeDef> = [
+            make_record(
+                "Wrapper",
+                vec!["T".to_string()],
+                HashMap::from([("value".to_string(), Ty::named("T", vec![]))]),
+            ),
+            make_enum(
+                "Tree",
+                HashMap::from([(
+                    "Node".to_string(),
+                    VariantDef::Tuple(vec![Ty::named("Wrapper", vec![named_type("Tree")])]),
+                )]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].edge.from, "Tree");
+        assert_eq!(cycles[0].edge.to, "Tree");
+    }
+
+    #[test]
+    fn recursive_value_type_allows_heap_and_pointer_indirection() {
+        let type_defs: HashMap<String, TypeDef> = [make_enum(
+            "Tree",
+            HashMap::from([
+                (
+                    "VecNode".to_string(),
+                    VariantDef::Tuple(vec![Ty::builtin_named(
+                        crate::BuiltinType::Vec,
+                        vec![named_type("Tree")],
+                    )]),
+                ),
+                (
+                    "RcNode".to_string(),
+                    VariantDef::Tuple(vec![Ty::builtin_named(
+                        crate::BuiltinType::Rc,
+                        vec![named_type("Tree")],
+                    )]),
+                ),
+                (
+                    "PtrNode".to_string(),
+                    VariantDef::Tuple(vec![Ty::Pointer {
+                        is_mutable: false,
+                        pointee: Box::new(named_type("Tree")),
+                    }]),
+                ),
+                (
+                    "BorrowNode".to_string(),
+                    VariantDef::Tuple(vec![Ty::Borrow {
+                        pointee: Box::new(named_type("Tree")),
+                    }]),
+                ),
+            ]),
+        )]
+        .into_iter()
+        .collect();
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+
         assert!(cycles.is_empty());
     }
 
@@ -319,6 +925,7 @@ mod tests {
                 HashMap::from([(
                     "s".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -364,6 +971,7 @@ mod tests {
                 HashMap::from([(
                     "bs".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "Vec".to_string(),
                         args: vec![actor_ref("B")],
                     },
@@ -444,6 +1052,7 @@ mod tests {
                 HashMap::from([(
                     "s".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "S".to_string(),
                         args: vec![],
                     },
@@ -470,6 +1079,7 @@ mod tests {
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     }),
@@ -477,6 +1087,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -487,8 +1098,10 @@ mod tests {
                 HashMap::from([(
                     "wrapper".to_string(),
                     Ty::Named {
+                        builtin: None,
                         name: "Wrapper".to_string(),
                         args: vec![Ty::Named {
+                            builtin: None,
                             name: "B".to_string(),
                             args: vec![],
                         }],
@@ -527,6 +1140,7 @@ mod tests {
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {
+                        builtin: None,
                         name: "T".to_string(),
                         args: vec![],
                     }),
@@ -534,6 +1148,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -545,15 +1160,19 @@ mod tests {
                     "combo".to_string(),
                     Ty::Tuple(vec![
                         Ty::Named {
+                            builtin: None,
                             name: "Wrapper".to_string(),
                             args: vec![Ty::Named {
+                                builtin: None,
                                 name: "B".to_string(),
                                 args: vec![],
                             }],
                         },
                         Ty::Named {
+                            builtin: None,
                             name: "Wrapper".to_string(),
                             args: vec![Ty::Named {
+                                builtin: None,
                                 name: "C".to_string(),
                                 args: vec![],
                             }],

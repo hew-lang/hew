@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Test: Collections
+
 // Test: Collections
 // Exercises: Vec<T>, HashMap<K,V> with push, len, get, pop, insert, contains_key, remove
 fn test_vec_basic() -> i32 {
@@ -72,7 +75,7 @@ fn test_vec_many_elements() -> i32 {
 
 fn test_hashmap_basic() -> i32 {
     println("--- test_hashmap_basic ---");
-    let m: HashMap<String, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
@@ -97,7 +100,7 @@ fn test_hashmap_basic() -> i32 {
 
 fn test_hashmap_contains() -> i32 {
     println("--- test_hashmap_contains ---");
-    let m: HashMap<String, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap::new();
     m.insert("key1", 10);
     let has_key1 = m.contains_key("key1");
     let has_key2 = m.contains_key("key2");
@@ -115,7 +118,7 @@ fn test_hashmap_contains() -> i32 {
 
 fn test_hashmap_remove() -> i32 {
     println("--- test_hashmap_remove ---");
-    let m: HashMap<String, i32> = HashMap::new();
+    let m: HashMap<string, i32> = HashMap::new();
     m.insert("a", 1);
     m.insert("b", 2);
     let before = m.len();

@@ -9,7 +9,7 @@
 // backing store (deep copy of the CowValue payload); if == 1, the mutation
 // is in-place (free).  This is the core of COW semantics.
 //
-// This fixture creates a shared Vec<int>, aliases it, then mutates the alias.
+// This fixture creates a shared Vec<i64>, aliases it, then mutates the alias.
 // The expected report shows ensure_unique at the mutation site and cow_share
 // at the aliasing site.
 //
@@ -20,7 +20,7 @@
 //   - record update `{ ..rec, field: v }` on a CowValue record (same pattern)
 
 fn alias_then_mutate() {
-    var original: Vec<int> = [1, 2, 3];
+    var original: Vec<i64> = [1, 2, 3];
     var alias = original;           // cow_share: both point at same backing
     alias.push(4);                  // mutation: ensure_unique fires here
     // original is still [1, 2, 3]; alias is [1, 2, 3, 4]
@@ -29,8 +29,8 @@ fn alias_then_mutate() {
 }
 
 struct User {
-    name: String,
-    score: int,
+    name: string,
+    score: i64,
 }
 
 fn record_update_cow() {

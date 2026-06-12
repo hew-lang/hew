@@ -1,0 +1,15 @@
+#[wire]
+struct SeedWire {
+    id: i64 @1,
+    label: string @2
+}
+
+type SeedPoint {
+    x: i32;
+    y: i32;
+}
+
+fn seed_structured() {
+    let _g = gen { yield 1; 2 };
+    let _p = SeedPoint { x: 1, y: 2 };
+}

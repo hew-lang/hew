@@ -6,11 +6,14 @@
 //!
 //! The TCP and Unix transports use length-prefixed (4-byte little-endian)
 //! framing for send/recv. Connections are stored in a fixed-size array.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::io::{ErrorKind, Read, Write};
-use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -23,9 +26,9 @@ use crate::lifetime::poison_safe::{PoisonSafe, PoisonSafeRw};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::actor::{self, HewActor};
+use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::internal::types::HewActorState;
 use crate::set_last_error;
-use crate::wire::{self, HewWireBuf, HewWireEnvelope};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -174,42 +177,38 @@ pub(crate) unsafe fn wire_send_envelope(
     payload: *mut u8,
     payload_len: usize,
 ) -> c_int {
-    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-    let env = HewWireEnvelope {
-        target_actor_id,
-        source_actor_id,
-        msg_type,
-        payload_size: payload_len as u32,
-        payload,
-        request_id: 0,
-        source_node_id: 0,
+    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
+    let bytes = match unsafe {
+        encode_envelope_frame_from_raw_parts(
+            target_actor_id,
+            source_actor_id,
+            msg_type,
+            payload.cast_const(),
+            payload_len,
+            0,
+            0,
+        )
+    } {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(format!("wire_send_envelope: {err}"));
+            return HEW_ERR_SERIALIZE;
+        }
     };
-    // SAFETY: zeroed is valid for HewWireBuf (null data pointer, zero lengths).
-    let mut buf: HewWireBuf = unsafe { mem::zeroed() };
-    // SAFETY: buf is a valid stack allocation.
-    unsafe { wire::hew_wire_buf_init(&raw mut buf) };
-    // SAFETY: buf and env are valid stack locals; payload validity is the caller's responsibility.
-    if unsafe { wire::hew_wire_encode_envelope(&raw mut buf, &raw const env) } != 0 {
-        // SAFETY: buf was initialised above.
-        unsafe { wire::hew_wire_buf_free(&raw mut buf) };
-        return HEW_ERR_SERIALIZE;
-    }
     // SAFETY: transport is valid per caller contract.
     let t = unsafe { &*transport };
     // SAFETY: t.ops was set during transport creation and remains valid for
     // the transport's lifetime; caller guarantees transport is not freed.
     let result = if let Some(ops) = unsafe { t.ops.as_ref() } {
         if let Some(send_fn) = ops.send {
-            // SAFETY: buf was successfully encoded; data/len are valid.
-            unsafe { send_fn(t.r#impl, conn, buf.data.cast::<c_void>(), buf.len) }
+            // SAFETY: bytes was successfully encoded; data/len are valid.
+            unsafe { send_fn(t.r#impl, conn, bytes.as_ptr().cast::<c_void>(), bytes.len()) }
         } else {
             -1
         }
     } else {
         -1
     };
-    // SAFETY: buf was initialised above.
-    unsafe { wire::hew_wire_buf_free(&raw mut buf) };
     if result > 0 {
         HEW_OK
     } else {
@@ -220,7 +219,7 @@ pub(crate) unsafe fn wire_send_envelope(
 /// Send a message through an actor reference.
 ///
 /// LOCAL path: direct call to `hew_actor_send`.
-/// REMOTE path: encode as HBF envelope, send over transport.
+/// REMOTE path: encode as CBOR envelope, send over transport.
 ///
 /// # Safety
 ///
@@ -315,6 +314,18 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
     c_int::from(unsafe { r.data.remote.conn } != HEW_CONN_INVALID)
 }
 
+/// Return the local `*mut HewActor` pointer (as `*mut c_void`) for a LOCAL
+/// actor reference, or null for a REMOTE reference. Used by the active-mode
+/// reactor, which only supports local actors (mirrors the websocket attach
+/// reader's `actor_ref_local_actor`).
+pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
+    if actor_ref.kind != ACTOR_REF_LOCAL {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the local union variant is active when kind == ACTOR_REF_LOCAL.
+    unsafe { actor_ref.data.local }.cast::<c_void>()
+}
+
 // ===========================================================================
 // TCP transport
 // ===========================================================================
@@ -360,7 +371,7 @@ pub fn tcp_counters_snapshot() -> TcpCountersSnapshot {
     }
 }
 
-fn record_tcp_error_kind(kind: ErrorKind) {
+pub(crate) fn record_tcp_error_kind(kind: ErrorKind) {
     if !matches!(
         kind,
         ErrorKind::WouldBlock | ErrorKind::Interrupted | ErrorKind::TimedOut
@@ -733,7 +744,7 @@ unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
 unsafe extern "C" fn tcp_destroy(impl_ptr: *mut c_void) {
     cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_tcp_new.
-    let _ = unsafe { Box::from_raw(impl_ptr.cast::<TcpTransport>()) };
+    let _ = unsafe { Box::from_raw(impl_ptr.cast::<TcpTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 static TCP_OPS: HewTransportOps = HewTransportOps {
@@ -776,9 +787,9 @@ pub unsafe extern "C" fn hew_transport_tcp_new() -> *mut HewTransport {
     let tcp = Box::new(TcpTransport::new());
     let transport = Box::new(HewTransport {
         ops: &raw const TCP_OPS,
-        r#impl: Box::into_raw(tcp).cast::<c_void>(),
+        r#impl: Box::into_raw(tcp).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
     });
-    Box::into_raw(transport)
+    Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ===========================================================================
@@ -818,8 +829,329 @@ fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
     TCP_API_STATE.access(|state| state.listeners.get(&handle)?.try_clone().ok())
 }
 
-fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
+/// Return the bound local port of a stdlib TCP listener handle, or `None` if
+/// the handle is unknown. Useful when binding to port 0 (ephemeral) and
+/// needing the OS-assigned port; consumed by active-mode e2e tests.
+#[must_use]
+pub fn tcp_listener_local_port(handle: c_int) -> Option<u16> {
+    TCP_API_STATE.access(|state| {
+        state
+            .listeners
+            .get(&handle)?
+            .local_addr()
+            .ok()
+            .map(|a| a.port())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn hew_tcp_listener_local_port(listener: c_int) -> c_int {
+    tcp_listener_local_port(listener).map_or(-1, c_int::from)
+}
+
+pub(crate) fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
     TCP_API_STATE.access(|state| state.streams.get(&handle)?.try_clone().ok())
+}
+
+/// Remove a TCP connection handle from the table WITHOUT calling `shutdown`.
+///
+/// Used by `hew_tcp_stream_from_conn` after cloning the socket for the read
+/// and write backings.  The two clones keep the underlying OS socket alive;
+/// calling `shutdown` here would invalidate those clones because `TcpStream`
+/// clones share a single file descriptor on Unix.
+///
+/// This is intentionally different from `hew_tcp_close`, which does call
+/// `shutdown(Both)` because it fully releases the connection.
+pub(crate) fn tcp_release_conn(handle: c_int) {
+    TCP_API_STATE.access(|state| {
+        state.streams.remove(&handle);
+        // Drop the removed TcpStream here. No shutdown call.
+    });
+}
+
+/// Close a freshly-accepted connection handle that has no Hew-side owner
+/// (NEW-2 accept/abandon race). When `handle_ready_accept` accepts a connection
+/// but the suspended handler was abandoned/cancelled before the deposit lands,
+/// no resume edge will ever bind — and thus own and close — the accepted handle.
+/// This removes it from `TCP_API_STATE.streams` and `shutdown(Both)`s the socket
+/// so the fd is released exactly once.
+///
+/// Unlike [`tcp_release_conn`] (which keeps the socket alive for clones) this
+/// fully releases the connection, mirroring `hew_tcp_close`'s stream branch. The
+/// accepted fd was never registered with the reactor (the reactor polls the
+/// listener, not this new conn), so no detach is required.
+pub(crate) fn tcp_close_orphan_conn(handle: c_int) {
+    TCP_API_STATE.access(|state| {
+        if let Some(stream) = state.streams.remove(&handle) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    });
+}
+
+/// Test-only: create a connected loopback TCP socketpair, register the server
+/// end as a conn handle, and return `(conn_handle, client_stream)`. Lets the
+/// reactor's resume-mode read branch be driven against a REAL readable socket
+/// (writing to `client_stream` makes `conn_handle` readable). The caller closes
+/// `conn_handle` with [`tcp_close_raw_for_test`] and drops `client_stream`.
+#[cfg(test)]
+pub(crate) fn tcp_socketpair_conn_for_test() -> (c_int, TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let client = TcpStream::connect(addr).expect("connect loopback client");
+    let (server, _) = listener.accept().expect("accept loopback server");
+    server.set_nodelay(true).ok();
+    let handle = TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, server);
+        handle
+    });
+    (handle, client)
+}
+
+/// Test-only: remove a conn handle's stream from the table (no shutdown), the
+/// counterpart to [`tcp_socketpair_conn_for_test`].
+#[cfg(test)]
+pub(crate) fn tcp_close_raw_for_test(handle: c_int) {
+    tcp_release_conn(handle);
+}
+
+/// Test-only: bind a loopback listener, register it as a listener handle, set it
+/// non-blocking, and connect a client so exactly one connection is pending in the
+/// kernel accept queue. Returns `(listener_handle, client_stream)`; keeping the
+/// client alive holds the pending connection so a subsequent
+/// [`tcp_listener_accept_nonblocking`] yields `Accepted`. Backs the NEW-2
+/// accept/abandon-race regression (the reactor accepts a real connection, then
+/// the deposit fails on a cancelled slot). The caller closes the listener with
+/// [`tcp_close_raw_for_test`] and drops `client_stream`.
+#[cfg(test)]
+pub(crate) fn tcp_listener_with_pending_conn_for_test() -> (c_int, TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let handle = TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.listeners.insert(handle, listener);
+        handle
+    });
+    assert!(tcp_listener_set_nonblocking(handle, true));
+    let client = TcpStream::connect(addr).expect("connect loopback client");
+    // Give the loopback handshake a moment so the connection is queued and a
+    // subsequent non-blocking accept yields `Accepted` deterministically.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    (handle, client)
+}
+
+/// Test-only: check whether a specific connection handle is currently in the
+/// live streams table. Checks a specific token rather than the global count,
+/// so concurrent transport tests adding/removing their own handles do not cause
+/// false positives or false negatives.
+#[cfg(test)]
+pub(crate) fn tcp_streams_has_handle_for_test(handle: c_int) -> bool {
+    TCP_API_STATE.access(|state| state.streams.contains_key(&handle))
+}
+
+// ---- Active-mode reactor support -------------------------------------------
+//
+// These helpers back the non-blocking "I/O completion as a mailbox message"
+// reactor (`crate::reactor`). The reactor registers a connection's raw fd for
+// readiness; on readiness it reads available bytes and delivers them to the
+// owning actor's mailbox. All three operate by the user-facing `Connection`
+// handle (the `c_int` in `TCP_API_STATE`), so they share the same socket
+// table — clone/close coordination is identical to the blocking read path.
+
+/// Return the raw OS file descriptor for a TCP connection handle, or `None`
+/// if the handle is unknown. Used by the reactor to register the fd with the
+/// platform poller. The fd remains owned by the `TcpStream` in
+/// `TCP_API_STATE`; the reactor must NOT close it directly (it closes via
+/// `hew_tcp_close` / handle removal).
+#[cfg(unix)]
+pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
+    use std::os::fd::AsRawFd;
+    TCP_API_STATE.access(|state| state.streams.get(&handle).map(AsRawFd::as_raw_fd))
+}
+
+/// Windows token form of [`tcp_conn_raw_fd`]. A Windows `SOCKET` is pointer-width
+/// and does not fit the poller's `c_int fd` ABI, so the reactor uses the
+/// user-facing connection handle itself as the poller token (D-2a); the IOCP
+/// poller resolves that token back to the `SOCKET` via [`tcp_handle_raw_socket`].
+/// Returns the handle unchanged when it names a live stream, mirroring the unix
+/// "fd is known" semantics.
+#[cfg(windows)]
+pub(crate) fn tcp_conn_raw_fd(handle: c_int) -> Option<c_int> {
+    TCP_API_STATE.access(|state| state.streams.contains_key(&handle).then_some(handle))
+}
+
+/// Resolve a reactor poller token (a `c_int` connection or listener handle) to
+/// the OS `SOCKET` it names, checking the stream table first and then the
+/// listener table. The Windows IOCP poller owns the token↔`SOCKET` indirection
+/// (D-2a); the engine never sees a raw `SOCKET`. Returns `None` if the handle is
+/// unknown (already closed) — the poller treats that as a benign stale token.
+#[cfg(windows)]
+pub(crate) fn tcp_handle_raw_socket(handle: c_int) -> Option<std::os::windows::io::RawSocket> {
+    use std::os::windows::io::AsRawSocket;
+    TCP_API_STATE.access(|state| {
+        state
+            .streams
+            .get(&handle)
+            .map(AsRawSocket::as_raw_socket)
+            .or_else(|| state.listeners.get(&handle).map(AsRawSocket::as_raw_socket))
+    })
+}
+
+/// Return the raw OS file descriptor for a TCP *listener* handle, or `None` if
+/// the handle is unknown (NEW-2 `await listener.accept()`). The fd-readiness
+/// sibling of [`tcp_conn_raw_fd`]: the reactor registers the listener fd for
+/// readability and `accept()`s when it fires. The fd remains owned by the
+/// `TcpListener` in `TCP_API_STATE`; the reactor must NOT close it directly.
+#[cfg(unix)]
+pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
+    use std::os::fd::AsRawFd;
+    TCP_API_STATE.access(|state| state.listeners.get(&handle).map(AsRawFd::as_raw_fd))
+}
+
+/// Windows token form of [`tcp_listener_raw_fd`] — returns the listener handle
+/// itself as the poller token (D-2a; see [`tcp_conn_raw_fd`]). The IOCP poller
+/// resolves it to the `SOCKET` via [`tcp_handle_raw_socket`].
+#[cfg(windows)]
+pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
+    TCP_API_STATE.access(|state| state.listeners.contains_key(&handle).then_some(handle))
+}
+
+/// Put a TCP *listener* handle's socket into non-blocking mode (the reactor
+/// thread must never park in `accept()`). Returns `true` on success. The
+/// readiness-suspension sibling of [`tcp_conn_set_nonblocking`].
+pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    TCP_API_STATE.access(|state| {
+        state
+            .listeners
+            .get(&handle)
+            .is_some_and(|listener| listener.set_nonblocking(nonblocking).is_ok())
+    })
+}
+
+/// Outcome of a single non-blocking `accept()` on a registered listener handle
+/// (NEW-2 reactor accept-readiness). The accept-path analogue of
+/// [`ActiveReadOutcome`].
+pub(crate) enum AcceptOutcome {
+    /// A connection was accepted and registered as a new conn handle.
+    Accepted(c_int),
+    /// The listener was spuriously reported readable; nothing to accept yet.
+    WouldBlock,
+    /// The handle is unknown or a hard accept error occurred.
+    Closed,
+}
+
+/// Non-blocking `accept()` on a registered listener handle (NEW-2 reactor
+/// accept-readiness). Drains exactly ONE pending connection (an `await
+/// listener.accept()` accepts once; the handler re-registers on its next
+/// `await`), registers it as a fresh conn handle with `set_nodelay`, and returns
+/// the handle. The accept-path sibling of [`tcp_conn_read_available`].
+pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome {
+    let Some(listener) = tcp_clone_listener(listener) else {
+        return AcceptOutcome::Closed;
+    };
+    match listener.accept() {
+        Ok((stream, _)) => {
+            let _ = stream.set_nodelay(true);
+            tcp_counters().accept_count.fetch_add(1, Ordering::Relaxed);
+            let handle = TCP_API_STATE.access(|state| {
+                let handle = state.alloc_handle();
+                state.streams.insert(handle, stream);
+                handle
+            });
+            AcceptOutcome::Accepted(handle)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => AcceptOutcome::WouldBlock,
+        Err(e) => {
+            record_tcp_error_kind(e.kind());
+            AcceptOutcome::Closed
+        }
+    }
+}
+
+/// Put a TCP connection handle's socket into non-blocking mode (active mode
+/// reads must never park the reactor thread). Returns `true` on success.
+pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    TCP_API_STATE.access(|state| {
+        state
+            .streams
+            .get(&handle)
+            .is_some_and(|stream| stream.set_nonblocking(nonblocking).is_ok())
+    })
+}
+
+/// Outcome of a single non-blocking active-mode read.
+pub(crate) enum ActiveReadOutcome {
+    /// Bytes were read (non-empty).
+    Data(Vec<u8>),
+    /// The socket is readable-empty for now (`WouldBlock`); nothing to deliver.
+    WouldBlock,
+    /// Peer closed the connection (read returned 0) — deliver `on_close`.
+    Eof,
+    /// The handle is unknown or a hard read error occurred — deliver `on_close`.
+    Closed,
+}
+
+/// Read all currently-available bytes from a non-blocking TCP connection
+/// handle, draining the socket until it would block (so a single readiness
+/// notification does not strand buffered data when the poller is edge
+/// triggered). Returns the concatenated bytes, or a non-`Data` outcome
+/// describing EOF / would-block / error.
+pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
+    let Some(mut stream) = tcp_clone_stream(handle) else {
+        return ActiveReadOutcome::Closed;
+    };
+    let mut out: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                tcp_counters()
+                    .bytes_read
+                    .fetch_add(out.len() as u64, Ordering::Relaxed);
+                // Peer closed. If we already drained some bytes, deliver them
+                // first; the caller re-polls and observes EOF next time. With
+                // an empty buffer this is a clean EOF.
+                return if out.is_empty() {
+                    ActiveReadOutcome::Eof
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+            Ok(n) => {
+                out.extend_from_slice(&buf[..n]);
+                // Keep draining; a partial fill (< buf len) means the kernel
+                // buffer is empty and the next read would block, so stop to
+                // avoid an extra syscall.
+                if n < buf.len() {
+                    tcp_counters()
+                        .bytes_read
+                        .fetch_add(out.len() as u64, Ordering::Relaxed);
+                    return ActiveReadOutcome::Data(out);
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                tcp_counters()
+                    .bytes_read
+                    .fetch_add(out.len() as u64, Ordering::Relaxed);
+                return if out.is_empty() {
+                    ActiveReadOutcome::WouldBlock
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => {
+                // Retry the read; EINTR is not a failure.
+            }
+            Err(e) => {
+                record_tcp_error_kind(e.kind());
+                return if out.is_empty() {
+                    ActiveReadOutcome::Closed
+                } else {
+                    ActiveReadOutcome::Data(out)
+                };
+            }
+        }
+    }
 }
 
 /// Open a TCP listener at `addr` (`host:port`).
@@ -1197,15 +1529,23 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
     })
 }
 
-/// Read up to 8192 bytes from a TCP connection into a new `HewVec`.
+/// Read up to 8192 bytes from a TCP connection into a fresh `bytes` value.
 ///
-/// Returns a pointer to a heap-allocated `HewVec` (i32 elements, one per byte).
-/// Returns an empty `HewVec` (not null) on EOF or error — callers detect
-/// disconnect by checking `is_empty()`.
+/// Returns a by-value [`crate::bytes::BytesTriple`] — the canonical `bytes`
+/// representation codegen materialises for a `bytes`-typed return (a 16-byte
+/// `{ptr, offset, len}` struct passed in `rax:rdx`). The triple OWNS a freshly
+/// allocated, refcount-1 buffer holding exactly the bytes read (mirrors
+/// `hew_bytes_from_static`'s construction + ownership). On EOF or error an
+/// empty triple (`null` ptr, len 0) is returned — callers detect disconnect by
+/// checking `.len() == 0`. The Hew drop spine releases the buffer via
+/// `hew_bytes_drop`.
 #[no_mangle]
-pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
-    // SAFETY: hew_vec_new allocates and returns a valid HewVec; we own it.
-    let empty = unsafe { crate::vec::hew_vec_new() };
+pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
+    let empty = crate::bytes::BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
     let Some(mut stream) = tcp_clone_stream(conn) else {
         return empty;
     };
@@ -1225,71 +1565,84 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
                 reason = "TCP reads are bounded by the 8192-byte stack buffer"
             )]
             let len = n as u32;
-            // SAFETY: `empty` was allocated above and has not been freed yet.
-            unsafe { crate::vec::hew_vec_free(empty) };
-            // SAFETY: `buf` is valid for `len` bytes and the helper widens them
-            // directly into the bytes HewVec shape codegen expects today.
-            unsafe { crate::vec::hew_vec_from_u8_data(buf.as_ptr(), len) }
+            // SAFETY: `buf` is valid for `len` bytes; `hew_bytes_from_static`
+            // copies them into a fresh, refcount-1 bytes allocation the caller
+            // owns (identical construction/ownership to `hew_bytes_from_str`).
+            unsafe { crate::bytes::hew_bytes_from_static(buf.as_ptr(), len) }
         }
     }
 }
 
-/// Write a bytes `HewVec` to a TCP connection.
+/// Out-pointer variant of [`hew_tcp_read`] that avoids the Windows x64 MSVC
+/// sret mismatch for the 16-byte `BytesTriple` return.
 ///
-/// Each i32 element in `vec` is written as one byte (low 8 bits).
-/// Does NOT append a newline.
+/// Writes the result to `out` and returns void. The called `hew_tcp_read`
+/// already handles the null-connection case by returning an empty triple.
+///
+/// # Safety
+///
+/// `out` must point to a valid, writable `BytesTriple` slot (caller-allocated).
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_read_raw(conn: c_int, out: *mut crate::bytes::BytesTriple) {
+    let triple = hew_tcp_read(conn);
+    // SAFETY: caller guarantees `out` points to a valid BytesTriple slot.
+    unsafe { out.write(triple) };
+}
+
+/// Write a `bytes` value to a TCP connection.
+///
+/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`] (the address of
+/// the `bytes` value's stack slot). The active region
+/// `data.ptr[data.offset .. data.offset + data.len]` is written verbatim; no
+/// newline is appended. The buffer is BORROWED for the duration of the call —
+/// ownership stays with the caller, whose drop spine releases it via
+/// `hew_bytes_drop`.
+///
+/// By-pointer (not by-value): a 16-byte triple passed by value as a non-first
+/// argument loses its offset/len eightbyte at the current codegen C-ABI
+/// boundary; passing the address is ABI-portable (mirrors `hew_bytes_push`).
+/// Codegen passes the triple alloca's address for the `data: bytes` parameter
+/// (`is_bytes_by_pointer_consumer`).
+///
 /// Returns number of bytes written, or -1 on error.
 ///
 /// # Safety
 ///
-/// `vec` must be a valid, non-null pointer to a `HewVec` created by
-/// `hew_vec_new` (i32 elements).
+/// `data` must point to a valid `BytesTriple` (non-null pointer to the caller's
+/// triple slot): either its `ptr` is null with `len == 0`, or `ptr` points to a
+/// `hew_bytes_*` allocation whose active region `[offset, offset + len)` is in
+/// bounds.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec) -> c_int {
-    cabi_guard!(vec.is_null(), -1);
+pub unsafe extern "C" fn hew_tcp_write(
+    conn: c_int,
+    data: *const crate::bytes::BytesTriple,
+) -> c_int {
+    if data.is_null() {
+        return -1;
+    }
+    // SAFETY: `data` points to the caller's valid BytesTriple slot.
+    let data = unsafe { &*data };
+    let len = data.len;
+    if len == 0 || data.ptr.is_null() {
+        // Empty write: nothing to send, succeeds with 0 bytes (matches the
+        // previous empty-HewVec behaviour). A null ptr only ever pairs with
+        // len 0 in a valid triple.
+        return 0;
+    }
     let Some(mut stream) = tcp_clone_stream(conn) else {
         return -1;
     };
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    let mut scratch = [0u8; 8192];
-    let mut start = 0i64;
-    while start < len {
-        let remaining = len - start;
-        let chunk = remaining.min(8192);
-        let Ok(chunk_usize) = usize::try_from(chunk) else {
-            hew_cabi::sink::set_last_error_with_errno(
-                "hew_tcp_write: chunk length exceeds usize range".into(),
-                22, // EINVAL: Invalid argument
-            );
-            return -1;
-        };
-        for (idx, slot) in scratch[..chunk_usize].iter_mut().enumerate() {
-            #[expect(
-                clippy::cast_possible_wrap,
-                reason = "chunk is bounded to 8192, so usize indices fit in i64"
-            )]
-            let index = start + idx as i64;
-            // SAFETY: `index < len`, so the read is in bounds.
-            let val = unsafe { crate::vec::hew_vec_get_i32(vec, index) };
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "byte values fit in u8"
-            )]
-            {
-                *slot = val as u8;
-            }
-        }
-        if let Err(e) = stream.write_all(&scratch[..chunk_usize]) {
-            record_tcp_error_kind(e.kind());
-            return -1;
-        }
-        tcp_counters()
-            .bytes_written
-            .fetch_add(chunk_usize as u64, Ordering::Relaxed);
-        start += chunk;
+    // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per the
+    // BytesTriple contract; we only read (no mutation, no free).
+    let payload =
+        unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), len as usize) };
+    if let Err(e) = stream.write_all(payload) {
+        record_tcp_error_kind(e.kind());
+        return -1;
     }
+    tcp_counters()
+        .bytes_written
+        .fetch_add(u64::from(len), Ordering::Relaxed);
     let Ok(written) = c_int::try_from(len) else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_write: payload length exceeds c_int range".into(),
@@ -1300,44 +1653,11 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
     written
 }
 
-/// Convert a bytes `HewVec` (Vec<i32>) to a NUL-terminated C string.
-///
-/// Each i32 element is treated as a byte value (low 8 bits used).
-/// The returned pointer is heap-allocated and must be freed by the caller
-/// (or left to the Hew runtime's string GC).
-///
-/// # Safety
-///
-/// `vec` must be a valid, non-null pointer to a `HewVec` created by
-/// `hew_vec_new` (i32 elements). The returned pointer is valid until freed.
-#[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *mut c_char {
-    if vec.is_null() {
-        return crate::cabi::str_to_malloc("");
-    }
-    // SAFETY: caller guarantees `vec` is a valid HewVec pointer.
-    let len = unsafe { crate::vec::hew_vec_len(vec) };
-    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "vec len fits in usize on all platforms"
-    )]
-    let mut bytes = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        // SAFETY: i < len, so index is in bounds.
-        let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "byte values fit in u8"
-        )]
-        bytes.push(val as u8);
-    }
-    // Strip embedded NUL bytes before creating the C string.
-    bytes.retain(|&b| b != 0);
-    // SAFETY: bytes.as_ptr() is valid for bytes.len() bytes.
-    unsafe { crate::cabi::malloc_cstring(bytes.as_ptr(), bytes.len()) }
-}
+// W4.039 — the native Vec-backed `hew_bytes_to_string(*mut HewVec)` export
+// was deleted when `Bytes -> String` conversion was canonicalised onto the
+// `BytesTriple` ABI. The canonical entry point now lives in
+// `hew-runtime/src/bytes.rs::hew_bytes_to_string` and consumes a single
+// `#[repr(C)] BytesTriple` argument cross-target.
 
 #[cfg(test)]
 mod tests {
@@ -1470,8 +1790,8 @@ mod tests {
         let before = crate::profiler::allocator::snapshot();
         let bytes = hew_tcp_read(handle);
         let after = crate::profiler::allocator::snapshot();
-        // SAFETY: `hew_tcp_read` returns a caller-owned HewVec.
-        unsafe { crate::vec::hew_vec_free(bytes) };
+        // SAFETY: `hew_tcp_read` returns a caller-owned BytesTriple (rc 1).
+        unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
         remove_stream(handle);
         after.alloc_count - before.alloc_count
     }
@@ -1520,7 +1840,7 @@ mod tests {
     }
 
     #[test]
-    fn tcp_read_returns_byte_hwvec() {
+    fn tcp_read_returns_bytes_triple() {
         let _guard = crate::runtime_test_guard();
         let payload = b"hello tcp";
         let (server, mut client) = connected_streams();
@@ -1528,25 +1848,21 @@ mod tests {
         client.write_all(payload).expect("send payload");
 
         let bytes = hew_tcp_read(handle);
-        // SAFETY: `hew_tcp_read` returns a live HewVec pointer until we free it below.
-        let len = unsafe { crate::vec::hew_vec_len(bytes) };
+        // The read owns a fresh refcount-1 buffer holding exactly the payload.
+        assert!(!bytes.ptr.is_null(), "non-empty read must own a buffer");
+        assert_eq!(bytes.offset, 0);
         assert_eq!(
-            len,
-            i64::try_from(payload.len()).expect("payload length fits in i64")
+            bytes.len,
+            u32::try_from(payload.len()).expect("payload length fits in u32")
         );
-        for (idx, expected) in payload.iter().enumerate() {
-            // SAFETY: `idx` is within the vector length asserted above.
-            let actual = unsafe {
-                crate::vec::hew_vec_get_i32(
-                    bytes,
-                    i64::try_from(idx).expect("payload index fits in i64"),
-                )
-            };
-            assert_eq!(actual, i32::from(*expected));
-        }
+        // SAFETY: `bytes.ptr + offset` is valid for `bytes.len` bytes.
+        let read_slice = unsafe {
+            std::slice::from_raw_parts(bytes.ptr.add(bytes.offset as usize), bytes.len as usize)
+        };
+        assert_eq!(read_slice, payload);
 
-        // SAFETY: `hew_tcp_read` transfers ownership of the vec to the caller.
-        unsafe { crate::vec::hew_vec_free(bytes) };
+        // SAFETY: `hew_tcp_read` transfers ownership of the rc-1 buffer.
+        unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
         remove_stream(handle);
     }
 
@@ -1603,26 +1919,29 @@ mod tests {
 
     #[cfg(feature = "profiler")]
     #[test]
-    fn tcp_write_streams_hwvec_without_rust_allocating() {
+    fn tcp_write_streams_bytes_without_rust_allocating() {
         run_in_isolated_test_process(
-            "transport::tests::tcp_write_streams_hwvec_without_rust_allocating",
+            "transport::tests::tcp_write_streams_bytes_without_rust_allocating",
             "HEW_RUNTIME_TCP_WRITE_ALLOC_TEST",
             || {
                 let _guard = crate::runtime_test_guard();
                 let payload = b"bytes over tcp";
                 let (server, mut client) = connected_streams();
                 let handle = register_stream(server);
+                // The bytes buffer is built via the libc-backed bytes allocator
+                // BEFORE the snapshot, so it is not counted; the Rust
+                // GlobalAlloc counter must stay flat across the write.
                 // SAFETY: `payload` is valid for `payload.len()` bytes.
                 let bytes = unsafe {
-                    crate::vec::hew_vec_from_u8_data(
+                    crate::bytes::hew_bytes_from_static(
                         payload.as_ptr(),
                         u32::try_from(payload.len()).expect("payload length fits in u32"),
                     )
                 };
 
                 let before = crate::profiler::allocator::snapshot();
-                // SAFETY: `bytes` is a valid caller-owned HewVec.
-                let written = unsafe { hew_tcp_write(handle, bytes) };
+                // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+                let written = unsafe { hew_tcp_write(handle, std::ptr::addr_of!(bytes)) };
                 let after = crate::profiler::allocator::snapshot();
                 let expected_written =
                     c_int::try_from(payload.len()).expect("payload length fits in c_int");
@@ -1639,8 +1958,8 @@ mod tests {
                     .expect("read back written payload");
                 assert_eq!(received, payload);
 
-                // SAFETY: `bytes` is the caller-owned HewVec allocated above.
-                unsafe { crate::vec::hew_vec_free(bytes) };
+                // SAFETY: `bytes` owns a refcount-1 buffer allocated above.
+                unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
                 remove_stream(handle);
             },
         );
@@ -1695,14 +2014,14 @@ mod tests {
 
                 // SAFETY: `payload` is valid for `payload.len()` bytes.
                 let bytes = unsafe {
-                    crate::vec::hew_vec_from_u8_data(
+                    crate::bytes::hew_bytes_from_static(
                         payload.as_ptr(),
                         u32::try_from(payload.len()).expect("payload length fits in u32"),
                     )
                 };
 
-                // SAFETY: `bytes` is a valid caller-owned HewVec.
-                let written = unsafe { hew_tcp_write(handle, bytes) };
+                // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+                let written = unsafe { hew_tcp_write(handle, std::ptr::addr_of!(bytes)) };
                 assert_eq!(
                     written,
                     c_int::try_from(payload.len()).expect("payload length fits in c_int")
@@ -1715,9 +2034,8 @@ mod tests {
                 assert_eq!(echoed, payload);
 
                 client.write_all(payload).expect("send payload to reader");
-                let read_vec = hew_tcp_read(handle);
-                // SAFETY: `read_vec` is a valid caller-owned HewVec.
-                let read_len = unsafe { crate::vec::hew_vec_len(read_vec) };
+                let read_bytes = hew_tcp_read(handle);
+                let read_len = i64::from(read_bytes.len);
                 assert_eq!(
                     read_len,
                     i64::try_from(payload.len()).expect("payload length fits in i64")
@@ -1733,10 +2051,10 @@ mod tests {
                     u64::try_from(payload.len()).expect("payload length fits in u64")
                 );
 
-                // SAFETY: vectors are caller-owned.
+                // SAFETY: both triples own a refcount-1 buffer.
                 unsafe {
-                    crate::vec::hew_vec_free(bytes);
-                    crate::vec::hew_vec_free(read_vec);
+                    crate::bytes::hew_bytes_drop(bytes.ptr);
+                    crate::bytes::hew_bytes_drop(read_bytes.ptr);
                 }
                 remove_stream(handle);
             },
@@ -1805,15 +2123,17 @@ mod tests {
                     .expect("set server stream nonblocking");
                 let handle = register_stream(server);
                 let before_read = tcp_counters_snapshot();
-                let read_vec = hew_tcp_read(handle);
+                let read_bytes = hew_tcp_read(handle);
                 let after_read = tcp_counters_snapshot();
                 assert_eq!(
                     after_read.error_count - before_read.error_count,
                     0,
                     "WouldBlock must not count as a TCP error"
                 );
-                // SAFETY: `read_vec` is caller-owned.
-                unsafe { crate::vec::hew_vec_free(read_vec) };
+                // WouldBlock yields an empty triple (null ptr); drop is a no-op.
+                assert!(read_bytes.ptr.is_null());
+                // SAFETY: a null ptr is a valid no-op for hew_bytes_drop.
+                unsafe { crate::bytes::hew_bytes_drop(read_bytes.ptr) };
                 remove_stream(handle);
 
                 // Explicit filter policy regression: WouldBlock, Interrupted,
@@ -1868,21 +2188,22 @@ mod tests {
                         for _ in 0..writes_per_thread {
                             // SAFETY: `payload` is valid for its full length.
                             let bytes = unsafe {
-                                crate::vec::hew_vec_from_u8_data(
+                                crate::bytes::hew_bytes_from_static(
                                     payload.as_ptr(),
                                     u32::try_from(payload.len())
                                         .expect("payload length fits in u32"),
                                 )
                             };
-                            // SAFETY: `bytes` is a valid caller-owned HewVec.
-                            let written = unsafe { hew_tcp_write(handle, bytes) };
+                            // SAFETY: `bytes` is a valid caller-owned BytesTriple.
+                            let written =
+                                unsafe { hew_tcp_write(handle, std::ptr::addr_of!(bytes)) };
                             assert_eq!(
                                 written,
                                 c_int::try_from(payload.len())
                                     .expect("payload length fits in c_int")
                             );
-                            // SAFETY: `bytes` is the caller-owned HewVec above.
-                            unsafe { crate::vec::hew_vec_free(bytes) };
+                            // SAFETY: `bytes` owns a refcount-1 buffer above.
+                            unsafe { crate::bytes::hew_bytes_drop(bytes.ptr) };
                         }
                     }));
                 }
@@ -1962,11 +2283,174 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     })
 }
 
+/// Attach a TCP connection to an actor for active-mode delivery.
+///
+/// After this call the connection's socket is non-blocking and registered with
+/// the active-mode reactor: each chunk of inbound data is delivered to the
+/// actor as an `on_data(bytes)` message (`on_data_type`), and a single
+/// `on_close()` message (`on_close_type`) is delivered when the peer closes or
+/// the socket errors. The actor must NOT call blocking `read`/`read_string`
+/// after attach (the reactor owns the read side); outbound `send`/`write`
+/// remain valid until close.
+///
+/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable).
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor_ref` must point to a valid [`HewActorRef`] for the duration of the
+///   call (a by-value snapshot is taken; mirrors `hew_ws_attach`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_attach(
+    conn: c_int,
+    actor_ref: *const HewActorRef,
+    on_data_type: i32,
+    on_close_type: i32,
+) -> c_int {
+    // SAFETY: caller guarantees `actor_ref` is valid for this call; the reactor
+    // takes a by-value snapshot before returning.
+    unsafe { crate::reactor::reactor_attach(conn, actor_ref, on_data_type, on_close_type) }
+}
+
+/// Attach a TCP connection to a *local* actor, identified by its raw
+/// `*mut HewActor` pointer rather than a fully-formed `HewActorRef`.
+///
+/// This is the entry point the Hew `conn.attach(handler)` surface lowers to:
+/// a Hew `LocalPid<T>` reaches the C ABI as the bare actor pointer (no
+/// `HewActorRef` wrapper), so codegen cannot hand `hew_tcp_attach` the
+/// `*const HewActorRef` it expects. This wrapper constructs the local
+/// `HewActorRef` on the runtime side (the owner of that layout) and forwards
+/// to the same reactor path. Mirrors `hew_ws_attach`, which likewise accepts
+/// the raw actor pointer for the active-mode WebSocket surface.
+///
+/// `on_data_type` / `on_close_type` are the `msg_id`s (SipHash-1-3 over the
+/// handler's fully-qualified name) the compiler synthesises at the attach call
+/// site from the concrete actor's `on_data` / `on_close` receive functions.
+///
+/// Returns 0 on success, -1 on failure (unknown handle, reactor unavailable,
+/// leak-prone mailbox).
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that outlives the
+///   connection's active-mode registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_attach_local(
+    conn: c_int,
+    actor: *mut HewActor,
+    on_data_type: i32,
+    on_close_type: i32,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_tcp_attach_local: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null (checked above) and the caller guarantees it
+    // points to a live actor for this call.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; `reactor_attach`
+    // takes a by-value snapshot before returning, so the address is only needed
+    // for the duration of this call.
+    unsafe {
+        crate::reactor::reactor_attach(conn, &raw const actor_ref, on_data_type, on_close_type)
+    }
+}
+
+/// Register a TCP connection for a SUSPENDING `await conn.read()` (NEW-1).
+///
+/// The codegen ramp for `Terminator::SuspendingRead` calls this from a
+/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
+/// in the coro frame) and parked its continuation on `actor`. This forwards to
+/// the reactor's resume-mode registration: when the fd becomes readable the
+/// reactor reads the bytes, deposits the result into `read_slot`, and
+/// `enqueue_resume`s the parked continuation.
+///
+/// `actor` is the raw `*mut HewActor` the Hew `LocalPid` lowers to (same shape
+/// as `hew_tcp_attach_local`); the runtime constructs the local `HewActorRef`.
+///
+/// Returns 0 on success, -1 on failure (null args, unknown handle, reactor
+/// unavailable). On failure the caller's slot ref is untouched and the codegen
+/// ramp binds the error edge.
+///
+/// # Safety
+///
+/// - `conn` must be a valid TCP connection handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
+///   continuation registered for this read.
+/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_conn_await_read(
+    conn: c_int,
+    actor: *mut HewActor,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_conn_await_read: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null and the caller guarantees it is live.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
+    // a by-value snapshot before returning. `read_slot` validity is the caller's
+    // contract (the reactor takes its own ref on success).
+    unsafe { crate::reactor::reactor_await_read(conn, &raw const actor_ref, read_slot) }
+}
+
+/// Register a TCP listener for a SUSPENDING `await listener.accept()` (NEW-2,
+/// the listener-readiness sibling of [`hew_conn_await_read`]).
+///
+/// The codegen ramp for `Terminator::SuspendingAccept` calls this from a
+/// suspendable handler: it has created a `HewReadSlot` (held across the suspend
+/// in the coro frame) and parked its continuation on `actor`. This forwards to
+/// the reactor's accept-mode registration: when the listener fd becomes readable
+/// the reactor `accept()`s a new connection, deposits its i64 handle into
+/// `read_slot`, and `enqueue_resume`s the parked continuation.
+///
+/// Returns 0 on success, -1 on failure (null args, unknown listener handle,
+/// reactor unavailable). On failure the caller's slot ref is untouched and the
+/// codegen ramp binds an invalid `Connection` on the resume edge.
+///
+/// # Safety
+///
+/// - `listener` must be a valid TCP listener handle from the stdlib `net` API.
+/// - `actor` must be a valid pointer to a live [`HewActor`] that owns the parked
+///   continuation registered for this accept.
+/// - `read_slot` must be a valid live `HewReadSlot` the caller holds a ref to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_listener_await_accept(
+    listener: c_int,
+    actor: *mut HewActor,
+    read_slot: *mut crate::read_slot::HewReadSlot,
+) -> c_int {
+    if actor.is_null() {
+        set_last_error("hew_listener_await_accept: null actor pointer");
+        return -1;
+    }
+    // SAFETY: `actor` is non-null and the caller guarantees it is live.
+    let actor_ref = unsafe { hew_actor_ref_local(actor) };
+    // SAFETY: `actor_ref` is a valid stack-local `HewActorRef`; the reactor takes
+    // a by-value snapshot before returning. `read_slot` validity is the caller's
+    // contract (the reactor takes its own ref on success).
+    unsafe { crate::reactor::reactor_await_accept(listener, &raw const actor_ref, read_slot) }
+}
+
+/// Detach a TCP connection from the active-mode reactor without closing it.
+///
+/// Idempotent; a no-op if the connection was never attached.
+#[no_mangle]
+pub extern "C" fn hew_tcp_detach(conn: c_int) {
+    crate::reactor::reactor_detach_conn(conn);
+}
+
 /// Close either a TCP connection handle or listener handle.
 ///
 /// Returns 0 on success, -1 if handle is unknown.
 #[no_mangle]
 pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
+    // Detach from the active-mode reactor first so the reactor stops polling a
+    // fd we are about to close (reactor-fd ownership: unregister before close).
+    crate::reactor::reactor_detach_conn(handle);
     TCP_API_STATE.access(|state| {
         if let Some(stream) = state.streams.remove(&handle) {
             let _ = stream.shutdown(Shutdown::Both);
@@ -2238,7 +2722,7 @@ mod unix_transport {
     unsafe extern "C" fn unix_destroy(impl_ptr: *mut c_void) {
         cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_unix_new.
-        let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) };
+        let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     static UNIX_OPS: HewTransportOps = HewTransportOps {
@@ -2261,9 +2745,9 @@ mod unix_transport {
         let ut = Box::new(UnixTransport::new());
         let transport = Box::new(HewTransport {
             ops: &raw const UNIX_OPS,
-            r#impl: Box::into_raw(ut).cast::<c_void>(),
+            r#impl: Box::into_raw(ut).cast::<c_void>(), // ALLOCATOR-PAIRING: GlobalAlloc
         });
-        Box::into_raw(transport)
+        Box::into_raw(transport) // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 

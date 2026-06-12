@@ -24,13 +24,13 @@
 //   - chained record updates (two updates from the same source)
 
 struct User {
-    name: String,
-    score: int,
+    name: string,
+    score: i64,
 }
 
 struct Point {
-    x: float,
-    y: float,
+    x: f64,
+    y: f64,
 }
 
 fn cowvalue_record_update() {

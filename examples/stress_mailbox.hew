@@ -1,28 +1,34 @@
+//! Status: runnable
+//! Description: stress_mailbox.hew - Test bounded mailbox under pressure
+
 // stress_mailbox.hew - Test bounded mailbox under pressure
 // Sends many messages to a bounded mailbox and verifies backpressure
 // doesn't deadlock and all messages are eventually processed.
 actor Counter {
-    let count: int;
+    var count: i64;
 
     mailbox 4 overflow block;
-    receive fn increment() -> int {
+    receive fn increment() {
         count = count + 1;
-        count
     }
-    receive fn report() -> int {
+    receive fn report() -> i64 {
         println(f"Counter count: {count}");
         count
     }
 }
 
-fn drain_batch(counter: ActorRef<Counter>, remaining: int) -> int {
-    if remaining <= 1 {
-        await counter.increment()
-    } else {
-        let pending = counter.increment();
-        let batch_count = drain_batch(counter, remaining - 1);
-        await pending;
-        batch_count
+fn send_batch(counter: LocalPid<Counter>, remaining: i64) {
+    if remaining > 0 {
+        counter.increment();
+        send_batch(counter, remaining - 1);
+    }
+}
+
+fn read_count(counter: LocalPid<Counter>) -> i64 {
+    let count_result = await counter.report();
+    match count_result {
+        Ok(value) => value,
+        Err(_) => -1,
     }
 }
 
@@ -32,20 +38,19 @@ fn main() {
     // Fill the bounded mailbox in deterministic batches without spelling out
     // ten separate awaits in the main loop.
     for batch in 0 .. 100 {
-        let batch_index: int = batch;
-        let batch_count = drain_batch(c, 10);
+        let batch_index: i64 = batch;
+        send_batch(c, 10);
+        let batch_count = read_count(c);
         let expected_count = (batch_index + 1) * 10;
         if batch_count != expected_count {
             println(f"FAIL: expected {expected_count} messages after batch {batch_index + 1}, got {batch_count}");
-            stop(c);
             return;
         }
     }
-    let final_count = await c.report();
+    let final_count = read_count(c);
     if final_count == 1000 {
         println("PASS: bounded mailbox processed all messages without deadlock");
     } else {
         println(f"FAIL: expected 1000 messages, got {final_count}");
     }
-    stop(c);
 }

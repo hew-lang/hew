@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Method Chaining Test example.
+
 type Point {
     x: f64;
     y: f64;

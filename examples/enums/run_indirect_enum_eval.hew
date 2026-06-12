@@ -1,0 +1,25 @@
+// Exercises recursive `indirect enum` construction and pattern-matched
+// evaluation end-to-end.
+//
+// This fixture verifies spec §3.7.4:
+//   1. `indirect enum Expr { Lit(i64); Neg(Expr) }` compiles and links.
+//   2. `Neg(Lit(5))` constructs a two-level heap-allocated expression tree.
+//   3. A recursive match-arm function traverses the tree correctly.
+//   4. Nesting ≥2 levels deep works: `Neg(Neg(Lit(3))) → 3`.
+indirect enum Expr {
+    Lit(i64);
+    Neg(Expr);
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Lit(n) => n,
+        Neg(inner) => 0 - eval(inner),
+    }
+}
+
+fn main() {
+    println(eval(Neg(Lit(5))));
+    println(eval(Neg(Neg(Lit(3)))));
+    println("done");
+}

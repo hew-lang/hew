@@ -10,7 +10,7 @@
 //!
 //! fn main() {
 //!     let s = bench.suite("My Benchmarks");
-//!     s.add("fib_20", 1000, () => { fibonacci(20); });
+//!     s.add("fib_20", 1000, || { fibonacci(20); });
 //!     s.report();
 //! }
 //! ```
@@ -20,23 +20,23 @@ import std::time::datetime;
 // ── Types ─────────────────────────────────────────────────────────────
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
-    name: String;
-    iterations: int;
-    avg_ns: int;
-    min_ns: int;
-    max_ns: int;
-    total_ns: int;
+    name: string;
+    iterations: i64;
+    avg_ns: i64;
+    min_ns: i64;
+    max_ns: i64;
+    total_ns: i64;
 }
 
 /// A collection of benchmark results.
 pub type Suite {
-    name: String;
+    name: string;
     results: Vec<BenchResult>;
 }
 
 // ── Constructor ───────────────────────────────────────────────────────
 /// Create a new benchmark suite.
-pub fn suite(name: String) -> Suite {
+pub fn suite(name: string) -> Suite {
     let results: Vec<BenchResult> = Vec::new();
     Suite { name: name, results: results }
 }
@@ -49,35 +49,32 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(suite: Suite, name: String, iterations: int, f: fn());
+    fn add(self, name: string, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
-    fn report(suite: Suite);
+    fn report(self);
 
     /// Print results as a JSON array.
-    fn report_json(suite: Suite);
+    fn report_json(self);
 }
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(suite: Suite, name: String, iterations: int, f: fn()) {
+    fn add(suite: Suite, name: string, iterations: i64, f: fn()) {
 
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {
             warmup = 1;
         }
-        var wi: int = 0;
-        while wi < warmup {
+        for wi in 0 .. warmup {
             f();
-            wi = wi + 1;
         }
         // Measure
-        var min_ns: int = 9223372036854775807;
-        var max_ns: int = 0;
-        var total_ns: int = 0;
-        var i: int = 0;
-        while i < iterations {
+        var min_ns: i64 = 9223372036854775807;
+        var max_ns: i64 = 0;
+        var total_ns: i64 = 0;
+        for i in 0 .. iterations {
             let start = datetime.now_nanos();
             f();
             let end = datetime.now_nanos();
@@ -89,7 +86,6 @@ impl SuiteMethods for Suite {
             if elapsed > max_ns {
                 max_ns = elapsed;
             }
-            i = i + 1;
         }
         let avg_ns = total_ns / iterations;
         let result = BenchResult { name: name, iterations: iterations, avg_ns: avg_ns, min_ns: min_ns, max_ns: max_ns, total_ns: total_ns };
@@ -98,28 +94,24 @@ impl SuiteMethods for Suite {
     /// Print results as a human-readable table.
     fn report(suite: Suite) {
         println(f"=== {suite.name} ===");
-        var i: i32 = 0;
-        while i < suite.results.len() {
+        for i in 0 .. suite.results.len() {
             let r = suite.results.get(i);
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
             let max_str = format_time(r.max_ns);
             let ops = format_ops(r.avg_ns);
             println(f"  {r.name}  {r.iterations} iters  avg {avg_str}  min {min_str}  max {max_str}  {ops}");
-            i = i + 1;
         }
     }
     /// Print results as a JSON array.
     fn report_json(suite: Suite) {
         var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
-        var i: i32 = 0;
-        while i < suite.results.len() {
+        for i in 0 .. suite.results.len() {
             let r = suite.results.get(i);
             if i > 0 {
                 json = json + ",";
             }
             json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\}";
-            i = i + 1;
         }
         json = json + "]}";
         println(json);
@@ -128,7 +120,7 @@ impl SuiteMethods for Suite {
 
 // ── Time formatting helpers ───────────────────────────────────────────
 /// Format a nanosecond duration as a human-readable string with appropriate units.
-fn format_time(ns: int) -> String {
+fn format_time(ns: i64) -> string {
     if ns < 1000 {
         f"{ns} ns"
     } else if ns < 1000000 {
@@ -150,7 +142,7 @@ fn format_time(ns: int) -> String {
 }
 
 /// Format an average nanosecond duration as an operations-per-second string.
-fn format_ops(avg_ns: int) -> String {
+fn format_ops(avg_ns: i64) -> string {
     if avg_ns <= 0 {
         "inf ops/sec"
     } else if avg_ns < 1000 {
@@ -172,7 +164,7 @@ fn format_ops(avg_ns: int) -> String {
 }
 
 /// Pad a number to two digits with a leading zero if needed.
-fn pad_two(n: int) -> String {
+fn pad_two(n: i64) -> string {
     if n < 10 {
         f"0{n}"
     } else {

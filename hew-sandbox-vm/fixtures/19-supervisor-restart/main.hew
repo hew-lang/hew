@@ -1,0 +1,15 @@
+actor Worker {
+    receive fn work() -> string {
+        "done"
+    }
+}
+
+supervisor WorkerTree {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+}
+
+fn main() {
+    let worker = supervise WorkerTree Worker();
+    println(await worker.work());
+}

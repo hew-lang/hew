@@ -1,12 +1,15 @@
+//! Status: runnable
+//! Description: Sample exercising primitive receiver trait-method dispatch end-to-end.
+
 // Sample exercising primitive receiver trait-method dispatch end-to-end.
-// Use the canonical primitive spelling directly; the `int`↔`i64` alias case is
+// Use the canonical primitive spelling directly; the `i64`↔`i64` alias case is
 // tracked separately.
 trait Display {
-    fn fmt(val: Self) -> String;
+    fn fmt(val: Self) -> string;
 }
 
 impl Display for i64 {
-    fn fmt(val: i64) -> String {
+    fn fmt(val: i64) -> string {
         "i64"
     }
 }

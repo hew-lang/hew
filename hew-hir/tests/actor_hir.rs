@@ -1,0 +1,323 @@
+//! Tests for HIR actor declaration lowering: actor structure plus lowered
+//! init, receive, method, and lifecycle-hook bodies.
+
+use hew_hir::{
+    dump_hir, lower_program, HirActorDecl, HirActorStateGuard, HirDiagnosticKind, HirItem,
+    HirLifecycleHookKind, ResolutionCtx,
+};
+use hew_parser::ast::OverflowPolicy;
+use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+
+fn lower(source: &str) -> hew_hir::LowerOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    )
+}
+
+fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirActorDecl {
+    output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Actor(a) if a.name == name => Some(a),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected actor `{name}` in lowered module"))
+}
+
+#[test]
+fn hir_receive_handler_carries_state_guard() {
+    let src = r"
+actor Counter {
+    let count: i32;
+
+    receive fn inc(n: i32) {
+        let seen: i32 = n;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Counter");
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
+
+    let dump = dump_hir(&output.module);
+    assert!(
+        dump.contains("receive inc params=1 -> () state_guard=Exclusive"),
+        "HIR dump must expose state guard fact, got:\n{dump}"
+    );
+}
+
+#[test]
+fn missing_checker_guard_fact_fails_closed() {
+    // W4.015: behavior pin — synthetic TCO omits the checker-owned actor
+    // guard fact so HIR lowering must emit ActorStateGuardMissing (duplicate
+    // coverage retained in actor_state_lock_lower.rs).
+    let parsed = hew_parser::parse(
+        r"
+actor Counter {
+    receive fn inc() {}
+}
+
+fn main() {}
+",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::ActorStateGuardMissing { .. }
+        )),
+        "missing checker guard fact must be a HIR diagnostic: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn actor_decl_lowering_happy_path() {
+    // Logger: one state field, one receive handler, no lifecycle hooks, no init.
+    let src = r"
+actor Logger {
+    let label: string;
+
+    receive fn log(msg: string) {
+        let seen: string = msg;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Logger");
+    assert_eq!(actor.state_fields.len(), 1);
+    assert_eq!(actor.state_fields[0].name, "label");
+    assert_eq!(actor.receive_handlers.len(), 1);
+    assert_eq!(actor.receive_handlers[0].name, "log");
+    assert_eq!(actor.receive_handlers[0].params.len(), 1);
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
+    assert_eq!(actor.receive_handlers[0].every_ns, None);
+    assert!(actor.init.is_none());
+    assert!(actor.methods.is_empty());
+    assert!(actor.lifecycle_hooks.is_empty());
+    assert!(!actor.is_isolated);
+    assert_eq!(actor.max_heap_bytes, None);
+    assert_eq!(actor.mailbox_capacity, None);
+    assert!(actor.overflow_policy.is_none());
+    assert!(!actor.cycle_capable);
+}
+
+#[test]
+fn actor_lifecycle_hooks_attributed_separately() {
+    // Service with one regular method and one of each lifecycle hook kind.
+    let src = r"
+actor Service {
+    receive fn handle() {
+        let handled = true;
+    }
+
+    #[on(start)]
+    fn boot() {
+        let ready = true;
+    }
+
+    #[on(stop)]
+    fn cleanup() {
+        let cleaned = true;
+    }
+
+    #[on(stop)]
+    fn drain() {
+        let drained = true;
+    }
+
+    fn helper() {
+        let helped = true;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Service");
+
+    // One receive handler.
+    assert_eq!(actor.receive_handlers.len(), 1);
+    assert_eq!(actor.receive_handlers[0].name, "handle");
+    assert_eq!(
+        actor.receive_handlers[0].state_guard,
+        HirActorStateGuard::Exclusive
+    );
+
+    // Only `helper` is a plain method; the three `#[on(...)]` fns are hooks.
+    let method_names: Vec<&str> = actor.methods.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(
+        method_names,
+        vec!["helper"],
+        "lifecycle-hook fns must not appear in methods; got {method_names:?}"
+    );
+
+    // Three lifecycle hooks: Start (boot), Stop (cleanup), Stop (drain).
+    assert_eq!(actor.lifecycle_hooks.len(), 3);
+    let hook_kinds: Vec<HirLifecycleHookKind> =
+        actor.lifecycle_hooks.iter().map(|h| h.kind).collect();
+    assert_eq!(
+        hook_kinds,
+        vec![
+            HirLifecycleHookKind::Start,
+            HirLifecycleHookKind::Stop,
+            HirLifecycleHookKind::Stop,
+        ],
+        "lifecycle hooks preserve source order"
+    );
+    assert_eq!(actor.lifecycle_hooks[0].name, "boot");
+    assert_eq!(actor.lifecycle_hooks[1].name, "cleanup");
+    assert_eq!(actor.lifecycle_hooks[2].name, "drain");
+}
+
+#[test]
+fn actor_init_and_every_attribute_lower() {
+    let src = r"
+actor Worker {
+    let counter: i64;
+
+    init(start: i64) {
+        let seed: i64 = start;
+    }
+
+    #[every(50ms)]
+    receive fn tick() {
+        let ticked = true;
+    }
+
+    receive fn bump() {
+        let bumped = true;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Worker");
+
+    // init block present, with one param.
+    let init = actor.init.as_ref().expect("init block expected");
+    assert_eq!(init.params.len(), 1);
+    assert_eq!(init.params[0].name, "start");
+
+    // Two receive handlers; the `tick` one carries every_ns.
+    assert_eq!(actor.receive_handlers.len(), 2);
+    let tick = actor
+        .receive_handlers
+        .iter()
+        .find(|r| r.name == "tick")
+        .expect("tick receive fn expected");
+    assert_eq!(
+        tick.every_ns,
+        Some(50_000_000),
+        "#[every(50ms)] lowers to 50_000_000 ns"
+    );
+    assert_eq!(tick.state_guard, HirActorStateGuard::Exclusive);
+    let bump = actor
+        .receive_handlers
+        .iter()
+        .find(|r| r.name == "bump")
+        .expect("bump receive fn expected");
+    assert_eq!(bump.every_ns, None);
+    assert_eq!(bump.state_guard, HirActorStateGuard::Exclusive);
+}
+
+#[test]
+fn actor_mailbox_and_overflow_lower() {
+    let src = r"
+actor Bounded {
+    mailbox 16
+    overflow drop_old
+
+    receive fn ping() {
+        let ok = true;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Bounded");
+    assert_eq!(actor.mailbox_capacity, Some(16));
+    assert_eq!(actor.overflow_policy, Some(OverflowPolicy::DropOld));
+}
+
+#[test]
+fn actor_max_heap_lower() {
+    let src = r"
+#[max_heap(64 kb)]
+actor Cache {
+    receive fn get() {
+        let ok = true;
+    }
+}
+
+fn main() {}
+";
+    let output = lower(src);
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        output.diagnostics
+    );
+    let actor = find_actor(&output, "Cache");
+    assert_eq!(actor.max_heap_bytes, Some(64 * 1024));
+}

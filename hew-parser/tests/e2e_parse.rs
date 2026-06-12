@@ -10,17 +10,6 @@ fn parse_all_examples() {
     test_directory(&examples_dir, "examples");
 }
 
-#[test]
-fn parse_all_codegen_examples() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("hew-codegen")
-        .join("tests")
-        .join("examples");
-    test_directory(&dir, "hew-codegen/tests/examples");
-}
-
 fn test_directory(dir: &Path, label: &str) {
     let mut passed = 0;
     let mut failed = 0;

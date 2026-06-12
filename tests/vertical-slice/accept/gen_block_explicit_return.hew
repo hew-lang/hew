@@ -1,0 +1,8 @@
+// Accept fixture: gen{} with an explicit `return` but no yield.
+// `gen { return 1; }` is valid: `return` targets the Return component (i64),
+// the body never yields so Yield=Never.  Produces Generator<Never, i64>.
+// HIR/MIR lowering is still fail-closed on GenBlock; hew check exercises
+// only the type-checker accept path.
+fn main() {
+    let _g = gen { return 1; };
+}

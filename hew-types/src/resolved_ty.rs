@@ -3,7 +3,7 @@
 //! `ResolvedTy` is the concrete, fully-resolved form of a type after the
 //! checker has finished inference, defaulted numeric literals, and rejected
 //! any leaked inference or error nodes. It is the wire-level form that
-//! crosses from `hew-types` into `hew-serialize`, `hew-codegen`, and
+//! crosses from `hew-types` into `hew-mir`, `hew-codegen-rs`, and
 //! `hew-lsp` — none of those downstream consumers should ever observe
 //! `Ty::Var`, `Ty::Error`, `Ty::IntLiteral`, or `Ty::FloatLiteral`.
 //!
@@ -16,6 +16,7 @@
 
 use std::fmt;
 
+use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
 
 /// A fully-resolved, concrete type that has crossed the checker output
@@ -49,6 +50,10 @@ pub enum ResolvedTy {
     U32,
     /// 64-bit unsigned integer
     U64,
+    /// Platform-sized signed integer: 32-bit on WASM32, 64-bit on native.
+    Isize,
+    /// Platform-sized unsigned integer: 32-bit on WASM32, 64-bit on native.
+    Usize,
     /// 32-bit floating point
     F32,
     /// 64-bit floating point
@@ -61,6 +66,8 @@ pub enum ResolvedTy {
     String,
     /// Ref-counted byte buffer
     Bytes,
+    /// Ref-counted cancellation token handle.
+    CancellationToken,
     /// Duration in nanoseconds (distinct from i64)
     Duration,
     /// Unit type (void)
@@ -79,6 +86,28 @@ pub enum ResolvedTy {
         name: String,
         /// Generic type arguments
         args: Vec<ResolvedTy>,
+        /// Compiler-known builtin discriminator. `Some(_)` means this `Named`
+        /// resolved to a canonical builtin from `builtin_type.rs::BUILTIN_TYPES`
+        /// during name resolution; `None` means it is a user-defined record/
+        /// enum/actor name or a type parameter. Consumers that need to
+        /// discriminate builtin vs user dispatch on this field, NOT on the
+        /// `name` string. Propagated round-trip-totally from `Ty::Named.builtin`.
+        builtin: Option<BuiltinType>,
+        /// `#[opaque]`-handle discriminator. `true` means this `Named` resolved
+        /// to a type declared `#[opaque]` (a pointer-width runtime handle such
+        /// as `json.Value` / `cron.Expr`) during HIR name resolution; `false`
+        /// means it is an ordinary user record/enum/actor or builtin.
+        ///
+        /// This is the type-identity carrier that lets the actor-state
+        /// clone/drop classifier (`hew-mir::state_clone`) distinguish a real
+        /// opaque handle from a user record/enum that merely shares its short
+        /// name. Name-based resolution is fundamentally ambiguous on such a
+        /// collision (`json.Value` and a user `type Value` both arrive at the
+        /// classifier as `Named { name: "Value" }`); consumers that must
+        /// fail-closed on opaque handles dispatch on THIS field, never on the
+        /// `name` string. Stamped by `hew-hir::lower::lower_type` from the
+        /// pre-collected opaque-type-decl set.
+        is_opaque: bool,
     },
     /// Function type: `fn(T1, T2) -> R`.
     Function {
@@ -103,6 +132,13 @@ pub enum ResolvedTy {
         /// Pointee type
         pointee: Box<ResolvedTy>,
     },
+    /// Immutable borrow `&T` — a first-class, no-retain shared reference (see
+    /// [`Ty::Borrow`]). Non-owning, classified `View`, retain-skipped by
+    /// codegen, with borrow-specific send/return-escape semantics.
+    Borrow {
+        /// Borrowed (pointee) type
+        pointee: Box<ResolvedTy>,
+    },
     /// Trait object: `dyn Trait` or `dyn (Trait1 + Trait2)`.
     TraitObject {
         /// Trait bounds
@@ -116,6 +152,29 @@ pub enum ResolvedTy {
     /// Display: `<task<T>>` (angle brackets signal compiler-internal origin;
     /// implemented via `to_ty()` → `Ty::Task` → `fmt_with_numeric_names`).
     Task(Box<ResolvedTy>),
+    /// An abstract generic type parameter, e.g. the `T` in `fn id<T>(x: T) -> T`.
+    ///
+    /// This is the single type-identity authority for an abstract parameter
+    /// (A622 / DI-020): an unsubstituted `T` is represented *structurally*
+    /// here rather than via a parallel side-table. A `ResolvedTy::TypeParam`
+    /// is a concrete, boundary-legal type — it carries no inference or
+    /// error state — but it stands for a type that is not yet known. It is
+    /// produced when a polymorphic body is lowered without a concrete
+    /// monomorphisation substitution (the generic-origin / pre-W5.008 form);
+    /// monomorphisation later replaces it with a concrete `ResolvedTy`.
+    ///
+    /// Construction from a checker-internal [`Ty`] requires the declared
+    /// type-parameter scope — see [`ResolvedTy::from_ty_with_type_params`].
+    /// The unscoped [`ResolvedTy::from_ty`] never produces this variant (a
+    /// bare `Ty::Named` is indistinguishable from a no-argument user type
+    /// without that scope), so its behaviour is unchanged.
+    ///
+    /// Display: the bare parameter name (`T`), via `to_ty()` →
+    /// `Ty::Named { name, args: [], builtin: None }`.
+    TypeParam {
+        /// The source-declared parameter name (e.g. `"T"`).
+        name: String,
+    },
 }
 
 /// A single trait bound in a resolved trait object.
@@ -125,6 +184,8 @@ pub struct ResolvedTraitBound {
     pub trait_name: String,
     /// Resolved type arguments
     pub args: Vec<ResolvedTy>,
+    /// Resolved associated-type bindings, sorted by associated-type name.
+    pub assoc_bindings: Vec<(String, ResolvedTy)>,
 }
 
 /// Reasons a checker-internal [`Ty`] cannot cross the boundary as a
@@ -157,6 +218,16 @@ pub enum BoundaryError {
         /// Number of type arguments that were actually present.
         got: usize,
     },
+    /// A [`Ty::AssocType`] projection survived past type-checking. Such a
+    /// projection must be collapsed (via the impl's `type Bar = X` binding)
+    /// before crossing the checker→HIR boundary; reaching this point means
+    /// monomorphisation did not resolve the projection.
+    UnresolvedAssocProjection {
+        /// Trait that declares the associated type.
+        trait_name: String,
+        /// Associated-type name (e.g. `"Item"`).
+        assoc_name: String,
+    },
 }
 
 impl fmt::Display for BoundaryError {
@@ -180,6 +251,15 @@ impl fmt::Display for BoundaryError {
                     "generic arity mismatch: expected {expected} type argument(s), got {got}"
                 )
             }
+            BoundaryError::UnresolvedAssocProjection {
+                trait_name,
+                assoc_name,
+            } => {
+                write!(
+                    f,
+                    "unresolved associated-type projection `{trait_name}::{assoc_name}` leaked to boundary"
+                )
+            }
         }
     }
 }
@@ -187,6 +267,74 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// Returns `true` for every concrete integer type admitted by the checker.
+    /// `Bool` and `Char` are deliberately excluded: `bool` participates in
+    /// explicit casts only through the checker-owned bool<->integer rules, and
+    /// `char` is not in `coerce.rs`'s numeric matrix.
+    #[must_use]
+    pub fn is_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::U8
+                | Self::U16
+                | Self::U32
+                | Self::U64
+                | Self::Isize
+                | Self::Usize
+        )
+    }
+
+    /// Returns `true` for the concrete floating-point types admitted by the
+    /// checker numeric matrix.
+    #[must_use]
+    pub fn is_float(&self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+
+    /// Returns `true` for integer or floating-point types. Mirrors
+    /// [`Ty::is_numeric`] after checker-boundary conversion.
+    #[must_use]
+    pub fn is_numeric(&self) -> bool {
+        self.is_integer() || self.is_float()
+    }
+
+    /// Returns `true` for signed integer types, including platform-sized
+    /// `isize`.
+    #[must_use]
+    pub fn is_signed_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Isize
+        )
+    }
+
+    /// Returns `true` for unsigned integer types, including platform-sized
+    /// `usize`.
+    #[must_use]
+    pub fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::Usize
+        )
+    }
+
+    /// Checker-authoritative explicit `as` cast matrix after conversion to
+    /// `ResolvedTy`.
+    ///
+    /// This mirrors `hew-types/src/check/coerce.rs::cast_is_valid`: numeric
+    /// <-> numeric, `bool` -> integer, and integer -> `bool`. Everything else
+    /// stays fail-closed at HIR/MIR/codegen boundaries.
+    #[must_use]
+    pub fn can_explicitly_numeric_cast_to(&self, target: &Self) -> bool {
+        (self.is_numeric() && target.is_numeric())
+            || (*self == Self::Bool && target.is_integer())
+            || (self.is_integer() && *target == Self::Bool)
+    }
+
     /// Convert a checker-internal [`Ty`] into a boundary [`ResolvedTy`].
     ///
     /// This is the **single authorised conversion** from `Ty` to
@@ -210,6 +358,38 @@ impl ResolvedTy {
     /// variable, an `Ty::Error` placeholder, or an unmaterialized numeric
     /// literal. The carried data identifies the innermost offender.
     pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
+        Self::from_ty_scoped(ty, &std::collections::HashSet::new())
+    }
+
+    /// Scope-aware variant of [`ResolvedTy::from_ty`] that recognises the
+    /// declared generic type parameters of the enclosing item.
+    ///
+    /// A bare `Ty::Named { name, args: [], builtin: None }` whose `name`
+    /// appears in `type_params` is converted to [`ResolvedTy::TypeParam`]
+    /// (the A622 abstract-parameter authority) rather than to a
+    /// `ResolvedTy::Named` user type. Every other type — and every name not
+    /// in scope — follows the exact same rules as [`ResolvedTy::from_ty`],
+    /// which is defined as this function with an empty scope. This keeps a
+    /// single conceptual boundary converter, so the two entry points cannot
+    /// drift: the unscoped form simply has no type parameters in scope.
+    ///
+    /// # Errors
+    ///
+    /// Identical fail-closed behaviour to [`ResolvedTy::from_ty`]: returns
+    /// the innermost [`BoundaryError`] for any leaked checker-internal state
+    /// (unresolved inference variable, error placeholder, unmaterialized
+    /// literal, or unresolved associated-type projection).
+    pub fn from_ty_with_type_params(
+        ty: &Ty,
+        type_params: &std::collections::HashSet<String>,
+    ) -> Result<Self, BoundaryError> {
+        Self::from_ty_scoped(ty, type_params)
+    }
+
+    fn from_ty_scoped(
+        ty: &Ty,
+        type_params: &std::collections::HashSet<String>,
+    ) -> Result<Self, BoundaryError> {
         match ty {
             Ty::I8 => Ok(ResolvedTy::I8),
             Ty::I16 => Ok(ResolvedTy::I16),
@@ -219,12 +399,15 @@ impl ResolvedTy {
             Ty::U16 => Ok(ResolvedTy::U16),
             Ty::U32 => Ok(ResolvedTy::U32),
             Ty::U64 => Ok(ResolvedTy::U64),
+            Ty::Isize => Ok(ResolvedTy::Isize),
+            Ty::Usize => Ok(ResolvedTy::Usize),
             Ty::F32 => Ok(ResolvedTy::F32),
             Ty::F64 => Ok(ResolvedTy::F64),
             Ty::Bool => Ok(ResolvedTy::Bool),
             Ty::Char => Ok(ResolvedTy::Char),
             Ty::String => Ok(ResolvedTy::String),
             Ty::Bytes => Ok(ResolvedTy::Bytes),
+            Ty::CancellationToken => Ok(ResolvedTy::CancellationToken),
             Ty::Duration => Ok(ResolvedTy::Duration),
             Ty::Unit => Ok(ResolvedTy::Unit),
             Ty::Never => Ok(ResolvedTy::Never),
@@ -232,51 +415,113 @@ impl ResolvedTy {
             Ty::FloatLiteral => Err(BoundaryError::UnmaterializedLiteral { is_integer: false }),
             Ty::Var(var) => Err(BoundaryError::UnresolvedInference { var: *var }),
             Ty::Error => Err(BoundaryError::TaintedError),
-            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems)?)),
-            Ty::Array(elem, size) => Ok(ResolvedTy::Array(Box::new(Self::from_ty(elem)?), *size)),
-            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty(elem)?))),
-            Ty::Named { name, args } => Ok(ResolvedTy::Named {
+            Ty::Tuple(elems) => Ok(ResolvedTy::Tuple(Self::convert_vec(elems, type_params)?)),
+            Ty::Array(elem, size) => Ok(ResolvedTy::Array(
+                Box::new(Self::from_ty_scoped(elem, type_params)?),
+                *size,
+            )),
+            Ty::Slice(elem) => Ok(ResolvedTy::Slice(Box::new(Self::from_ty_scoped(
+                elem,
+                type_params,
+            )?))),
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::CancellationToken),
+            } if args.is_empty() && name == "CancellationToken" => {
+                Ok(ResolvedTy::CancellationToken)
+            }
+            // A bare, non-builtin `Named` whose name is a declared generic
+            // parameter of the enclosing item is the abstract-parameter form
+            // (A622). The unscoped `from_ty` passes an empty scope, so it
+            // never reaches this branch and its behaviour is unchanged.
+            Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } if args.is_empty() && type_params.contains(name) => {
+                Ok(ResolvedTy::TypeParam { name: name.clone() })
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => Ok(ResolvedTy::Named {
                 name: name.clone(),
-                args: Self::convert_vec(args)?,
+                args: Self::convert_vec(args, type_params)?,
+                builtin: *builtin,
+                // The checker's `Ty::Named` carries no opacity discriminator;
+                // opacity is stamped downstream by `hew-hir::lower::lower_type`
+                // from the opaque-type-decl set. A `ResolvedTy` produced from a
+                // checker `Ty` is never the actor-state-field carrier, so
+                // `false` here is correct and behaviour-preserving.
+                is_opaque: false,
             }),
             Ty::Function { params, ret } => Ok(ResolvedTy::Function {
-                params: Self::convert_vec(params)?,
-                ret: Box::new(Self::from_ty(ret)?),
+                params: Self::convert_vec(params, type_params)?,
+                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
             }),
             Ty::Closure {
                 params,
                 ret,
                 captures,
             } => Ok(ResolvedTy::Closure {
-                params: Self::convert_vec(params)?,
-                ret: Box::new(Self::from_ty(ret)?),
-                captures: Self::convert_vec(captures)?,
+                params: Self::convert_vec(params, type_params)?,
+                ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
+                captures: Self::convert_vec(captures, type_params)?,
             }),
             Ty::Pointer {
                 is_mutable,
                 pointee,
             } => Ok(ResolvedTy::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(Self::from_ty(pointee)?),
+                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
+            }),
+            Ty::Borrow { pointee } => Ok(ResolvedTy::Borrow {
+                pointee: Box::new(Self::from_ty_scoped(pointee, type_params)?),
             }),
             Ty::TraitObject { traits } => Ok(ResolvedTy::TraitObject {
                 traits: traits
                     .iter()
-                    .map(Self::convert_trait_bound)
+                    .map(|bound| Self::convert_trait_bound(bound, type_params))
                     .collect::<Result<Vec<_>, _>>()?,
             }),
-            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty(inner)?))),
+            Ty::Task(inner) => Ok(ResolvedTy::Task(Box::new(Self::from_ty_scoped(
+                inner,
+                type_params,
+            )?))),
+            Ty::AssocType {
+                trait_name,
+                assoc_name,
+                ..
+            } => Err(BoundaryError::UnresolvedAssocProjection {
+                trait_name: trait_name.to_string(),
+                assoc_name: assoc_name.to_string(),
+            }),
         }
     }
 
-    fn convert_vec(tys: &[Ty]) -> Result<Vec<ResolvedTy>, BoundaryError> {
-        tys.iter().map(Self::from_ty).collect()
+    fn convert_vec(
+        tys: &[Ty],
+        type_params: &std::collections::HashSet<String>,
+    ) -> Result<Vec<ResolvedTy>, BoundaryError> {
+        tys.iter()
+            .map(|ty| Self::from_ty_scoped(ty, type_params))
+            .collect()
     }
 
-    fn convert_trait_bound(bound: &TraitObjectBound) -> Result<ResolvedTraitBound, BoundaryError> {
+    fn convert_trait_bound(
+        bound: &TraitObjectBound,
+        type_params: &std::collections::HashSet<String>,
+    ) -> Result<ResolvedTraitBound, BoundaryError> {
         Ok(ResolvedTraitBound {
             trait_name: bound.trait_name.clone(),
-            args: Self::convert_vec(&bound.args)?,
+            args: Self::convert_vec(&bound.args, type_params)?,
+            assoc_bindings: bound
+                .assoc_bindings
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), Self::from_ty_scoped(ty, type_params)?)))
+                .collect::<Result<Vec<_>, BoundaryError>>()?,
         })
     }
 
@@ -295,20 +540,32 @@ impl ResolvedTy {
             ResolvedTy::U16 => Ty::U16,
             ResolvedTy::U32 => Ty::U32,
             ResolvedTy::U64 => Ty::U64,
+            ResolvedTy::Isize => Ty::Isize,
+            ResolvedTy::Usize => Ty::Usize,
             ResolvedTy::F32 => Ty::F32,
             ResolvedTy::F64 => Ty::F64,
             ResolvedTy::Bool => Ty::Bool,
             ResolvedTy::Char => Ty::Char,
             ResolvedTy::String => Ty::String,
             ResolvedTy::Bytes => Ty::Bytes,
+            ResolvedTy::CancellationToken => Ty::CancellationToken,
             ResolvedTy::Duration => Ty::Duration,
             ResolvedTy::Unit => Ty::Unit,
             ResolvedTy::Never => Ty::Never,
             ResolvedTy::Tuple(elems) => Ty::Tuple(elems.iter().map(Self::to_ty).collect()),
             ResolvedTy::Array(elem, size) => Ty::Array(Box::new(elem.to_ty()), *size),
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
-            ResolvedTy::Named { name, args } => Ty::Named {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                // `Ty::Named` carries no opacity discriminator; opacity is a
+                // HIR-resolution fact that does not round-trip back into the
+                // checker type. Dropped here intentionally.
+                is_opaque: _,
+            } => Ty::Named {
                 name: name.clone(),
+                builtin: *builtin,
                 args: args.iter().map(Self::to_ty).collect(),
             },
             ResolvedTy::Function { params, ret } => Ty::Function {
@@ -331,24 +588,90 @@ impl ResolvedTy {
                 is_mutable: *is_mutable,
                 pointee: Box::new(pointee.to_ty()),
             },
+            ResolvedTy::Borrow { pointee } => Ty::Borrow {
+                pointee: Box::new(pointee.to_ty()),
+            },
             ResolvedTy::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
                         args: bound.args.iter().map(Self::to_ty).collect(),
+                        assoc_bindings: bound
+                            .assoc_bindings
+                            .iter()
+                            .map(|(name, ty)| (name.clone(), ty.to_ty()))
+                            .collect(),
                     })
                     .collect(),
             },
             ResolvedTy::Task(inner) => Ty::Task(Box::new(inner.to_ty())),
+            // The abstract parameter lifts back to its canonical checker-side
+            // carrier — a bare, non-builtin `Named` with no arguments. This is
+            // the same shape the type param had before `from_ty_with_type_params`
+            // recognised it, so the round-trip is lossless within the declared
+            // type-parameter scope.
+            ResolvedTy::TypeParam { name } => Ty::Named {
+                name: name.clone(),
+                args: Vec::new(),
+                builtin: None,
+            },
         }
     }
 
-    /// User-facing display wrapper that preserves Hew numeric spellings
-    /// (`int`/`float` aliases) identically to
-    /// [`Ty::user_facing`]. Rendering a `ResolvedTy` never exposes the
-    /// unrepresentable states (they don't exist), so callers can consume
-    /// this output directly without post-filtering.
+    /// Construct a `Named` for a known builtin. Use this in production code
+    /// when the call site holds an actual [`BuiltinType`] — it prevents
+    /// "I'll just pass `None`" sites that would silently fall onto the
+    /// user-record branch of every downstream discriminator.
+    #[must_use]
+    pub fn named_builtin(
+        name: impl Into<String>,
+        kind: BuiltinType,
+        args: Vec<ResolvedTy>,
+    ) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: Some(kind),
+            is_opaque: false,
+        }
+    }
+
+    /// Construct a `Named` for a user-defined record/enum/actor name (or a
+    /// type parameter reference). Sets `builtin: None` explicitly so the
+    /// intent ("not a builtin") is named at the call site rather than being
+    /// inferred from an absent field.
+    #[must_use]
+    pub fn named_user(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    /// Construct a `Named` for a `#[opaque]` runtime-handle type (e.g.
+    /// `json.Value`, `cron.Expr`). Sets `is_opaque: true` so the actor-state
+    /// clone/drop classifier recognises the handle by type identity rather
+    /// than by a short-name heuristic that collides with user types of the
+    /// same name. `builtin: None` — an opaque handle is a user-module decl,
+    /// not a compiler builtin.
+    #[must_use]
+    pub fn named_opaque(name: impl Into<String>, args: Vec<ResolvedTy>) -> Self {
+        ResolvedTy::Named {
+            name: name.into(),
+            args,
+            builtin: None,
+            is_opaque: true,
+        }
+    }
+
+    /// User-facing display wrapper that mirrors [`Ty::user_facing`]: numeric
+    /// types render with their explicit-width spellings (`i64`, `f64`, etc.).
+    /// Rendering a `ResolvedTy` never exposes the unrepresentable states
+    /// (they don't exist), so callers can consume this output directly without
+    /// post-filtering.
     #[must_use]
     pub fn user_facing(&self) -> UserFacingResolvedTy<'_> {
         UserFacingResolvedTy(self)
@@ -412,6 +735,7 @@ mod tests {
     fn from_ty_rejects_nested_inference_variable_in_named_args() {
         let var = TypeVar::fresh();
         let ty = Ty::Named {
+            builtin: None,
             name: "Vec".into(),
             args: vec![Ty::Var(var)],
         };
@@ -456,6 +780,7 @@ mod tests {
     #[test]
     fn from_ty_accepts_fully_concrete_named() {
         let ty = Ty::Named {
+            builtin: None,
             name: "Foo".into(),
             args: vec![Ty::I32, Ty::String],
         };
@@ -464,6 +789,8 @@ mod tests {
             Ok(ResolvedTy::Named {
                 name: "Foo".into(),
                 args: vec![ResolvedTy::I32, ResolvedTy::String],
+                builtin: None,
+                is_opaque: false,
             })
         );
     }
@@ -517,12 +844,14 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::I32],
+                assoc_bindings: vec![],
             }],
         };
         let expected = ResolvedTy::TraitObject {
             traits: vec![ResolvedTraitBound {
                 trait_name: "Iterator".into(),
                 args: vec![ResolvedTy::I32],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected));
@@ -535,12 +864,73 @@ mod tests {
             traits: vec![TraitObjectBound {
                 trait_name: "Iterator".into(),
                 args: vec![Ty::Var(var)],
+                assoc_bindings: vec![],
             }],
         };
         assert_eq!(
             ResolvedTy::from_ty(&ty),
             Err(BoundaryError::UnresolvedInference { var })
         );
+    }
+
+    #[test]
+    fn round_trip_preserves_builtin_for_user_shadowed_names() {
+        // Smoke test for the §5.5 fix: a user-declared type whose *name*
+        // collides with a builtin (here `Vec`) MUST round-trip with
+        // `builtin: None` preserved. Before the fix, `to_ty` re-derived
+        // via `lookup_builtin_type(name)` and silently re-tagged the user
+        // type as the builtin.
+        let user_vec = Ty::Named {
+            name: "Vec".into(),
+            args: vec![Ty::I32],
+            builtin: None,
+        };
+        let resolved = ResolvedTy::from_ty(&user_vec).expect("concrete Ty resolves");
+        // `from_ty` preserves the discriminator.
+        match &resolved {
+            ResolvedTy::Named { builtin, .. } => {
+                assert_eq!(*builtin, None, "from_ty must preserve user-side `None`");
+            }
+            other => panic!("expected ResolvedTy::Named, got {other:?}"),
+        }
+        // `to_ty` consumes the carried discriminator (does NOT re-derive
+        // by name). Round-trip equality holds.
+        assert_eq!(resolved.to_ty(), user_vec);
+
+        // Sibling case: a true builtin round-trips with `Some(_)` intact.
+        let builtin_vec = Ty::Named {
+            name: "Vec".into(),
+            args: vec![Ty::I32],
+            builtin: Some(crate::BuiltinType::Vec),
+        };
+        let resolved_b = ResolvedTy::from_ty(&builtin_vec).expect("concrete Ty resolves");
+        match &resolved_b {
+            ResolvedTy::Named { builtin, .. } => {
+                assert_eq!(*builtin, Some(crate::BuiltinType::Vec));
+            }
+            other => panic!("expected ResolvedTy::Named, got {other:?}"),
+        }
+        assert_eq!(resolved_b.to_ty(), builtin_vec);
+    }
+
+    #[test]
+    fn named_constructor_helpers_set_builtin_explicitly() {
+        let user = ResolvedTy::named_user("Connection", vec![]);
+        assert!(matches!(
+            user,
+            ResolvedTy::Named { ref name, builtin: None, .. } if name == "Connection"
+        ));
+
+        let builtin =
+            ResolvedTy::named_builtin("Vec", crate::BuiltinType::Vec, vec![ResolvedTy::I32]);
+        assert!(matches!(
+            builtin,
+            ResolvedTy::Named {
+                ref name,
+                builtin: Some(crate::BuiltinType::Vec),
+                ..
+            } if name == "Vec"
+        ));
     }
 
     #[test]
@@ -552,6 +942,7 @@ mod tests {
             Ty::String,
             Ty::Tuple(vec![Ty::I64, Ty::Unit]),
             Ty::Named {
+                builtin: Some(crate::BuiltinType::Vec),
                 name: "Vec".into(),
                 args: vec![Ty::I32],
             },
@@ -569,6 +960,7 @@ mod tests {
     #[test]
     fn user_facing_display_matches_ty_user_facing() {
         let ty = Ty::Named {
+            builtin: None,
             name: "Option".into(),
             args: vec![Ty::I64],
         };
@@ -636,7 +1028,133 @@ mod tests {
         let resolved = ResolvedTy::Task(Box::new(ResolvedTy::Named {
             name: "User".into(),
             args: Vec::new(),
+            builtin: None,
+            is_opaque: false,
         }));
         assert_eq!(resolved.to_string(), "<task<User>>");
+    }
+
+    // --- TypeParam variant tests (A622) ---
+
+    fn type_param_scope(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn unscoped_from_ty_never_produces_type_param() {
+        // Behaviour-preserving: a bare `Named` is a user type under the
+        // unscoped converter, exactly as before this variant existed.
+        let ty = Ty::Named {
+            name: "T".into(),
+            args: vec![],
+            builtin: None,
+        };
+        assert_eq!(
+            ResolvedTy::from_ty(&ty),
+            Ok(ResolvedTy::Named {
+                name: "T".into(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            })
+        );
+    }
+
+    #[test]
+    fn scoped_from_ty_recognises_declared_type_param() {
+        let ty = Ty::Named {
+            name: "T".into(),
+            args: vec![],
+            builtin: None,
+        };
+        let scope = type_param_scope(&["T"]);
+        assert_eq!(
+            ResolvedTy::from_ty_with_type_params(&ty, &scope),
+            Ok(ResolvedTy::TypeParam { name: "T".into() })
+        );
+    }
+
+    #[test]
+    fn scoped_from_ty_leaves_out_of_scope_names_as_named() {
+        // A no-argument user type whose name is NOT a declared param stays a
+        // `Named` even under the scoped converter.
+        let ty = Ty::Named {
+            name: "Color".into(),
+            args: vec![],
+            builtin: None,
+        };
+        let scope = type_param_scope(&["T", "U"]);
+        assert_eq!(
+            ResolvedTy::from_ty_with_type_params(&ty, &scope),
+            Ok(ResolvedTy::Named {
+                name: "Color".into(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            })
+        );
+    }
+
+    #[test]
+    fn type_param_round_trips_losslessly_both_directions() {
+        // Non-vacuous round-trip: the variant survives ResolvedTy -> Ty and
+        // back to the identical ResolvedTy under the declared scope.
+        let scope = type_param_scope(&["T"]);
+        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+
+        let lowered = resolved.to_ty();
+        assert_eq!(
+            lowered,
+            Ty::Named {
+                name: "T".into(),
+                args: vec![],
+                builtin: None,
+            }
+        );
+
+        let restored = ResolvedTy::from_ty_with_type_params(&lowered, &scope)
+            .expect("type-param carrier resolves within scope");
+        assert_eq!(restored, resolved);
+    }
+
+    #[test]
+    fn nested_type_param_round_trips_inside_composites() {
+        let scope = type_param_scope(&["T"]);
+        // Vec<T> as a user-named composite carrying an abstract argument.
+        let resolved = ResolvedTy::Named {
+            name: "Vec".into(),
+            args: vec![ResolvedTy::TypeParam { name: "T".into() }],
+            builtin: None,
+            is_opaque: false,
+        };
+        let restored = ResolvedTy::from_ty_with_type_params(&resolved.to_ty(), &scope)
+            .expect("nested type-param resolves within scope");
+        assert_eq!(restored, resolved);
+    }
+
+    #[test]
+    fn scoped_from_ty_still_fails_closed_on_inference_var() {
+        // The scope must not weaken the fail-closed contract for genuine
+        // checker-internal leaks.
+        let var = TypeVar::fresh();
+        let ty = Ty::Tuple(vec![
+            Ty::Named {
+                name: "T".into(),
+                args: vec![],
+                builtin: None,
+            },
+            Ty::Var(var),
+        ]);
+        let scope = type_param_scope(&["T"]);
+        assert_eq!(
+            ResolvedTy::from_ty_with_type_params(&ty, &scope),
+            Err(BoundaryError::UnresolvedInference { var })
+        );
+    }
+
+    #[test]
+    fn type_param_display_is_bare_name() {
+        let resolved = ResolvedTy::TypeParam { name: "T".into() };
+        assert_eq!(resolved.to_string(), "T");
     }
 }

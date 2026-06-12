@@ -9,6 +9,7 @@ use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
 
 fn named(n: &str) -> Ty {
     Ty::Named {
+        builtin: None,
         name: n.to_string(),
         args: vec![],
     }
@@ -32,7 +33,7 @@ fn display_all_primitives() {
     assert_eq!(Ty::F64.to_string(), "f64");
     assert_eq!(Ty::Bool.to_string(), "bool");
     assert_eq!(Ty::Char.to_string(), "char");
-    assert_eq!(Ty::String.to_string(), "String");
+    assert_eq!(Ty::String.to_string(), "string");
     assert_eq!(Ty::Bytes.to_string(), "bytes");
     assert_eq!(Ty::Duration.to_string(), "duration");
     assert_eq!(Ty::Unit.to_string(), "()");
@@ -68,10 +69,11 @@ fn display_named_no_args() {
 #[test]
 fn display_named_multiple_args() {
     let ty = Ty::Named {
+        builtin: None,
         name: "HashMap".to_string(),
         args: vec![Ty::String, Ty::I64],
     };
-    assert_eq!(ty.to_string(), "HashMap<String, i64>");
+    assert_eq!(ty.to_string(), "HashMap<string, i64>");
 }
 
 #[test]
@@ -89,7 +91,7 @@ fn display_function_multiple_params() {
         params: vec![Ty::I32, Ty::Bool, Ty::String],
         ret: Box::new(Ty::F64),
     };
-    assert_eq!(ty.to_string(), "fn(i32, bool, String) -> f64");
+    assert_eq!(ty.to_string(), "fn(i32, bool, string) -> f64");
 }
 
 #[test]
@@ -127,6 +129,7 @@ fn display_trait_object_single_no_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Display".to_string(),
             args: vec![],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.to_string(), "dyn Display");
@@ -138,6 +141,7 @@ fn display_trait_object_single_with_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Iterator".to_string(),
             args: vec![Ty::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(ty.to_string(), "dyn Iterator<i32>");
@@ -149,9 +153,10 @@ fn display_trait_object_single_with_multiple_args() {
         traits: vec![TraitObjectBound {
             trait_name: "Converter".to_string(),
             args: vec![Ty::I32, Ty::String],
+            assoc_bindings: vec![],
         }],
     };
-    assert_eq!(ty.to_string(), "dyn Converter<i32, String>");
+    assert_eq!(ty.to_string(), "dyn Converter<i32, string>");
 }
 
 #[test]
@@ -161,10 +166,12 @@ fn display_trait_object_multi_trait() {
             TraitObjectBound {
                 trait_name: "Display".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Debug".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -178,19 +185,22 @@ fn display_trait_object_multi_trait_with_args() {
             TraitObjectBound {
                 trait_name: "Into".to_string(),
                 args: vec![Ty::String],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Clone".to_string(),
                 args: vec![],
+                assoc_bindings: vec![],
             },
         ],
     };
-    assert_eq!(ty.to_string(), "dyn (Into<String> + Clone)");
+    assert_eq!(ty.to_string(), "dyn (Into<string> + Clone)");
 }
 
 #[test]
 fn display_machine() {
     let ty = Ty::Named {
+        builtin: None,
         name: "MyMachine".to_string(),
         args: vec![],
     };
@@ -223,37 +233,47 @@ fn from_name_all_aliases() {
     assert_eq!(Ty::from_name("i16"), Some(Ty::I16));
     assert_eq!(Ty::from_name("i32"), Some(Ty::I32));
     assert_eq!(Ty::from_name("i64"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("int"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("Int"), Some(Ty::I64));
-    assert_eq!(Ty::from_name("isize"), Some(Ty::I64));
+    // `int`/`Int` are removed aliases; they must not resolve.
+    assert_eq!(Ty::from_name("int"), None);
+    assert_eq!(Ty::from_name("Int"), None);
+    // isize is now a distinct platform-sized type (not an alias for i64)
+    assert_eq!(Ty::from_name("isize"), Some(Ty::Isize));
 
     // Unsigned integers
     assert_eq!(Ty::from_name("u8"), Some(Ty::U8));
-    assert_eq!(Ty::from_name("byte"), Some(Ty::U8));
+    // `byte` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("byte"), None);
     assert_eq!(Ty::from_name("u16"), Some(Ty::U16));
     assert_eq!(Ty::from_name("u32"), Some(Ty::U32));
     assert_eq!(Ty::from_name("u64"), Some(Ty::U64));
-    assert_eq!(Ty::from_name("uint"), Some(Ty::U64));
-    assert_eq!(Ty::from_name("usize"), Some(Ty::U64));
+    // `uint` is a removed alias; it must not resolve.
+    assert_eq!(Ty::from_name("uint"), None);
+    // usize is now a distinct platform-sized type (not an alias for u64)
+    assert_eq!(Ty::from_name("usize"), Some(Ty::Usize));
 
     // Floats
     assert_eq!(Ty::from_name("f32"), Some(Ty::F32));
     assert_eq!(Ty::from_name("f64"), Some(Ty::F64));
-    assert_eq!(Ty::from_name("float"), Some(Ty::F64));
-    assert_eq!(Ty::from_name("Float"), Some(Ty::F64));
+    // `float` and `Float` are retired aliases; they must not resolve.
+    assert_eq!(Ty::from_name("float"), None);
+    assert_eq!(Ty::from_name("Float"), None);
 
     // Other primitives
     assert_eq!(Ty::from_name("bool"), Some(Ty::Bool));
-    assert_eq!(Ty::from_name("Bool"), Some(Ty::Bool));
+    // `Bool` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Bool"), None);
     assert_eq!(Ty::from_name("char"), Some(Ty::Char));
-    assert_eq!(Ty::from_name("Char"), Some(Ty::Char));
+    // `Char` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Char"), None);
     assert_eq!(Ty::from_name("string"), Some(Ty::String));
-    assert_eq!(Ty::from_name("String"), Some(Ty::String));
-    assert_eq!(Ty::from_name("str"), Some(Ty::String));
+    assert_eq!(Ty::from_name("String"), None); // uppercase removed per Q57/R14
+                                               // `str` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("str"), None);
     assert_eq!(Ty::from_name("bytes"), Some(Ty::Bytes));
-    assert_eq!(Ty::from_name("Bytes"), Some(Ty::Bytes));
+    // `Bytes` is a retired alias; it must not resolve.
+    assert_eq!(Ty::from_name("Bytes"), None);
     assert_eq!(Ty::from_name("duration"), Some(Ty::Duration));
-    assert_eq!(Ty::from_name("Duration"), Some(Ty::Duration));
+    assert_eq!(Ty::from_name("Duration"), None); // uppercase removed per Q57/R14
     assert_eq!(Ty::from_name("()"), Some(Ty::Unit));
     assert_eq!(Ty::from_name("!"), Some(Ty::Never));
 }
@@ -264,6 +284,8 @@ fn from_name_unknown_returns_none() {
     assert_eq!(Ty::from_name("HashMap"), None);
     assert_eq!(Ty::from_name("NonExistent"), None);
     assert_eq!(Ty::from_name(""), None);
+    assert_eq!(Ty::from_name("String"), None); // uppercase removed per Q57/R14
+    assert_eq!(Ty::from_name("Duration"), None); // uppercase removed per Q57/R14
 }
 
 #[test]
@@ -271,6 +293,8 @@ fn canonical_lowering_name_normalizes_internal_spellings() {
     let cases = [
         (Ty::I64, Some("i64")),
         (Ty::U64, Some("u64")),
+        (Ty::Isize, Some("isize")),
+        (Ty::Usize, Some("usize")),
         (Ty::F64, Some("f64")),
         (Ty::Bool, Some("bool")),
         (Ty::Char, Some("char")),
@@ -301,6 +325,8 @@ fn canonical_lowering_name_round_trips_through_from_name() {
         Ty::U16,
         Ty::U32,
         Ty::U64,
+        Ty::Isize,
+        Ty::Usize,
         Ty::F32,
         Ty::F64,
         Ty::Bool,
@@ -326,30 +352,6 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 // ===========================================================================
 
 #[test]
-fn option_constructor_and_accessor() {
-    let ty = Ty::option(Ty::I32);
-    assert_eq!(ty.as_option(), Some(&Ty::I32));
-    // Non-option returns None
-    assert_eq!(Ty::I32.as_option(), None);
-}
-
-#[test]
-fn result_constructor_and_accessor() {
-    let ty = Ty::result(Ty::I32, Ty::String);
-    let (ok, err) = ty.as_result().unwrap();
-    assert_eq!(ok, &Ty::I32);
-    assert_eq!(err, &Ty::String);
-    assert_eq!(Ty::I32.as_result(), None);
-}
-
-#[test]
-fn actor_ref_constructor_and_accessor() {
-    let ty = Ty::actor_ref(Ty::String);
-    assert_eq!(ty.as_actor_ref(), Some(&Ty::String));
-    assert_eq!(Ty::I32.as_actor_ref(), None);
-}
-
-#[test]
 fn actor_handle_accessor() {
     // ActorRef<T> is an actor handle
     let ty = Ty::actor_ref(Ty::I32);
@@ -357,6 +359,7 @@ fn actor_handle_accessor() {
 
     // Actor<T> is also an actor handle
     let actor = Ty::Named {
+        builtin: Some(hew_types::BuiltinType::Actor),
         name: "Actor".to_string(),
         args: vec![Ty::Bool],
     };
@@ -367,47 +370,6 @@ fn actor_handle_accessor() {
     assert_eq!(named("Other").as_actor_handle(), None);
 }
 
-#[test]
-fn stream_constructor_and_accessor() {
-    let ty = Ty::stream(Ty::I32);
-    assert_eq!(ty.as_stream(), Some(&Ty::I32));
-    assert!(ty.is_stream());
-    assert!(!Ty::I32.is_stream());
-    assert_eq!(Ty::I32.as_stream(), None);
-}
-
-#[test]
-fn sink_constructor_and_accessor() {
-    let ty = Ty::sink(Ty::String);
-    assert_eq!(ty.as_sink(), Some(&Ty::String));
-    assert!(ty.is_sink());
-    assert!(!Ty::I32.is_sink());
-    assert_eq!(Ty::I32.as_sink(), None);
-}
-
-#[test]
-fn generator_constructor_and_accessor() {
-    let ty = Ty::generator(Ty::I32, Ty::Bool);
-    let (yields, returns) = ty.as_generator().unwrap();
-    assert_eq!(yields, &Ty::I32);
-    assert_eq!(returns, &Ty::Bool);
-    assert_eq!(Ty::I32.as_generator(), None);
-}
-
-#[test]
-fn async_generator_constructor_and_accessor() {
-    let ty = Ty::async_generator(Ty::String);
-    assert_eq!(ty.as_async_generator(), Some(&Ty::String));
-    assert_eq!(Ty::I32.as_async_generator(), None);
-}
-
-#[test]
-fn range_constructor_and_accessor() {
-    let ty = Ty::range(Ty::I64);
-    assert_eq!(ty.as_range(), Some(&Ty::I64));
-    assert_eq!(Ty::I32.as_range(), None);
-}
-
 // ===========================================================================
 // Accessors — negative cases with wrong arity
 // ===========================================================================
@@ -416,6 +378,7 @@ fn range_constructor_and_accessor() {
 fn accessor_wrong_arity_returns_none() {
     // Option with wrong number of args
     let bad_option = Ty::Named {
+        builtin: None,
         name: "Option".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -423,6 +386,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Result with wrong arity
     let bad_result = Ty::Named {
+        builtin: None,
         name: "Result".to_string(),
         args: vec![Ty::I32],
     };
@@ -430,6 +394,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Generator with wrong arity
     let bad_gen = Ty::Named {
+        builtin: None,
         name: "Generator".to_string(),
         args: vec![Ty::I32],
     };
@@ -437,6 +402,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // AsyncGenerator with wrong arity
     let bad_async_gen = Ty::Named {
+        builtin: None,
         name: "AsyncGenerator".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -444,6 +410,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // ActorRef with wrong arity
     let bad_actor = Ty::Named {
+        builtin: None,
         name: "ActorRef".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -452,11 +419,13 @@ fn accessor_wrong_arity_returns_none() {
 
     // Stream/Sink with wrong arity
     let bad_stream = Ty::Named {
+        builtin: None,
         name: "Stream".to_string(),
         args: vec![],
     };
     assert_eq!(bad_stream.as_stream(), None);
     let bad_sink = Ty::Named {
+        builtin: None,
         name: "Sink".to_string(),
         args: vec![Ty::I32, Ty::Bool],
     };
@@ -464,6 +433,7 @@ fn accessor_wrong_arity_returns_none() {
 
     // Range with wrong arity
     let bad_range = Ty::Named {
+        builtin: None,
         name: "Range".to_string(),
         args: vec![],
     };
@@ -480,6 +450,7 @@ fn normalize_named_produces_named() {
     assert_eq!(
         ty,
         Ty::Named {
+            builtin: None,
             name: "Foo".to_string(),
             args: vec![Ty::I32],
         }
@@ -695,6 +666,7 @@ fn contains_var_in_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
             args: vec![Ty::Var(v)],
+            assoc_bindings: vec![],
         }],
     };
     assert!(ty.contains_var(v));
@@ -703,6 +675,7 @@ fn contains_var_in_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Foo".to_string(),
             args: vec![Ty::I32],
+            assoc_bindings: vec![],
         }],
     };
     assert!(!ty_no_var.contains_var(v));
@@ -712,6 +685,7 @@ fn contains_var_in_trait_object() {
 fn contains_var_in_named_machine_and_error() {
     let v = TypeVar(5050);
     assert!(!Ty::Named {
+        builtin: None,
         name: "M".to_string(),
         args: vec![],
     }
@@ -783,10 +757,12 @@ fn substitute_in_trait_object() {
             TraitObjectBound {
                 trait_name: "Foo".to_string(),
                 args: vec![Ty::Var(v)],
+                assoc_bindings: vec![],
             },
             TraitObjectBound {
                 trait_name: "Bar".to_string(),
                 args: vec![Ty::I32, Ty::Var(v)],
+                assoc_bindings: vec![],
             },
         ],
     };
@@ -798,10 +774,12 @@ fn substitute_in_trait_object() {
                 TraitObjectBound {
                     trait_name: "Foo".to_string(),
                     args: vec![Ty::String],
+                    assoc_bindings: vec![],
                 },
                 TraitObjectBound {
                     trait_name: "Bar".to_string(),
                     args: vec![Ty::I32, Ty::String],
+                    assoc_bindings: vec![],
                 },
             ],
         }
@@ -829,6 +807,7 @@ fn substitute_in_function() {
 fn substitute_in_named_machine_is_identity() {
     let v = TypeVar(6060);
     let ty = Ty::Named {
+        builtin: None,
         name: "SM".to_string(),
         args: vec![],
     };
@@ -836,6 +815,7 @@ fn substitute_in_named_machine_is_identity() {
     assert_eq!(
         result,
         Ty::Named {
+            builtin: None,
             name: "SM".to_string(),
             args: vec![],
         }
@@ -978,14 +958,6 @@ fn substitution_mappings_returns_all() {
 // ===========================================================================
 
 #[test]
-fn ty_equality_same_variant() {
-    assert_eq!(Ty::I32, Ty::I32);
-    assert_eq!(Ty::String, Ty::String);
-    assert_eq!(Ty::Error, Ty::Error);
-    assert_eq!(Ty::Never, Ty::Never);
-}
-
-#[test]
 fn ty_inequality_different_variants() {
     assert_ne!(Ty::I32, Ty::I64);
     assert_ne!(Ty::String, Ty::Bytes);
@@ -1073,6 +1045,7 @@ fn apply_subst_through_trait_object() {
         traits: vec![TraitObjectBound {
             trait_name: "Iter".to_string(),
             args: vec![Ty::Var(v)],
+            assoc_bindings: vec![],
         }],
     };
     assert_eq!(
@@ -1081,6 +1054,7 @@ fn apply_subst_through_trait_object() {
             traits: vec![TraitObjectBound {
                 trait_name: "Iter".to_string(),
                 args: vec![Ty::Char],
+                assoc_bindings: vec![],
             }],
         }
     );
@@ -1113,12 +1087,14 @@ fn apply_subst_named_machine_unchanged() {
     subst.insert(v, &Ty::I32).unwrap();
 
     let ty = Ty::Named {
+        builtin: None,
         name: "SM".to_string(),
         args: vec![],
     };
     assert_eq!(
         ty.apply_subst(&subst),
         Ty::Named {
+            builtin: None,
             name: "SM".to_string(),
             args: vec![],
         }

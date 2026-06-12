@@ -1,0 +1,33 @@
+//! @name Record Types
+//! @description Structured record types, enums, and exhaustive pattern matching
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Circle {
+    centre: Point;
+    radius: i64;
+}
+
+enum Shape {
+    Dot(Point);
+    Ring(Circle);
+}
+
+fn area_description(s: Shape) -> string {
+    match s {
+        Dot(_p) => "a single point",
+        Ring(c) => f"a circle with radius {c.radius}",
+    }
+}
+
+fn main() {
+    let origin = Point { x: 0, y: 0 };
+    let dot = Dot(origin);
+    println(area_description(dot));
+    let centre = Point { x: 3, y: 4 };
+    let ring = Ring(Circle { centre: centre, radius: 10 });
+    println(area_description(ring));
+}

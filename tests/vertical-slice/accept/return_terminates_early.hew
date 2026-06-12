@@ -1,0 +1,14 @@
+// Explicit `return` must seal the basic block with Terminator::Return so
+// codegen actually returns at that program point. Codegen emits the
+// function return from the block terminator, not the MirStatement::Return
+// THIR marker — without sealing, post-return source code keeps executing
+// and the user-visible behaviour is a no-op `return`.
+//
+// This fixture exits 7 from the early-return path. If the early return
+// did NOT seal its block, the subsequent `exit(99)` would still run and
+// the process would exit 99. Observing exit code 7 proves the early
+// return actually terminates the function at that point.
+fn main() -> i64 {
+    return 7;
+    exit(99)
+}

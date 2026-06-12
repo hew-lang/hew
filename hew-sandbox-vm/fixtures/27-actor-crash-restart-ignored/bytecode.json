@@ -1,0 +1,382 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-actor-lifecycle-parser-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:boom.explode.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "boom"
+                }
+              ],
+              "dst": "local:boom.msg",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:boom.msg"
+                }
+              ],
+              "dst": null,
+              "op": "panic",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:boom.explode",
+      "locals": [
+        {
+          "id": "local:boom.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:boom.msg",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Boom.explode",
+      "params": [
+        "local:boom.reply"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:boom.crash.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "crash hook"
+                }
+              ],
+              "dst": "local:boom.text",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:boom.text"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "restart"
+                }
+              ],
+              "dst": "local:boom.decision",
+              "op": "const.string",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:boom.decision"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:boom.crash",
+      "locals": [
+        {
+          "id": "local:boom.failure",
+          "mutable": false,
+          "name": "failure",
+          "span": null,
+          "type": "type:string"
+        },
+        {
+          "id": "local:boom.text",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        },
+        {
+          "id": "local:boom.decision",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Boom.on_crash",
+      "params": [
+        "local:boom.failure"
+      ],
+      "result": "type:string",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:boom.stop.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": "stopped"
+                }
+              ],
+              "dst": "local:boom.text",
+              "op": "const.string",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:boom.text"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:boom.stop",
+      "locals": [
+        {
+          "id": "local:boom.stop_event",
+          "mutable": false,
+          "name": "event",
+          "span": null,
+          "type": "type:unit"
+        },
+        {
+          "id": "local:boom.text",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:string"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Boom.on_stop",
+      "params": [
+        "local:boom.stop_event"
+      ],
+      "result": "type:unit",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Boom"
+                }
+              ],
+              "dst": "local:main.boom",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.boom"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "explode"
+                }
+              ],
+              "dst": null,
+              "op": "actor.send",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.boom",
+          "mutable": false,
+          "name": "boom",
+          "span": null,
+          "type": "type:Boom"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:boom.explode",
+            "name": "explode"
+          },
+          {
+            "function": "fn:boom.crash",
+            "name": "on(crash)"
+          },
+          {
+            "function": "fn:boom.stop",
+            "name": "on(stop)"
+          }
+        ],
+        "id": "type:Boom",
+        "max_mailbox": 4,
+        "name": "Boom",
+        "state_fields": []
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "String"
+      },
+      {
+        "id": "type:actor",
+        "kind": "actor",
+        "name": "Actor"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Boom",
+        "kind": "actor",
+        "name": "Boom"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:boom.explode",
+          "fn:boom.crash",
+          "fn:boom.stop",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:actor-crash-restart-ignored",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:any"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+fn main() -> i64 {
+    let words = ["red", "green"];
+    if words.len() != 2 { return 64; }
+    for word in words {
+        println(word);
+    }
+    0
+}

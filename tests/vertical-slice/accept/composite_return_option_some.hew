@@ -1,0 +1,19 @@
+// Accept: user function returning Option<i64> with Some payload.
+// Exercises MachineVariantCtor → Move to ReturnSlot → aggregate ret.
+// Exit 42 proves the caller received and destructured the composite.
+enum Option<T> {
+    Some(T);
+    None;
+}
+
+fn maybe() -> Option<i64> {
+    Option::Some(42)
+}
+
+fn main() -> i64 {
+    let r = maybe();
+    match r {
+        Option::Some(v) => v,
+        Option::None => 0,
+    }
+}

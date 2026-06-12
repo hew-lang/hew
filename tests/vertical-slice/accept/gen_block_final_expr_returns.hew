@@ -1,0 +1,8 @@
+// Accept fixture: gen{} with a tail expression but no yield.
+// `gen { 1 }` produces Generator<Never, i64>: the body never yields but
+// its return component is inferred as i64 from the tail expression.
+// HIR/MIR lowering is still fail-closed on GenBlock; hew check exercises
+// only the type-checker accept path.
+fn main() {
+    let _g = gen { 1 };
+}

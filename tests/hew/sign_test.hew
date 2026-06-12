@@ -1,0 +1,60 @@
+//! Behavioural tests for std::crypto::sign.
+
+import std::crypto::sign;
+
+import std::testing;
+
+#[test]
+fn test_sign_verify_roundtrip_succeeds() {
+    let kp = sign.keypair();
+    let msg = bytes [0x68, 0x65, 0x77]; // "hew"
+    let sig = sign.sign(msg, kp.private_key);
+    testing.assert_true(sign.verify(msg, sig, kp.public_key));
+}
+
+#[test]
+fn test_verify_rejects_tampered_message() {
+    let kp = sign.keypair();
+    let msg = bytes [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let tampered = bytes [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09]; // last byte flipped
+    let sig = sign.sign(msg, kp.private_key);
+    testing.assert_false(sign.verify(tampered, sig, kp.public_key));
+}
+
+#[test]
+fn test_verify_rejects_wrong_public_key() {
+    let kp1 = sign.keypair();
+    let kp2 = sign.keypair();
+    let msg = bytes [0x2a, 0x2b, 0x2c];
+    let sig = sign.sign(msg, kp1.private_key);
+    testing.assert_false(sign.verify(msg, sig, kp2.public_key));
+}
+
+#[test]
+fn test_verify_rejects_malformed_signature() {
+    let kp = sign.keypair();
+    let msg = bytes [0x0a, 0x14, 0x1e];
+    // A 64-byte all-zero buffer is not a valid signature.
+    let bad_sig = bytes [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    testing.assert_false(sign.verify(msg, bad_sig, kp.public_key));
+}
+
+#[test]
+fn test_keypair_public_key_is_32_bytes() {
+    let kp = sign.keypair();
+    testing.assert_eq(kp.public_key.len(), 32);
+}
+
+#[test]
+fn test_keypair_private_key_is_83_bytes() {
+    let kp = sign.keypair();
+    testing.assert_eq(kp.private_key.len(), 83);
+}
+
+#[test]
+fn test_signature_is_64_bytes() {
+    let kp = sign.keypair();
+    let msg = bytes [0x01, 0x02, 0x03];
+    let sig = sign.sign(msg, kp.private_key);
+    testing.assert_eq(sig.len(), 64);
+}

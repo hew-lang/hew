@@ -1,7 +1,0 @@
-=== Enum State Machine ===
-Initial: Idle
-After start: Running
-After pause: Paused
-After resume: Running
-After finish: Done
-PASS

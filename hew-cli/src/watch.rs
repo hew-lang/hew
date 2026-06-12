@@ -355,7 +355,7 @@ fn emit_check_start(check_target: &str, palette: &WatchPalette) {
 
 fn run_check_and_program(
     check_target: &str,
-    options: &compile::CompileOptions,
+    _options: &compile::CompileOptions,
     palette: &WatchPalette,
     start: Instant,
 ) {
@@ -363,11 +363,11 @@ fn run_check_and_program(
         return;
     };
 
-    let result = compile::compile(check_target, Some(&tmp_bin), false, options);
+    let result = crate::compile_native_binary(Path::new(check_target), Path::new(&tmp_bin));
     let elapsed = start.elapsed();
 
     match result {
-        Ok(_) => {
+        Ok(()) => {
             emit_watch_status("✓ Build succeeded", palette.green, elapsed, palette);
             eprintln!(
                 "{dim}--- program output ---{reset}",
@@ -376,7 +376,7 @@ fn run_check_and_program(
             );
             run_compiled_binary(&tmp_bin, palette);
         }
-        Err(_) => emit_watch_status("✗ Build failed", palette.red, elapsed, palette),
+        Err(()) => emit_watch_status("✗ Build failed", palette.red, elapsed, palette),
     }
 
     drop(tmp_path);
@@ -429,12 +429,22 @@ fn run_check_only(
     palette: &WatchPalette,
     start: Instant,
 ) {
-    let result = compile::compile(check_target, None, true, options);
+    let frontend_options = compile::frontend_options_for_check(options);
+    let result = match hew_compile::check_file(check_target, &frontend_options) {
+        Ok(output) => {
+            compile::render_frontend_diagnostics(&output.diagnostics);
+            Ok(())
+        }
+        Err(failure) => {
+            compile::render_frontend_diagnostics(&failure.diagnostics);
+            Err(())
+        }
+    };
     let elapsed = start.elapsed();
 
     match result {
-        Ok(_) => emit_watch_status("✓ No errors", palette.green, elapsed, palette),
-        Err(_) => emit_watch_status("✗ Check failed", palette.red, elapsed, palette),
+        Ok(()) => emit_watch_status("✓ No errors", palette.green, elapsed, palette),
+        Err(()) => emit_watch_status("✗ Check failed", palette.red, elapsed, palette),
     }
 }
 

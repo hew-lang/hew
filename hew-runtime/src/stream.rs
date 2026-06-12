@@ -14,10 +14,16 @@
 //!
 //! All functions use `#[no_mangle] extern "C"` with opaque `*mut c_void`
 //! pointers for the stream/sink handles. Items are transferred as
-//! malloc-allocated byte buffers:
+//! header-aware string allocations (for the string-element entries) or
+//! malloc-allocated byte buffers (for the bytes-element / raw-byte entries):
 //!
-//! - `hew_stream_next` returns a malloc'd item on success, NULL on EOF. The
-//!   caller must `free()` the returned pointer.
+//! - `hew_stream_next_layout` / `hew_stream_try_next_layout` /
+//!   `hew_stream_pop_layout` are the recv entries: an element-layout witness
+//!   selects the envelope decode (string elements materialise a refcount-1,
+//!   NUL-terminated `*mut c_char` via
+//!   [`crate::channel_common::bytes_to_cstr`] the MIR drop spine releases
+//!   through `hew_string_drop`; bytes elements a fresh refcounted
+//!   `BytesTriple`; Plain/owned elements decode into the out slot directly).
 //! - `hew_sink_write` accepts a pointer+size; the runtime copies the bytes.
 //! - `hew_stream_channel` returns a `HewStreamPair*`; extract the two handles
 //!   with `hew_stream_pair_sink` / `hew_stream_pair_stream`, then free the pair
@@ -34,27 +40,32 @@
 //!
 //! A channel's Sink and Stream may live in different actors / threads. All
 //! other stream types are single-owner and may not be shared across threads.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fs;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, Read};
+use std::net::TcpStream;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 
 // ── Re-export sink types from hew-cabi ────────────────────────────────────────
 // These are the shared ABI types that native packages (e.g. HTTP) also use.
 // Defining them in hew-cabi avoids pulling the full runtime into stdlib packages.
 
-pub use hew_cabi::sink::{
-    into_sink_ptr, into_write_sink_ptr, set_last_error, set_last_error_with_errno, take_last_error,
-    HewSink,
+pub use crate::stream_error::{
+    hew_stream_last_error, set_last_error, set_last_error_with_errno, take_last_error,
 };
+pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink};
 
-// hew_stream_last_error is defined in hew-cabi::sink (with #[no_mangle])
-// so we re-export it here for Rust callers but don't redefine the C symbol.
-pub use hew_cabi::sink::hew_stream_last_error;
+// hew_stream_last_error / hew_stream_last_errno are defined in crate::stream_error
+// (the single owner of the C ABI); hew-cabi only declares them as imports so that
+// native packages resolve them against libhew.a at final link.
 
 use hew_cabi::vec::HewVec;
 
@@ -78,8 +89,20 @@ type Item = Vec<u8>;
 // ── Backing traits ────────────────────────────────────────────────────────────
 
 trait StreamBacking: Send + std::fmt::Debug {
-    /// Return the next item, or `None` on EOF.
+    /// Return the next item, or `None` on EOF. Blocks until an item is available.
     fn next(&mut self) -> Option<Item>;
+    /// Non-blocking item poll. Returns `Some(item)` if one is immediately
+    /// available, or `None` if the stream is empty or closed. The default
+    /// falls back to `next()` (blocking); override for genuine non-blocking
+    /// behaviour.
+    fn try_next(&mut self) -> Option<Item> {
+        // Deliberately blocking default — callers that need non-blocking
+        // semantics must be created with a backing that overrides this method
+        // (e.g. ChannelStream). Other backings (file, TCP) do not support
+        // non-blocking reads, so returning None would be misleading; falling
+        // back to blocking is safer until a poll-based abstraction is added.
+        self.next()
+    }
     /// Discard remaining items and signal done to the producer.
     fn close(&mut self);
     /// Check if the stream is exhausted without consuming an item.
@@ -112,6 +135,12 @@ pub struct HewStream {
     /// park-thread generation rather than sleeping (§5.7).
     #[cfg(test)]
     park_exit_gen: Arc<(Mutex<u64>, std::sync::Condvar)>,
+    /// The suspending channel core (NEW-7) when this stream is the read half of
+    /// an in-memory pipe; `None` for every other backing. Shared by `Arc` with
+    /// the paired sink so `await stream.recv()` can park + be woken by the
+    /// producer's `await sink.send()`. Non-channel backings keep the blocking
+    /// read path (no parkable producer to wake).
+    channel: Option<Arc<crate::channel_core::ChannelCore>>,
 }
 
 impl Drop for HewStream {
@@ -159,12 +188,12 @@ impl Drop for HewStreamPair {
         // Drop any handles that weren't extracted by the caller.
         if !self.sink.is_null() {
             // SAFETY: sink was allocated with Box::into_raw and is still owned.
-            unsafe { drop(Box::from_raw(self.sink)) };
+            unsafe { drop(Box::from_raw(self.sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
             self.sink = std::ptr::null_mut();
         }
         if !self.stream.is_null() {
             // SAFETY: stream was allocated with Box::into_raw and is still owned.
-            unsafe { drop(Box::from_raw(self.stream)) };
+            unsafe { drop(Box::from_raw(self.stream)) }; // ALLOCATOR-PAIRING: GlobalAlloc
             self.stream = std::ptr::null_mut();
         }
     }
@@ -178,25 +207,24 @@ unsafe impl Send for HewStreamPair {}
 
 #[derive(Debug)]
 struct ChannelStream {
-    rx: mpsc::Receiver<Item>,
-}
-
-#[derive(Debug)]
-struct ChannelSink {
-    tx: mpsc::SyncSender<Item>,
+    core: Arc<crate::channel_core::ChannelCore>,
 }
 
 impl StreamBacking for ChannelStream {
     fn next(&mut self) -> Option<Item> {
-        self.rx.recv().ok()
+        // Default (non-suspending) callers block the foreign thread on the core
+        // condvar. Suspending callers never reach here — they go through
+        // `hew_stream_await_next` + `hew_stream_pop_bytes`.
+        self.core.blocking_recv()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        self.core.try_recv()
     }
 
     fn close(&mut self) {
-        // Drain the channel so the sender is unblocked and can observe disconnect.
-        while self.rx.try_recv().is_ok() {}
-        // Dropping `rx` here signals the sender-side that the channel is gone,
-        // but we can't drop `self` from a method.  The struct will be dropped
-        // when the HewStream is freed.
+        // Consumer-side close: local cancel/discard. Wakes parked producers.
+        self.core.close_stream();
     }
 
     fn is_closed(&self) -> bool {
@@ -205,24 +233,13 @@ impl StreamBacking for ChannelStream {
     }
 }
 
-impl Write for ChannelSink {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.tx.send(data.to_vec()).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "failed to send to channel sink",
-            )
-        })?;
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 impl StreamBacking for VecStream {
     fn next(&mut self) -> Option<Item> {
+        self.items.pop_front()
+    }
+
+    fn try_next(&mut self) -> Option<Item> {
+        // VecStream is in-memory and never blocks; try_next is identical to next.
         self.items.pop_front()
     }
 
@@ -261,6 +278,95 @@ impl StreamBacking for FileReadStream {
 
     fn is_closed(&self) -> bool {
         // File streams don't know they are at EOF until they try to read.
+        false
+    }
+}
+
+// ── TCP read backing ──────────────────────────────────────────────────────────
+//
+// A `StreamBacking` that reads from a cloned `TcpStream` handle.  Created
+// exclusively by `hew_tcp_stream_from_conn` — never directly by user code.
+//
+// Thread-safety: the struct is `Send` (TcpStream is Send), so it is safe
+// to drive from the park thread inside `hew_stream_poll`.  It is NOT `Sync`;
+// at most one reader exists at any point (the park thread).
+//
+// Blocking behaviour: `next` blocks until data arrives, the peer closes,
+// or the OS returns an error.  If the caller wants a deadline, they call
+// `conn.set_read_timeout(ms)` on the `Connection` before calling
+// `into_stream_sink` — the timeout is inherited by the clone.
+// See Risk R1 in the R45 plan: callers composing this inside `select{}`
+// SHOULD set a read timeout on the connection to avoid an uninterruptible
+// park-thread block.
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct TcpStreamBacking {
+    stream: TcpStream,
+}
+
+/// TCP read backing size, matching `hew_tcp_read`'s buffer (transport.rs:1216).
+#[cfg(not(target_arch = "wasm32"))]
+const TCP_BACKING_BUF_SIZE: usize = 8192;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl StreamBacking for TcpStreamBacking {
+    fn next(&mut self) -> Option<Item> {
+        let mut buf = [0u8; TCP_BACKING_BUF_SIZE];
+        loop {
+            match self.stream.read(&mut buf) {
+                Ok(0) => {
+                    // Peer closed the connection — clean EOF.
+                    return None;
+                }
+                Ok(n) => return Some(buf[..n].to_vec()),
+                Err(e) => {
+                    // Record the error kind in the transport counters.
+                    crate::transport::record_tcp_error_kind(e.kind());
+
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        // POSIX EINTR: the read was interrupted by a signal.
+                        // Retry immediately — EINTR is fully recoverable and
+                        // must not be surfaced as a stream error or pause.
+                    } else {
+                        // EAGAIN / EWOULDBLOCK: socket is non-blocking or a
+                        // read timeout fired with no data available.  Set a
+                        // distinct errno so callers can call
+                        // hew_stream_last_errno() to distinguish this pause
+                        // from clean EOF (where errno stays 0).
+                        // WouldBlock maps to EAGAIN; TimedOut to ETIMEDOUT.
+                        // Persistent errors use the raw OS errno.
+                        let (msg, raw) = match e.kind() {
+                            std::io::ErrorKind::WouldBlock => {
+                                (format!("TCP read would block: {e}"), libc::EAGAIN)
+                            }
+                            std::io::ErrorKind::TimedOut => {
+                                (format!("TCP read timed out: {e}"), libc::ETIMEDOUT)
+                            }
+                            _ => (
+                                format!("TCP read error: {e}"),
+                                e.raw_os_error().unwrap_or(0),
+                            ),
+                        };
+                        set_last_error_with_errno(msg, raw);
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        // The cloned TcpStream fd closes when this struct is dropped.
+        // No explicit action needed; document the drop-on-drop contract:
+        //   TcpStreamBacking::drop → TcpStream::drop → OS fd table entry removed.
+        // Callers that want eager half-close should set a read timeout
+        // before bridging (Risk R1 in the R45 plan).
+    }
+
+    fn is_closed(&self) -> bool {
+        // TCP streams can't know they're at EOF without attempting a read.
+        // This matches FileReadStream's posture.
         false
     }
 }
@@ -402,24 +508,28 @@ impl StreamBacking for ChunksStream {
 
 fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Box::new(backing),
         closed: false,
         pending_read: AtomicU64::new(0),
         pending_state: Mutex::new(None),
         #[cfg(test)]
         park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
+        channel: None,
     }))
 }
 
 /// Like [`into_stream_ptr`] but accepts an already-boxed backing.
 fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
     Box::into_raw(Box::new(HewStream {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         inner: backing,
         closed: false,
         pending_read: AtomicU64::new(0),
         pending_state: Mutex::new(None),
         #[cfg(test)]
         park_exit_gen: Arc::new((Mutex::new(0u64), std::sync::Condvar::new())),
+        channel: None,
     }))
 }
 
@@ -444,6 +554,9 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
         let _ = ptr::read(&raw const (*stream).closed);
         let _ = ptr::read(&raw const (*stream).pending_read);
         drop(ptr::read(&raw const (*stream).pending_state));
+        #[cfg(test)]
+        drop(ptr::read(&raw const (*stream).park_exit_gen));
+        drop(ptr::read(&raw const (*stream).channel));
     }
     // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
     // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
@@ -532,8 +645,8 @@ impl StreamBacking for MapStringStream {
         // SAFETY: result_ptr is a valid null-terminated C string from the closure.
         let result_cstr = unsafe { std::ffi::CStr::from_ptr(result_ptr) };
         let bytes = result_cstr.to_bytes().to_vec();
-        // SAFETY: result_ptr was malloc'd by the closure; we own it now.
-        unsafe { libc::free(result_ptr.cast::<c_void>()) };
+        // SAFETY: result_ptr is the closure's header-aware Hew string; we own it.
+        unsafe { crate::cabi::free_cstring(result_ptr) }; // CSTRING-FREE: str-open (StringMapFn closure output = Hew (string)->string; header-aware in S1)
         Some(bytes)
     }
 
@@ -722,16 +835,148 @@ unsafe fn rc_drop_env(env_ptr: *const c_void) {
 /// handles have been extracted.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair {
+    use crate::channel_core::ChannelCore;
     let cap = usize::try_from(capacity.max(1)).unwrap_or(1);
-    let (tx, rx) = mpsc::sync_channel::<Item>(cap);
+    let core = Arc::new(ChannelCore::new(cap));
+    // Borrow the allocation address before the Arc clones move; the address is
+    // stable and stays valid while either handle (each holding an Arc clone)
+    // is alive.
+    let core_raw = Arc::as_ptr(&core).cast::<c_void>();
 
-    let stream_ptr = into_stream_ptr(ChannelStream { rx });
-    let sink_ptr = into_write_sink_ptr(ChannelSink { tx });
+    // Read half: a channel-backed stream that also carries an Arc clone so the
+    // suspending `await stream.recv()` path can reach the shared queue.
+    let stream_ptr = into_stream_ptr(ChannelStream {
+        core: Arc::clone(&core),
+    });
+    // SAFETY: stream_ptr was just allocated by into_stream_ptr.
+    unsafe {
+        (*stream_ptr).channel = Some(Arc::clone(&core));
+    }
+
+    // Write half: a callback sink owning the last Arc clone; the opaque core
+    // borrow lets `hew_stream_await_send` reach the queue + parked consumer.
+    let sink_ptr = into_sink_ptr(
+        core,
+        channel_sink_write,
+        channel_sink_flush,
+        channel_sink_close,
+    );
+    // SAFETY: sink_ptr was just allocated by into_sink_ptr.
+    unsafe {
+        (*sink_ptr).set_channel_core(core_raw);
+    }
 
     Box::into_raw(Box::new(HewStreamPair {
+        // ALLOCATOR-PAIRING: GlobalAlloc
         sink: sink_ptr,
         stream: stream_ptr,
     }))
+}
+
+/// Channel-sink callback: blocking write (default callers). Suspending callers
+/// route through `hew_stream_await_send` instead.
+fn channel_sink_write(core: &mut Arc<crate::channel_core::ChannelCore>, data: &[u8]) {
+    core.blocking_send(data.to_vec());
+}
+
+/// Channel-sink callback: flush is a no-op (the core is not write-buffered).
+fn channel_sink_flush(_core: &mut Arc<crate::channel_core::ChannelCore>) {}
+
+/// Channel-sink callback: producer EOF. Wakes a parked consumer so its
+/// `await stream.recv()` resume binds `None`.
+fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
+    core.close_sink();
+}
+
+/// Bridge a live TCP connection into a `(Stream<bytes>, Sink<bytes>)` pair.
+///
+/// Clones the underlying socket twice (once for the read backing, once for
+/// the write backing) via the existing `tcp_clone_stream` helper so the
+/// two halves own independent `TcpStream` descriptors.  After a successful
+/// clone, the original handle is removed from the TCP connection table (the
+/// same close path as `hew_tcp_close`) so there is no fd leak — the caller
+/// has transferred ownership to the returned pair.
+///
+/// Returns a `*mut HewStreamPair` on success.  The caller must extract the
+/// stream and sink with `hew_stream_pair_stream_bytes` /
+/// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
+///
+/// Returns `null` with the last-error set to EBADF (errno 9) if `conn` is
+/// not a registered TCP connection handle.
+///
+/// # Safety
+///
+/// `conn` must be a valid connection handle returned by `hew_tcp_accept` or
+/// `hew_tcp_connect`.  After this call the original `conn` handle is
+/// consumed: do not pass it to any other `hew_tcp_*` function.
+///
+/// # Platform
+///
+/// Not available on `wasm32` targets; TCP transport is unavailable there.
+/// See `WASM-TODO(#1451)`.  The `wasm32` stub returns `null` so the symbol
+/// resolves at link time, but every call returns `null` without side-effects.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStreamPair {
+    use crate::transport::{tcp_clone_stream, tcp_release_conn};
+
+    // Clone the read fd.
+    let Some(read_stream) = tcp_clone_stream(conn) else {
+        set_last_error_with_errno(
+            format!("hew_tcp_stream_from_conn: invalid connection handle {conn}"),
+            9, // EBADF
+        );
+        return ptr::null_mut();
+    };
+
+    // Clone the write fd.
+    let Some(write_stream) = tcp_clone_stream(conn) else {
+        // read_stream RAII drops its clone here.
+        set_last_error_with_errno(
+            format!("hew_tcp_stream_from_conn: could not clone write fd for handle {conn}"),
+            9, // EBADF
+        );
+        return ptr::null_mut();
+    };
+
+    // Release the original handle from the connection table WITHOUT calling
+    // shutdown.  TcpStream clones share a single OS file descriptor on Unix;
+    // calling shutdown on any clone shuts down the shared socket, which would
+    // immediately invalidate the two backings we just created.
+    // `tcp_release_conn` only removes the table entry — the two clones keep
+    // the socket alive.
+    tcp_release_conn(conn);
+
+    // Build the stream (read) half via the canonical helper.
+    let stream_ptr = into_stream_ptr(TcpStreamBacking {
+        stream: read_stream,
+    });
+
+    // Build the sink (write) half using the Write-backed sink constructor,
+    // matching the `hew_stream_from_file_write` pattern.
+    let sink_ptr = into_write_sink_ptr(write_stream);
+
+    Box::into_raw(Box::new(HewStreamPair {
+        // ALLOCATOR-PAIRING: GlobalAlloc
+        sink: sink_ptr,
+        stream: stream_ptr,
+    }))
+}
+
+/// `wasm32` stub: TCP transport is unavailable on wasm32 builds.
+///
+/// Returns `null` unconditionally.  The symbol is present so the wasm32 link
+/// succeeds; actual rejection happens at the type-checker level
+/// (`hew-types/src/check/methods.rs`: `reject_if_wasm_native_only_handle`)
+/// which emits `WasmUnsupportedFeature::TcpNetworking` for any call on
+/// `net.Connection`, including `into_stream_sink`.  This stub is never
+/// reachable through valid Hew code compiled for wasm32.
+///
+/// WASM-TODO(#1451): TCP transport gap.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_tcp_stream_from_conn(_conn: c_int) -> *mut HewStreamPair {
+    ptr::null_mut()
 }
 
 /// Extract the `HewSink*` from a pair without consuming the pair.
@@ -780,7 +1025,7 @@ pub unsafe extern "C" fn hew_stream_pair_free(pair: *mut HewStreamPair) {
     if !pair.is_null() {
         // SAFETY: pair was allocated with Box::into_raw.
         // Drop impl frees any remaining (non-null) handles.
-        unsafe { drop(Box::from_raw(pair)) };
+        unsafe { drop(Box::from_raw(pair)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -891,43 +1136,6 @@ pub unsafe extern "C" fn hew_stream_from_bytes(
     into_stream_ptr(VecStream { items })
 }
 
-/// Get the next item from a stream.
-///
-/// Returns a malloc-allocated byte buffer that the caller must `free()`.
-/// Returns null when the stream is exhausted (EOF).
-///
-/// # Safety
-///
-/// `stream` must be a valid pointer created by one of the `hew_stream_*`
-/// constructor functions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void {
-    cabi_guard!(stream.is_null(), ptr::null_mut());
-    // SAFETY: stream is valid per caller contract.
-    let s = unsafe { &mut *stream };
-    match s.inner.next() {
-        Some(item) => {
-            let len = item.len();
-            // Allocate len + 1 for a NUL terminator so the buffer can be
-            // used as a C string by the generic hew_print_value string path.
-            // For empty items, this yields a 1-byte buffer containing '\0'.
-            // SAFETY: libc::malloc returns a valid aligned pointer or null.
-            let buf = unsafe { libc::malloc(len + 1) };
-            if buf.is_null() {
-                return ptr::null_mut();
-            }
-            if len > 0 {
-                // SAFETY: buf is len+1 bytes allocated above; item.as_ptr() points to len bytes.
-                unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
-            }
-            // SAFETY: buf has len+1 bytes allocated; writing the null terminator at offset len.
-            unsafe { *buf.cast::<u8>().add(len) = 0 };
-            buf.cast::<c_void>()
-        }
-        None => ptr::null_mut(),
-    }
-}
-
 /// Get the next item from a stream, with its size written to `out_size`.
 ///
 /// Identical to `hew_stream_next` but also writes the byte count to `out_size`.
@@ -953,7 +1161,7 @@ pub unsafe extern "C" fn hew_stream_next_sized(
         // For empty items, allocate 1 byte so the pointer is non-null.
         let alloc_len = if len == 0 { 1 } else { len };
         // SAFETY: libc::malloc returns a valid aligned pointer or null.
-        let buf = unsafe { libc::malloc(alloc_len) };
+        let buf = unsafe { libc::malloc(alloc_len) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_next_sized item buffer)
         if buf.is_null() {
             return ptr::null_mut();
         }
@@ -1045,9 +1253,11 @@ pub unsafe extern "C" fn hew_stream_next_view(
 /// caller can later pass to [`hew_stream_cancel_pending_read`] to withdraw
 /// the registration. When an item arrives (or the stream reaches EOF), the
 /// runtime invokes `callback(userdata, item_ptr)` where `item_ptr` is a
-/// malloc-allocated copy of the item bytes (caller must `free()` it) or
-/// null for EOF. The ownership contract for `item_ptr` matches
-/// [`hew_stream_next`] (`malloc`'d, caller frees).
+/// `libc::malloc`-allocated copy of the item bytes (the callback MUST free
+/// it via `libc::free`) or null for EOF. This is the bare-bytes adapter
+/// ownership contract — distinct from [`hew_stream_next`], which on the
+/// `Stream<string>::recv` surface returns a header-aware `*mut c_char` the
+/// MIR drop spine frees via `hew_string_drop`.
 ///
 /// ## Ownership contract
 ///
@@ -1186,7 +1396,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 let len = bytes.len();
                 // SAFETY: Bounds — malloc(len+1) returns a pointer to at
                 // least len+1 bytes or null; null is handled below.
-                let buf = unsafe { libc::malloc(len + 1) };
+                let buf = unsafe { libc::malloc(len + 1) }; // ALLOCATOR-PAIRING: libc  // CSTRING-ALLOC: libc-bytes (hew_stream_poll item buffer)
                 if buf.is_null() {
                     ptr::null_mut()
                 } else {
@@ -1219,7 +1429,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                     // SAFETY: Provenance + Failure mode — item_ptr was
                     // malloc'd by libc::malloc above; null is excluded
                     // by the if-guard. Ownership transfers to free here.
-                    unsafe { libc::free(item_ptr) };
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
                 }
             }
             ParkState::Pending => {
@@ -1253,7 +1463,7 @@ pub unsafe extern "C" fn hew_stream_poll(
                 if !item_ptr.is_null() {
                     // SAFETY: same as Cancelled branch — malloc'd above,
                     // non-null guarded, ownership transferred to free.
-                    unsafe { libc::free(item_ptr) };
+                    unsafe { libc::free(item_ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream item byte buffer)
                 }
             }
         }
@@ -1377,6 +1587,68 @@ pub unsafe extern "C" fn hew_stream_cancel_pending_read(
     // WASM-GAP: paired with hew_stream_poll; tracked for v0.5.
 }
 
+// ── Deadline-cancel cleanup callback (NEW-6b) ───────────────────────────────
+
+/// Per-suspend cancel context for `await stream.recv()`: holds both the read
+/// slot and the stream handle so the cleanup callback can cancel + detach.
+///
+/// Allocated as an alloca in the coroutine frame (codegen side) so its lifetime
+/// spans the coro.suspend — the spilling pass moves it into the frame object.
+#[repr(C)]
+#[allow(
+    dead_code,
+    reason = "fields accessed via FFI from codegen-emitted LLVM IR, not from Rust"
+)]
+pub struct HewStreamRecvCancelCtx {
+    /// The `HewReadSlot` this recv registered against.
+    pub slot: *mut crate::read_slot::HewReadSlot,
+    /// The `HewStream` handle the recv is registered against.
+    pub stream: *mut HewStream,
+}
+
+impl std::fmt::Debug for HewStreamRecvCancelCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewStreamRecvCancelCtx")
+            .field("slot", &self.slot)
+            .field("stream", &self.stream)
+            .finish()
+    }
+}
+
+/// Await-cancel cleanup callback for a suspending `await stream.recv()`.
+///
+/// Fires when the deadline timer wins the one-shot CAS (`TimedOut`) or an
+/// explicit cancel wins (`Cancelled`).  Cancels the read slot and detaches the
+/// stream core's in-flight consumer reference so the core never tries to wake
+/// a freed slot.
+///
+/// # Safety
+///
+/// `source` must be a `*mut HewStreamRecvCancelCtx` allocated in the caller's
+/// coroutine frame.  The underlying slot and stream must still be alive.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_recv_cancel_cleanup(
+    source: *mut std::ffi::c_void,
+    _status: i32,
+) {
+    let ctx = source.cast::<HewStreamRecvCancelCtx>();
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: ctx is a valid frame-alloca; slot and stream pointers are alive.
+    let slot = unsafe { (*ctx).slot };
+    // SAFETY: same frame-alloca guarantee as slot above.
+    let stream = unsafe { (*ctx).stream };
+    if !slot.is_null() {
+        // SAFETY: slot is alive (frame alloca).
+        unsafe { crate::read_slot::hew_read_slot_cancel(slot) };
+    }
+    if !stream.is_null() {
+        // SAFETY: stream is alive and core still holds a reference to the slot.
+        unsafe { hew_stream_detach_await(stream, slot) };
+    }
+}
+
 /// Close (discard) a stream.
 ///
 /// # Safety
@@ -1386,9 +1658,10 @@ pub unsafe extern "C" fn hew_stream_cancel_pending_read(
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     if !stream.is_null() {
+        crate::tracing::record_channel_event(stream as u64, crate::tracing::SPAN_STREAM_CLOSED);
         // SAFETY: stream was allocated with Box::into_raw.
         // Drop impl calls close() on the backing.
-        unsafe { drop(Box::from_raw(stream)) };
+        unsafe { drop(Box::from_raw(stream)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -1432,9 +1705,10 @@ pub unsafe extern "C" fn hew_sink_flush(sink: *mut HewSink) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     if !sink.is_null() {
+        crate::tracing::record_channel_event(sink as u64, crate::tracing::SPAN_SINK_CLOSED);
         // SAFETY: sink was allocated with Box::into_raw.
         // Drop impl calls close() on the backing.
-        unsafe { drop(Box::from_raw(sink)) };
+        unsafe { drop(Box::from_raw(sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -1462,8 +1736,8 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
     // Free both handles.
     // SAFETY: Both were allocated with Box::into_raw.
     unsafe {
-        drop(Box::from_raw(stream));
-        drop(Box::from_raw(sink));
+        drop(Box::from_raw(stream)); // ALLOCATOR-PAIRING: GlobalAlloc
+        drop(Box::from_raw(sink)); // ALLOCATOR-PAIRING: GlobalAlloc
     }
 }
 
@@ -1519,7 +1793,8 @@ pub unsafe extern "C" fn hew_stream_chunks(
 
 /// Read all remaining items from a stream and concatenate them as a C string.
 ///
-/// Returns a malloc-allocated null-terminated string. The caller must free it.
+/// Returns a header-aware null-terminated string. The caller must free it with
+/// `hew_string_drop`.
 /// Consumes the stream.
 ///
 /// # Safety
@@ -1530,7 +1805,7 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     cabi_guard!(stream.is_null(), ptr::null_mut());
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let mut owned = unsafe { Box::from_raw(stream) };
+    let mut owned = unsafe { Box::from_raw(stream) }; // ALLOCATOR-PAIRING: GlobalAlloc
     let mut buffer = Vec::new();
 
     while let Some(chunk) = owned.inner.next() {
@@ -1541,8 +1816,9 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
     buffer.push(0);
 
     let len = buffer.len();
-    // SAFETY: libc::malloc returns a valid aligned pointer or null.
-    let ptr = unsafe { libc::malloc(len) };
+    // Header-aware (S1): buffer already includes the trailing NUL, so request
+    // exactly `len` data bytes. Released via hew_string_drop / free_cstring.
+    let ptr = crate::cabi::alloc_cstring_data(len); // CSTRING-ALLOC: str-open (hew_stream_collect_string — header-aware String result; reaches hew_string_drop)
     if ptr.is_null() {
         return ptr::null_mut();
     }
@@ -1564,7 +1840,7 @@ pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
     cabi_guard!(stream.is_null(), 0);
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let mut owned = unsafe { Box::from_raw(stream) };
+    let mut owned = unsafe { Box::from_raw(stream) }; // ALLOCATOR-PAIRING: GlobalAlloc
     let mut count = 0;
 
     while owned.inner.next().is_some() {
@@ -1783,63 +2059,512 @@ pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut
 // the `bytes` (`HewVec<i32>`) representation used by the Hew language.
 // The enricher dispatches here when the stream element type is `bytes`.
 
-/// Read the next item from a stream and return it as a `bytes` value.
-///
-/// Returns a `*mut HewVec` (i32-element vec, one byte per slot) on success —
-/// including for zero-length items — or **null** on EOF.  The caller owns the
-/// returned vec and must eventually free it.
-///
-/// # Safety
-///
-/// `stream` must be a valid stream pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut HewVec {
-    if stream.is_null() {
-        return std::ptr::null_mut();
-    }
-    let mut size: usize = 0;
-    // SAFETY: stream is valid per caller contract; size is a valid local.
-    let raw_ptr = unsafe { hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size)) };
-    if raw_ptr.is_null() {
-        return std::ptr::null_mut(); // EOF
-    }
-    // SAFETY: raw_ptr is valid for `size` bytes (from hew_stream_next_sized contract).
-    let raw = unsafe { std::slice::from_raw_parts(raw_ptr.cast::<u8>(), size) };
-    // SAFETY: u8_to_hwvec allocates a new HewVec; raw slice is valid.
-    let vec = unsafe { hew_cabi::vec::u8_to_hwvec(raw) };
-    // SAFETY: raw_ptr was allocated by libc::malloc inside hew_stream_next_sized.
-    unsafe { libc::free(raw_ptr) };
-    vec
-}
-
 /// Write a `bytes` value to a sink.
 ///
-/// Extracts the raw byte content from the `HewVec` and writes it as a single
-/// stream item.  Zero-length writes are forwarded — they are valid data, not
-/// no-ops.  Does nothing only if `sink` or `data` is null.
+/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`] and writes the
+/// active region `data.ptr[data.offset .. data.offset + data.len]` as a single
+/// stream item. Zero-length writes are forwarded — they are valid data, not
+/// no-ops. Does nothing only if `sink` or `data` is null. The buffer is
+/// BORROWED — ownership stays with the caller, whose drop spine releases it via
+/// `hew_bytes_drop`.
+///
+/// By-pointer (not by-value): a 16-byte triple passed by value as a non-first
+/// argument loses its offset/len eightbyte at the current codegen C-ABI
+/// boundary; passing the address is ABI-portable (mirrors `hew_bytes_push`).
+/// Codegen passes the triple alloca's address for the `data: bytes` parameter
+/// (`is_bytes_by_pointer_consumer`).
 ///
 /// # Safety
 ///
-/// `sink` must be a valid sink pointer.  `data` must be a valid `HewVec`
-/// pointer (or null).
+/// `sink` must be a valid sink pointer. `data` must point to a valid
+/// `BytesTriple` (either its `ptr` null with `len == 0`, or `ptr` pointing to a
+/// `hew_bytes_*` allocation whose active region `[offset, offset + len)` is in
+/// bounds).
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut HewVec) {
+pub unsafe extern "C" fn hew_sink_write_bytes(
+    sink: *mut HewSink,
+    data: *const crate::bytes::BytesTriple,
+) {
     if sink.is_null() || data.is_null() {
         return;
     }
-    // SAFETY: data is a valid HewVec per caller contract.
-    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
-    if bytes.is_empty() {
-        // hew_sink_write short-circuits on size=0, but empty bytes are valid
-        // data items that must be delivered.  Write directly to the backing.
+    // SAFETY: `data` points to the caller's valid BytesTriple slot.
+    let data = unsafe { &*data };
+    if data.len == 0 || data.ptr.is_null() {
+        // hew_sink_write short-circuits on size=0, but an empty item is valid
+        // data that must be delivered.  Write directly to the backing.
         // SAFETY: sink is valid per caller contract.
         unsafe { (*sink).write_item(&[]) };
-    } else {
-        // SAFETY: sink is valid; bytes slice is valid for its length.
-        unsafe {
-            hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
-        }
+        return;
     }
+    // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per the
+    // BytesTriple contract; read-only borrow (no mutation, no free).
+    let bytes = unsafe {
+        std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize)
+    };
+    // SAFETY: sink is valid; bytes slice is valid for its length.
+    unsafe {
+        hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
+    }
+}
+
+// ── Suspending stream consumer / producer (NEW-7) ─────────────────────────────
+//
+// These entries flip `await stream.recv()` / `await sink.send(x)` from a
+// worker-blocking call onto the read-slot / `enqueue_resume` substrate when the
+// caller carries an execution context (actor handler / closure / task entry).
+// The codegen suspend ramp calls `*_await_*` to register, suspends, and on the
+// resume edge binds the result (`hew_stream_pop_bytes` for the consumer; unit
+// for the producer). Non-channel backings (file/TCP/adapters) keep the blocking
+// path: the await entry returns `STREAM_AWAIT_READY` and the bind reads through
+// the existing blocking FFI. See `crate::channel_core` for the wake discipline.
+// the existing blocking FFI. See `crate::channel_core` for the wake discipline.
+
+/// Register a suspending consumer for `await stream.recv()`.
+///
+/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the bind can proceed
+/// immediately (an item is queued, the producer closed, or this is a
+/// non-channel backing), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
+/// parking the consumer's continuation on `slot`.
+///
+/// # Safety
+///
+/// `stream` is a live stream handle; `actor` is the awaiting actor
+/// (`hew_actor_self`); `slot` is a live read slot the caller created.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_await_next(
+    stream: *mut HewStream,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+) -> i32 {
+    if stream.is_null() {
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: stream is a valid HewStream per caller contract.
+    let channel = unsafe { (*stream).channel.as_ref() };
+    match channel {
+        // SAFETY: the core is alive (the stream holds an Arc clone); `actor` /
+        // `slot` validity is the caller's contract.
+        Some(core) => unsafe { core.await_next(actor, slot) },
+        None => crate::channel_core::STREAM_AWAIT_READY,
+    }
+}
+
+// ── Layout-witness element path (generic Stream<T> width) ────────────────────
+//
+// The `*_layout` entries carry ANY element type the compiler can describe
+// through one mechanism: a `HewVecElemLayout` witness selects the envelope
+// encoding and ownership discipline (see `crate::channel_common`). String and
+// bytes elements stay content-encoded, so the witness path composes with
+// platform backings (TCP, file, lines/chunks adapters) that produce raw byte
+// envelopes natively. Layout-managed (heap-owning) elements exist only on
+// in-memory channel pipes — the typed-serialise send below fails closed on any
+// other sink kind.
+
+/// Send one element of any witness-describable type into a sink.
+/// Blocks with backpressure if the backing buffer is full.
+///
+/// # Safety
+///
+/// `sink` must be a valid pointer. `data` must point to one live element of
+/// the witness's type (see [`crate::channel_common::encode_elem_envelope`]).
+/// `layout` must point to a valid `HewVecElemLayout` for the duration of the
+/// call (in practice a codegen static).
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_send_layout(
+    sink: *mut HewSink,
+    data: *const c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) {
+    cabi_guard!(sink.is_null() || data.is_null());
+    // SAFETY: layout validity is the caller's contract; the helper aborts
+    // fail-closed on a malformed witness.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_send_layout") };
+    if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+        // Owned elements ride only the in-memory pipe: the queue must be able
+        // to release unconsumed envelopes via the stamped witness. A byte
+        // sink (file, TCP) has no element ownership concept — fail closed.
+        // SAFETY: sink is valid per caller contract.
+        let core_raw = unsafe { (*sink).channel_core_ptr() };
+        if core_raw.is_null() {
+            crate::channel_common::abort_elem_witness(
+                "hew_stream_send_layout",
+                "layout-managed elements require an in-memory channel sink",
+            );
+        }
+        // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the
+        // sink backing (alive for the duration of this call).
+        let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+        core.stamp_elem_layout(layout);
+        // SAFETY: data points to one live element per caller contract.
+        let env = unsafe {
+            crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_send_layout")
+        };
+        core.blocking_send(env);
+        return;
+    }
+    // Plain / String / Bytes envelopes own no heap; any sink kind accepts them.
+    // SAFETY: data points to one live element per caller contract.
+    let env = unsafe {
+        crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_send_layout")
+    };
+    // SAFETY: sink is valid per caller contract. write_item delivers empty
+    // envelopes too (an empty string element is a valid item).
+    unsafe { (*sink).write_item(&env) };
+}
+
+/// Block until an element is available and decode it into `out`.
+///
+/// Returns 1 when an element was written to `out` (ownership transfers to the
+/// caller), or 0 at EOF, letting codegen wrap the result as `Option<T>`.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream handle. `out` must point to one writable
+/// element slot of the witness's type. `layout` must be a valid witness.
+/// No other thread may concurrently read from `stream` during this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_layout(
+    stream: *mut HewStream,
+    out: *mut c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    cabi_guard!(stream.is_null() || out.is_null(), 0);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_next_layout") };
+    // SAFETY: stream is valid and exclusively borrowed per caller contract.
+    let item = unsafe { (*stream).inner.next() };
+    // SAFETY: out points to one writable element slot per caller contract.
+    unsafe {
+        crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_next_layout")
+    }
+}
+
+/// Pop one element on the consumer resume / immediate bind edge. Channel
+/// streams pop from the shared queue (draining a parked producer); non-channel
+/// backings fall back to the blocking read (status quo for platform streams).
+///
+/// Returns 1 when an element was written to `out`, or 0 when no item is
+/// available (EOF, or a spurious wake on an empty-and-open pipe).
+///
+/// # Safety
+///
+/// Same contract as [`hew_stream_next_layout`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_pop_layout(
+    stream: *mut HewStream,
+    out: *mut c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    cabi_guard!(stream.is_null() || out.is_null(), 0);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_pop_layout") };
+    // SAFETY: stream is valid per caller contract.
+    let channel = unsafe { (*stream).channel.as_ref() };
+    let item = match channel {
+        Some(core) => core.pop(),
+        // SAFETY: stream is valid; the blocking read is the status-quo path
+        // for non-channel backings (file / TCP / adapters).
+        None => unsafe { (*stream).inner.next() },
+    };
+    // SAFETY: out points to one writable element slot per caller contract.
+    unsafe {
+        crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_pop_layout")
+    }
+}
+
+/// Try to receive an element without blocking (channel-backed streams; other
+/// backings keep their documented blocking fallback, matching
+/// [`hew_stream_try_next`]).
+///
+/// Returns 1 when an element was written to `out`, or 0 when the stream is
+/// empty or at EOF.
+///
+/// # Safety
+///
+/// Same contract as [`hew_stream_next_layout`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_try_next_layout(
+    stream: *mut HewStream,
+    out: *mut c_void,
+    layout: *const crate::vec::HewVecElemLayout,
+) -> i32 {
+    cabi_guard!(stream.is_null() || out.is_null(), 0);
+    // SAFETY: layout validity is the caller's contract.
+    let layout =
+        unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_try_next_layout") };
+    // SAFETY: stream is valid and exclusively borrowed per caller contract.
+    let item = unsafe { (*stream).inner.try_next() };
+    // SAFETY: out points to one writable element slot per caller contract.
+    unsafe {
+        crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_try_next_layout")
+    }
+}
+
+/// Detach an abandoned suspending consumer (the codegen abandon edge). Releases
+/// the channel core's in-flight ref on `slot` if it is still registered.
+///
+/// # Safety
+///
+/// `stream` is a valid stream handle; `slot` is the consumer's read slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_detach_await(
+    stream: *mut HewStream,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    if stream.is_null() {
+        return;
+    }
+    // SAFETY: stream is valid per caller contract.
+    if let Some(core) = unsafe { (*stream).channel.as_ref() } {
+        // SAFETY: the core is alive (stream holds an Arc clone); slot is the
+        // consumer's read slot.
+        unsafe { core.detach_consumer(slot) };
+    }
+}
+
+/// Register a suspending producer for `await sink.send(x)`.
+///
+/// Returns [`crate::channel_core::STREAM_AWAIT_READY`] when the write completed
+/// immediately (the ring had space, the consumer is gone, or this is a
+/// non-channel sink), or [`crate::channel_core::STREAM_AWAIT_SUSPEND`] after
+/// parking the producer (the ring was full; its item is owned by the runtime
+/// across the suspend and enqueued by the consumer's drain).
+///
+/// # Safety
+///
+/// `sink` is a live sink handle; `actor` is the sending actor; `slot` is a live
+/// read slot; `data` points to the caller's `BytesTriple` (borrowed — the
+/// runtime copies it).
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_await_send(
+    sink: *mut HewSink,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+    data: *const crate::bytes::BytesTriple,
+) -> i32 {
+    if sink.is_null() {
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        // Non-channel sink: blocking write (status quo).
+        // SAFETY: sink + data validity is the caller's contract.
+        unsafe { hew_sink_write_bytes(sink, data) };
+        return crate::channel_core::STREAM_AWAIT_READY;
+    }
+    // Copy the item out of the borrowed triple (the runtime owns it across the
+    // suspend / hand-off).
+    let item: Vec<u8> = if data.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: data points to the caller's valid BytesTriple slot.
+        let d = unsafe { &*data };
+        if d.ptr.is_null() || d.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: `d.ptr + d.offset` is valid for `d.len` bytes per the
+            // BytesTriple contract; read-only borrow.
+            unsafe {
+                std::slice::from_raw_parts(d.ptr.add(d.offset as usize), d.len as usize).to_vec()
+            }
+        }
+    };
+    // SAFETY: core_raw borrows the live `Arc<ChannelCore>` owned by the sink
+    // backing (alive for the duration of this call); actor / slot validity is
+    // the caller's contract.
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    // SAFETY: see above.
+    unsafe { core.await_send(actor, slot, item) }
+}
+
+/// Detach an abandoned suspending producer (the codegen abandon edge). Releases
+/// the channel core's in-flight ref on `slot` and drops the parked item.
+///
+/// # Safety
+///
+/// `sink` is a valid sink handle; `slot` is the producer's read slot.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_detach_await(
+    sink: *mut HewSink,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    if sink.is_null() {
+        return;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        return;
+    }
+    // SAFETY: core_raw borrows the sink's live `Arc<ChannelCore>`.
+    let core = unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() };
+    // SAFETY: slot is the producer's read slot.
+    unsafe { core.detach_producer(slot) };
+}
+
+// ── Non-blocking stream read / sink write ─────────────────────────────────────
+
+/// Non-blocking variant of [`hew_sink_write_string`].
+///
+/// Writes a null-terminated C string to the sink if the backing buffer has
+/// capacity. Returns `0` (`SendError::Ok`) on success or `2`
+/// (`SendError::Full`) if the buffer is at capacity and the write would have
+/// blocked. For non-channel sinks the backing falls back to a blocking write
+/// and always returns `0`.
+///
+/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
+/// `hew_sink_*` constructor and must not have been freed.
+/// `data` must be a non-null pointer to a valid NUL-terminated C string.
+///
+/// ## Aliasing
+/// No other thread may concurrently write to `sink` during this call.
+///
+/// ## Lifetime
+/// `data` must remain valid for the duration of this call; the runtime
+/// copies the bytes before returning.
+///
+/// ## Return value
+/// `0` = item accepted; `1` = null argument (closed); `2` = channel full.
+///
+/// ## Caller responsibility
+/// The caller retains ownership of `data`; the runtime copies the bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_try_write_string(sink: *mut HewSink, data: *const c_char) -> i32 {
+    // SendError::Closed = 1
+    if sink.is_null() || data.is_null() {
+        return 1;
+    }
+    // SAFETY:
+    //   Provenance: `data` is a NUL-terminated C string per caller contract; non-null by guard.
+    //   Type tag: c_char → CStr → &[u8]; the CStr scan validates NUL-termination.
+    //   Lifetime owner: caller retains `data`; we only borrow for this call (no take/free).
+    //   Aliasing/concurrency: read-only borrow; safe under caller's "no concurrent modification" contract.
+    //   Bounds: CStr::from_ptr walks until NUL; caller-promised termination keeps it bounded.
+    //   Failure mode: violation (missing NUL or invalid ptr) is UB — documented at fn level.
+    let s = unsafe { CStr::from_ptr(data) };
+    let bytes = s.to_bytes();
+    // Channel-backed sinks use the core's genuine non-blocking `try_send`.
+    // SAFETY: sink is valid per the guard above.
+    if let Some(core) = unsafe { sink_channel_core(sink) } {
+        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+    }
+    // SAFETY:
+    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
+    //   Type tag: cast to `*mut HewSink` matches declared type.
+    //   Lifetime owner: caller retains; we do not free.
+    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
+    //   Bounds: not a slice access — method dispatch with the bytes slice we just borrowed.
+    //   Failure mode: violations are UAF / data race; documented at fn level. Non-channel sinks fall back to blocking write per `SinkOps::try_write_item` default.
+    let accepted = unsafe { (*sink).try_write_item(bytes) };
+    if accepted {
+        0
+    } else {
+        2
+    } // 0 = Ok, 2 = Full
+}
+
+/// If `sink` is a channel-backed (NEW-7) sink, return a borrow of its core.
+///
+/// # Safety
+///
+/// `sink` must be a valid `HewSink` pointer; the returned borrow is valid for
+/// as long as the sink is alive (it owns an `Arc<ChannelCore>` clone).
+unsafe fn sink_channel_core<'a>(
+    sink: *mut HewSink,
+) -> Option<&'a crate::channel_core::ChannelCore> {
+    if sink.is_null() {
+        return None;
+    }
+    // SAFETY: sink is valid per caller contract.
+    let core_raw = unsafe { (*sink).channel_core_ptr() };
+    if core_raw.is_null() {
+        None
+    } else {
+        // SAFETY: core_raw borrows the sink's live Arc<ChannelCore>.
+        Some(unsafe { &*core_raw.cast::<crate::channel_core::ChannelCore>() })
+    }
+}
+
+/// Non-blocking variant of [`hew_sink_write_bytes`].
+///
+/// Writes a `bytes` value to the sink if the backing buffer has capacity.
+/// Returns `0` (`SendError::Ok`) on success or `2` (`SendError::Full`) if
+/// the buffer is at capacity. For non-channel sinks the backing falls back
+/// to a blocking write and always returns `0`.
+///
+/// Returns `1` (`SendError::Closed`) if `sink` or `data` is null.
+///
+/// Takes a POINTER to the caller's [`crate::bytes::BytesTriple`]; the active
+/// region is BORROWED for the duration of the call and the caller retains
+/// ownership (the Hew drop spine releases it via `hew_bytes_drop`). By-pointer
+/// (not by-value) for the same ABI reason as [`hew_sink_write_bytes`]
+/// (`is_bytes_by_pointer_consumer`).
+///
+/// # Safety
+///
+/// ## Pointer validity
+/// `sink` must be a non-null pointer obtained from a `hew_stream_*` or
+/// `hew_sink_*` constructor and must not have been freed.
+/// `data` must point to a valid `BytesTriple` (its ptr null with len 0, or ptr
+/// pointing to a `hew_bytes_*` allocation whose active region is in bounds).
+///
+/// ## Aliasing
+/// No other thread may concurrently write to `sink` during this call.
+///
+/// ## Lifetime
+/// `data`'s buffer must remain valid for the duration of this call; the
+/// runtime copies the bytes before returning.
+///
+/// ## Return value
+/// `0` = item accepted; `1` = null sink/data (closed); `2` = channel full.
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_try_write_bytes(
+    sink: *mut HewSink,
+    data: *const crate::bytes::BytesTriple,
+) -> i32 {
+    // SendError::Closed = 1
+    if sink.is_null() || data.is_null() {
+        return 1;
+    }
+    // SAFETY: `data` points to the caller's valid BytesTriple slot.
+    let data = unsafe { &*data };
+    // Borrow the active region (empty for a null/0 triple).
+    let bytes: &[u8] = if data.len == 0 || data.ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: `data.ptr + data.offset` is valid for `data.len` bytes per
+        // the BytesTriple contract; read-only borrow (no mutation, no free).
+        unsafe { std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize) }
+    };
+    // Channel-backed sinks use the core's genuine non-blocking `try_send`
+    // (the CallbackSink default would block).
+    // SAFETY: sink is valid per caller contract.
+    if let Some(core) = unsafe { sink_channel_core(sink) } {
+        return if core.try_send(bytes.to_vec()) { 0 } else { 2 };
+    }
+    // SAFETY:
+    //   Provenance: `sink` came from a `hew_*_sink_*` constructor; non-null by guard above.
+    //   Type tag: cast to `*mut HewSink` matches declared type.
+    //   Lifetime owner: caller retains; we do not free.
+    //   Aliasing/concurrency: caller contract bans concurrent writes; backing's try_write is internally synchronised.
+    //   Bounds: method dispatch with the bytes slice borrowed above.
+    //   Failure mode: violations are UAF / data race. Non-channel sinks fall back to blocking write.
+    let accepted = unsafe { (*sink).try_write_item(bytes) };
+    if accepted {
+        0
+    } else {
+        2
+    } // 0 = Ok, 2 = Full
 }
 
 #[cfg(test)]
@@ -1875,7 +2600,7 @@ mod tests {
             // SAFETY: ptr is valid for `size` bytes per hew_stream_next_sized contract.
             let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size).to_vec() };
             // SAFETY: ptr was malloc'd by hew_stream_next_sized.
-            unsafe { libc::free(ptr) };
+            unsafe { libc::free(ptr) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             items.push(bytes);
         }
         items
@@ -2108,45 +2833,6 @@ mod tests {
 
     // ── hew_stream_next ─────────────────────────────────────────────────
 
-    #[test]
-    fn stream_next_null_returns_null() {
-        // SAFETY: null is explicitly handled by cabi_guard.
-        let result = unsafe { hew_stream_next(ptr::null_mut()) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn stream_next_returns_nul_terminated_buffer() {
-        let data = b"test";
-        // SAFETY: data is valid; stream is created from it.
-        unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let buf = hew_stream_next(stream);
-            assert!(!buf.is_null());
-            // The buffer should be NUL-terminated for C string compatibility.
-            let cstr = CStr::from_ptr(buf.cast::<c_char>());
-            assert_eq!(cstr.to_bytes(), b"test");
-            libc::free(buf);
-            hew_stream_close(stream);
-        }
-    }
-
-    #[test]
-    fn stream_next_eof_returns_null() {
-        let data = b"one";
-        // SAFETY: data is valid; stream is created from it.
-        unsafe {
-            let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let first = hew_stream_next(stream);
-            assert!(!first.is_null());
-            libc::free(first);
-            // Stream is now exhausted.
-            let second = hew_stream_next(stream);
-            assert!(second.is_null(), "should return null on EOF");
-            hew_stream_close(stream);
-        }
-    }
-
     // ── hew_stream_next_sized ───────────────────────────────────────────
 
     #[test]
@@ -2167,7 +2853,7 @@ mod tests {
             let buf = hew_stream_next_sized(stream, &raw mut size);
             assert!(!buf.is_null());
             assert_eq!(size, 7);
-            libc::free(buf);
+            libc::free(buf); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test stream byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2228,7 +2914,7 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer is large enough.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 64;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 5);
@@ -2236,7 +2922,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"hello");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2248,7 +2934,7 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer will be grown.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = libc::malloc(2).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(2).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 2;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, i64::try_from(data.len()).unwrap());
@@ -2256,7 +2942,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, data);
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2277,7 +2963,7 @@ mod tests {
             let n = usize::try_from(ret).unwrap();
             let slice = std::slice::from_raw_parts(buf, n);
             assert_eq!(slice, b"from_null");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2297,7 +2983,7 @@ mod tests {
             assert!(!buf.is_null(), "must allocate when *buf is null");
             let slice = std::slice::from_raw_parts(buf, usize::try_from(ret).unwrap());
             assert_eq!(slice, b"safe");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2307,11 +2993,11 @@ mod tests {
         // SAFETY: empty stream hits EOF immediately.
         unsafe {
             let stream = hew_stream_from_bytes(ptr::null(), 0, 0);
-            let mut buf: *mut u8 = libc::malloc(16).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(16).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 16;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, -1, "EOF must return -1");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2323,14 +3009,14 @@ mod tests {
         // SAFETY: stream + buffer are valid; buffer is exactly the right size.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = libc::malloc(4).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(4).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 4;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 4);
             assert_eq!(cap, 4, "capacity unchanged on exact fit");
             let slice = std::slice::from_raw_parts(buf, 4);
             assert_eq!(slice, b"ABCD");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2351,7 +3037,7 @@ mod tests {
             hew_sink_write(sink, b_data.as_ptr().cast(), b_data.len());
             hew_sink_close(sink);
 
-            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(64).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 64;
             let original_buf = buf;
 
@@ -2377,7 +3063,7 @@ mod tests {
             let r3 = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(r3, -1, "EOF after all items consumed");
 
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2389,14 +3075,14 @@ mod tests {
         // SAFETY: stream + buffer are valid.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            let mut buf: *mut u8 = libc::malloc(1).cast::<u8>();
+            let mut buf: *mut u8 = libc::malloc(1).cast::<u8>(); // ALLOCATOR-PAIRING: libc
             let mut cap: usize = 1;
             let ret = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(ret, 1);
             assert_eq!(*buf, b'X');
             let eof = hew_stream_next_view(stream, &raw mut buf, &raw mut cap);
             assert_eq!(eof, -1, "EOF after the single item");
-            libc::free(buf.cast());
+            libc::free(buf.cast()); // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (test next_view byte buffer)
             hew_stream_close(stream);
         }
     }
@@ -2496,7 +3182,7 @@ mod tests {
         let result = unsafe { hew_stream_from_file_read(path.as_ptr()) };
         assert!(result.is_null());
         // An error should have been recorded.
-        let err = hew_cabi::sink::take_last_error();
+        let err = crate::stream_error::take_last_error();
         assert!(err.is_some(), "missing file should set an error");
     }
 
@@ -2911,8 +3597,8 @@ mod tests {
             assert!(!cstr_ptr.is_null());
             let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
             assert_eq!(result, "hello world");
-            libc::free(cstr_ptr.cast());
-            // stream is consumed by collect_string; do not close.
+            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
+                                                 // stream is consumed by collect_string; do not close.
         }
     }
 
@@ -2932,7 +3618,7 @@ mod tests {
             assert!(!cstr_ptr.is_null());
             let result = CStr::from_ptr(cstr_ptr).to_str().unwrap();
             assert!(result.is_empty());
-            libc::free(cstr_ptr.cast());
+            crate::cabi::free_cstring(cstr_ptr); // CSTRING-FREE: str-open (test frees hew_stream_collect_string output)
         }
     }
 
@@ -3031,9 +3717,11 @@ mod tests {
         // SAFETY: data is valid; stream is created from it.
         unsafe {
             let stream = hew_stream_from_bytes(data.as_ptr(), data.len(), 0);
-            // Drain the stream.
-            let buf = hew_stream_next(stream);
-            libc::free(buf);
+            // Drain the stream via the sized accessor (raw libc buffer).
+            let mut size: usize = 0;
+            let buf = hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size));
+            assert!(!buf.is_null());
+            libc::free(buf); // ALLOCATOR-PAIRING: libc
             assert_eq!(hew_stream_is_closed(stream), 1);
             hew_stream_close(stream);
         }
@@ -3283,7 +3971,7 @@ mod tests {
                 .store(first as usize, TestOrdering::Release);
             // The callback owns the buffer.
             // SAFETY: item was malloc'd by hew_stream_poll's park thread.
-            unsafe { libc::free(item) };
+            unsafe { libc::free(item) }; // ALLOCATOR-PAIRING: libc  // CSTRING-FREE: libc-bytes (stream poll item byte buffer)
         }
         sink.fired.fetch_add(1, TestOrdering::Release);
         // Signal the waiter — set ready under the lock, then notify.
@@ -3413,7 +4101,7 @@ mod tests {
             // sink_ptr was passed into hew_sink_write; the channel pair's
             // Drop took care of the surviving side that wasn't extracted —
             // here we extracted both, so free the sink directly.
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -3433,7 +4121,7 @@ mod tests {
             let sink_addr = sink_ptr as usize;
             let writer = std::thread::spawn(move || {
                 std::thread::sleep(TestDuration::from_millis(20));
-                drop(Box::from_raw(sink_addr as *mut HewSink));
+                drop(Box::from_raw(sink_addr as *mut HewSink)); // ALLOCATOR-PAIRING: GlobalAlloc
             });
 
             let userdata = TestArc::as_ptr(&sink) as *mut c_void;
@@ -3506,13 +4194,15 @@ mod tests {
             // directly via the consuming variant.
             let payload2 = [0xBB_u8];
             hew_sink_write(sink_ptr, payload2.as_ptr().cast::<c_void>(), 1);
-            let next = hew_stream_next(stream_ptr);
+            let mut size: usize = 0;
+            let next = hew_stream_next_sized(stream_ptr, std::ptr::addr_of_mut!(size));
             assert!(!next.is_null(), "stream must remain readable after cancel");
-            assert_eq!(*(next as *const u8), 0xBB);
-            libc::free(next);
+            assert_eq!(size, 1);
+            assert_eq!(*next.cast::<u8>(), 0xBB);
+            libc::free(next); // ALLOCATOR-PAIRING: libc
 
             hew_stream_close(stream_ptr);
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -3551,7 +4241,7 @@ mod tests {
             assert_eq!((*stream_ptr).pending_read.load(Ordering::Acquire), 0);
 
             hew_stream_close(stream_ptr);
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -3580,7 +4270,7 @@ mod tests {
 
             // Now drop the sink — EOF wakes the park thread and the
             // callback fires normally.
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
             assert!(wait_for_callback(&sink, 500));
             assert_eq!(sink.fired.load(TestOrdering::Acquire), 1);
             assert_eq!(sink.last_was_null.load(TestOrdering::Acquire), 1);
@@ -3621,7 +4311,7 @@ mod tests {
             hew_stream_cancel_pending_read(stream_ptr, 0);
 
             hew_stream_close(stream_ptr);
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -3665,7 +4355,7 @@ mod tests {
             );
 
             hew_stream_close(stream_ptr);
-            drop(Box::from_raw(sink_ptr));
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -3675,14 +4365,14 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn stream_poll_double_register_aborts() {
-        // Spawn a child that runs the ignored helper below.
+        // Spawn a child that runs the helper below via HEW_DEATH_TEST gate.
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "stream::tests::_helper_stream_poll_double_register",
-                "--include-ignored",
             ])
             .env("RUST_TEST_THREADS", "1")
+            .env("HEW_DEATH_TEST", "_helper_stream_poll_double_register")
             .output()
             .unwrap();
         assert!(
@@ -3693,8 +4383,12 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    #[ignore = "subprocess helper for stream_poll_double_register_aborts — calls process::abort"]
     fn _helper_stream_poll_double_register() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "_helper_stream_poll_double_register")
+        {
+            return;
+        }
         // SAFETY: standard test ownership. The second poll must abort.
         unsafe {
             let pair = hew_stream_channel(4);
@@ -3707,5 +4401,485 @@ mod tests {
             // This second call must abort the process.
             hew_stream_poll(stream_ptr, record_callback, userdata);
         }
+    }
+
+    // ── TcpStreamBacking unit tests ──────────────────────────────────────
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_stream_backing_reads_bytes_until_peer_closes() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+
+        // Bind on OS-assigned port to avoid conflicts in parallel test runs.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let payload = b"hello from peer";
+
+        // Peer thread: write payload then close.
+        let t = std::thread::spawn(move || {
+            let mut peer = TcpStream::connect(addr).unwrap();
+            peer.write_all(payload).unwrap();
+            // peer drops here, closing the connection (EOF to the reader).
+        });
+
+        let (accepted, _) = listener.accept().unwrap();
+        let mut backing = TcpStreamBacking { stream: accepted };
+
+        // Read all items until EOF.
+        let mut collected = Vec::new();
+        while let Some(chunk) = backing.next() {
+            collected.extend_from_slice(&chunk);
+        }
+
+        t.join().unwrap();
+
+        assert_eq!(collected, payload);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tcp_stream_backing_records_error_on_reset() {
+        use std::net::{TcpListener, TcpStream};
+        #[cfg(unix)]
+        use std::os::unix::io::AsRawFd;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Peer thread: connect, set SO_LINGER=0, then drop to send RST.
+        let t = std::thread::spawn(move || {
+            let peer = TcpStream::connect(addr).unwrap();
+            // Force RST on close by setting SO_LINGER with l_onoff=1, l_linger=0.
+            #[cfg(unix)]
+            // SAFETY: setsockopt is called with a valid fd and a stack-allocated
+            // linger struct whose address and size are correct for SO_LINGER.
+            unsafe {
+                let fd = peer.as_raw_fd();
+                let linger = libc::linger {
+                    l_onoff: 1,
+                    l_linger: 0,
+                };
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    std::ptr::addr_of!(linger).cast::<libc::c_void>(),
+                    // socklen_t is u32; sizeof(linger) is always <= 8 bytes, safe to cast.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "sizeof(linger) fits in u32"
+                    )]
+                    {
+                        std::mem::size_of::<libc::linger>() as libc::socklen_t
+                    },
+                );
+            }
+            drop(peer);
+        });
+
+        // On FreeBSD (and other BSDs), `accept()` may return ECONNABORTED
+        // (os error 53) when the peer's RST arrives before the accept
+        // completes. This is POSIX-permitted BSD behaviour; Linux silently
+        // drops the aborted connection and waits for the next one.  Retry
+        // until we get a connection or a genuinely unexpected error.
+        let accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => {
+                    // Peer RST arrived before accept completed; retry.
+                }
+                Err(e) => panic!("listener.accept() failed unexpectedly: {e}"),
+            }
+        };
+        t.join().unwrap();
+
+        // Give the RST time to arrive.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let mut backing = TcpStreamBacking { stream: accepted };
+        // RST produces either ConnectionReset or Ok(0) EOF — either way None.
+        let result = backing.next();
+        assert!(
+            result.is_none(),
+            "backing.next() must return None on RST/EOF, got {result:?}"
+        );
+    }
+
+    // ── hew_tcp_stream_from_conn factory tests ───────────────────────────
+
+    /// Register a real TCP connection via the runtime's own connect/accept
+    /// path so `TCP_API_STATE` holds the handle, then call the factory.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn make_loopback_conn() -> (c_int, std::net::TcpStream) {
+        use std::net::TcpListener;
+
+        // Bind a listener on an OS-assigned port.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
+
+        // hew_tcp_connect registers the client-side conn in TCP_API_STATE.
+        // SAFETY: addr is a valid NUL-terminated C string.
+        let conn_handle = unsafe { crate::transport::hew_tcp_connect(addr.as_ptr()) };
+        assert!(conn_handle > 0, "hew_tcp_connect failed");
+
+        let (peer, _) = listener.accept().unwrap();
+        (conn_handle, peer)
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_returns_pair_for_valid_conn() {
+        let (conn_handle, _peer) = make_loopback_conn();
+
+        // SAFETY: conn_handle is a valid registered connection.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(
+            !pair.is_null(),
+            "factory must return non-null for valid conn"
+        );
+
+        // Both halves must be extractable.
+        // SAFETY: pair is valid.
+        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        assert!(!stream_ptr.is_null());
+
+        // SAFETY: pair still valid (stream extraction nulls the stream slot, sink is still there).
+        let sink_ptr = unsafe { hew_stream_pair_sink_bytes(pair) };
+        assert!(!sink_ptr.is_null());
+
+        // SAFETY: cleanup.
+        unsafe {
+            hew_stream_close(stream_ptr);
+            drop(Box::from_raw(sink_ptr)); // ALLOCATOR-PAIRING: GlobalAlloc
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_null_for_invalid_conn() {
+        use hew_cabi::sink::hew_stream_last_errno;
+
+        // Clear any prior errno.
+        let _ = hew_stream_last_errno();
+
+        // SAFETY: -1 is never a valid registered handle.
+        let pair = unsafe { hew_tcp_stream_from_conn(-1) };
+        assert!(
+            pair.is_null(),
+            "factory must return null for invalid handle"
+        );
+        assert_eq!(
+            hew_stream_last_errno(),
+            9, // EBADF
+            "factory must set EBADF errno for invalid handle"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn factory_consumes_original_conn_handle() {
+        let (conn_handle, _peer) = make_loopback_conn();
+
+        // SAFETY: conn_handle is valid.
+        let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(!pair.is_null());
+
+        // After the factory consumes the handle, a second call with the same
+        // handle must return null (the entry is gone from TCP_API_STATE).
+        // SAFETY: conn_handle is no longer valid (consumed above).
+        let pair2 = unsafe { hew_tcp_stream_from_conn(conn_handle) };
+        assert!(
+            pair2.is_null(),
+            "factory must return null when conn handle is already consumed"
+        );
+
+        // SAFETY: cleanup pair1.
+        unsafe { hew_stream_pair_free(pair) };
+    }
+
+    // ── String recv (hew_stream_next / hew_stream_pop_string) ──────────────
+
+    // ── Layout-witness element path (generic Stream<T> width) ───────────────
+
+    use crate::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+
+    fn plain_elem_layout(size: usize, align: usize) -> HewVecElemLayout {
+        HewVecElemLayout {
+            size,
+            align,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        }
+    }
+
+    fn string_elem_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<*const c_char>(),
+            align: align_of::<*const c_char>(),
+            ownership_kind: HewTypeOwnershipKind::String,
+            clone_fn: None,
+            drop_fn: None,
+        }
+    }
+
+    fn bytes_elem_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<crate::bytes::BytesTriple>(),
+            align: align_of::<crate::bytes::BytesTriple>(),
+            ownership_kind: HewTypeOwnershipKind::Bytes,
+            clone_fn: None,
+            drop_fn: None,
+        }
+    }
+
+    /// String elements ride the witness path content-encoded: the sink reads
+    /// the caller's string slot, the stream materialises a fresh header-aware
+    /// cstring. An empty string survives as `Some("")` (rc 1).
+    #[test]
+    fn layout_stream_string_roundtrip_preserves_empty() {
+        // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let layout = string_elem_layout();
+            let alpha: *const c_char = c"alpha".as_ptr();
+            hew_stream_send_layout(sink, std::ptr::addr_of!(alpha).cast(), &raw const layout);
+            let empty: *const c_char = c"".as_ptr();
+            hew_stream_send_layout(sink, std::ptr::addr_of!(empty).cast(), &raw const layout);
+            hew_sink_close(sink);
+
+            let mut out: *mut c_char = ptr::null_mut();
+            let rc = hew_stream_next_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1);
+            assert_eq!(CStr::from_ptr(out).to_bytes(), b"alpha");
+            crate::cabi::free_cstring(out);
+
+            let rc = hew_stream_next_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1, "empty string element is Some(\"\"), not None");
+            assert_eq!(CStr::from_ptr(out).to_bytes(), b"");
+            crate::cabi::free_cstring(out);
+
+            let rc = hew_stream_next_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 0, "EOF binds no value");
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    /// Bytes elements: the envelope is the content bytes; decode materialises
+    /// an owned `BytesTriple`. A present zero-length item keeps the documented
+    /// EOF narrowing (rc 0), matching `hew_stream_next_bytes`.
+    #[test]
+    fn layout_stream_bytes_roundtrip_with_empty_narrowing() {
+        // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let layout = bytes_elem_layout();
+            let payload = b"\x01\x02\x03";
+            let value = crate::bytes::hew_bytes_from_static(payload.as_ptr(), 3);
+            hew_stream_send_layout(sink, std::ptr::addr_of!(value).cast(), &raw const layout);
+            // The caller keeps its bytes value; release it independently.
+            crate::bytes::hew_bytes_drop(value.ptr);
+
+            let empty = crate::bytes::BytesTriple {
+                ptr: ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            hew_stream_send_layout(sink, std::ptr::addr_of!(empty).cast(), &raw const layout);
+            hew_sink_close(sink);
+
+            let mut out = crate::bytes::BytesTriple {
+                ptr: ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+            let rc = hew_stream_pop_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1);
+            assert_eq!(out.len, 3);
+            let got = std::slice::from_raw_parts(out.ptr.add(out.offset as usize), 3);
+            assert_eq!(got, payload);
+            crate::bytes::hew_bytes_drop(out.ptr);
+
+            let rc = hew_stream_pop_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(
+                rc, 0,
+                "present zero-length bytes item keeps the EOF narrowing"
+            );
+
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    /// Plain elements (f64 here) ride the witness path through a stream pipe;
+    /// `try_next_layout` binds nothing on an empty-but-open pipe.
+    #[test]
+    fn layout_stream_plain_roundtrip_and_try_next_empty() {
+        // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let layout = plain_elem_layout(8, 8);
+            let mut out: f64 = 0.0;
+            let rc = hew_stream_try_next_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 0, "empty pipe binds no value without blocking");
+
+            let value: f64 = 2.5;
+            hew_stream_send_layout(sink, std::ptr::addr_of!(value).cast(), &raw const layout);
+            let rc = hew_stream_try_next_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1);
+            assert!((out - 2.5).abs() < f64::EPSILON);
+
+            hew_sink_close(sink);
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+    }
+
+    // Heap-owning element thunks for the stream-level round trip.
+    static ST_OWNED_LOCK: Mutex<()> = Mutex::new(());
+    static ST_OWNED_CLONES: AtomicUsize = AtomicUsize::new(0);
+    static ST_OWNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[repr(C)]
+    struct StOwnedElem {
+        tag: u64,
+        heap: *mut u8,
+    }
+
+    unsafe extern "C" fn st_owned_clone(src: *const c_void, dst: *mut c_void) -> i32 {
+        // SAFETY: thunk contract — src is a live element.
+        let s = unsafe { &*src.cast::<StOwnedElem>() };
+        // SAFETY: thunk contract — dst holds a writable memcpy of src.
+        let d = unsafe { &mut *dst.cast::<StOwnedElem>() };
+        // SAFETY: plain allocation; freed by st_owned_drop.
+        let dup = unsafe { libc::malloc(8).cast::<u8>() };
+        if !s.heap.is_null() {
+            // SAFETY: both buffers are 8 bytes.
+            unsafe { std::ptr::copy_nonoverlapping(s.heap, dup, 8) };
+        }
+        d.heap = dup;
+        ST_OWNED_CLONES.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    unsafe extern "C" fn st_owned_drop(slot: *mut c_void) {
+        // SAFETY: thunk contract — slot is a live element being released.
+        let e = unsafe { &mut *slot.cast::<StOwnedElem>() };
+        if !e.heap.is_null() {
+            // SAFETY: heap was malloc'd by st_owned_clone / the test body.
+            unsafe { libc::free(e.heap.cast()) };
+            e.heap = ptr::null_mut();
+        }
+        ST_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn st_owned_layout() -> HewVecElemLayout {
+        HewVecElemLayout {
+            size: size_of::<StOwnedElem>(),
+            align: align_of::<StOwnedElem>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: Some(st_owned_clone),
+            drop_fn: Some(st_owned_drop),
+        }
+    }
+
+    /// Heap-owning element through a typed stream pipe: clone on send, move on
+    /// recv, and stream close with an unconsumed item releases it exactly once.
+    #[test]
+    fn layout_stream_owned_roundtrip_and_close_releases_queued() {
+        let _g = ST_OWNED_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let clones_before = ST_OWNED_CLONES.load(Ordering::SeqCst);
+        let drops_before = ST_OWNED_DROPS.load(Ordering::SeqCst);
+        // SAFETY: hew_stream_channel returns a valid pair; slots are locals.
+        unsafe {
+            let pair = hew_stream_channel(4);
+            let sink = hew_stream_pair_sink(pair);
+            let stream = hew_stream_pair_stream(pair);
+
+            let layout = st_owned_layout();
+            for tag in [21u64, 22u64] {
+                let heap = libc::malloc(8).cast::<u8>();
+                let value = StOwnedElem { tag, heap };
+                hew_stream_send_layout(sink, std::ptr::addr_of!(value).cast(), &raw const layout);
+                libc::free(value.heap.cast());
+            }
+            assert_eq!(ST_OWNED_CLONES.load(Ordering::SeqCst) - clones_before, 2);
+
+            let mut out = StOwnedElem {
+                tag: 0,
+                heap: ptr::null_mut(),
+            };
+            let rc = hew_stream_pop_layout(
+                stream,
+                std::ptr::addr_of_mut!(out).cast(),
+                &raw const layout,
+            );
+            assert_eq!(rc, 1);
+            assert_eq!(out.tag, 21);
+            assert!(!out.heap.is_null());
+            assert_eq!(
+                ST_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+                0,
+                "pop transfers ownership — the queue must not drop"
+            );
+            // The consumer owns the element; release it exactly once.
+            st_owned_drop(std::ptr::addr_of_mut!(out).cast());
+
+            // One element (tag 22) is still queued: tearing the pipe down must
+            // release it exactly once via the stamped witness.
+            hew_sink_close(sink);
+            hew_stream_close(stream);
+            hew_stream_pair_free(pair);
+        }
+        assert_eq!(
+            ST_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "consumed element dropped by the consumer; queued element by teardown"
+        );
     }
 }

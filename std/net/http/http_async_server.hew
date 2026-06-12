@@ -1,0 +1,507 @@
+//! Async HTTP/1.1 server codec — idiomatic Hew over a suspending listener+conn.
+//!
+//! The `await`-suspended sibling of the blocking `std::net::http` server
+//! (which is backed by a native engine and cannot suspend an actor). The codec
+//! is pure Hew layered on NEW-2's `await listener.accept()` carrier and NEW-1's
+//! `await conn.read()`: an acceptor handler creates a listener with
+//! `net.listen`, **`await`s a connection**, drives an **`await conn.read()`
+//! loop** until the request is fully buffered ([`request_complete`]), parses it
+//! ([`parse_request`]), and replies by writing the bytes from [`response_text`]
+//! / [`response_json`] / [`build_response`] over the connection.
+//!
+//! Scope (v0.5.0): HTTP/1.1 only, fully-buffered request/response bodies, one
+//! connection handled per accept (the OTP acceptor-per-conn shape). The
+//! `Listener`/`Connection` are handler LOCALs, never actor state (the
+//! supervisor-restart clone gate rejects opaque handles in state). Streaming
+//! bodies are NEW-7; HTTPS is BUG-NET-3.
+//!
+//! # Example (the await-accept + await-read request loop, inline in a handler)
+//!
+//! ```
+//! import std::net;
+//! import std::net::http::http_async_server;
+//! import std::string;
+//!
+//! actor Server {
+//!     let addr: string;   // "127.0.0.1:8080"
+//!     receive fn serve(unused: i64) {
+//!         let listener = net.listen(addr);
+//!         let conn = await listener.accept();         // suspends on readiness
+//!         var raw = "";
+//!         var reads = 0;
+//!         var done = false;
+//!         while !done {
+//!             let chunk = await conn.read_string();    // suspends the worker
+//!             reads = reads + 1;
+//!             if string.is_empty(chunk) {
+//!                 done = true;
+//!             } else {
+//!                 raw = raw + chunk;
+//!                 if http_async_server.over_limit(raw) {       // F2: fail closed
+//!                     done = true;
+//!                 } else if http_async_server.request_complete(raw) {
+//!                     done = true;
+//!                 }
+//!             }
+//!             if reads > http_async_server.MAX_READS {         // F2: read ceiling
+//!                 done = true;
+//!             }
+//!         }
+//!         let req = http_async_server.parse_request(raw);
+//!         var reply = http_async_server.response_text(req.reject_status(), "rejected");
+//!         if req.is_valid() {                                  // F2/F3: fail closed
+//!             reply = match req.path() {
+//!                 "/hello" => http_async_server.response_text(200, "hi from hew"),
+//!                 _        => http_async_server.response_text(404, "nope"),
+//!             };
+//!         }
+//!         conn.write_string(reply);
+//!         let _ = conn.close();
+//!         let _ = listener.close();
+//!     }
+//! }
+//! ```
+
+import std::string;
+
+// ── Hardening limits (fail-closed DoS / injection bounds) ─────────────
+/// Maximum bytes accepted in the request head (request line + headers). A head
+/// larger than this fails closed with `413` rather than buffering unbounded.
+pub const MAX_HEADER_BYTES: i64 = 65536;
+
+/// Maximum bytes accepted in the request body — also the `Content-Length`
+/// ceiling. A declared or buffered body larger than this fails closed with `413`.
+pub const MAX_BODY_BYTES: i64 = 8388608;
+
+/// Maximum total request bytes buffered before the read loop fails closed
+/// (`MAX_HEADER_BYTES + MAX_BODY_BYTES`). The single overall cap that bounds the
+/// accumulator regardless of framing.
+pub const MAX_REQUEST_BYTES: i64 = 8454144;
+
+/// Maximum number of read iterations a request loop will accept before failing
+/// closed. Bounds an endless-trickle peer that never satisfies a framing rule.
+pub const MAX_READS: i64 = 4096;
+
+/// A fully-buffered HTTP/1.1 request parsed from the bytes read off an accepted
+/// connection. `verb` is the method (`GET`/`POST`/…), `target` the request path,
+/// `header_section` the raw header block (CRLF-separated lines after the request
+/// line), and `body_text` the request body. `reject_code` is `0` for a
+/// well-formed request, or the HTTP status the codec failed closed with
+/// (`400` malformed framing, `413` over a size bound).
+pub type AsyncRequest {
+    verb: string;
+    target: string;
+    header_section: string;
+    body_text: string;
+    reject_code: i64;
+}
+
+/// Methods on [`AsyncRequest`] — the request-side accessor surface.
+trait AsyncRequestMethods {
+    /// The HTTP method (e.g. `"GET"`, `"POST"`). Empty on a malformed request.
+    fn method(self) -> string;
+
+    /// The request path (e.g. `"/api/users"`). Empty on a malformed request.
+    fn path(self) -> string;
+
+    /// Look up a request header by name (case-insensitive). Empty if absent.
+    fn header(self, name: string) -> string;
+
+    /// The request body as a string.
+    fn body(self) -> string;
+
+    /// The fail-closed reject status (`0` when the request is well-formed, else
+    /// the HTTP status to reply with: `400` malformed framing, `413` too large).
+    fn reject_status(self) -> i64;
+
+    /// Whether the request passed all framing + size validation.
+    fn is_valid(self) -> bool;
+}
+
+impl AsyncRequestMethods for AsyncRequest {
+    fn method(req: AsyncRequest) -> string {
+        req.verb
+    }
+    fn path(req: AsyncRequest) -> string {
+        req.target
+    }
+    fn header(req: AsyncRequest, name: string) -> string {
+        find_header(req.header_section, name)
+    }
+    fn body(req: AsyncRequest) -> string {
+        req.body_text
+    }
+    fn reject_status(req: AsyncRequest) -> i64 {
+        req.reject_code
+    }
+    fn is_valid(req: AsyncRequest) -> bool {
+        req.reject_code == 0
+    }
+}
+
+// ── Request framing + parsing ─────────────────────────────────────────
+/// Whether `raw` holds a complete HTTP/1.1 request: the header terminator
+/// (CRLF-CRLF) is present AND, when a `Content-Length` header is declared, the
+/// buffered body is at least that long. Drives the acceptor's read loop so it
+/// stops reading as soon as the request is fully buffered (rather than waiting
+/// for the peer to close).
+pub fn request_complete(raw: string) -> bool {
+    let sep = raw.find("\r\n\r\n");
+    if sep < 0 {
+        return false;
+    }
+    let head = raw.slice(0, sep);
+    let body_start = sep + 4;
+    let have_body = raw.len() - body_start;
+    let want_body = content_length_of(header_section_after_request_line(head));
+    have_body >= want_body
+}
+
+/// Whether `raw` has exceeded a size bound and the read loop must STOP and fail
+/// closed (F2). True when the buffered bytes exceed the total ceiling, the head
+/// exceeds the header ceiling (even before a terminator is seen), or the declared
+/// `Content-Length` exceeds the body ceiling. The acceptor's read loop checks
+/// this before [`request_complete`] so a malicious peer cannot OOM the worker by
+/// streaming an unbounded head/body or declaring an enormous `Content-Length`.
+pub fn over_limit(raw: string) -> bool {
+    if raw.len() > MAX_REQUEST_BYTES {
+        return true;
+    }
+    let sep = raw.find("\r\n\r\n");
+    if sep < 0 {
+        // No header terminator yet: bound the head we are willing to buffer.
+        return raw.len() > MAX_HEADER_BYTES;
+    }
+    let head = raw.slice(0, sep);
+    if head.len() > MAX_HEADER_BYTES {
+        return true;
+    }
+    let declared = content_length_of(header_section_after_request_line(head));
+    return declared > MAX_BODY_BYTES;
+}
+
+/// Parse the buffered bytes into an [`AsyncRequest`]. The request line is the
+/// first CRLF-terminated line (`GET /path HTTP/1.1`); the method and path are
+/// its first two space-separated tokens. The body is everything after the first
+/// CRLF-CRLF. The framing is validated and the request FAILS CLOSED — see
+/// [`AsyncRequest::reject_status`] — on a malformed request line, an unsupported
+/// `Transfer-Encoding`, a duplicate/conflicting/non-numeric `Content-Length`, or
+/// any size bound (F2/F3); the acceptor replies with that status and closes.
+pub fn parse_request(raw: string) -> AsyncRequest {
+    let sep = raw.find("\r\n\r\n");
+    let head = if sep < 0 {
+        raw
+    } else {
+        raw.slice(0, sep)
+    };
+    let body = if sep < 0 {
+        ""
+    } else {
+        raw.slice(sep + 4, raw.len())
+    };
+    let head_lines = string.split(head, "\r\n");
+    let request_line = if head_lines.len() > 0 {
+        head_lines.get(0)
+    } else {
+        ""
+    };
+    let verb = token_at(request_line, 0);
+    let target = token_at(request_line, 1);
+    let header_section = header_section_after_request_line(head);
+    let reject = request_reject_status(raw, sep, head, header_section, body);
+    AsyncRequest { verb: verb, target: target, header_section: header_section, body_text: body, reject_code: reject }
+}
+
+/// The fail-closed framing verdict for a buffered request: `0` when well-formed,
+/// else the HTTP status to reply with. `413` on any size bound (F2); `400` on an
+/// unframed/malformed request line, an unsupported `Transfer-Encoding`, or a
+/// duplicate/conflicting/non-numeric `Content-Length` (F3).
+fn request_reject_status(raw: string, sep: i64, head: string, header_section: string, body: string) -> i64 {
+    // F2 — size bounds (fail closed with 413).
+    if raw.len() > MAX_REQUEST_BYTES {
+        return 413;
+    }
+    if head.len() > MAX_HEADER_BYTES {
+        return 413;
+    }
+    if body.len() > MAX_BODY_BYTES {
+        return 413;
+    }
+    // F3 — the request must be fully framed (header terminator present).
+    if sep < 0 {
+        return 400;
+    }
+    // F3 — request line: method SP target SP HTTP/1.1.
+    if !valid_request_line(first_line(head)) {
+        return 400;
+    }
+    // SF3 — every non-empty header line must carry a ':' name/value separator;
+    // a colonless header line (e.g. `BadHeader`) is malformed → fail closed.
+    if !headers_have_colons(header_section) {
+        return 400;
+    }
+    // F3 — chunked/other transfer codings are unsupported in this buffered codec.
+    if header_count(header_section, "Transfer-Encoding") > 0 {
+        return 400;
+    }
+    // F3 — Content-Length must be single, numeric, and within the body ceiling.
+    let cl_count = header_count(header_section, "Content-Length");
+    if cl_count > 1 {
+        return 400;
+    }
+    if cl_count == 1 {
+        let value = find_header(header_section, "Content-Length");
+        if !string.is_numeric(value) {
+            return 400;
+        }
+        // SF1 — a bounded parse: an oversized OR overflowing numeric
+        // Content-Length exceeds the ceiling and fails closed with 413.
+        if content_length_of(header_section) > MAX_BODY_BYTES {
+            return 413;
+        }
+    }
+    0
+}
+
+// ── Response building ─────────────────────────────────────────────────
+/// Build a plain-text HTTP/1.1 response (`Content-Type: text/plain`).
+pub fn response_text(status: i64, body: string) -> string {
+    build_response(status, "text/plain; charset=utf-8", body)
+}
+
+/// Build a JSON HTTP/1.1 response (`Content-Type: application/json`).
+pub fn response_json(status: i64, json: string) -> string {
+    build_response(status, "application/json", json)
+}
+
+/// Build a full HTTP/1.1 response: the status line, `Content-Type`,
+/// `Content-Length` (derived from `body`), `Connection: close`, the blank line,
+/// then the body. The status text is a small well-known mapping (anything
+/// unknown is labelled `Status`).
+///
+/// FAILS CLOSED on header smuggling (F4): a `content_type` carrying a `\r`/`\n`
+/// or other control character would inject extra headers into the response, so
+/// such a value is rejected and an empty string is returned (the acceptor writes
+/// nothing and closes) rather than emitting an attacker-controlled header.
+pub fn build_response(status: i64, content_type: string, body: string) -> string {
+    if has_control_char(content_type) {
+        return "";
+    }
+    let nl = "\r\n";
+    var resp = f"HTTP/1.1 {status} {status_text(status)}" + nl;
+    resp = resp + f"Content-Type: {content_type}" + nl;
+    resp = resp + f"Content-Length: {body.len()}" + nl;
+    resp = resp + "Connection: close" + nl;
+    resp = resp + nl;
+    resp = resp + body;
+    resp
+}
+
+/// Reason phrase for a status code (the common subset; `Status` otherwise).
+fn status_text(status: i64) -> string {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        _ => "Status",
+    }
+}
+
+// ── Internal parsing helpers ──────────────────────────────────────────
+/// The `index`-th space-separated token of `line`, or the empty string.
+fn token_at(line: string, index: i64) -> string {
+    if string.is_empty(line) {
+        return "";
+    }
+    let parts = string.split(line, " ");
+    if parts.len() > index {
+        parts.get(index)
+    } else {
+        ""
+    }
+}
+
+/// The header lines of a head block (everything after the request/status line),
+/// re-joined with CRLF for header lookups + Content-Length framing.
+fn header_section_after_request_line(head: string) -> string {
+    let first = head.find("\r\n");
+    if first < 0 {
+        ""
+    } else {
+        head.slice(first + 2, head.len())
+    }
+}
+
+/// The declared `Content-Length` of a header section, or `0` when absent/invalid.
+///
+/// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
+/// OVERFLOWS i64 saturates to `MAX_BODY_BYTES + 1` — a sentinel guaranteed to
+/// exceed the body ceiling — so an overflowing `Content-Length` fails closed
+/// (`over_limit`/`request_reject_status` → 413) rather than `string.to_int`
+/// returning `0` and the huge body bypassing the cap.
+fn content_length_of(header_section: string) -> i64 {
+    let value = find_header(header_section, "Content-Length");
+    if string.is_empty(value) {
+        return 0;
+    }
+    if !string.is_numeric(value) {
+        return 0;
+    }
+    match string.try_to_int(value) {
+        Ok(n) => n,
+        Err(_) => MAX_BODY_BYTES + 1,
+    }
+}
+
+/// Case-insensitive header lookup over a CRLF-separated header section.
+fn find_header(header_section: string, name: string) -> string {
+    if string.is_empty(header_section) {
+        return "";
+    }
+    let target = string.to_lower(name);
+    let lines = string.split(header_section, "\r\n");
+    let n = lines.len();
+    var i: i64 = 0;
+    var found = "";
+    while i < n {
+        let line = lines.get(i);
+        let colon = line.find(":");
+        if colon > 0 {
+            let key = string.to_lower(string.trim(line.slice(0, colon)));
+            if key == target {
+                found = string.trim(line.slice(colon + 1, line.len()));
+            }
+        }
+        i = i + 1;
+    }
+    found
+}
+
+/// Number of header lines whose name (case-insensitive) equals `name`. Used to
+/// reject duplicate/conflicting `Content-Length` and any `Transfer-Encoding`.
+fn header_count(header_section: string, name: string) -> i64 {
+    if string.is_empty(header_section) {
+        return 0;
+    }
+    let target = string.to_lower(name);
+    let lines = string.split(header_section, "\r\n");
+    let n = lines.len();
+    var i: i64 = 0;
+    var count: i64 = 0;
+    while i < n {
+        let line = lines.get(i);
+        let colon = line.find(":");
+        if colon > 0 {
+            let key = string.to_lower(string.trim(line.slice(0, colon)));
+            if key == target {
+                count = count + 1;
+            }
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Whether every non-empty line of a header section carries a ':' name/value
+/// separator (with a non-empty name). The fail-closed gate for SF3: a request
+/// with any non-empty header line lacking a `:` (e.g. a bare `BadHeader`) is
+/// malformed and must be rejected with `400` rather than silently skipped.
+fn headers_have_colons(header_section: string) -> bool {
+    if string.is_empty(header_section) {
+        return true;
+    }
+    let lines = string.split(header_section, "\r\n");
+    let n = lines.len();
+    var i: i64 = 0;
+    while i < n {
+        let line = lines.get(i);
+        if !string.is_empty(line) {
+            if line.find(":") <= 0 {
+                return false;
+            }
+        }
+        i = i + 1;
+    }
+    true
+}
+
+/// The first CRLF-terminated line of a head block (the request line).
+fn first_line(head: string) -> string {
+    let nl = head.find("\r\n");
+    if nl < 0 {
+        head
+    } else {
+        head.slice(0, nl)
+    }
+}
+
+/// Whether a request line is a well-formed `method SP target SP HTTP/1.1`
+/// (origin-form `/path` or asterisk-form `*` target). The fail-closed framing
+/// gate for F3: anything else (wrong token count, non-alphabetic method, a
+/// non-origin target, a version other than HTTP/1.1) is rejected.
+fn valid_request_line(line: string) -> bool {
+    if string.is_empty(line) {
+        return false;
+    }
+    let parts = string.split(line, " ");
+    if parts.len() != 3 {
+        return false;
+    }
+    let method = parts.get(0);
+    let target = parts.get(1);
+    let version = parts.get(2);
+    if !is_alpha_token(method) {
+        return false;
+    }
+    if string.is_empty(target) {
+        return false;
+    }
+    if !(string.starts_with(target, "/") || target == "*") {
+        return false;
+    }
+    version == "HTTP/1.1"
+}
+
+/// Whether `s` is a non-empty run of ASCII letters (a valid method token).
+fn is_alpha_token(s: string) -> bool {
+    let n = s.len();
+    if n == 0 {
+        return false;
+    }
+    var i: i64 = 0;
+    while i < n {
+        let b = s.char_at(i);
+        let upper = b >= 65 && b <= 90;
+        let lower = b >= 97 && b <= 122;
+        if !upper && !lower {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+/// Whether `s` contains an ASCII control character (`< 0x20` or `0x7F`),
+/// including CR/LF. The fail-closed gate for F4 header smuggling: caller-provided
+/// header values carrying such bytes are rejected so they cannot inject extra
+/// CRLF-delimited headers into the framed output.
+fn has_control_char(s: string) -> bool {
+    let n = s.len();
+    var i: i64 = 0;
+    while i < n {
+        let b = s.char_at(i);
+        if b < 32 || b == 127 {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}

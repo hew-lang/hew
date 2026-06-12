@@ -1,0 +1,21 @@
+// Accept: builtin Option<T>::is_some/is_none lower by reading the tag only.
+// Exercises both Some and None for i64 and string payloads.
+fn main() -> i64 {
+    let a: Option<i64> = Some(5);
+    let b: Option<i64> = None;
+
+    if a.is_some() == false { return 1; }
+    if a.is_none() == true { return 2; }
+    if b.is_none() == false { return 3; }
+    if b.is_some() == true { return 4; }
+
+    let s: Option<string> = Some("hello");
+    let n: Option<string> = None;
+
+    if s.is_some() == false { return 5; }
+    if s.is_none() == true { return 6; }
+    if n.is_none() == false { return 7; }
+    if n.is_some() == true { return 8; }
+
+    0
+}

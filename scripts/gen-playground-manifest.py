@@ -14,6 +14,7 @@ from typing import TypedDict
 
 class Capabilities(TypedDict):
     browser: str
+    sandbox: str
     wasi: str
 
 
@@ -31,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PLAYGROUND_DIR = ROOT / "examples" / "playground"
 OUTPUT_FILE = PLAYGROUND_DIR / "manifest.json"
 HEADER_PATTERN = re.compile(r"^//!\s*@(?P<key>name|description)\s+(?P<value>.+?)\s*$")
-CATEGORY_ORDER = ("basics", "concurrency", "types")
+CATEGORY_ORDER = ("basics", "concurrency", "machines", "types")
 # Keep the checked-in manifest aligned with the current curated snippet order.
 EXAMPLE_ORDER = {
     "basics": (
@@ -46,18 +47,23 @@ EXAMPLE_ORDER = {
         "counter_actor",
         "supervisor",
     ),
+    "machines": ("traffic_light",),
     "types": (
         "collections",
         "pattern_matching",
+        "record_types",
         "wire_types",
         "structural_bounds",
     ),
 }
 
-# Capability contract for the browser/WASI manifest slice.
+# Capability contract for the browser/sandbox/WASI manifest slice.
 #
 # browser: always "analysis-only" — hew-wasm (Tier 1) exposes lex/parse/typecheck
 #          only; no in-browser program execution exists today.
+# sandbox: "runnable"                — the example compiles to sandbox bytecode.
+#          "unsupported_native_only" — the example is native-only for the
+#                                      sandbox VM playground slice.
 # wasi:    "runnable"   — the example compiles and executes correctly under
 #                         hew build --target=wasm32-wasi (Tier 2).
 #          "unsupported" — the example triggers a known WASM32 diagnostic path;
@@ -66,9 +72,54 @@ EXAMPLE_ORDER = {
 #                          warned at the type-checker level (see
 #                          docs/wasm-capability-matrix.md for the full table).
 #
+# Entries omitted from SANDBOX_CAPABILITY default to "unsupported_native_only".
+SANDBOX_CAPABILITY: dict[str, str] = {
+    "basics/hello_world": "runnable",
+    "basics/fibonacci": "runnable",
+    "basics/string_interpolation": "runnable",
+    "types/pattern_matching": "runnable",
+    # Actor/supervisor/machine support was added in the sandbox VM; these now compile
+    # to bytecode and execute in the educational browser sandbox.
+    "concurrency/counter_actor": "runnable",
+    "concurrency/actor_pipeline": "runnable",
+    # async_await uses actor+await which is now supported in the sandbox VM.
+    "concurrency/async_await": "runnable",
+    # machines/traffic_light has a fn main() demonstration and the sandbox VM
+    # implements machine.new/step/state.
+    "machines/traffic_light": "runnable",
+    # concurrency/supervisor: rewritten to remove supervisor_stop (native-only);
+    # spawn + child method calls are sandbox-admitted via the actor/supervisor
+    # profile extension added in this release.
+    "concurrency/supervisor": "runnable",
+    # basics/higher_order_functions: rewritten from lambda-based to enum dispatch;
+    # unit-variant construction as call arguments is now supported via enum.new.
+    "basics/higher_order_functions": "runnable",
+    # types/collections: rewritten to use indexed for-loop (range-based) rather
+    # than for-in Vec; sandbox bytecode emission verified via parity test.
+    "types/collections": "runnable",
+    # types/record_types: plain record types with enum dispatch (formerly
+    # misnamed wire_types); all constructs are sandbox-admitted.
+    "types/record_types": "runnable",
+    # types/wire_types: #[wire] struct declarations emit sandbox bytecode
+    # (the playground consistency test proves it both ways); the example's
+    # body is declaration + prints, all sandbox-admitted.
+    "types/wire_types": "runnable",
+    # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
+    # to plain record types with conditional dispatch.
+    "types/structural_bounds": "runnable",
+}
+
 # Entries omitted from WASI_CAPABILITY default to "runnable".
 WASI_CAPABILITY: dict[str, str] = {
+    # Actor examples currently require the native actor/coroutine runtime ABI;
+    # the WASI runtime gap is tracked by #1821.
+    "concurrency/actor_pipeline": "unsupported",
+    "concurrency/async_await": "unsupported",
+    "concurrency/counter_actor": "unsupported",
     "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
+    # traffic_light now has fn main() but the machine runtime is not yet wired
+    # into the WASI/LLVM path; remains unsupported in WASI until that lands.
+    "machines/traffic_light": "unsupported",
 }
 
 
@@ -145,8 +196,8 @@ def fail_on_curated_scope_mismatch(curated_paths: list[Path]) -> None:
         )
     if unexpected_sources:
         details.append(
-            "unexpected playground snippets outside the curated 11:\n  - "
-            + "\n  - ".join(unexpected_sources)
+            "unexpected playground snippets outside the curated "
+            f"{len(curated_rel_paths)}:\n  - " + "\n  - ".join(unexpected_sources)
         )
 
     raise SystemExit(
@@ -165,14 +216,15 @@ def build_manifest_entries() -> list[ManifestEntry]:
             rel_path = source_path.relative_to(ROOT)
             raise SystemExit(f"error: missing curated playground snippet: {rel_path}")
         expected_path = source_path.with_suffix(".expected")
-        if not expected_path.is_file():
+        category = source_path.parent.name
+        entry_id = f"{category}/{source_path.stem}"
+        wasi_capability = WASI_CAPABILITY.get(entry_id, "runnable")
+        if wasi_capability == "runnable" and not expected_path.is_file():
             rel_path = expected_path.relative_to(ROOT)
             raise SystemExit(f"error: missing expected output file for {rel_path}")
 
         metadata = parse_header_metadata(source_path)
-        category = source_path.parent.name
 
-        entry_id = f"{category}/{source_path.stem}"
         entries.append(
             {
                 "id": entry_id,
@@ -183,7 +235,10 @@ def build_manifest_entries() -> list[ManifestEntry]:
                 "expected_path": expected_path.relative_to(PLAYGROUND_DIR).as_posix(),
                 "capabilities": {
                     "browser": "analysis-only",
-                    "wasi": WASI_CAPABILITY.get(entry_id, "runnable"),
+                    "sandbox": SANDBOX_CAPABILITY.get(
+                        entry_id, "unsupported_native_only"
+                    ),
+                    "wasi": wasi_capability,
                 },
             }
         )
@@ -230,6 +285,7 @@ def check_manifest(rendered: str) -> int:
 
 def _verify_capability_fields(entries: list[ManifestEntry], rel_output: str) -> int:
     """Verify every entry carries well-formed capability metadata."""
+    valid_sandbox = {"runnable", "unsupported_native_only"}
     valid_wasi = {"runnable", "unsupported"}
     errors: list[str] = []
 
@@ -246,6 +302,12 @@ def _verify_capability_fields(entries: list[ManifestEntry], rel_output: str) -> 
             errors.append(
                 f"  {entry_id}: capabilities.browser must be 'analysis-only', "
                 f"got {caps.get('browser')!r}"
+            )
+        sandbox = caps.get("sandbox")
+        if sandbox not in valid_sandbox:
+            errors.append(
+                f"  {entry_id}: capabilities.sandbox must be one of "
+                f"{sorted(valid_sandbox)}, got {sandbox!r}"
             )
         wasi = caps.get("wasi")
         if wasi not in valid_wasi:

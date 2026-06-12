@@ -1,5 +1,5 @@
 //! Linker invocation: drives `cc` (or `wasm-ld` for WASM targets) to produce
-//! the final binary from the object file emitted by Hew's embedded codegen
+//! the final binary from the object file emitted by Hew's Rust codegen-rs
 //! backend and the combined Hew library (`libhew.a`).
 
 use crate::target::TargetSpec;
@@ -174,6 +174,22 @@ pub fn link_executable(
 
     cmd.arg(object_path).arg(&hew_lib);
 
+    // ── Stdlib staticlibs the user may reference via `extern "rt"` ────
+    // Pull in sibling stdlib crate archives (e.g. hew-std-time-datetime)
+    // so direct extern declarations naming `hew_datetime_*` and similar
+    // stable-stdlib symbols resolve at link time. Missing archives are
+    // ignored (best-effort) so users who never reach for stdlib FFI from
+    // a source build that skipped those crates still link plain programs.
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_dir = exe.parent().expect("exe should have a parent directory");
+        let triple = target.normalized_triple();
+        for archive in NATIVE_STDLIB_ARCHIVES {
+            if let Some(path) = find_optional_hew_lib(exe_dir, archive, triple) {
+                cmd.arg(path);
+            }
+        }
+    }
+
     cmd.arg("-o").arg(&safe_output);
 
     if debug {
@@ -195,16 +211,14 @@ pub fn link_executable(
         }
     }
 
-    // ── Linux cross-arch sysroot (probe, non-fatal) ───────────────────
-    // On Debian/Ubuntu multiarch hosts, cross-arch libs live under
-    // /usr/<arch-tuple>/.  Passing --sysroot directs clang/lld there so the
-    // target arch's libc, libpthread, etc. resolve correctly without a full
-    // cross-toolchain installation.  If the sysroot is absent the link still
-    // proceeds — it succeeds when the system linker finds the target libs via
-    // other search paths (e.g. multiarch symlinks in /usr/lib/).
+    // ── Linux cross-arch GCC toolchain (probe, non-fatal) ──────────────
+    // Debian/Ubuntu cross libc linker scripts under /usr/<arch-tuple>/lib use
+    // absolute paths, so do not pass that directory as --sysroot.  Instead,
+    // point clang at the installed GCC cross toolchain so it finds crtbeginS.o
+    // and libgcc while keeping "/" as the effective sysroot for those scripts.
     #[cfg(target_os = "linux")]
-    if let Some(sysroot) = find_linux_cross_sysroot(target) {
-        cmd.arg("--sysroot").arg(sysroot);
+    if let Some(gcc_toolchain) = find_linux_cross_gcc_toolchain(target) {
+        cmd.arg(format!("--gcc-toolchain={gcc_toolchain}"));
     }
 
     // ── Windows CRT linkage fixup (target-driven) ─────────────────────
@@ -220,6 +234,22 @@ pub fn link_executable(
     for lib in extra_libs {
         cmd.arg(lib);
     }
+
+    // ── Re-list the runtime archive after the consumer archives ───────
+    // libhew.a appears once above (resolving the program object's *direct*
+    // runtime references) and again here, after the stdlib/native-package
+    // archives. Native packages and stdlib staticlibs reference runtime symbols
+    // (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them against
+    // libhew.a at the final link rather than bundling their own copy — bundling
+    // is the duplicate-symbol failure this lane fixes. A single-pass archive
+    // linker (GNU ld / ld.lld on ELF) only pulls an archive member to satisfy an
+    // already-pending undefined symbol, so a consumer archive listed *after* the
+    // first libhew.a needs libhew.a repeated here for its backward references to
+    // resolve; the system libraries above are shared objects and stay globally
+    // available. Mach-O resolves archives as a set and is order-insensitive, so
+    // the repeat is a harmless no-op there. Repeating a static archive never
+    // double-defines a symbol — each member is pulled at most once.
+    cmd.arg(&hew_lib);
 
     let output = cmd
         .output()
@@ -359,21 +389,43 @@ where
     }
 }
 
-/// Probe for a Debian/Ubuntu multiarch sysroot for Linux cross-arch linking.
+/// Probe for the Debian/Ubuntu multiarch tuple for Linux cross-arch linking.
 ///
 /// Returns `None` when:
-/// - the target arch is the same as the host arch (no sysroot needed), or
+/// - the target arch is the same as the host arch (no cross paths needed), or
 /// - the arch has no known Debian multiarch tuple, or
-/// - the sysroot directory does not exist on this host.
+/// - the multiarch directory does not exist on this host.
 ///
-/// Sysroot paths follow the Debian/Ubuntu multiarch convention:
+/// Paths follow the Debian/Ubuntu multiarch convention:
 /// - `/usr/aarch64-linux-gnu` — aarch64 cross-libs on an `x86_64` host
 /// - `/usr/x86_64-linux-gnu` — `x86_64` cross-libs on an aarch64 host
-///
-/// The sysroot is non-fatal: the link proceeds even when absent and succeeds
-/// when the system linker already finds the target libs via other paths.
 #[cfg(target_os = "linux")]
-fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
+fn linux_cross_multiarch_tuple(target: &TargetSpec) -> Option<&'static str> {
+    let arch_tuple = linux_cross_arch_tuple(target)?;
+    let multiarch_root = std::path::Path::new("/usr").join(arch_tuple);
+    if multiarch_root.is_dir() {
+        Some(arch_tuple)
+    } else {
+        None
+    }
+}
+
+/// Probe for the GCC cross toolchain root that clang needs for Linux
+/// cross-arch startup objects (`crtbeginS.o`) and libgcc search paths.
+#[cfg(target_os = "linux")]
+fn find_linux_cross_gcc_toolchain(target: &TargetSpec) -> Option<&'static str> {
+    let arch_tuple = linux_cross_multiarch_tuple(target)?;
+    let gcc_cross_root = std::path::Path::new("/usr/lib/gcc-cross").join(arch_tuple);
+
+    if gcc_cross_root.is_dir() {
+        Some("/usr")
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_cross_arch_tuple(target: &TargetSpec) -> Option<&'static str> {
     use crate::target::{TargetArch, TargetOs};
 
     if target.os() != TargetOs::Linux {
@@ -391,14 +443,9 @@ fn find_linux_cross_sysroot(target: &TargetSpec) -> Option<std::path::PathBuf> {
     let is_host_arch = cfg!(target_arch = "aarch64") && arch_tuple == "aarch64-linux-gnu"
         || cfg!(target_arch = "x86_64") && arch_tuple == "x86_64-linux-gnu";
     if is_host_arch {
-        return None;
-    }
-
-    let path = std::path::PathBuf::from(format!("/usr/{arch_tuple}"));
-    if path.is_dir() {
-        Some(path)
-    } else {
         None
+    } else {
+        Some(arch_tuple)
     }
 }
 
@@ -414,7 +461,7 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 
     // Link focused WASM support archives. JSON/YAML archives come before the
     // runtime so wasm-ld can resolve their runtime references in one pass.
-    for lib in find_wasm_link_libs(target) {
+    for lib in find_wasm_link_libs(target)? {
         cmd.arg(&lib);
     }
 
@@ -427,47 +474,55 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
 
     cmd.arg("-o")
         .arg(output_path)
-        // Allow unresolved symbols for runtime functions not yet in the WASM
-        // runtime (they become WASM imports from the `env` module).
-        .arg("--allow-undefined")
         // We provide `_start` in the runtime, not via WASI CRT1.
         .arg("--no-entry")
         .arg("--export=_start");
 
-    let status = cmd
-        .status()
+    let output = cmd
+        .output()
         .map_err(|e| format!("Error: cannot invoke wasm-ld: {e}"))?;
 
-    if !status.success() {
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    if !stderr_text.is_empty() {
+        eprint!("{stderr_text}");
+    }
+
+    if !output.status.success() {
+        for hint in diagnose_linker_errors(&stderr_text) {
+            eprintln!("{hint}");
+        }
         return Err("WASM linking failed".into());
     }
+
+    verify_no_unresolved_hew_wasm_imports(output_path)?;
 
     Ok(())
 }
 
-const WASM_LINK_ARCHIVES: [&str; 3] = [
-    "libhew_std_encoding_json.a",
-    "libhew_std_encoding_yaml.a",
-    "libhew_runtime.a",
-];
+const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 2] =
+    ["libhew_std_encoding_json.a", "libhew_std_encoding_yaml.a"];
+const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
-fn find_wasm_link_libs(target: &str) -> Vec<String> {
-    let Ok(exe) = std::env::current_exe() else {
-        return Vec::new();
-    };
+/// Sibling stdlib staticlibs the native linker pulls in (best-effort) so
+/// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
+/// Keep in sync with the `stable-stdlib` block in
+/// `scripts/jit-symbol-classification.toml`.
+const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std_time_datetime.a"];
+
+fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
+    let rust_target = wasm_runtime_target(target);
 
-    // Map wasm32-wasi to wasm32-wasip1 (modern Rust toolchain name)
-    let rust_target = if target == "wasm32-wasi" {
-        "wasm32-wasip1"
-    } else {
-        target
-    };
+    let mut libs = Vec::new();
+    for name in WASM_OPTIONAL_LINK_ARCHIVES {
+        if let Some(path) = find_optional_wasm_hew_lib(exe_dir, name, rust_target) {
+            libs.push(path);
+        }
+    }
+    libs.push(find_required_wasm_runtime_lib(exe_dir, rust_target)?);
 
-    WASM_LINK_ARCHIVES
-        .into_iter()
-        .filter_map(|name| find_optional_hew_lib(exe_dir, name, rust_target))
-        .collect()
+    Ok(libs)
 }
 
 fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) -> Option<String> {
@@ -486,13 +541,68 @@ fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) ->
     None
 }
 
-/// Locate `libc.a` from Rust's WASI sysroot so `malloc`/`free`/etc. resolve.
-fn find_wasi_libc(target: &str) -> Result<Option<String>, LinkerProbeError> {
-    let rust_target = if target == "wasm32-wasi" {
+fn wasm_runtime_target(target: &str) -> &str {
+    if target == "wasm32-wasi" {
         "wasm32-wasip1"
     } else {
         target
-    };
+    }
+}
+
+fn find_optional_wasm_hew_lib(
+    exe_dir: &std::path::Path,
+    name: &str,
+    triple: &str,
+) -> Option<String> {
+    for candidate in hew_wasm_lib_candidates(exe_dir, name, triple) {
+        if candidate.exists() {
+            return Some(
+                candidate
+                    .canonicalize()
+                    .unwrap_or(candidate)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+
+    None
+}
+
+fn find_required_wasm_runtime_lib(
+    exe_dir: &std::path::Path,
+    triple: &str,
+) -> Result<String, String> {
+    let candidates = hew_wasm_lib_candidates(exe_dir, WASM_RUNTIME_ARCHIVE, triple);
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone())
+                .display()
+                .to_string());
+        }
+    }
+
+    Err(format_missing_wasm_runtime_error(triple, &candidates))
+}
+
+fn format_missing_wasm_runtime_error(triple: &str, candidates: &[std::path::PathBuf]) -> String {
+    format!(
+        "Error: cannot find {WASM_RUNTIME_ARCHIVE} for WASM target {triple}. \
+         Build it with `make wasm-runtime` or \
+         `cargo build -p hew-runtime --target {triple} --no-default-features`; tried: {}",
+        candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Locate `libc.a` from Rust's WASI sysroot so `malloc`/`free`/etc. resolve.
+fn find_wasi_libc(target: &str) -> Result<Option<String>, LinkerProbeError> {
+    let rust_target = wasm_runtime_target(target);
 
     let sysroot = probe_command_stdout("Rust sysroot probe", "rustc", &["--print", "sysroot"])?;
     let libc_path = wasi_libc_candidates(&sysroot, rust_target);
@@ -521,6 +631,56 @@ fn wasi_libc_candidates(sysroot: &str, rust_target: &str) -> Vec<std::path::Path
         .join("lib/rustlib")
         .join(rust_target)
         .join("lib/self-contained/libc.a")]
+}
+
+fn hew_wasm_lib_candidates(
+    exe_dir: &std::path::Path,
+    name: &str,
+    triple: &str,
+) -> Vec<std::path::PathBuf> {
+    let profile = exe_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| matches!(*name, "debug" | "release"));
+    let other_profile = match profile {
+        Some("debug") => Some("release"),
+        Some("release") => Some("debug"),
+        _ => None,
+    };
+
+    let mut candidates = vec![
+        // Installed target-aware layouts. Do not use flat host fallbacks for
+        // WASM: a native libhew_runtime.a must never satisfy a wasm link.
+        exe_dir.join("../lib").join(triple).join(name),
+        exe_dir.join("../lib/hew").join(triple).join(name),
+        exe_dir.join("../lib64/hew").join(triple).join(name),
+        // Assembled developer layout.
+        exe_dir.join("../../build/lib").join(triple).join(name),
+    ];
+
+    if let Some(target_dir) = exe_dir.parent() {
+        if let Some(profile) = profile {
+            candidates.push(target_dir.join(triple).join(profile).join(name));
+        }
+        if let Some(profile) = other_profile {
+            candidates.push(target_dir.join(triple).join(profile).join(name));
+        }
+    }
+
+    candidates.extend([
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("release")
+            .join(name),
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("debug")
+            .join(name),
+    ]);
+
+    candidates
 }
 
 fn hew_lib_candidates(
@@ -561,6 +721,41 @@ fn hew_lib_candidates(
     ]
 }
 
+fn verify_no_unresolved_hew_wasm_imports(output_path: &str) -> Result<(), String> {
+    let bytes = std::fs::read(output_path)
+        .map_err(|e| format!("Error: cannot read linked WASM `{output_path}`: {e}"))?;
+    let imports = unresolved_hew_wasm_imports(&bytes)?;
+    if imports.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Error: WASM link left unresolved Hew runtime imports: {}. \
+         Rebuild the wasm runtime archive with `make wasm-runtime` and retry.",
+        imports.join(", ")
+    ))
+}
+
+fn unresolved_hew_wasm_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let mut imports = std::collections::BTreeSet::new();
+
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        let payload =
+            payload.map_err(|e| format!("Error: failed to parse linked WASM imports: {e}"))?;
+        if let wasmparser::Payload::ImportSection(reader) = payload {
+            for import in reader.into_imports() {
+                let import =
+                    import.map_err(|e| format!("Error: failed to parse WASM import: {e}"))?;
+                if import.module == "env" && import.name.starts_with("hew_") {
+                    imports.insert(format!("env::{}", import.name));
+                }
+            }
+        }
+    }
+
+    Ok(imports.into_iter().collect())
+}
+
 fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
@@ -586,6 +781,8 @@ fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
 pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<(&'static str, &'static str)> =
         std::collections::BTreeSet::new();
+    let mut dup_hew: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dup_generic = false;
 
     for line in stderr.lines() {
         if let Some(sym) = extract_undefined_hew_symbol(line) {
@@ -593,16 +790,51 @@ pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
                 seen.insert(hint);
             }
         }
+        if let Some(sym) = extract_duplicate_symbol(line) {
+            // mach-o prefixes a leading underscore; normalise before classifying.
+            let norm = sym.strip_prefix('_').unwrap_or(sym);
+            if norm.starts_with("hew_") {
+                dup_hew.insert(norm.to_string());
+            } else {
+                dup_generic = true;
+            }
+        }
     }
 
-    seen.into_iter()
+    let mut hints: Vec<String> = seen
+        .into_iter()
         .map(|(module, feature)| {
             format!(
                 "hint: The `{module}` module requires the `{feature}` runtime feature.\n      \
                  Rebuild the runtime with: cargo build -p hew-runtime --features {feature}"
             )
         })
-        .collect()
+        .collect();
+
+    // Duplicate `hew_*` symbols mean a native library passed via --link-lib has
+    // statically embedded a runtime symbol that libhew.a already owns. This is a
+    // mis-shaped native package; emit the supported build recipe (fail-closed).
+    if !dup_hew.is_empty() {
+        let list = dup_hew.into_iter().collect::<Vec<_>>().join(", ");
+        hints.push(format!(
+            "hint: duplicate Hew runtime symbol(s): {list}\n      \
+             A library linked via --link-lib bundles its own copy of a symbol that libhew.a \
+             already provides. A native Hew package must depend on `hew-cabi` for shared ABI \
+             types (hew-cabi declares runtime symbols as imports) and must NOT statically embed \
+             hew-runtime or hew-lib.\n      \
+             Build the package as a `staticlib` with `panic = \"abort\"`, then link it with \
+             --link-lib; do not re-export or bundle the runtime."
+        ));
+    } else if dup_generic {
+        hints.push(
+            "hint: duplicate symbol(s) during link: two linked inputs define the same symbol. \
+             Ensure a library passed via --link-lib does not also embed a copy of a symbol \
+             already provided by another linked input (such as the Hew runtime)."
+                .to_string(),
+        );
+    }
+
+    hints
 }
 
 /// Extract a `hew_`-prefixed symbol name from a linker error line, or `None`
@@ -630,6 +862,46 @@ fn extract_undefined_hew_symbol(line: &str) -> Option<&str> {
             .find(|c: char| !c.is_alphanumeric() && c != '_')
             .unwrap_or(rest.len());
         return Some(&rest[..end]);
+    }
+    None
+}
+
+/// Extract the symbol name from a linker "duplicate symbol" / "multiple
+/// definition" error line, or `None` if the line is not such an error.
+///
+/// Handles three linker message shapes (SYM is the symbol):
+/// - lld (mach-o and ELF): `duplicate symbol: SYM`
+/// - Apple ld: `duplicate symbol 'SYM' in:`
+/// - GNU ld / gold: `multiple definition of SYM` (backtick + single-quote)
+///
+/// The returned name may carry a mach-o leading underscore; callers normalise it.
+fn extract_duplicate_symbol(line: &str) -> Option<&str> {
+    // lld (mach-o and ELF): "duplicate symbol: <sym>"
+    if let Some(pos) = line.find("duplicate symbol: ") {
+        let rest = line[pos + "duplicate symbol: ".len()..].trim_start();
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let sym = &rest[..end];
+        if !sym.is_empty() {
+            return Some(sym);
+        }
+    }
+    // Apple ld: "duplicate symbol '_sym' in:"
+    if let Some(pos) = line.find("duplicate symbol '") {
+        let rest = &line[pos + "duplicate symbol '".len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(&rest[..end]);
+        }
+    }
+    // GNU ld / gold: "multiple definition of `sym'" (backtick + single-quote)
+    if let Some(pos) = line.find("multiple definition of ") {
+        let rest = line[pos + "multiple definition of ".len()..]
+            .trim_start()
+            .trim_start_matches(['`', '\'', '"']);
+        let end = rest.find(['`', '\'', '"']).unwrap_or(rest.len());
+        let sym = &rest[..end];
+        if !sym.is_empty() {
+            return Some(sym);
+        }
     }
     None
 }
@@ -991,8 +1263,86 @@ mod tests {
         assert!(hints.is_empty());
     }
 
+    // ── diagnose_linker_errors: duplicate symbols ─────────────────────
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_lld() {
+        // Exact format emitted by ld64.lld on this host.
+        let stderr = "ld64.lld: error: duplicate symbol: hew_stream_last_error\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("--link-lib"));
+        assert!(hints[0].contains("hew-cabi"));
+        assert!(hints[0].contains("panic = \"abort\""));
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_apple_ld() {
+        // Apple system ld: leading underscore + single quotes.
+        let stderr = "duplicate symbol '_hew_stream_last_errno' in:\n    a.o\n    b.o\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_errno"));
+        assert!(
+            !hints[0].contains("'_hew"),
+            "leading underscore must be normalised"
+        );
+    }
+
+    #[test]
+    fn diagnose_duplicate_hew_symbol_gnu_ld() {
+        let stderr =
+            "b.o: multiple definition of `hew_stream_last_error'; a.o: first defined here\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_generic_symbol_is_non_hew_note() {
+        let stderr = "ld64.lld: error: duplicate symbol: _my_app_thing\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("duplicate symbol"));
+        // Generic note, NOT the hew-specific recipe.
+        assert!(!hints[0].contains("hew-cabi"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_folds_multiple_hew_symbols_into_one_hint() {
+        // lld prints one error per duplicate plus ">>> defined in" provenance
+        // lines, which must be ignored. Two hew dups fold into one recipe hint.
+        let stderr = "\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n\
+            >>> defined in libhew.a\n\
+            >>> defined in libmod.a\n\
+            ld64.lld: error: duplicate symbol: hew_stream_last_errno\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1, "both hew dups fold into one recipe hint");
+        assert!(hints[0].contains("hew_stream_last_error"));
+        assert!(hints[0].contains("hew_stream_last_errno"));
+    }
+
+    #[test]
+    fn diagnose_duplicate_and_undefined_coexist() {
+        // A feature hint and a duplicate hint can both be present.
+        let stderr = "\
+            foo.o: undefined reference to `hew_json_parse'\n\
+            ld64.lld: error: duplicate symbol: hew_stream_last_error\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 2);
+        assert!(hints.iter().any(|h| h.contains("serialization")));
+        assert!(hints
+            .iter()
+            .any(|h| h.contains("duplicate Hew runtime symbol")));
+    }
+
     // ── has_tool ──────────────────────────────────────────────────────
 
+    // WINDOWS-TODO: true command does not exist on Windows.
+    #[cfg_attr(windows, ignore)]
     #[test]
     fn has_tool_finds_true_command() {
         // `true` is a standard Unix utility that always succeeds
@@ -1212,13 +1562,126 @@ mod tests {
     #[test]
     fn wasm_link_archives_keep_wire_support_libs_before_runtime() {
         assert_eq!(
-            WASM_LINK_ARCHIVES,
-            [
-                "libhew_std_encoding_json.a",
-                "libhew_std_encoding_yaml.a",
-                "libhew_runtime.a",
+            WASM_OPTIONAL_LINK_ARCHIVES,
+            ["libhew_std_encoding_json.a", "libhew_std_encoding_yaml.a"]
+        );
+        assert_eq!(WASM_RUNTIME_ARCHIVE, "libhew_runtime.a");
+    }
+
+    // WINDOWS-TODO: wasm lib candidate path logic differs on Windows.
+    #[cfg_attr(windows, ignore)]
+    #[test]
+    fn wasm_lib_candidates_reject_flat_host_fallbacks() {
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates = hew_wasm_lib_candidates(exe_dir, WASM_RUNTIME_ARCHIVE, "wasm32-wasip1");
+
+        assert!(
+            !candidates.contains(&std::path::PathBuf::from(
+                "/repo/target/debug/libhew_runtime.a"
+            )),
+            "same-dir host runtime archive must not satisfy a WASM link"
+        );
+        assert!(
+            !candidates.contains(&std::path::PathBuf::from(
+                "/repo/target/debug/../../target/debug/libhew_runtime.a"
+            )),
+            "host target/debug runtime archive must not satisfy a WASM link"
+        );
+        assert!(
+            candidates.iter().any(|path| path
+                .display()
+                .to_string()
+                .contains("wasm32-wasip1/debug/libhew_runtime.a")),
+            "WASM target-specific runtime archive candidate missing: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn missing_wasm_runtime_error_is_actionable() {
+        let candidates = vec![std::path::PathBuf::from(
+            "/repo/target/wasm32-wasip1/debug/libhew_runtime.a",
+        )];
+        let message = format_missing_wasm_runtime_error("wasm32-wasip1", &candidates);
+
+        assert!(message.contains("cannot find libhew_runtime.a"));
+        assert!(message.contains("make wasm-runtime"));
+        assert!(message
+            .contains("cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features"));
+        assert!(message.contains("/repo/target/wasm32-wasip1/debug/libhew_runtime.a"));
+    }
+
+    #[test]
+    fn unresolved_hew_wasm_imports_reports_env_hew_symbols() {
+        let wasm = wasm_with_func_imports(&[
+            ("env", "hew_print_value"),
+            ("env", "hew_actor_cooperate"),
+            ("wasi_snapshot_preview1", "fd_write"),
+        ]);
+        let imports = unresolved_hew_wasm_imports(&wasm).expect("parse imports");
+
+        assert_eq!(
+            imports,
+            vec![
+                "env::hew_actor_cooperate".to_string(),
+                "env::hew_print_value".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn unresolved_hew_wasm_imports_ignores_non_hew_imports() {
+        let wasm = wasm_with_func_imports(&[
+            ("env", "not_hew"),
+            ("host", "hew_print_value"),
+            ("wasi_snapshot_preview1", "proc_exit"),
+        ]);
+        let imports = unresolved_hew_wasm_imports(&wasm).expect("parse imports");
+
+        assert!(imports.is_empty());
+    }
+
+    fn wasm_with_func_imports(imports: &[(&str, &str)]) -> Vec<u8> {
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        let mut payload = Vec::new();
+        push_leb_u32(
+            &mut payload,
+            u32::try_from(imports.len()).expect("test import count fits in u32"),
+        );
+        for (module, name) in imports {
+            push_wasm_name(&mut payload, module);
+            push_wasm_name(&mut payload, name);
+            payload.push(0x00); // function import
+            push_leb_u32(&mut payload, 0); // type index; parser does not validate it here
+        }
+        wasm.push(2); // import section
+        push_leb_u32(
+            &mut wasm,
+            u32::try_from(payload.len()).expect("test import section fits in u32"),
+        );
+        wasm.extend(payload);
+        wasm
+    }
+
+    fn push_wasm_name(bytes: &mut Vec<u8>, name: &str) {
+        push_leb_u32(
+            bytes,
+            u32::try_from(name.len()).expect("test import name fits in u32"),
+        );
+        bytes.extend(name.as_bytes());
+    }
+
+    fn push_leb_u32(bytes: &mut Vec<u8>, mut value: u32) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
     }
 
     // ── output-path sanitisation (extracted from link_executable) ─────

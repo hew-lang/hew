@@ -11,6 +11,7 @@
 #
 # Excluded paths (category labels, not actionable TODO markers):
 #   - docs/                         — uses WASM-TODO as a table column label
+#   - .tmp/                         — local planning/orchestration prose quotes audits and examples
 #   - CONTRIBUTING.md               — documents the marker convention itself
 #   - .github/                      — PR template references the form by example
 #   - Makefile                      — contains DROP-TODO|WASM-TODO grep pattern literal
@@ -30,6 +31,7 @@ cd "$REPO_ROOT"
 bad=$(git grep -nE 'WASM-TODO([^(]|\([^#]|\(#[^0-9])' -- \
     ':!scripts/lint-wasm-todo-issue-ref.sh' \
     ':!docs/' \
+    ':!.tmp/' \
     ':!CONTRIBUTING.md' \
     ':!.github/' \
     ':!Makefile' \

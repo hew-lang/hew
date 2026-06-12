@@ -10,6 +10,10 @@
 //! - [`CrashStats`] — per-actor crash statistics with sliding window
 //! - [`RECENT_CRASHES`] — global ring buffer of recent crashes (64 entries)
 //! - C ABI functions for allocating/managing crash statistics
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::lifetime::PoisonSafe;
 use std::collections::VecDeque;
@@ -25,6 +29,8 @@ pub struct CrashReport {
     /// Unique ID of the crashed actor.
     pub actor_id: u64,
     /// Process identifier (PID) of the crashed actor.
+    ///
+    /// Always equals `actor_id`; kept for C-ABI layout compatibility.
     pub actor_pid: u64,
     /// Signal number that caused the crash (SIGSEGV=11, SIGBUS=7, etc.).
     pub signal: i32,
@@ -138,6 +144,7 @@ const MAX_CRASH_LOG_SIZE: usize = 64;
 /// discarded; the data protected by this lock is append-only and safe to use
 /// after poison recovery.
 pub(crate) fn push_crash_report(report: CrashReport) {
+    crate::observe::record_actor_crash();
     push_crash_report_to(&RECENT_CRASHES, report);
 }
 
@@ -161,7 +168,7 @@ fn push_crash_report_to(log: &PoisonSafe<VecDeque<CrashReport>>, report: CrashRe
 pub(crate) fn record_injected_crash(actor_id: u64) {
     let report = CrashReport {
         actor_id,
-        actor_pid: 0,
+        actor_pid: actor_id,
         signal: -1, // Indicates injected fault, not a real signal.
         signal_code: 0,
         fault_addr: 0,
@@ -204,7 +211,7 @@ fn monotonic_time_ns() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_crash_stats_new() -> *mut CrashStats {
     let stats = Box::new(CrashStats::new());
-    Box::into_raw(stats)
+    Box::into_raw(stats) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Record a crash in the statistics, updating counters and timestamps.
@@ -265,7 +272,7 @@ pub unsafe extern "C" fn hew_crash_stats_free(stats: *mut CrashStats) {
     }
 
     // SAFETY: Caller guarantees stats was created by hew_crash_stats_new.
-    drop(unsafe { Box::from_raw(stats) });
+    drop(unsafe { Box::from_raw(stats) }); // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Add a crash report to the global crash log.
@@ -343,9 +350,17 @@ pub fn snapshot_crashes_json() -> String {
                 reason = "nanosecond precision loss is acceptable for display"
             )]
             let time_s = crash.timestamp_ns as f64 / 1_000_000_000.0;
+            // The `signal` field carries either an OS signal number (SIGSEGV,
+            // SIGILL, SIGBUS, SIGFPE, …) or a canonical `HEW_TRAP_*` discriminator
+            // (200-band) depending on the crash path. `trap_kind` is the resolved
+            // human-readable slug derived through `ExitReason::from_error_code`,
+            // so downstream observe/profiler consumers no longer need their own
+            // copy of the trap-code → name table.
+            let trap_kind =
+                crate::internal::types::ExitReason::from_error_code(crash.signal).trap_kind_name();
             let _ = write!(
                 json,
-                r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"msg_type":{},"fault_addr":{}}}"#,
+                r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"trap_kind":"{trap_kind}","msg_type":{},"fault_addr":{}}}"#,
                 crash.actor_id, crash.signal, crash.msg_type, crash.fault_addr,
             );
         }
@@ -377,16 +392,16 @@ pub(crate) unsafe fn build_crash_report(
 
     // SAFETY: Caller guarantees actor is valid.
     {
-        let (id, pid) = if actor.is_null() {
-            (0, 0)
+        let id = if actor.is_null() {
+            0
         } else {
             // SAFETY: Caller guarantees actor pointer is valid.
-            unsafe { ((*actor).id, (*actor).pid) }
+            unsafe { (*actor).id }
         };
 
         CrashReport {
             actor_id: id,
-            actor_pid: pid,
+            actor_pid: id,
             signal,
             signal_code,
             fault_addr,

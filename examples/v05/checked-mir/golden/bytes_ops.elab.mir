@@ -1,0 +1,1277 @@
+ElaboratedMirFunction {
+    name: "main",
+    return_ty: I64,
+    statements: [
+        Bind {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            site: SiteId(
+                0,
+            ),
+            ty: Bytes,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            site: SiteId(
+                5,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                3,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            site: SiteId(
+                9,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                1,
+            ),
+            name: "first",
+            site: SiteId(
+                8,
+            ),
+            ty: U8,
+        },
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "first",
+            site: SiteId(
+                12,
+            ),
+            ty: U8,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                2,
+            ),
+            name: "fi",
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                2,
+            ),
+            name: "fi",
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                13,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            site: SiteId(
+                17,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                16,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            site: SiteId(
+                21,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "slice",
+            site: SiteId(
+                20,
+            ),
+            ty: Bytes,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "slice",
+            site: SiteId(
+                26,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                24,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "slice",
+            site: SiteId(
+                31,
+            ),
+            ty: Bytes,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                29,
+            ),
+            ty: Unit,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    34,
+                ),
+            ),
+            ty: I64,
+        },
+        Drop {
+            binding: BindingId(
+                3,
+            ),
+            name: "slice",
+            ty: Bytes,
+        },
+        Drop {
+            binding: BindingId(
+                0,
+            ),
+            name: "b",
+            ty: Bytes,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                1,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: U8,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: U8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: Bytes,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "hew_string_to_bytes",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 1,
+                callee: "println_i64",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 2,
+                callee: "println_i64",
+                next: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "println_i64",
+                next: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 4,
+                callee: "hew_bytes_to_string",
+                next: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 5,
+                callee: "println_str",
+                next: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 6,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            13,
+                        ),
+                        ty: Bytes,
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_bytes_drop",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            2,
+                        ),
+                        ty: Bytes,
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_bytes_drop",
+                        },
+                    },
+                ],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                7,
+            ),
+            name: "val",
+            site: SiteId(
+                64,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    63,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                8,
+            ),
+            name: "val",
+            site: SiteId(
+                67,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    66,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                9,
+            ),
+            name: "val",
+            site: SiteId(
+                70,
+            ),
+            ty: U32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    69,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                10,
+            ),
+            name: "val",
+            site: SiteId(
+                73,
+            ),
+            ty: U64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    72,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                11,
+            ),
+            name: "val",
+            site: SiteId(
+                76,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    75,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_bool",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "val",
+            site: SiteId(
+                79,
+            ),
+            ty: Char,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    78,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_char",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                13,
+            ),
+            name: "val",
+            site: SiteId(
+                82,
+            ),
+            ty: F64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    81,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_f64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                14,
+            ),
+            name: "val",
+            site: SiteId(
+                84,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    84,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Return {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}

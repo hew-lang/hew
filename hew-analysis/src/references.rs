@@ -101,6 +101,7 @@ pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
             Item::Wire(w) => Some(w.name.as_str()),
             Item::TypeAlias(ta) => Some(ta.name.as_str()),
             Item::Machine(m) => Some(m.name.as_str()),
+            Item::Record(r) => Some(r.name.as_str()),
             Item::Import(_) | Item::ExternBlock(_) | Item::Impl(_) => None,
         };
         if item_name == Some(name) {
@@ -428,6 +429,7 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Or(left, right) => {
             pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
         }
+        Pattern::Regex { captures, .. } => captures.iter().any(|c| c == name),
         Pattern::Wildcard | Pattern::Literal(_) => false,
     }
 }
@@ -481,6 +483,13 @@ impl RefsVisitor<'_> {
             Pattern::Or(left, right) => {
                 self.push_pattern_matches(&left.0, &left.1);
                 self.push_pattern_matches(&right.0, &right.1);
+            }
+            Pattern::Regex { captures, .. } => {
+                for capture_name in captures {
+                    if capture_name == self.name {
+                        self.spans.push(span.clone());
+                    }
+                }
             }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
@@ -660,7 +669,7 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
         Item::Const(c) => count_idents_in_expr(&c.value.0, counts),
         Item::Supervisor(s) => {
             for child in &s.children {
-                for arg in &child.args {
+                for (_field_name, arg) in &child.args {
                     count_idents_in_expr(&arg.0, counts);
                 }
             }
@@ -673,7 +682,12 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&transition.body.0, counts);
             }
         }
-        Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+        // Record fields contain only type annotations; no expression idents to count.
+        Item::Record(_)
+        | Item::Import(_)
+        | Item::ExternBlock(_)
+        | Item::Wire(_)
+        | Item::TypeAlias(_) => {}
     }
 }
 
@@ -786,18 +800,18 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             count_idents_in_expr(&target.0, counts);
             for (_, val) in args {
                 count_idents_in_expr(&val.0, counts);
             }
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => count_idents_in_block(block, counts),
-        Expr::Scope { body, .. } => count_idents_in_block(body, counts),
+        Expr::Block(block) | Expr::Scope { body: block } => {
+            count_idents_in_block(block, counts);
+        }
+        Expr::UnsafeBlock(block) => {
+            count_idents_in_block(block, counts);
+        }
         Expr::ForkChild { expr, .. } => count_idents_in_expr(&expr.0, counts),
         Expr::If {
             condition,
@@ -848,10 +862,6 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             for elem in elems {
                 count_idents_in_expr(&elem.0, counts);
             }
-        }
-        Expr::Send { target, message } => {
-            count_idents_in_expr(&target.0, counts);
-            count_idents_in_expr(&message.0, counts);
         }
         Expr::Select {
             arms: sel_arms,
@@ -1034,7 +1044,7 @@ mod tests {
 
     #[test]
     fn local_shadowing_global_stays_local() {
-        let source = "fn foo() -> int { 1 }\nfn main() {\n    let foo = 2;\n    foo\n}";
+        let source = "fn foo() -> i64 { 1 }\nfn main() {\n    let foo = 2;\n    foo\n}";
         let pr = parse(source);
         let local_offset = source.find("let foo").unwrap() + 4;
         let (_name, spans) =
@@ -1259,7 +1269,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(make_config());\n",
+            "    child w: Worker(init: make_config());\n",
             "}",
         );
         let pr = parse(source);
@@ -1286,6 +1296,48 @@ mod tests {
     }
 
     #[test]
+    fn parse_supervisor_named_child_arg_stores_expr() {
+        use hew_parser::ast::Item;
+        // Verify that the parser stores named child args in ChildSpec.args
+        // so analysis passes can walk them.
+        let source = concat!(
+            "fn make_config() -> Int { 42 }\n",
+            "actor Worker {\n",
+            "    receive fn start() {}\n",
+            "}\n",
+            "supervisor Pool {\n",
+            "    child w: Worker(init: make_config());\n",
+            "}",
+        );
+        let pr = parse(source);
+        // Verify no parse errors and args are stored
+        assert!(
+            pr.errors.is_empty(),
+            "parse must succeed with no errors; got: {:?}",
+            pr.errors
+        );
+        let sup = pr
+            .program
+            .items
+            .iter()
+            .find_map(|(item, _)| {
+                if let Item::Supervisor(s) = item {
+                    Some(s)
+                } else {
+                    None
+                }
+            })
+            .expect("supervisor should be in AST");
+        assert_eq!(sup.children.len(), 1);
+        assert_eq!(
+            sup.children[0].args.len(),
+            1,
+            "child w must have 1 named arg"
+        );
+        assert_eq!(sup.children[0].args[0].0, "init");
+    }
+
+    #[test]
     fn count_matches_find_refs_for_ident_in_machine_transition_body() {
         // A global function `compute` is referenced in a machine transition body.
         // Previously count_all_references returned 0 because Item::Machine(_)
@@ -1293,10 +1345,12 @@ mod tests {
         let source = concat!(
             "fn compute() -> Int { 0 }\n",
             "machine Counter {\n",
+            "    events {\n",
+            "        Start;\n",
+            "    }\n",
             "    state Idle;\n",
             "    state Running;\n",
-            "    event Start;\n",
-            "    on Start: Idle -> Running { compute() }\n",
+            "    on Start: Idle => Running { compute() }\n",
             "}",
         );
         let pr = parse(source);
@@ -1329,10 +1383,12 @@ mod tests {
         let source = concat!(
             "const flag: Bool = true;\n",
             "machine Gate {\n",
+            "    events {\n",
+            "        Try;\n",
+            "    }\n",
             "    state Locked;\n",
             "    state Open;\n",
-            "    event Try;\n",
-            "    on Try: Locked -> Open when flag { Open }\n",
+            "    on Try: Locked => Open when flag { Open }\n",
             "}",
         );
         let pr = parse(source);

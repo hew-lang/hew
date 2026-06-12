@@ -14,6 +14,9 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 hew-lexer = { path = "../../hew-lexer" }
 hew-parser = { path = ".." }
+hew-types = { path = "../../hew-types" }
+hew-hir = { path = "../../hew-hir" }
+hew-mir = { path = "../../hew-mir" }
 
 [[bin]]
 name = "fuzz_parse"
@@ -34,4 +37,44 @@ doc = false
 [[bin]]
 name = "fuzz_machine"
 path = "fuzz_targets/fuzz_machine.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_check"
+path = "fuzz_targets/fuzz_check.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mir"
+path = "fuzz_targets/fuzz_mir.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_machine_decls"
+path = "fuzz_targets/fuzz_machine_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_gen_blocks"
+path = "fuzz_targets/fuzz_gen_blocks.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_record_types"
+path = "fuzz_targets/fuzz_record_types.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_actor_decls"
+path = "fuzz_targets/fuzz_actor_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_supervisor_decls"
+path = "fuzz_targets/fuzz_supervisor_decls.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_qualified_ctor_resolution"
+path = "fuzz_targets/fuzz_qualified_ctor_resolution.rs"
 doc = false

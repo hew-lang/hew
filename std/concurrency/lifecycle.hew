@@ -1,0 +1,77 @@
+//! Generic lifecycle state machine for resource-owning services.
+
+/// Opaque lifecycle failure payload.
+pub enum Error {
+    Code(i64);
+}
+
+pub machine Lifecycle<T> {
+    events {
+        Initialise;
+        Started { handle: T; }
+        Stop;
+        Crashed { error: Error; }
+    }
+
+    state Created;
+    state Initialising;
+    state Running { handle: T; }
+    state Stopping;
+    state Stopped;
+    state Faulted { error: Error; }
+
+    on Initialise: Created => Initialising {
+        Initialising
+    }
+    on Initialise: _ => _ {
+        state
+    }
+    on Started: Initialising => Running {
+        Running { handle: event.handle }
+    }
+    on Started: _ => _ {
+        state
+    }
+    on Stop: Running => Stopping {
+        Stopping
+    }
+    on Stop: Stopping => Stopped {
+        Stopped
+    }
+    on Stop: _ => _ {
+        state
+    }
+    on Crashed: Initialising => Faulted {
+        Lifecycle::Faulted { error: event.error }
+    }
+    on Crashed: Running => Faulted {
+        Lifecycle::Faulted { error: event.error }
+    }
+    on Crashed: _ => _ {
+        state
+    }
+}
+
+#[test]
+fn lifecycle_i64_happy_path_state_names() {
+    var lifecycle: Lifecycle<i64> = Lifecycle::Created;
+    assert(lifecycle.state_name() == "Created");
+    lifecycle.step(Initialise);
+    assert(lifecycle.state_name() == "Initialising");
+    lifecycle.step(LifecycleEvent::Started { handle: 42 });
+    assert(lifecycle.state_name() == "Running");
+    lifecycle.step(Stop);
+    assert(lifecycle.state_name() == "Stopping");
+    lifecycle.step(Stop);
+    assert(lifecycle.state_name() == "Stopped");
+}
+
+#[test]
+fn lifecycle_string_faulted_path_state_names() {
+    var lifecycle: Lifecycle<string> = Lifecycle::Created;
+    assert(lifecycle.state_name() == "Created");
+    lifecycle.step(Initialise);
+    assert(lifecycle.state_name() == "Initialising");
+    lifecycle.step(LifecycleEvent::Crashed { error: Error::Code(7) });
+    assert(lifecycle.state_name() == "Faulted");
+}

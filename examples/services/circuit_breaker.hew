@@ -17,15 +17,15 @@
 // Returns request_id * 10 on success, -1 on failure.
 // Failure is triggered by setting the actor to "degraded" mode.
 actor Backend {
-    let healthy: int; // 1 = healthy, 0 = degraded
-    receive fn call(request_id: int) -> int {
+    var healthy: i64; // 1 = healthy, 0 = degraded
+    receive fn call(request_id: i64) -> i64 {
         if healthy == 0 {
             -1
         } else {
             request_id * 10
         }
     }
-    receive fn set_healthy(val: int) {
+    receive fn set_healthy(val: i64) {
         healthy = val;
         if val == 1 {
             println("[backend] restored to healthy");
@@ -42,10 +42,10 @@ actor Backend {
 //   1 = Open     (rejecting all calls)
 //   2 = HalfOpen (allowing one probe)
 actor CircuitBreaker {
-    let backend: ActorRef<Backend>;
-    let state: int; // 0=Closed, 1=Open, 2=HalfOpen
-    let failure_count: int;
-    let max_failures: int; // trip threshold
+    let backend: LocalPid<Backend>;
+    var state: i64; // 0=Closed, 1=Open, 2=HalfOpen
+    var failure_count: i64;
+    let max_failures: i64; // trip threshold
     init() {
         println(f"[breaker] init: max_failures={max_failures}");
     }
@@ -54,7 +54,7 @@ actor CircuitBreaker {
     //   Returns  >= 0  on success (the backend result)
     //   Returns -1     if the breaker is open (fast-fail)
     //   Returns -2     if the backend call failed
-    receive fn request(id: int) -> int {
+    receive fn request(id: i64) -> i64 {
         if state == 1 {
             // Open — reject immediately
             println(f"[breaker] OPEN — rejecting request {id}");
@@ -92,7 +92,7 @@ actor CircuitBreaker {
             println("[breaker] Open → HalfOpen (allowing probe)");
         }
     }
-    receive fn get_state() -> int {
+    receive fn get_state() -> i64 {
         state
     }
 }

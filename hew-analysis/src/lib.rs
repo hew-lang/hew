@@ -59,6 +59,9 @@ pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionKind,
     pub detail: Option<String>,
+    /// Markdown documentation extracted from the doc-comment on the declaration,
+    /// if any. Surfaced as `CompletionItem.documentation` in the LSP response.
+    pub documentation: Option<String>,
     pub insert_text: Option<String>,
     pub insert_text_is_snippet: bool,
     pub sort_text: Option<String>,
@@ -146,15 +149,6 @@ pub mod token_modifiers {
     pub const DECLARATION: u32 = 1 << 0;
     pub const READONLY: u32 = 1 << 1;
     pub const ASYNC: u32 = 1 << 2;
-}
-
-// ── References ───────────────────────────────────────────────────────
-
-/// A reference location with a flag indicating whether it is the definition site.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReferenceSpan {
-    pub span: OffsetSpan,
-    pub is_definition: bool,
 }
 
 // ── Rename ───────────────────────────────────────────────────────────
@@ -284,6 +278,9 @@ pub struct SignatureHelpResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignatureInfo {
     pub label: String,
+    /// Markdown documentation extracted from the doc-comment on the declaration,
+    /// if any. Surfaced as `SignatureInformation.documentation` in the LSP response.
+    pub documentation: Option<String>,
     pub parameters: Vec<ParameterInfo>,
 }
 

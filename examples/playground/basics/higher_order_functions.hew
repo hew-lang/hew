@@ -1,25 +1,27 @@
-//! @name Higher-Order Functions
-//! @description Lambdas and function passing
+//! @name Function Composition
+//! @description Named functions and enum dispatch for composable behaviour
 
-fn apply(f: fn(int) -> int, x: int) -> int {
-    f(x)
+enum Operation {
+    Double;
+    Square;
+    Negate;
+}
+
+fn apply(op: Operation, x: i64) -> i64 {
+    match op {
+        Double => x * 2,
+        Square => x * x,
+        Negate => 0 - x,
+    }
+}
+
+fn compose(a: Operation, b: Operation, x: i64) -> i64 {
+    apply(b, apply(a, x))
 }
 
 fn main() {
-    let double = (x: int) -> int => {
-        x * 2
-    };
-    let square = (x: int) -> int => {
-        x * x
-    };
-    let negate = (x: int) -> int => {
-        0 - x
-    };
-    // Calculate and store the value for display
-    let double_res = apply(double, 5);
-    println(f"double(5) = {double_res}");
-
-    // Just directly display it in the interpolated string format
-    println(f"square(5) = {apply(square, 5)}");
-    println(f"negate(7) = {apply(negate, 7)}");
+    println(f"double(5)          = {apply(Double, 5)}");
+    println(f"square(5)          = {apply(Square, 5)}");
+    println(f"negate(7)          = {apply(Negate, 7)}");
+    println(f"double then square = {compose(Double, Square, 3)}");
 }

@@ -4,17 +4,22 @@
 //! operations.  They use `match` on the built-in `Result` type and avoid
 //! FFI calls entirely for the supported element types.
 //!
+//! v0.5 supports user functions returning `Result<T, E>` for bitcopy payloads
+//! (i64, f64, bool, and other non-heap-owning types). Composite returns of
+//! heap-owning payloads (e.g. `Result<string, string>`) are rejected at compile
+//! time until tag-aware drop is implemented.
+//!
 //! # Examples
 //!
 //! ```
 //! import std::result;
 //!
 //! fn main() {
-//!     let x: Result<int, int> = Ok(42);
+//!     let x: Result<i64, i64> = Ok(42);
 //!     println(result.is_ok_int(x));          // true
 //!     println(result.unwrap_or_int(x, 0));   // 42
 //!
-//!     let y: Result<int, int> = Err(1);
+//!     let y: Result<i64, i64> = Err(1);
 //!     println(result.is_err_int(y));          // true
 //!     println(result.unwrap_or_int(y, -1));   // -1
 //! }
@@ -22,7 +27,7 @@
 
 // ── Predicates ──────────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_int(r: Result<int, int>) -> bool {
+pub fn is_ok_int(r: Result<i64, i64>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -30,7 +35,7 @@ pub fn is_ok_int(r: Result<int, int>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_int(r: Result<int, int>) -> bool {
+pub fn is_err_int(r: Result<i64, i64>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -39,7 +44,7 @@ pub fn is_err_int(r: Result<int, int>) -> bool {
 
 // ── Unwrap ──────────────────────────────────────────────────────────
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_int(r: Result<int, int>) -> int {
+pub fn unwrap_int(r: Result<i64, i64>) -> i64 {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -50,7 +55,7 @@ pub fn unwrap_int(r: Result<int, int>) -> int {
 }
 
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_int(r: Result<int, int>) -> int {
+pub fn unwrap_err_int(r: Result<i64, i64>) -> i64 {
     match r {
         Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
@@ -61,7 +66,7 @@ pub fn unwrap_err_int(r: Result<int, int>) -> int {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
+pub fn unwrap_or_int(r: Result<i64, i64>, fallback: i64) -> i64 {
     match r {
         Ok(v) => v,
         Err(_) => fallback,
@@ -70,7 +75,7 @@ pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
 
 // ── Map ─────────────────────────────────────────────────────────────
 /// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
-pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+pub fn map_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
         Ok(v) => Ok(f(v)),
         Err(e) => Err(e),
@@ -78,7 +83,7 @@ pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
 }
 
 /// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
-pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+pub fn map_err_int(r: Result<i64, i64>, f: fn(i64) -> i64) -> Result<i64, i64> {
     match r {
         Ok(v) => Ok(v),
         Err(e) => Err(f(e)),
@@ -87,16 +92,16 @@ pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
 
 // ── Contains ────────────────────────────────────────────────────────
 /// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
+pub fn contains_int(r: Result<i64, i64>, needle: i64) -> bool {
     match r {
         Ok(v) => v == needle,
         Err(_) => false,
     }
 }
 
-// ── String variants ────────────────────────────────────────────────
+// ── string variants ────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_str(r: Result<String, String>) -> bool {
+pub fn is_ok_str(r: Result<string, string>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -104,7 +109,7 @@ pub fn is_ok_str(r: Result<String, String>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_str(r: Result<String, String>) -> bool {
+pub fn is_err_str(r: Result<string, string>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -112,7 +117,7 @@ pub fn is_err_str(r: Result<String, String>) -> bool {
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_str(r: Result<String, String>) -> String {
+pub fn unwrap_str(r: Result<string, string>) -> string {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -123,7 +128,7 @@ pub fn unwrap_str(r: Result<String, String>) -> String {
 }
 
 /// Unwrap the `Err` value.  Panics if the result is `Ok`.
-pub fn unwrap_err_str(r: Result<String, String>) -> String {
+pub fn unwrap_err_str(r: Result<string, string>) -> string {
     match r {
         Ok(v) => {
             panic(f"result: unwrap_err called on Ok({v})");
@@ -134,7 +139,7 @@ pub fn unwrap_err_str(r: Result<String, String>) -> String {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_str(r: Result<String, String>, fallback: String) -> String {
+pub fn unwrap_or_str(r: Result<string, string>, fallback: string) -> string {
     match r {
         Ok(v) => v,
         Err(_) => fallback,
@@ -142,7 +147,7 @@ pub fn unwrap_or_str(r: Result<String, String>, fallback: String) -> String {
 }
 
 /// Returns `true` if the result is `Ok` and contains `needle`.
-pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
+pub fn contains_str(r: Result<string, string>, needle: string) -> bool {
     match r {
         Ok(v) => v == needle,
         Err(_) => false,
@@ -151,7 +156,7 @@ pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
 
 // ── Float variants ─────────────────────────────────────────────────
 /// Returns `true` if the result contains an `Ok` value.
-pub fn is_ok_f64(r: Result<f64, String>) -> bool {
+pub fn is_ok_f64(r: Result<f64, string>) -> bool {
     match r {
         Ok(_) => true,
         Err(_) => false,
@@ -159,7 +164,7 @@ pub fn is_ok_f64(r: Result<f64, String>) -> bool {
 }
 
 /// Returns `true` if the result contains an `Err` value.
-pub fn is_err_f64(r: Result<f64, String>) -> bool {
+pub fn is_err_f64(r: Result<f64, string>) -> bool {
     match r {
         Ok(_) => false,
         Err(_) => true,
@@ -167,7 +172,7 @@ pub fn is_err_f64(r: Result<f64, String>) -> bool {
 }
 
 /// Unwrap the `Ok` value.  Panics if the result is `Err`.
-pub fn unwrap_f64(r: Result<f64, String>) -> f64 {
+pub fn unwrap_f64(r: Result<f64, string>) -> f64 {
     match r {
         Ok(v) => v,
         Err(e) => {
@@ -178,9 +183,29 @@ pub fn unwrap_f64(r: Result<f64, String>) -> f64 {
 }
 
 /// Unwrap the `Ok` value, or return `fallback` if `Err`.
-pub fn unwrap_or_f64(r: Result<f64, String>, fallback: f64) -> f64 {
+pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
     match r {
         Ok(v) => v,
         Err(_) => fallback,
+    }
+}
+
+// ── Declarative receiver FFI ─────────────────────────────────────────
+impl<T, E> Result<T, E> {
+    #[extern_symbol(hew_result_is_ok)]
+    fn is_ok(r: Result<T, E>) -> bool {
+        panic("hew_result_is_ok: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol(hew_result_is_err)]
+    fn is_err(r: Result<T, E>) -> bool {
+        panic("hew_result_is_err: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol("hew_result_unwrap_{T}")]
+    fn unwrap(r: Result<T, E>) -> T {
+        panic("hew_result_unwrap: declarative FFI body reached without rewrite")
+    }
+    #[extern_symbol("hew_result_unwrap_or_{T}")]
+    fn unwrap_or(r: Result<T, E>, fallback: T) -> T {
+        panic("hew_result_unwrap_or: declarative FFI body reached without rewrite")
     }
 }

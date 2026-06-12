@@ -1,0 +1,26 @@
+// Accept fixture (NEW-6d): `await ln.accept() | after d` — the simplest
+// deadline-accept form. An actor creates a listener, parks on accept with a
+// short deadline, and receives Err(IoError::TimedOut) because no client
+// connects. This was the original reject-deferred placeholder; it now
+// compiles and runs cleanly under v0.5.
+//
+// Harness: compile + run (HEW_WORKERS=1). Expected exit: 7 (timeout path).
+import std::net;
+
+actor Server {
+    receive fn go() {
+        let ln = net.listen("127.0.0.1:0");
+        let code = match await ln.accept() | after 50ms {
+            Ok(_conn) => 42,
+            Err(_e) => 7,
+        };
+        exit(code);
+    }
+}
+
+fn main() {
+    let s = spawn Server;
+    s.go();
+    sleep_ms(500);
+    exit(99);
+}

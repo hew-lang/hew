@@ -13,15 +13,32 @@
 // Pattern: Ask/Reply — the caller blocks until the limiter replies with
 // a boolean (allowed or rejected). This is back-pressure by design.
 actor RateLimiter {
-    let tokens: int;
-    let max_tokens: int;
-    let refill_amount: int;
-    init() {
-        println(f"[limiter] ready: {tokens}/{max_tokens} tokens, refill={refill_amount}");
-    }
 
     // Try to acquire a token. Returns 1 if allowed, 0 if rejected.
-    receive fn acquire() -> int {
+
+    // Refill tokens (called periodically by a refill timer).
+
+    // Simulated API worker that checks the limiter before processing.
+
+    // Periodic refill timer — adds tokens at a fixed interval.
+
+    // Create a limiter with 5 tokens, max 5, refilling 3 at a time
+
+    // Two API workers sharing the same limiter
+
+    // Start a refill timer: refill every 200ms, 3 cycles
+
+    // Burst: send 8 requests through 2 workers (only 5 tokens available)
+
+    // Check remaining tokens
+
+    // Wait for refill, then send more
+
+    // Final stats
+    var tokens: i64;
+    let max_tokens: i64;
+    let refill_amount: i64;
+    receive fn acquire() -> i64 {
         if tokens > 0 {
             tokens = tokens - 1;
             1
@@ -29,48 +46,50 @@ actor RateLimiter {
             0
         }
     }
-
-    // Refill tokens (called periodically by a refill timer).
     receive fn refill() {
         let prev = tokens;
         tokens = tokens + refill_amount;
         if tokens > max_tokens {
             tokens = max_tokens;
         }
-        println(f"[limiter] refill: {prev} → {tokens}");
+        println(f"[limiter] refill: {prev} -> {tokens}");
     }
-    receive fn available() -> int {
+    receive fn available() -> i64 {
         tokens
     }
 }
 
-// Simulated API worker that checks the limiter before processing.
 actor ApiWorker {
-    let id: int;
-    let limiter: ActorRef<RateLimiter>;
-    let accepted: int;
-    let rejected: int;
-    receive fn handle_request(request_id: int) {
-        let allowed = await limiter.acquire();
-        if allowed == 1 {
-            accepted = accepted + 1;
-            println(f"  [worker {id}] request {request_id} → ALLOWED ({accepted} served)");
-        } else {
-            rejected = rejected + 1;
-            println(f"  [worker {id}] request {request_id} → REJECTED ({rejected} dropped)");
+    let id: i64;
+    let limiter: LocalPid<RateLimiter>;
+    var accepted: i64;
+    var rejected: i64;
+    receive fn handle_request(request_id: i64) {
+        scope {
+            let allowed_r = await limiter.acquire();
+            let allowed = match allowed_r {
+                Ok(v) => v,
+                Err(_) => 0,
+            };
+            if allowed == 1 {
+                accepted = accepted + 1;
+                println(f"  [worker {id}] request {request_id}: ALLOWED ({accepted} served)");
+            } else {
+                rejected = rejected + 1;
+                println(f"  [worker {id}] request {request_id}: REJECTED ({rejected} dropped)");
+            }
         }
     }
-    receive fn stats() -> int {
+    receive fn stats() -> i64 {
         println(f"  [worker {id}] accepted={accepted} rejected={rejected}");
         accepted
     }
 }
 
-// Periodic refill timer — adds tokens at a fixed interval.
 actor RefillTimer {
-    let limiter: ActorRef<RateLimiter>;
-    let interval_ms: int;
-    let cycles: int;
+    let limiter: LocalPid<RateLimiter>;
+    let interval_ms: i64;
+    let cycles: i64;
     receive fn start() {
         for i in 0 .. cycles {
             sleep_ms(interval_ms);
@@ -83,17 +102,11 @@ actor RefillTimer {
 fn main() {
     println("=== Token Bucket Rate Limiter ===");
     println("");
-
-    // Create a limiter with 5 tokens, max 5, refilling 3 at a time
     let limiter = spawn RateLimiter(tokens: 5, max_tokens: 5, refill_amount: 3);
-    // Two API workers sharing the same limiter
     let w1 = spawn ApiWorker(id: 1, limiter: limiter, accepted: 0, rejected: 0);
     let w2 = spawn ApiWorker(id: 2, limiter: limiter, accepted: 0, rejected: 0);
-    // Start a refill timer: refill every 200ms, 3 cycles
     let timer = spawn RefillTimer(limiter: limiter, interval_ms: 200, cycles: 3);
     timer.start();
-
-    // ── Burst: send 8 requests through 2 workers (only 5 tokens available) ──
     println("--- Burst: 8 requests, 5 tokens ---");
     w1.handle_request(0);
     w2.handle_request(1);
@@ -104,23 +117,23 @@ fn main() {
     w1.handle_request(6);
     w2.handle_request(7);
     sleep_ms(100);
-
-    // Check remaining tokens
-    let remaining = await limiter.available();
-    println(f"Tokens remaining after burst: {remaining}");
-
-    // ── Wait for refill, then send more ──
+    let remaining_r = await limiter.available();
+    match remaining_r {
+        Ok(n) => println(f"Tokens remaining after burst: {n}"),
+        Err(_) => println("Tokens remaining: err"),
+    }
     println("");
     println("--- After refill ---");
     sleep_ms(250);
-    let after_refill = await limiter.available();
-    println(f"Tokens after refill: {after_refill}");
+    let after_refill_r = await limiter.available();
+    match after_refill_r {
+        Ok(n) => println(f"Tokens after refill: {n}"),
+        Err(_) => println("Tokens after refill: err"),
+    }
     w1.handle_request(100);
     w2.handle_request(101);
     w1.handle_request(102);
     sleep_ms(100);
-
-    // ── Final stats ──
     println("");
     println("--- Worker stats ---");
     await w1.stats();

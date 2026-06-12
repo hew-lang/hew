@@ -20,35 +20,35 @@
 //! ```
 
 /// Test whether a string is a valid IP address (v4 or v6).
-pub fn is_valid(addr: String) -> bool {
+pub fn is_valid(addr: string) -> bool {
     unsafe {
         hew_ip_parse(addr)
     }
 }
 
 /// Test whether an IP address is IPv4.
-pub fn is_v4(addr: String) -> bool {
+pub fn is_v4(addr: string) -> bool {
     unsafe {
         hew_ip_is_v4(addr)
     }
 }
 
 /// Test whether an IP address is IPv6.
-pub fn is_v6(addr: String) -> bool {
+pub fn is_v6(addr: string) -> bool {
     unsafe {
         hew_ip_is_v6(addr)
     }
 }
 
 /// Test whether an IP address is a loopback address (e.g. `127.0.0.1`, `::1`).
-pub fn is_loopback(addr: String) -> bool {
+pub fn is_loopback(addr: string) -> bool {
     unsafe {
         hew_ip_is_loopback(addr)
     }
 }
 
 /// Test whether an IP address is in a private range (e.g. `10.x`, `192.168.x`).
-pub fn is_private(addr: String) -> bool {
+pub fn is_private(addr: string) -> bool {
     unsafe {
         hew_ip_is_private(addr)
     }
@@ -62,7 +62,7 @@ pub fn is_private(addr: String) -> bool {
 /// ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3")  // true
 /// ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1") // false
 /// ```
-pub fn cidr_contains(cidr: String, ip: String) -> bool {
+pub fn cidr_contains(cidr: string, ip: string) -> bool {
     unsafe {
         hew_cidr_contains(cidr, ip)
     } == 1
@@ -75,7 +75,7 @@ pub fn cidr_contains(cidr: String, ip: String) -> bool {
 /// ```
 /// ipnet.cidr_network("192.168.1.0/24")  // "192.168.1.0"
 /// ```
-pub fn cidr_network(cidr: String) -> String {
+pub fn cidr_network(cidr: string) -> string {
     unsafe {
         hew_cidr_network(cidr)
     }
@@ -88,7 +88,7 @@ pub fn cidr_network(cidr: String) -> String {
 /// ```
 /// ipnet.cidr_broadcast("192.168.1.0/24")  // "192.168.1.255"
 /// ```
-pub fn cidr_broadcast(cidr: String) -> String {
+pub fn cidr_broadcast(cidr: string) -> string {
     unsafe {
         hew_cidr_broadcast(cidr)
     }
@@ -101,7 +101,7 @@ pub fn cidr_broadcast(cidr: String) -> String {
 /// ```
 /// ipnet.cidr_hosts("192.168.1.0/24")  // 254
 /// ```
-pub fn cidr_hosts(cidr: String) -> int {
+pub fn cidr_hosts(cidr: string) -> i64 {
     unsafe {
         hew_cidr_hosts(cidr)
     }
@@ -109,13 +109,13 @@ pub fn cidr_hosts(cidr: String) -> int {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_ip_parse(addr: String) -> bool;
-    fn hew_ip_is_v4(addr: String) -> bool;
-    fn hew_ip_is_v6(addr: String) -> bool;
-    fn hew_ip_is_loopback(addr: String) -> bool;
-    fn hew_ip_is_private(addr: String) -> bool;
-    fn hew_cidr_contains(cidr: String, ip: String) -> i32;
-    fn hew_cidr_network(cidr: String) -> String;
-    fn hew_cidr_broadcast(cidr: String) -> String;
-    fn hew_cidr_hosts(cidr: String) -> i64;
+    fn hew_ip_parse(addr: string) -> bool;
+    fn hew_ip_is_v4(addr: string) -> bool;
+    fn hew_ip_is_v6(addr: string) -> bool;
+    fn hew_ip_is_loopback(addr: string) -> bool;
+    fn hew_ip_is_private(addr: string) -> bool;
+    fn hew_cidr_contains(cidr: string, ip: string) -> i32;
+    fn hew_cidr_network(cidr: string) -> string;
+    fn hew_cidr_broadcast(cidr: string) -> string;
+    fn hew_cidr_hosts(cidr: string) -> i64;
 }

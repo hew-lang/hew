@@ -1,0 +1,25 @@
+// Exercises wildcard arms in match expressions over a user-defined enum.
+//
+// This fixture verifies:
+//   1. A wildcard arm (`_`) catches every variant not named earlier.
+//   2. The wildcard branch's body is the result for both Green and Blue.
+//   3. Earlier explicit arms still win for their named variants.
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn describe(c: Colour) {
+    match c {
+        Colour::Red => println("red-direct"),
+        _ => println("not-red"),
+    }
+}
+
+fn main() {
+    describe(Colour::Red);
+    describe(Colour::Green);
+    describe(Colour::Blue);
+    println("done");
+}

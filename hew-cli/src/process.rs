@@ -1,17 +1,17 @@
 //! Bounded child-process execution helpers for native Hew binaries.
 
-#![allow(
-    dead_code,
-    reason = "the dispatcher short-circuits `hew run` with a cutover error before \
-              reaching this module; its helpers are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
-)]
-
 use std::io::Read;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// Per-stream capture cap for bounded child output.
+///
+/// Four MiB preserves useful diagnostics while preventing an infinite-output
+/// child from growing the CLI or test process without bound before timeout.
+const MAX_CAPTURED_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const OUTPUT_READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// Result of running a native binary under a timeout.
 #[derive(Debug)]
@@ -43,6 +43,7 @@ pub(crate) enum TimeoutKillTarget {
     /// Kill only the direct child process.
     Child,
     /// Kill the child's process group.
+    #[cfg(unix)]
     ProcessGroup,
 }
 
@@ -247,9 +248,12 @@ impl BoundedChild {
         }
     }
 
-    /// Return the child's process ID.
-    pub(crate) fn id(&self) -> u32 {
-        self.child.id()
+    /// Wait without a deadline while preserving the same process-isolation
+    /// setup used by timed runs.
+    pub(crate) fn wait_unbounded(&mut self) -> Result<ExitStatus, String> {
+        self.child
+            .wait()
+            .map_err(|e| format!("cannot wait for child process: {e}"))
     }
 }
 
@@ -391,10 +395,39 @@ impl ChildPipeReader {
 
 fn drain_pipe<T: Read>(mut stream: T, name: &str) -> Result<String, String> {
     let mut bytes = Vec::new();
-    stream
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read child {name}: {e}"))?;
+    let mut chunk = [0; OUTPUT_READ_CHUNK_BYTES];
+    let mut truncated = false;
+
+    loop {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|e| format!("cannot read child {name}: {e}"))?;
+        if read == 0 {
+            break;
+        }
+
+        let remaining = MAX_CAPTURED_OUTPUT_BYTES.saturating_sub(bytes.len());
+        if remaining == 0 {
+            truncated = true;
+            continue;
+        }
+
+        let keep = remaining.min(read);
+        bytes.extend_from_slice(&chunk[..keep]);
+        if keep < read {
+            truncated = true;
+        }
+    }
+
+    if truncated {
+        bytes.extend_from_slice(truncation_marker().as_bytes());
+    }
+
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn truncation_marker() -> String {
+    format!("\n[output truncated at {MAX_CAPTURED_OUTPUT_BYTES} bytes]\n")
 }
 
 /// Wait for a child process to exit before `timeout`, terminating it otherwise.
@@ -505,39 +538,6 @@ fn kill_timed_out_child(child: &mut Child, kill_target: TimeoutKillTarget) -> Re
         TimeoutKillTarget::Child => {
             kill_child_only(child)?;
             Ok(false)
-        }
-        TimeoutKillTarget::ProcessGroup => {
-            let pid = child.id();
-            match Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .status()
-            {
-                Ok(s) if s.success() => Ok(true),
-                Ok(s) => {
-                    // Exit 128 means the root PID was not found — the child
-                    // exited naturally, but its descendants may still be alive.
-                    // Any other non-zero code means partial or no kill.
-                    // In both cases fall back to a best-effort child kill and
-                    // return false so drain threads are detached, not joined.
-                    kill_child_only(child).map_err(|kill_error| {
-                        format!(
-                            "taskkill exited with {s}; \
-                             fallback child kill also failed: {kill_error}"
-                        )
-                    })?;
-                    Ok(false)
-                }
-                Err(spawn_error) => {
-                    // taskkill.exe not available; fall back to child-only kill.
-                    kill_child_only(child).map_err(|kill_error| {
-                        format!(
-                            "cannot spawn taskkill: {spawn_error}; \
-                             fallback child kill also failed: {kill_error}"
-                        )
-                    })?;
-                    Ok(false)
-                }
-            }
         }
     }
 }
@@ -738,11 +738,14 @@ mod tests {
         let pid_file = dir.path().join("grandchild.pid");
         let pid_file_str = pid_file.to_str().unwrap();
 
-        // Shell script: start a grandchild sleep, record its PID, then spin.
+        // Shell script: start a grandchild sleep, record its PID, then wait.
+        // `wait` blocks with zero CPU until the backgrounded sleep exits (when
+        // killpg fires), avoiding CPU saturation that can delay the echo under
+        // nextest parallel load and cause the PID-file poll to time out.
         let script = dir.path().join("tree_spinner.sh");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwhile true; do :; done\n"),
+            format!("#!/bin/sh\nsleep 999 & echo $! > {pid_file_str}\nwait\n"),
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -811,6 +814,44 @@ mod tests {
         assert!(
             !alive,
             "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout"
+        );
+    }
+
+    #[test]
+    fn run_command_captured_caps_output_and_keeps_draining_promptly() {
+        let output_bytes = MAX_CAPTURED_OUTPUT_BYTES + (1024 * 1024);
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("yes 0123456789abcdef | head -c {output_bytes}"));
+
+        let timeout = Duration::from_secs(20);
+        let started = Instant::now();
+        let outcome =
+            run_command_captured(&mut command, timeout).expect("captured command should run");
+        let elapsed = started.elapsed();
+
+        let BinaryRunOutcome::Success { stdout } = outcome else {
+            panic!("expected successful capped capture, got {outcome:?}");
+        };
+
+        let marker = truncation_marker();
+        // This bound checks that the drain loop does not block reading surplus
+        // data past the cap — it is not a performance gate.  60 s is generous
+        // enough to absorb I/O-scheduler jitter on a loaded parallel test run
+        // while still catching a regression where the loop stalls entirely.
+        assert!(
+            elapsed < Duration::from_mins(1),
+            "capped finite output should return promptly, elapsed {elapsed:?}"
+        );
+        assert!(
+            stdout.ends_with(&marker),
+            "captured stdout should end with truncation marker"
+        );
+        assert_eq!(
+            stdout.len(),
+            MAX_CAPTURED_OUTPUT_BYTES + marker.len(),
+            "captured stdout should be capped plus the marker"
         );
     }
 }

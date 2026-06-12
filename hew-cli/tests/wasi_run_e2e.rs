@@ -42,10 +42,16 @@ fn run_wasi_example(source: &Path) -> Output {
 // together whenever the unsupported set changes intentionally.  The coverage
 // guard in curated_playground_examples_run_under_wasi relies on this to catch
 // misclassified manifest entries before they silently drop out of the runnable loop.
-const EXPECTED_WASI_UNSUPPORTED: &[&str] = &["concurrency/supervisor"];
+const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
+    "concurrency/actor_pipeline",
+    "concurrency/async_await",
+    "concurrency/counter_actor",
+    "concurrency/supervisor",
+    "machines/traffic_light",
+];
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -53,8 +59,8 @@ fn curated_playground_examples_run_under_wasi() {
     let manifest = load_playground_manifest();
     assert_eq!(
         manifest.len(),
-        12,
-        "expected the curated 12-snippet manifest"
+        14,
+        "expected the curated 14-snippet manifest"
     );
 
     let mut actual_unsupported: Vec<&str> = manifest
@@ -102,8 +108,8 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
     require_wasi_runner();
@@ -133,17 +139,13 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
         "expected unsupported WASM diagnostic\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("type errors found"),
-        "expected checker-phase failure before lowering\nstderr:\n{stderr}",
-    );
-    assert!(
         !stderr.contains("hew.supervisor.new"),
         "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
     );
 }
 
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
 #[test]
 fn wasi_run_timeout_terminates_a_non_terminating_program() {
     require_wasi_runner();

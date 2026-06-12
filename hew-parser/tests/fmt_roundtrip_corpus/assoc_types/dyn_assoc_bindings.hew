@@ -1,0 +1,8 @@
+fn consume(iter: dyn Iterator<Item = i32>, pid: dyn Pid<Msg = string>) {
+}
+
+fn consume_pair(pair: dyn Pair<Left = i32, Right = string>) {
+}
+
+fn consume_mapper(mapper: dyn Mapper<i32, string, Key = i32, Value = string>) {
+}

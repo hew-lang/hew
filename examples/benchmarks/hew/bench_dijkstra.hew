@@ -1,4 +1,4 @@
-fn build_weighted_graph(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
+fn build_weighted_graph(adj_nodes: Vec<i64>, adj_weights: Vec<i64>, adj_offsets: Vec<i64>, n: i64) -> i64 {
     for i in 0 .. n + 1 {
         adj_offsets.push(0);
     }
@@ -22,10 +22,10 @@ fn build_weighted_graph(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets:
     return 0;
 }
 
-fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> int {
+fn dijkstra(adj_nodes: Vec<i64>, adj_weights: Vec<i64>, adj_offsets: Vec<i64>, n: i64, start_node: i64) -> i64 {
     let INF = 999999;
-    let dist: Vec<int> = Vec::new();
-    let used: Vec<int> = Vec::new();
+    let dist: Vec<i64> = Vec::new();
+    let used: Vec<i64> = Vec::new();
     for i in 0 .. n {
         dist.push(INF);
         used.push(0);
@@ -65,13 +65,13 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
     return total;
 }
 
-const ITERS: int = 50000;
+const ITERS: i64 = 50000;
 
 fn main() {
     let n = 50;
-    let adj_nodes: Vec<int> = Vec::new();
-    let adj_weights: Vec<int> = Vec::new();
-    let adj_offsets: Vec<int> = Vec::new();
+    let adj_nodes: Vec<i64> = Vec::new();
+    let adj_weights: Vec<i64> = Vec::new();
+    let adj_offsets: Vec<i64> = Vec::new();
     let _ = build_weighted_graph(adj_nodes, adj_weights, adj_offsets, n);
     var checksum = 0;
     for i in 0 .. ITERS {

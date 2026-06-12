@@ -16,27 +16,16 @@
 //! snapshots.  Unregistered dispatch functions fall back to `"Actor"`.
 
 use crate::lifetime::PoisonSafe;
+use crate::send_ptr::SendPtr;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
 use crate::actor::HewActor;
-use crate::internal::types::HewActorState;
+use crate::internal::types::{HewActorState, HewDispatchFn};
 use crate::mailbox::HewMailbox;
 
-/// Wrapper to make `*mut HewActor` `Send` for the registry `HashMap`.
-///
-/// # Safety
-///
-/// `HewActor` implements `Send + Sync`. The raw pointer is only
-/// dereferenced while the actor is live (between register and unregister).
-struct SendPtr(*mut HewActor);
-
-// SAFETY: `HewActor` is `Send + Sync` (see actor.rs). The registry only
-// holds pointers to live actors and unregisters before free.
-unsafe impl Send for SendPtr {}
-
 /// Global registry of live actors. Keyed by actor ID.
-static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr>>> = PoisonSafe::new(None);
+static REGISTRY: PoisonSafe<Option<HashMap<u64, SendPtr<HewActor>>>> = PoisonSafe::new(None);
 
 /// Side table mapping dispatch function pointer (as `usize`) to Hew type name.
 ///
@@ -83,12 +72,7 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 /// type.  Subsequent registrations for the same `dispatch_fn` key are ignored.
 ///
 /// `type_name` must be a `'static` string (a literal baked into the binary).
-pub fn register_dispatch_type(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-    type_name: &'static str,
-) {
+pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: &'static str) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
     if key == 0 {
         return;
@@ -105,11 +89,7 @@ pub fn register_dispatch_type(
 ///
 /// Returns `"Actor"` if the dispatch fn is not registered.
 #[must_use]
-pub fn lookup_dispatch_type(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-) -> &'static str {
+pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> &'static str {
     let key = match dispatch_fn.map(|f| f as usize) {
         Some(k) if k != 0 => k,
         _ => return "Actor",
@@ -136,7 +116,7 @@ pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
 ///
 /// Returns `Some("ActorName::handler_name")` when registered, `None` otherwise.
 /// This variant avoids a `transmute` by operating on the raw `usize` pointer.
-pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
+pub fn handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<String> {
     if dispatch_ptr == 0 {
         return None;
     }
@@ -155,9 +135,7 @@ pub fn lookup_handler_name_by_ptr(dispatch_ptr: usize, msg_type: i32) -> Option<
 ///
 /// `handler_name` must be a `"ActorName::handler_name"` string.
 pub fn register_handler_name(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
+    dispatch_fn: Option<HewDispatchFn>,
     msg_type: i32,
     handler_name: String,
 ) {
@@ -171,27 +149,6 @@ pub fn register_handler_name(
             .entry((key, msg_type))
             .or_insert(handler_name);
     });
-}
-
-/// Look up the fully-qualified handler name for a `(dispatch_fn_ptr, msg_type)` pair.
-///
-/// Returns `Some("ActorName::handler_name")` when the pair was previously registered
-/// via `register_handler_name`, or `None` if not found.
-pub fn lookup_handler_name(
-    dispatch_fn: Option<
-        unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut std::ffi::c_void, usize),
-    >,
-    msg_type: i32,
-) -> Option<String> {
-    let key = dispatch_fn.map_or(0, |f| f as usize);
-    if key == 0 {
-        return None;
-    }
-    HANDLER_NAME_REGISTRY.access(|guard| {
-        guard
-            .as_ref()
-            .and_then(|m| m.get(&(key, msg_type)).cloned())
-    })
 }
 
 /// Look up the dispatch function pointer (as `usize`) for a live actor by its ID.
@@ -211,11 +168,11 @@ pub fn lookup_handler_name(
 pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
     REGISTRY.access(|guard| {
         let map = guard.as_ref()?;
-        let SendPtr(ptr) = map.get(&actor_id)?;
+        let ptr = map.get(&actor_id)?.as_ptr();
         // SAFETY: The actor pointer is valid while it is registered.  We take only
         // the dispatch fn value (a function pointer cast to usize) without
         // dereferencing any managed data.
-        let dispatch = unsafe { (**ptr).dispatch };
+        let dispatch = unsafe { (*ptr).dispatch };
         dispatch.map(|f| f as usize)
     })
 }
@@ -253,9 +210,12 @@ pub unsafe fn register(actor: *mut HewActor) {
     // SAFETY: Actor was just allocated and is valid.
     let id = unsafe { (*actor).id };
     REGISTRY.access(|guard| {
-        guard
-            .get_or_insert_with(HashMap::new)
-            .insert(id, SendPtr(actor));
+        // SAFETY: `HewActor` is `Send + Sync` (see actor.rs).  The registry only
+        // holds pointers to live actors and `unregister` removes the entry
+        // before the actor is freed, so the pointer is valid for the duration
+        // of its registration.
+        let entry = unsafe { SendPtr::new(actor) };
+        guard.get_or_insert_with(HashMap::new).insert(id, entry);
     });
 }
 
@@ -299,6 +259,13 @@ pub struct ActorSnapshot {
     pub mailbox_hwm: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MailboxAggregate {
+    pub sum_depth: u64,
+    pub max_depth: u64,
+    pub p99_depth: u64,
+}
+
 /// Enumerate all live actors and return a snapshot of their stats.
 pub fn snapshot_all() -> Vec<ActorSnapshot> {
     REGISTRY.access(|guard| {
@@ -307,10 +274,11 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
         };
 
         let mut result = Vec::with_capacity(map.len());
-        for SendPtr(actor_ptr) in map.values() {
+        for entry in map.values() {
+            let actor_ptr = entry.as_ptr();
             // SAFETY: Actor is registered and not yet freed. The pointer
             // is valid and the atomic fields can be read concurrently.
-            let a = unsafe { &**actor_ptr };
+            let a = unsafe { &*actor_ptr };
 
             let state_int = a.actor_state.load(Ordering::Relaxed);
             let state_name = if state_int == HewActorState::Idle as i32 {
@@ -319,10 +287,12 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 "runnable"
             } else if state_int == HewActorState::Running as i32 {
                 "running"
-            } else if state_int == HewActorState::Blocked as i32 {
-                "blocked"
+            } else if state_int == HewActorState::Suspended as i32 {
+                "suspended"
             } else if state_int == HewActorState::Stopping as i32 {
                 "stopping"
+            } else if state_int == HewActorState::Crashing as i32 {
+                "crashing"
             } else if state_int == HewActorState::Crashed as i32 {
                 "crashed"
             } else if state_int == HewActorState::Stopped as i32 {
@@ -349,7 +319,7 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
 
             result.push(ActorSnapshot {
                 id: a.id,
-                pid: a.pid,
+                pid: a.id,
                 actor_type,
                 state: state_name,
                 messages_processed: a.prof_messages_processed.load(Ordering::Relaxed),
@@ -365,6 +335,82 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
     })
 }
 
+/// Count live actors currently in a specific scheduler state.
+#[must_use]
+pub fn state_count(state: i32) -> u64 {
+    REGISTRY.access(|guard| {
+        guard.as_ref().map_or(0, |map| {
+            map.values()
+                .filter(|entry| {
+                    let actor_ptr = entry.as_ptr();
+                    // SAFETY: Actor is registered and not yet freed.
+                    unsafe { (*actor_ptr).actor_state.load(Ordering::Relaxed) == state }
+                })
+                .count() as u64
+        })
+    })
+}
+
+/// Count runnable actors that have a parked continuation ready to resume.
+#[must_use]
+pub fn runnable_coroutine_count() -> u64 {
+    REGISTRY.access(|guard| {
+        guard.as_ref().map_or(0, |map| {
+            map.values()
+                .filter(|entry| {
+                    let actor_ptr = entry.as_ptr();
+                    // SAFETY: Actor is registered and not yet freed.
+                    unsafe {
+                        (*actor_ptr).actor_state.load(Ordering::Relaxed)
+                            == HewActorState::Runnable as i32
+                            && !(*actor_ptr)
+                                .suspended_cont
+                                .load(Ordering::Relaxed)
+                                .is_null()
+                    }
+                })
+                .count() as u64
+        })
+    })
+}
+
+#[must_use]
+pub fn mailbox_aggregate() -> MailboxAggregate {
+    REGISTRY.access(|guard| {
+        let Some(map) = guard.as_ref() else {
+            return MailboxAggregate::default();
+        };
+        let mut depths = Vec::with_capacity(map.len());
+        for entry in map.values() {
+            let actor_ptr = entry.as_ptr();
+            // SAFETY: Actor is registered and not yet freed.
+            let actor = unsafe { &*actor_ptr };
+            if actor.mailbox.is_null() {
+                depths.push(0_u64);
+                continue;
+            }
+            let mailbox = actor.mailbox.cast::<HewMailbox>();
+            // SAFETY: Mailbox is valid while actor is registered.
+            let depth = unsafe { (*mailbox).count.load(Ordering::Relaxed) }
+                .max(0)
+                .cast_unsigned();
+            depths.push(depth);
+        }
+        if depths.is_empty() {
+            return MailboxAggregate::default();
+        }
+        depths.sort_unstable();
+        let sum_depth = depths.iter().copied().sum();
+        let max_depth = *depths.last().unwrap_or(&0);
+        let p99_index = ((depths.len() * 99).saturating_add(99) / 100).saturating_sub(1);
+        MailboxAggregate {
+            sum_depth,
+            max_depth,
+            p99_depth: depths[p99_index.min(depths.len() - 1)],
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,20 +421,26 @@ mod tests {
     // barrier, closure API adds no value here.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    unsafe extern "C" fn fake_dispatch_a(
+    unsafe extern "C-unwind" fn fake_dispatch_a(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn fake_dispatch_b(
+    unsafe extern "C-unwind" fn fake_dispatch_b(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -419,20 +471,26 @@ mod tests {
         assert_eq!(name, "Actor");
     }
 
-    unsafe extern "C" fn fake_dispatch_c(
+    unsafe extern "C-unwind" fn fake_dispatch_c(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn fake_dispatch_d(
+    unsafe extern "C-unwind" fn fake_dispatch_d(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -474,12 +532,15 @@ mod tests {
         );
     }
 
-    unsafe extern "C" fn fake_dispatch_e(
+    unsafe extern "C-unwind" fn fake_dispatch_e(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// Regression test for the `hew_sched_shutdown` ordering bug:
@@ -520,7 +581,6 @@ mod tests {
         // dangling pointer.
         let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
         actor.id = 0xdead_beef_cafe_1234;
-        actor.pid = 0xdead_beef_cafe_1234;
         actor.dispatch = Some(fake_dispatch_e);
 
         let actor_ptr: *mut HewActor = &raw mut *actor;
@@ -564,12 +624,90 @@ mod tests {
         unsafe { unregister(actor_ptr) };
     }
 
-    unsafe extern "C" fn fake_dispatch_handler(
+    /// Removal-of-Blocked invariant: cycling an actor through every valid
+    /// state (and through the stale legacy discriminant `3`) must never
+    /// surface `"blocked"` on a snapshot.  Discriminant `3` falls through to
+    /// the catch-all `"unknown"` label — the variant has been excised from
+    /// the runtime enum and the registry's stringifier no longer recognises
+    /// it as a real state.
+    #[test]
+    fn snapshot_never_reports_blocked_state() {
+        use std::sync::atomic::Ordering;
+
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
+
+        register_dispatch_type(Some(fake_dispatch_e), "CooperativeActor");
+
+        // SAFETY: zero-init of a #[repr(C)] HewActor is sound — every atomic
+        // field has a valid zero pattern and every pointer field is null.
+        let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0x1234_5678_9abc_def0;
+        actor.dispatch = Some(fake_dispatch_e);
+
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        // Every state the runtime is allowed to transition into, including the
+        // repurposed `3` discriminant (formerly the dead `Blocked` variant,
+        // now `Suspended`).  The probe asserts that none of these states
+        // stringify to "blocked".
+        let states: &[(i32, &str)] = &[
+            (HewActorState::Idle as i32, "idle"),
+            (HewActorState::Runnable as i32, "runnable"),
+            (HewActorState::Running as i32, "running"),
+            (HewActorState::Suspended as i32, "suspended"),
+            (HewActorState::Stopping as i32, "stopping"),
+            (HewActorState::Crashing as i32, "crashing"),
+            (HewActorState::Crashed as i32, "crashed"),
+            (HewActorState::Stopped as i32, "stopped"),
+            // Repurposed discriminant — `3` is now Suspended, never "blocked".
+            (3, "suspended"),
+            // Out-of-range value — catch-all.
+            (999, "unknown"),
+        ];
+
+        for (raw, expected_label) in states {
+            actor.actor_state.store(*raw, Ordering::Relaxed);
+
+            let snaps = snapshot_all();
+            let snap = snaps
+                .iter()
+                .find(|s| s.id == actor.id)
+                .expect("registered actor must appear in snapshot");
+
+            assert_ne!(
+                snap.state, "blocked",
+                "snapshot must never report \"blocked\" (raw state={raw})"
+            );
+            assert_eq!(
+                snap.state, *expected_label,
+                "snapshot label for raw state {raw} should be {expected_label}"
+            );
+        }
+
+        // SAFETY: actor_ptr is still valid; actor has not been freed.
+        unsafe { unregister(actor_ptr) };
+    }
+
+    unsafe extern "C-unwind" fn fake_dispatch_handler(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// Registering a handler name and looking it up by raw ptr returns the stored value.
@@ -585,7 +723,7 @@ mod tests {
             "Counter::on_increment".to_owned(),
         );
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 7);
+        let result = handler_name_by_ptr(ptr, 7);
         assert_eq!(
             result.as_deref(),
             Some("Counter::on_increment"),
@@ -596,7 +734,7 @@ mod tests {
     /// Unknown (`dispatch_ptr`, `msg_type`) pair returns None.
     #[test]
     fn handler_name_unknown_pair_returns_none() {
-        let result = lookup_handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
+        let result = handler_name_by_ptr(0xdead_beef_cafe_babe, 42);
         assert!(result.is_none(), "unknown pair must return None");
     }
 
@@ -610,7 +748,7 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::first".to_owned());
         register_handler_name(Some(fake_dispatch_handler), 99, "Actor::second".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
-        let result = lookup_handler_name_by_ptr(ptr, 99);
+        let result = handler_name_by_ptr(ptr, 99);
         // First registration wins.
         assert_eq!(result.as_deref(), Some("Actor::first"));
     }
@@ -625,22 +763,25 @@ mod tests {
         register_handler_name(Some(fake_dispatch_handler), 55, "MyType::on_msg".to_owned());
         let ptr = fake_dispatch_handler as *const () as usize;
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_some(),
+            handler_name_by_ptr(ptr, 55).is_some(),
             "handler name must be present before clear"
         );
         clear_dispatch_registry();
         assert!(
-            lookup_handler_name_by_ptr(ptr, 55).is_none(),
+            handler_name_by_ptr(ptr, 55).is_none(),
             "handler name must be absent after clear_dispatch_registry"
         );
     }
 
-    unsafe extern "C" fn fake_dispatch_for_id_lookup(
+    unsafe extern "C-unwind" fn fake_dispatch_for_id_lookup(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _s: *mut std::ffi::c_void,
         _m: i32,
         _p: *mut std::ffi::c_void,
         _n: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
     }
 
     /// `lookup_dispatch_for_actor_id` returns the dispatch pointer while an actor is live.

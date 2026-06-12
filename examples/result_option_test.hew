@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Result and Option type test
+
 // Result and Option type test
 // Exercises construction, pattern matching, and ? operator
 fn test_option_some() -> i64 {
@@ -16,7 +19,7 @@ fn test_option_none() -> i64 {
     }
 }
 
-fn divide(a: i64, b: i64) -> Result<i64, String> {
+fn divide(a: i64, b: i64) -> Result<i64, string> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -40,7 +43,7 @@ fn test_result_err() -> i64 {
     }
 }
 
-fn try_divide(a: i64, b: i64) -> Result<i64, String> {
+fn try_divide(a: i64, b: i64) -> Result<i64, string> {
     let x = divide(a, b)?;
     Ok(x * 2)
 }

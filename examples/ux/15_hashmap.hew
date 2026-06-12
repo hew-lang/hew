@@ -1,6 +1,6 @@
 // HashMap test
 fn main() {
-    let map: HashMap<String, int> = HashMap::new();
+    let map: HashMap<string, i64> = HashMap::new();
     map.insert("a", 100);
     map.insert("b", 200);
     match map.get("a") {

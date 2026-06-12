@@ -128,7 +128,7 @@ fn collect_inlay_hints_from_item(
         }
         Item::Supervisor(s) => {
             for child in &s.children {
-                for arg in &child.args {
+                for (_field_name, arg) in &child.args {
                     collect_inlay_hints_from_expr(source, &arg.0, tc, hints);
                 }
             }
@@ -207,6 +207,7 @@ fn collect_inlay_hints_from_stmt(
                     let span_key = SpanKey {
                         start: value_expr.1.start,
                         end: value_expr.1.end,
+                        module_idx: 0,
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         hints.push(InlayHint {
@@ -230,6 +231,7 @@ fn collect_inlay_hints_from_stmt(
                     let span_key = SpanKey {
                         start: value_expr.1.start,
                         end: value_expr.1.end,
+                        module_idx: 0,
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = find_var_name_end(source, &value_expr.1, name);
@@ -338,7 +340,7 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
-        Expr::Unary { operand, .. } => {
+        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
             collect_inlay_hints_from_expr(source, &operand.0, tc, hints);
         }
         Expr::Lambda {
@@ -348,6 +350,7 @@ fn collect_inlay_hints_from_expr(
                 let span_key = SpanKey {
                     start: body.1.start,
                     end: body.1.end,
+                    module_idx: 0,
                 };
                 if let Some(body_ty) = tc.expr_types.get(&span_key) {
                     hints.push(InlayHint {
@@ -363,15 +366,15 @@ fn collect_inlay_hints_from_expr(
         Expr::SpawnLambdaActor { body, .. } => {
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
             collect_inlay_hints_from_block(source, block, tc, hints);
         }
-        Expr::Scope { body, .. } => {
+        Expr::ScopeDeadline { duration, body } => {
+            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
+        }
+        Expr::UnsafeBlock(block) => {
+            collect_inlay_hints_from_block(source, block, tc, hints);
         }
         Expr::ForkChild { expr, .. } => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
@@ -448,16 +451,12 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::StructInit { fields, .. } => {
+        Expr::StructInit { fields, .. } | Expr::MachineEmit { fields, .. } => {
             for (_, value) in fields {
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
             }
         }
-        Expr::Send { target, message } => {
-            collect_inlay_hints_from_expr(source, &target.0, tc, hints);
-            collect_inlay_hints_from_expr(source, &message.0, tc, hints);
-        }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_inlay_hints_from_expr(source, &target.0, tc, hints);
             for (_, value) in args {
                 collect_inlay_hints_from_expr(source, &value.0, tc, hints);
@@ -505,15 +504,20 @@ fn collect_inlay_hints_from_expr(
                 }
             }
         }
+        Expr::Is { lhs, rhs } => {
+            collect_inlay_hints_from_expr(source, &lhs.0, tc, hints);
+            collect_inlay_hints_from_expr(source, &rhs.0, tc, hints);
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
-        | Expr::Cooperate
         | Expr::This
-        | Expr::ScopeCancel
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None) => {}
+        Expr::GenBlock { body } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
     }
 }
 
@@ -546,6 +550,7 @@ fn find_method_call_signature(
         .get(&SpanKey {
             start: receiver_span.start,
             end: receiver_span.end,
+            module_idx: 0,
         })
         .or_else(|| find_receiver_type(tc, receiver_span.end))?;
     collect_method_sigs_for_receiver(tc, receiver_ty)
@@ -642,27 +647,52 @@ mod tests {
             SpanKey {
                 start: span_start,
                 end: span_end,
+                module_idx: 0,
             },
             ty,
         );
         TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 
@@ -700,7 +730,7 @@ mod tests {
     #[test]
     fn multi_arg_function_call_gets_parameter_hints() {
         let source = r"
-fn add(left: int, right: int) -> int { left + right }
+fn add(left: i64, right: i64) -> i64 { left + right }
 fn main() {
     add(1, 2);
 }
@@ -715,12 +745,12 @@ fn main() {
     #[test]
     fn method_call_gets_parameter_hints_without_receiver_name() {
         let source = r"
-type Point { x: int, y: int }
+type Point { x: i64, y: i64 }
 trait PointMethods {
-    fn shift(pt: Point, dx: int, dy: int) -> Point;
+    fn shift(pt: Point, dx: i64, dy: i64) -> Point;
 }
 impl PointMethods for Point {
-    fn shift(pt: Point, dx: int, dy: int) -> Point {
+    fn shift(pt: Point, dx: i64, dy: i64) -> Point {
         Point { x: pt.x + dx, y: pt.y + dy }
     }
 }
@@ -739,7 +769,7 @@ fn main() {
     #[test]
     fn parameter_hints_skip_single_arg_calls_and_same_name_arguments() {
         let source = r#"
-fn label(name: String, age: int) {}
+fn label(name: String, age: i64) {}
 fn echo(value: String) {}
 fn main() {
     let name = "Ada";
@@ -757,7 +787,7 @@ fn main() {
     #[test]
     fn parameter_hints_do_not_skip_prefix_matches() {
         let source = r#"
-fn limit(max: int, key: String) {}
+fn limit(max: i64, key: String) {}
 fn main() {
     let maximum_count = 10;
     let key_path = "/tmp";
@@ -826,7 +856,7 @@ fn main() {
                 let hints = build_inlay_hints(source, &pr, &tc);
                 let type_hints = binding_type_hint_labels(&hints);
                 assert!(!type_hints.is_empty(), "var binding should get a type hint");
-                assert_eq!(type_hints[0], ": int");
+                assert_eq!(type_hints[0], ": i64");
             } else {
                 panic!("expected var statement with value");
             }
@@ -854,7 +884,7 @@ fn main() {
                     !type_hints.is_empty(),
                     "unannotated let should get type hint"
                 );
-                assert!(type_hints[0].contains("String"));
+                assert!(type_hints[0].contains("string"));
             } else {
                 panic!("expected let statement with value");
             }
@@ -865,7 +895,7 @@ fn main() {
 
     #[test]
     fn lambda_in_call_argument_gets_return_hint() {
-        let source = "fn main() { foo((x) => x + 1); }";
+        let source = "fn main() { foo(|x| x + 1); }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {
@@ -895,7 +925,7 @@ fn main() {
 
     #[test]
     fn lambda_in_trait_default_body_gets_return_hint() {
-        let source = "trait Mapper { fn map() { foo((x) => x + 1); } }";
+        let source = "trait Mapper { fn map() { foo(|x| x + 1); } }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {
@@ -933,7 +963,7 @@ fn main() {
 
     #[test]
     fn lambda_in_trailing_block_expression_gets_return_hint() {
-        let source = "fn main() { { foo((x) => x + 1) } }";
+        let source = "fn main() { { foo(|x| x + 1) } }";
         let pr = parse(source);
 
         let lambda_body = match &pr.program.items[0].0 {
@@ -972,7 +1002,7 @@ fn main() {
 
     #[test]
     fn function_without_return_annotation_gets_return_hint() {
-        let source = "fn answer() { 42 }\nfn main() -> int { answer(); 0 }";
+        let source = "fn answer() { 42 }\nfn main() -> i64 { answer(); 0 }";
         let pr = parse(source);
         let tc = type_check(&pr);
         let answer_fn = match &pr.program.items[0].0 {
@@ -996,13 +1026,13 @@ fn main() {
     #[test]
     fn impl_method_without_return_annotation_gets_return_hint() {
         let source = r"
-type Counter { value: int }
+type Counter { value: i64 }
 
 impl Counter {
     fn doubled(counter: Counter) { counter.value * 2 }
 }
 
-fn main() -> int { 0 }
+fn main() -> i64 { 0 }
 ";
         let pr = parse(source);
         let tc = type_check(&pr);
@@ -1029,7 +1059,7 @@ fn main() -> int { 0 }
 
     #[test]
     fn explicit_named_return_type_does_not_get_hint() {
-        let source = "fn answer() -> int { 42 }";
+        let source = "fn answer() -> i64 { 42 }";
         let pr = parse(source);
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);

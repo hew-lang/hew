@@ -1,33 +1,33 @@
 // Treap: BST by key, heap by priority
 // Each node: [key, priority, left, right] = 4 slots
 // NIL = -1 means no child
-fn node_key(nodes: Vec<int>, i: int) -> int {
+fn node_key(nodes: Vec<i64>, i: i64) -> i64 {
     nodes.get(i * 4)
 }
 
-fn node_pri(nodes: Vec<int>, i: int) -> int {
+fn node_pri(nodes: Vec<i64>, i: i64) -> i64 {
     nodes.get(i * 4 + 1)
 }
 
-fn node_left(nodes: Vec<int>, i: int) -> int {
+fn node_left(nodes: Vec<i64>, i: i64) -> i64 {
     nodes.get(i * 4 + 2)
 }
 
-fn node_right(nodes: Vec<int>, i: int) -> int {
+fn node_right(nodes: Vec<i64>, i: i64) -> i64 {
     nodes.get(i * 4 + 3)
 }
 
-fn set_left(nodes: Vec<int>, i: int, v: int) -> int {
+fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 2, v);
     0
 }
 
-fn set_right(nodes: Vec<int>, i: int, v: int) -> int {
+fn set_right(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
     nodes.set(i * 4 + 3, v);
     0
 }
 
-fn add_node(nodes: Vec<int>, key: int, pri: int, NIL: int) -> int {
+fn add_node(nodes: Vec<i64>, key: i64, pri: i64, NIL: i64) -> i64 {
     let idx = nodes.len() / 4;
     nodes.push(key);
     nodes.push(pri);
@@ -37,7 +37,7 @@ fn add_node(nodes: Vec<int>, key: int, pri: int, NIL: int) -> int {
 }
 
 // Right rotate: y is root, x = y.left
-fn right_rotate(nodes: Vec<int>, y: int) -> int {
+fn right_rotate(nodes: Vec<i64>, y: i64) -> i64 {
     let x = node_left(nodes, y);
     let t2 = node_right(nodes, x);
     let _ = set_right(nodes, x, y);
@@ -46,7 +46,7 @@ fn right_rotate(nodes: Vec<int>, y: int) -> int {
 }
 
 // Left rotate: x is root, y = x.right
-fn left_rotate(nodes: Vec<int>, x: int) -> int {
+fn left_rotate(nodes: Vec<i64>, x: i64) -> i64 {
     let y = node_right(nodes, x);
     let t2 = node_left(nodes, y);
     let _ = set_left(nodes, y, x);
@@ -55,13 +55,13 @@ fn left_rotate(nodes: Vec<int>, x: int) -> int {
 }
 
 // Insert into treap, returns new root
-fn treap_insert(nodes: Vec<int>, root: int, key: int, pri: int, NIL: int) -> int {
+fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64 {
     if root == NIL {
         return add_node(nodes, key, pri, NIL);
     }
     // Track path from root to insertion point
-    let path: Vec<int> = Vec::new();
-    let dirs: Vec<int> = Vec::new();
+    let path: Vec<i64> = Vec::new();
+    let dirs: Vec<i64> = Vec::new();
     var cur = root;
     var placed = false;
     while !placed {
@@ -133,11 +133,11 @@ fn treap_insert(nodes: Vec<int>, root: int, key: int, pri: int, NIL: int) -> int
 }
 
 // Inorder traversal
-fn inorder(nodes: Vec<int>, root: int, result: Vec<int>, NIL: int) -> int {
+fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
     if root == NIL {
         return 0;
     }
-    let stack: Vec<int> = Vec::new();
+    let stack: Vec<i64> = Vec::new();
     var cur = root;
     var running = true;
     while running {
@@ -157,8 +157,8 @@ fn inorder(nodes: Vec<int>, root: int, result: Vec<int>, NIL: int) -> int {
 }
 
 // Verify BST property
-fn check_bst(nodes: Vec<int>, root: int, NIL: int) -> bool {
-    let result: Vec<int> = Vec::new();
+fn check_bst(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
+    let result: Vec<i64> = Vec::new();
     let _ = inorder(nodes, root, result, NIL);
     if result.len() <= 1 {
         return true;
@@ -174,11 +174,11 @@ fn check_bst(nodes: Vec<int>, root: int, NIL: int) -> bool {
 }
 
 // Verify max-heap property on priorities
-fn check_heap(nodes: Vec<int>, root: int, NIL: int) -> bool {
+fn check_heap(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
     if root == NIL {
         return true;
     }
-    let stack: Vec<int> = Vec::new();
+    let stack: Vec<i64> = Vec::new();
     stack.push(root);
     var ok = true;
     while stack.len() > 0 {
@@ -201,9 +201,9 @@ fn check_heap(nodes: Vec<int>, root: int, NIL: int) -> bool {
     ok
 }
 
-fn test_basic_treap() -> int {
+fn test_basic_treap() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     var root = NIL;
     // key, priority pairs
     root = treap_insert(nodes, root, 5, 10, NIL);
@@ -226,9 +226,9 @@ fn test_basic_treap() -> int {
     0
 }
 
-fn test_inorder_sorted() -> int {
+fn test_inorder_sorted() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     var root = NIL;
     root = treap_insert(nodes, root, 10, 50, NIL);
     root = treap_insert(nodes, root, 5, 30, NIL);
@@ -237,7 +237,7 @@ fn test_inorder_sorted() -> int {
     root = treap_insert(nodes, root, 7, 35, NIL);
     root = treap_insert(nodes, root, 12, 20, NIL);
     root = treap_insert(nodes, root, 20, 45, NIL);
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     let _ = inorder(nodes, root, result, NIL);
     var ok = true;
     if result.len() != 7 {
@@ -275,9 +275,9 @@ fn test_inorder_sorted() -> int {
     }
 }
 
-fn test_high_priority_at_root() -> int {
+fn test_high_priority_at_root() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     var root = NIL;
     root = treap_insert(nodes, root, 5, 10, NIL);
     root = treap_insert(nodes, root, 3, 100, NIL); // highest priority
@@ -294,9 +294,9 @@ fn test_high_priority_at_root() -> int {
     }
 }
 
-fn test_sequential_inserts() -> int {
+fn test_sequential_inserts() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     var root = NIL;
     // Use simple pseudo-random priorities
     var pri = 17;
@@ -308,7 +308,7 @@ fn test_sequential_inserts() -> int {
     }
     let bst_ok = check_bst(nodes, root, NIL);
     let heap_ok = check_heap(nodes, root, NIL);
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     let _ = inorder(nodes, root, result, NIL);
     if bst_ok {
         if heap_ok {
@@ -322,9 +322,9 @@ fn test_sequential_inserts() -> int {
     0
 }
 
-fn test_single_node() -> int {
+fn test_single_node() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     var root = NIL;
     root = treap_insert(nodes, root, 42, 99, NIL);
     let bst_ok = check_bst(nodes, root, NIL);

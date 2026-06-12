@@ -1,0 +1,4 @@
+bool true
+bool false
+i32 got 42
+i32 got -1

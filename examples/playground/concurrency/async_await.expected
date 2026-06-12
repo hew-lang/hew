@@ -1,1 +1,2 @@
 fib(10) = 55
+awaited fib(10) = 55

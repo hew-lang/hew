@@ -1,0 +1,5 @@
+fn main() {
+  let large: i64 = 9007199254740993
+  let rounded: f64 = 9007199254740992.0
+  let _wrong = large > rounded
+}

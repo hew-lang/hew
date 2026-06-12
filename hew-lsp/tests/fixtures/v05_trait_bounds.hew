@@ -1,0 +1,23 @@
+trait Describable {
+    fn describe(value: Self) -> string;
+}
+
+type Label {
+    text: string;
+}
+
+impl Describable for Label {
+    fn describe(label: Label) -> string {
+        label.text
+    }
+}
+
+fn trait_bounds_probe<T: Describable>(item: T) -> string {
+    item.describe()
+}
+
+fn trait_bounds_use() -> string {
+    let label = Label { text: "ok" };
+    trait_bounds_probe(label)
+}
+

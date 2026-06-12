@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: stress_scheduler.hew - Test M:N scheduling with many actors
+
 // stress_scheduler.hew - Test M:N scheduling with many actors
 // Spawns 50 actors, each processing 20 messages via a computation workload.
 // Uses a Collector actor to count completions. Verifies all counted.
@@ -20,7 +23,7 @@ actor Worker {
 }
 
 actor Collector {
-    let count: i32;
+    var count: i32;
     receive fn tick() {
         count = count + 1;
     }
@@ -31,19 +34,17 @@ actor Collector {
 
 fn main() {
     println("=== Stress: Scheduler ===");
-    let collector = spawn Collector;
+    let collector = spawn Collector(count: 0);
     // Spawn 50 workers, each processing 20 messages
     for i in 0 .. 50 {
-        let w = spawn Worker;
+        let w = spawn Worker(id: i);
         for j in 0 .. 20 {
             w.process(j);
         }
         collector.tick();
-        stop(w);
     }
     // Give time for all messages to be processed
     sleep_ms(500);
     collector.report();
     println("PASS: scheduler handles 50 actors x 20 messages");
-    stop(collector);
 }

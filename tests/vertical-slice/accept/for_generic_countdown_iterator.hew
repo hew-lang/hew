@@ -1,0 +1,27 @@
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+fn main() -> i64 {
+    var sum: i64 = 0;
+
+    for value in Countdown { n: 3 } {
+        sum = sum + value;
+    }
+
+    return sum;
+}

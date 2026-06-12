@@ -1,7 +1,7 @@
-// Binary Search Tree using Vec<int> with index-based pointers
+// Binary Search Tree using Vec<i64> with index-based pointers
 // Each node: [value, left, right] = 3 slots
 // NIL = -1 means no child
-fn add_node(nodes: Vec<int>, val: int, NIL: int) -> int {
+fn add_node(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
     let idx = nodes.len() / 3;
     nodes.push(val);
     nodes.push(NIL);
@@ -9,7 +9,7 @@ fn add_node(nodes: Vec<int>, val: int, NIL: int) -> int {
     idx
 }
 
-fn bst_insert(nodes: Vec<int>, val: int, NIL: int) -> int {
+fn bst_insert(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
     if nodes.len() == 0 {
         let _ = add_node(nodes, val, NIL);
         return 0;
@@ -41,7 +41,7 @@ fn bst_insert(nodes: Vec<int>, val: int, NIL: int) -> int {
     0
 }
 
-fn bst_search(nodes: Vec<int>, val: int, NIL: int) -> bool {
+fn bst_search(nodes: Vec<i64>, val: i64, NIL: i64) -> bool {
     if nodes.len() == 0 {
         return false;
     }
@@ -59,7 +59,7 @@ fn bst_search(nodes: Vec<int>, val: int, NIL: int) -> bool {
     false
 }
 
-fn bst_min(nodes: Vec<int>, NIL: int) -> int {
+fn bst_min(nodes: Vec<i64>, NIL: i64) -> i64 {
     var cur = 0;
     var left = nodes.get(cur * 3 + 1);
     while left != NIL {
@@ -69,7 +69,7 @@ fn bst_min(nodes: Vec<int>, NIL: int) -> int {
     nodes.get(cur * 3)
 }
 
-fn bst_max(nodes: Vec<int>, NIL: int) -> int {
+fn bst_max(nodes: Vec<i64>, NIL: i64) -> i64 {
     var cur = 0;
     var right = nodes.get(cur * 3 + 2);
     while right != NIL {
@@ -80,11 +80,11 @@ fn bst_max(nodes: Vec<int>, NIL: int) -> int {
 }
 
 // Iterative inorder traversal
-fn inorder(nodes: Vec<int>, result: Vec<int>, NIL: int) -> int {
+fn inorder(nodes: Vec<i64>, result: Vec<i64>, NIL: i64) -> i64 {
     if nodes.len() == 0 {
         return 0;
     }
-    let stack: Vec<int> = Vec::new();
+    let stack: Vec<i64> = Vec::new();
     var cur = 0;
     var running = true;
     while running {
@@ -103,7 +103,7 @@ fn inorder(nodes: Vec<int>, result: Vec<int>, NIL: int) -> int {
     0
 }
 
-fn vecs_equal(a: Vec<int>, b: Vec<int>) -> bool {
+fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -117,7 +117,7 @@ fn vecs_equal(a: Vec<int>, b: Vec<int>) -> bool {
     true
 }
 
-fn print_vec(v: Vec<int>) -> int {
+fn print_vec(v: Vec<i64>) -> i64 {
     for i in 0 .. v.len() {
         print(v.get(i));
         print(" ");
@@ -126,9 +126,9 @@ fn print_vec(v: Vec<int>) -> int {
     0
 }
 
-fn test_insert_and_inorder() -> int {
+fn test_insert_and_inorder() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     // Insert [5, 3, 7, 1, 4, 6, 8]
     let _ = bst_insert(nodes, 5, NIL);
     let _ = bst_insert(nodes, 3, NIL);
@@ -137,10 +137,10 @@ fn test_insert_and_inorder() -> int {
     let _ = bst_insert(nodes, 4, NIL);
     let _ = bst_insert(nodes, 6, NIL);
     let _ = bst_insert(nodes, 8, NIL);
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     let _ = inorder(nodes, result, NIL);
     // Inorder of BST should be sorted: 1 3 4 5 6 7 8
-    let expected: Vec<int> = Vec::new();
+    let expected: Vec<i64> = Vec::new();
     expected.push(1);
     expected.push(3);
     expected.push(4);
@@ -158,9 +158,9 @@ fn test_insert_and_inorder() -> int {
     }
 }
 
-fn test_search() -> int {
+fn test_search() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     let _ = bst_insert(nodes, 5, NIL);
     let _ = bst_insert(nodes, 3, NIL);
     let _ = bst_insert(nodes, 7, NIL);
@@ -195,9 +195,9 @@ fn test_search() -> int {
     0
 }
 
-fn test_min_max() -> int {
+fn test_min_max() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     let _ = bst_insert(nodes, 5, NIL);
     let _ = bst_insert(nodes, 3, NIL);
     let _ = bst_insert(nodes, 7, NIL);
@@ -220,14 +220,14 @@ fn test_min_max() -> int {
     0
 }
 
-fn test_sorted_insert() -> int {
+fn test_sorted_insert() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     // Insert in sorted order (worst case for BST)
     for i in 1 .. 11 {
         let _ = bst_insert(nodes, i, NIL);
     }
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     let _ = inorder(nodes, result, NIL);
     var ok = true;
     if result.len() != 10 {
@@ -248,9 +248,9 @@ fn test_sorted_insert() -> int {
     }
 }
 
-fn test_single_element() -> int {
+fn test_single_element() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<int> = Vec::new();
+    let nodes: Vec<i64> = Vec::new();
     let _ = bst_insert(nodes, 42, NIL);
     let found = bst_search(nodes, 42, NIL);
     let not_found = bst_search(nodes, 99, NIL);

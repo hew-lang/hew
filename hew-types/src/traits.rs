@@ -4,10 +4,12 @@
 //! and user-defined traits with methods.
 
 use crate::ty::Ty;
+use crate::BuiltinType;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Built-in marker traits that are automatically derived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MarkerTrait {
     /// Can cross actor boundaries safely
     Send,
@@ -23,6 +25,8 @@ pub enum MarkerTrait {
     Eq,
     /// Ordered
     Ord,
+    /// Numeric value accepted by generic math builtins.
+    Num,
     /// Hashable
     Hash,
     /// String formatting via `{}`
@@ -35,8 +39,18 @@ pub enum MarkerTrait {
     Decode,
     /// Can be serialized to bytes
     Encode,
+    /// Can cross a remote actor boundary as a Hew value payload.
+    ///
+    /// This is a compile-time floor only: current remote-send lowering still
+    /// wraps raw in-memory ABI bytes in a CBOR envelope, and structural
+    /// Hew-value encoding is a later slice.
+    Serializable,
     /// Contains no `Rc<T>` anywhere in its admissible structure
     RcFree,
+    /// Owns an operating-system or runtime resource whose drop closes it.
+    /// Design contract D3 (@resource) in v0.5. Applies to Duplex, Stream, Sink.
+    /// No consumer in slice 2; queried by drop-elaboration in slice 3.
+    Resource,
 }
 
 impl std::fmt::Display for MarkerTrait {
@@ -49,13 +63,16 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Clone => write!(f, "Clone"),
             MarkerTrait::Eq => write!(f, "Eq"),
             MarkerTrait::Ord => write!(f, "Ord"),
+            MarkerTrait::Num => write!(f, "Num"),
             MarkerTrait::Hash => write!(f, "Hash"),
             MarkerTrait::Display => write!(f, "Display"),
             MarkerTrait::Debug => write!(f, "Debug"),
             MarkerTrait::Drop => write!(f, "Drop"),
             MarkerTrait::Decode => write!(f, "Decode"),
             MarkerTrait::Encode => write!(f, "Encode"),
+            MarkerTrait::Serializable => write!(f, "Serializable"),
             MarkerTrait::RcFree => write!(f, "RcFree"),
+            MarkerTrait::Resource => write!(f, "Resource"),
         }
     }
 }
@@ -72,13 +89,16 @@ impl MarkerTrait {
             "Clone" => Some(Self::Clone),
             "Eq" => Some(Self::Eq),
             "Ord" => Some(Self::Ord),
+            "Num" => Some(Self::Num),
             "Hash" => Some(Self::Hash),
             "Display" => Some(Self::Display),
             "Debug" => Some(Self::Debug),
             "Drop" => Some(Self::Drop),
             "Decode" => Some(Self::Decode),
             "Encode" => Some(Self::Encode),
+            "Serializable" => Some(Self::Serializable),
             "RcFree" => Some(Self::RcFree),
+            "Resource" => Some(Self::Resource),
             _ => None,
         }
     }
@@ -145,6 +165,18 @@ pub struct TraitRegistry {
     handle_types: HashSet<String>,
     /// Drop types from loaded modules (e.g. "http.Request").
     drop_types: HashSet<String>,
+    /// Record types declared with the `record` keyword.
+    ///
+    /// Records are value types: marker derivation is entirely field-driven, and
+    /// the `Resource` marker is always false regardless of field types (a record
+    /// wrapping a resource field is not itself an OS/runtime resource).
+    records: HashSet<String>,
+    /// Named types admitted to the initial `Serializable` subset.
+    ///
+    /// The value stores every field / variant-payload member that must itself
+    /// be serializable. Registration deliberately includes records, enums, and
+    /// wire-marked types, but not ordinary plain structs.
+    serializable_members: HashMap<String, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,9 +198,22 @@ impl TraitRegistry {
         self.type_fields.insert(name, field_types);
     }
 
+    /// Register a `record` declaration so the marker-derivation path knows to
+    /// suppress `Resource` and apply field-driven derivation exhaustively.
+    ///
+    /// Must be called in addition to `register_type` for every `record` decl.
+    pub fn register_record_type(&mut self, name: String) {
+        self.records.insert(name);
+    }
+
     /// Register the structural members that participate in `RcFree`.
     pub fn register_rcfree_members(&mut self, name: String, member_types: Vec<Ty>) {
         self.rc_free_members.insert(name, member_types);
+    }
+
+    /// Register a named type as part of the accepted `Serializable` subset.
+    pub fn register_serializable_type(&mut self, name: String, member_types: Vec<Ty>) {
+        self.serializable_members.insert(name, member_types);
     }
 
     /// Look up `RcFree` members by exact or module-qualified/unqualified name.
@@ -176,6 +221,14 @@ impl TraitRegistry {
         self.rc_free_members.get(name).or_else(|| {
             name.rsplit_once('.')
                 .and_then(|(_, unqualified)| self.rc_free_members.get(unqualified))
+        })
+    }
+
+    /// Look up `Serializable` members by exact or module-qualified/unqualified name.
+    fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
+        self.serializable_members.get(name).or_else(|| {
+            name.rsplit_once('.')
+                .and_then(|(_, unqualified)| self.serializable_members.get(unqualified))
         })
     }
 
@@ -200,18 +253,73 @@ impl TraitRegistry {
 
     fn implements_rc_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> RcFreeStatus {
         match ty {
-            Ty::Named { name, args } if name == "Rc" => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Rc),
+                args,
+                ..
+            } => {
                 if args.is_empty() {
                     RcFreeStatus::RcFree
                 } else {
                     RcFreeStatus::ContainsRc
                 }
             }
-            // ActorRef<T> lowers to *mut HewActor with no ref-counted fields.
-            // T is a phantom dispatch type, and actor graph cycles are handled
-            // separately by cycle.rs.
-            Ty::Named { name, .. } if name == "ActorRef" => RcFreeStatus::RcFree,
-            Ty::Named { name, args } => {
+            // ActorRef<T>/LocalPid<T>/RemotePid<T> are opaque identity references;
+            // their T parameter is phantom for rc-free structural checks.
+            Ty::Named {
+                builtin:
+                    Some(BuiltinType::ActorRef | BuiltinType::LocalPid | BuiltinType::RemotePid),
+                ..
+            } => RcFreeStatus::RcFree,
+            // Heap-indirecting collections (`Vec`/`HashMap`/`HashSet`): the
+            // element type lives behind a heap allocation, so a recursive
+            // back-edge through one of these is FINITE in value size (the
+            // recursion terminates at the heap buffer, not at an infinite-size
+            // inline value). `Vec<RedisReply>` where
+            // `enum RedisReply { Array(Vec<RedisReply>); ... }` is therefore
+            // RcFree-admissible — the indirection is the witness that the value
+            // is representable. A `Recursive(name)` reported for a name that is
+            // CURRENTLY being visited is exactly such an indirection-broken
+            // back-edge → admit it as `RcFree`. A `Recursive(name)` for a name
+            // NOT on the active stack is a genuine cycle elsewhere and is
+            // preserved (fail-closed). `ContainsRc` is always preserved.
+            //
+            // This is the ONLY relaxation: a DIRECT value back-edge
+            // (`enum E { V(E) }`) never passes through a collection arm — it
+            // recurses through the general `Named` member walk below and stays
+            // `Recursive`, which keeps the infinite-size value cycle rejected
+            // (over-admitting it would unbound codegen layout recursion).
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+            } => {
+                let mut worst = RcFreeStatus::RcFree;
+                for arg in args {
+                    match self.implements_rc_free(arg, visiting) {
+                        RcFreeStatus::RcFree => {}
+                        RcFreeStatus::ContainsRc => return RcFreeStatus::ContainsRc,
+                        RcFreeStatus::Recursive(rec_name) => {
+                            if visiting.contains(&rec_name) {
+                                // Indirection-broken back-edge: finite value
+                                // size, drop terminates at the heap buffer.
+                                // Admit (leave `worst` as RcFree).
+                            } else if matches!(worst, RcFreeStatus::RcFree) {
+                                // A genuine recursive cycle not broken by this
+                                // collection — preserve it (fail-closed).
+                                worst = RcFreeStatus::Recursive(rec_name);
+                            }
+                        }
+                    }
+                }
+                let _ = name;
+                worst
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin: _,
+            } => {
                 match self.combine_rc_free_status(args.iter().cloned(), visiting) {
                     RcFreeStatus::RcFree => {}
                     outcome => return outcome,
@@ -236,6 +344,96 @@ impl TraitRegistry {
     pub(crate) fn rc_free_status(&self, ty: &Ty) -> RcFreeStatus {
         let mut visiting = HashSet::new();
         self.implements_rc_free(ty, &mut visiting)
+    }
+
+    fn has_encode_decode(&self, ty: &Ty) -> bool {
+        self.implements_marker(ty, MarkerTrait::Encode)
+            && self.implements_marker(ty, MarkerTrait::Decode)
+    }
+
+    fn implements_serializable_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Var(_) | Ty::Error => true,
+            _ if !self.has_encode_decode(ty) => false,
+            Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::IntLiteral
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::FloatLiteral
+            | Ty::Bool
+            | Ty::Char
+            | Ty::Duration
+            | Ty::Unit
+            | Ty::Never
+            | Ty::String
+            | Ty::Bytes => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|elem| self.implements_serializable_inner(elem, visiting)),
+            Ty::Array(inner, _) => self.implements_serializable_inner(inner, visiting),
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                if let Some(negatives) = self.negative_impls.get(name) {
+                    if negatives.contains(&MarkerTrait::Serializable) {
+                        return false;
+                    }
+                }
+                if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                    return args
+                        .iter()
+                        .all(|arg| self.implements_serializable_inner(arg, visiting));
+                }
+                // Fix 1: Vec, HashMap, and HashSet are NOT in `serializable_members`
+                // (they are never registered via `register_serializable_type`), so
+                // `serializable_members_any` returns `None` for them and they fall to
+                // `return false` below.  This is the fail-closed boundary for the
+                // RemotePid serialization gate: neither the codegen walk
+                // (`emit_{ser,de}_value`) nor the on-wire codec handles collection
+                // types, so admitting them here would be a silent correctness hole.
+                //
+                // Tests in the `tests` module assert this property for
+                // `Vec<i64>` and `HashMap<String, i64>` by name.
+                let Some(members) = self.serializable_members_any(name).cloned() else {
+                    return false;
+                };
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let ok = members
+                    .iter()
+                    .all(|member| self.implements_serializable_inner(member, visiting));
+                visiting.remove(name);
+                ok
+            }
+            Ty::Slice(_)
+            | Ty::CancellationToken
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Pointer { .. }
+            | Ty::Borrow { .. }
+            | Ty::TraitObject { .. }
+            | Ty::Task(_)
+            | Ty::AssocType { .. } => false,
+        }
+    }
+
+    /// Check whether a type is admitted by the current `Serializable` subset.
+    #[must_use]
+    pub fn is_serializable(&self, ty: &Ty) -> bool {
+        let mut visiting = HashSet::new();
+        self.implements_serializable_inner(ty, &mut visiting)
     }
 
     /// Register an actor type.
@@ -316,16 +514,51 @@ impl TraitRegistry {
     /// - `ActorRef` is always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
+    pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        let mut visiting = HashSet::new();
+        self.implements_marker_guarded(ty, marker, &mut visiting)
+    }
+
+    /// Structural marker derivation with a recursion guard over named types.
+    ///
+    /// The guard makes the walk total on recursive type graphs. A type whose
+    /// member set transitively re-enters itself (`enum E { V(E) }`, or an
+    /// indirection-broken recursive enum `enum R { A(Vec<R>) }`) would
+    /// otherwise recurse forever through the `type_fields` / record / collection
+    /// member arms. On re-entry to a name already on the active stack we return
+    /// `true` (the neutral element of the `all(...)` member conjunction): the
+    /// re-entered edge contributes no NEW obligation, so the result is decided
+    /// by the non-recursive members. Genuine infinite-size value cycles are
+    /// rejected upstream by the dedicated cycle detector (`cycle.rs`); this
+    /// guard only prevents the derivation from diverging while computing a
+    /// marker for a type the cycle detector permits (the `Vec`-indirected case).
     #[expect(
         clippy::too_many_lines,
         reason = "marker derivation covers many Ty variants"
     )]
-    pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+    fn implements_marker_guarded(
+        &self,
+        ty: &Ty,
+        marker: MarkerTrait,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        if marker == MarkerTrait::Serializable {
+            return self.is_serializable(ty);
+        }
         if marker == MarkerTrait::RcFree {
             return matches!(self.rc_free_status(ty), RcFreeStatus::RcFree);
         }
+        if marker == MarkerTrait::Resource {
+            // Only resource types are Resource; primitives are NOT.
+            // Handled per-type below; fall through to the match.
+        }
+        if marker == MarkerTrait::Num {
+            return ty.is_numeric();
+        }
         match ty {
-            // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug
+            // Primitives: always Send, Sync, Frozen, Copy, Clone, Eq, Ord, Hash, Debug.
+            // NOT Resource: primitives own no OS/runtime resource and need no drop close.
+            // Isize/Usize are platform-sized integers: same marker set as fixed-width ints.
             Ty::I8
             | Ty::I16
             | Ty::I32
@@ -335,17 +568,19 @@ impl TraitRegistry {
             | Ty::U16
             | Ty::U32
             | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
             | Ty::Bool
             | Ty::Char
             | Ty::Duration
             | Ty::Unit
             | Ty::Error
-            | Ty::Never => true,
+            | Ty::Never => !matches!(marker, MarkerTrait::Resource),
 
-            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues)
+            // Floats: most traits but NOT Eq, Ord, Hash (NaN issues), NOT Resource (value type)
             Ty::F32 | Ty::F64 | Ty::FloatLiteral => !matches!(
                 marker,
-                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash
+                MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash | MarkerTrait::Resource
             ),
 
             // String: Send + Sync + Clone + Encode + Decode, but NOT Frozen (mutable), NOT Copy
@@ -376,8 +611,52 @@ impl TraitRegistry {
                     | MarkerTrait::Decode
             ),
 
+            // CancellationToken: ref-counted runtime handle. It is movable,
+            // cloneable by retain, and dropped by release-ref; it is not Copy.
+            Ty::CancellationToken => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+                    | MarkerTrait::Resource
+            ),
+
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
-            Ty::Named { name, .. } if name == "ActorRef" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorRef),
+                ..
+            } => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
+            // LocalPid<T>: process-local actor pid returned by `spawn`.
+            // Same marker set as ActorRef — an opaque identity reference, not a resource.
+            Ty::Named {
+                builtin: Some(BuiltinType::LocalPid),
+                ..
+            } => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Frozen
+                    | MarkerTrait::Copy
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Debug
+            ),
+
+            // RemotePid<T>: remote actor pid, from peer-discovery or explicit construction.
+            // Same marker set as LocalPid — the pid value itself is an opaque u64.
+            Ty::Named {
+                builtin: Some(BuiltinType::RemotePid),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync
@@ -389,38 +668,69 @@ impl TraitRegistry {
 
             // Actor<T>: the built-in lambda-actor handle; always Send + Sync + Clone + Debug.
             // Actor references are channel handles — safe to capture in spawned actors.
-            Ty::Named { name, .. } if name == "Actor" => matches!(
+            Ty::Named {
+                builtin: Some(BuiltinType::Actor),
+                ..
+            } => matches!(
                 marker,
                 MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Debug
             ),
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
-            Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => {
-                match marker {
-                    MarkerTrait::Send | MarkerTrait::Sync => {
-                        self.implements_marker(&args[0], MarkerTrait::Send)
-                    }
-                    _ => false,
+            Ty::Named {
+                builtin: Some(BuiltinType::Stream | BuiltinType::Sink),
+                args,
+                ..
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
                 }
-            }
+                _ => false,
+            },
+
+            // Duplex<S, R>: bidirectional lambda-actor handle.
+            // Send/Sync iff BOTH S: Send AND R: Send.
+            // NOT Copy (move-only resource — drop closes both directions).
+            // NOT Clone (split via send_half/recv_half in slice 4, not by cloning).
+            // NOT Frozen (mutable internal queue state).
+            // Resource: yes — dropping the last Duplex handle closes both I/O directions
+            //   (@resource design contract D3; consumed by drop-elaboration in slice 3).
+            Ty::Named {
+                builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Resource => true,
+                _ => false,
+            },
 
             // Tuple: marker holds if ALL elements have it
-            Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),
+            Ty::Tuple(elems) => elems
+                .iter()
+                .all(|e| self.implements_marker_guarded(e, marker, visiting)),
 
             // Array: marker holds if element has it
-            Ty::Array(inner, _) => self.implements_marker(inner, marker),
+            Ty::Array(inner, _) => self.implements_marker_guarded(inner, marker, visiting),
 
             // Slice: like array but NOT Copy (unsized)
             Ty::Slice(elem) => {
                 if marker == MarkerTrait::Copy {
                     false
                 } else {
-                    self.implements_marker(elem, marker)
+                    self.implements_marker_guarded(elem, marker, visiting)
                 }
             }
 
             // Named types: check all fields
-            Ty::Named { name, args } => {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
                 // Check negative impls first
                 if let Some(negatives) = self.negative_impls.get(name) {
                     if negatives.contains(&marker) {
@@ -460,27 +770,76 @@ impl TraitRegistry {
                 }
                 // Built-in generic collections: Send/Clone/Debug if elements are,
                 // but NOT Copy or Frozen (heap-allocated, mutable)
-                if name == "Vec" || name == "HashMap" || name == "HashSet" {
+                if builtin.is_some_and(BuiltinType::is_collection) {
                     return match marker {
                         MarkerTrait::Copy | MarkerTrait::Frozen => false,
-                        _ => args.iter().all(|a| self.implements_marker(a, marker)),
+                        _ => args
+                            .iter()
+                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
                     };
                 }
                 // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
                 // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
-                if name == "Rc" {
+                if *builtin == Some(BuiltinType::Rc) {
                     return matches!(marker, MarkerTrait::Clone | MarkerTrait::Drop);
                 }
-                // Check if all fields implement the trait
-                if let Some(fields) = self.type_fields.get(name) {
-                    fields.iter().all(|f| self.implements_marker(f, marker))
+                // Recursion guard: a recursive type graph (e.g. an
+                // indirection-broken recursive enum `enum R { A(Vec<R>) }`)
+                // re-enters this name through its member walk. On re-entry,
+                // return the neutral `true` — the re-entered edge adds no new
+                // obligation; the result is decided by the non-recursive
+                // members. (Direct infinite-size cycles are rejected by
+                // `cycle.rs`; this only keeps the derivation total.)
+                if !visiting.insert(name.clone()) {
+                    return true;
+                }
+                // Record types: value types declared with `record`. Markers are
+                // derived entirely from field types with two exceptions:
+                //   - `Resource` is always false: a record wrapping a resource field
+                //     is NOT itself an OS/runtime resource (no drop-close contract).
+                //   - `RcFree` is handled at the top of `implements_marker` before
+                //     this arm is reached.
+                // The two genuine exceptions (Resource, Num) are explicit; all
+                // other markers share the structural `field_derives(marker)` rule
+                // via the fallthrough.
+                let result = if self.records.contains(name) {
+                    match marker {
+                        // Records are not OS/runtime resources or scalar numeric values.
+                        MarkerTrait::Resource | MarkerTrait::Num => false,
+                        // All other markers derive from field types. Clone the
+                        // member list so the `&self` borrow does not alias the
+                        // `&mut visiting` recursion below.
+                        _ => {
+                            let fields = self.type_fields.get(name).cloned().unwrap_or_default();
+                            fields
+                                .iter()
+                                .all(|f| self.implements_marker_guarded(f, marker, visiting))
+                        }
+                    }
+                } else if let Some(fields) = self.type_fields.get(name).cloned() {
+                    fields
+                        .iter()
+                        .all(|f| self.implements_marker_guarded(f, marker, visiting))
                 } else {
                     false // Unknown type — conservatively fail
-                }
+                };
+                visiting.remove(name);
+                result
             }
 
             // Pointers: NOT Send (unless explicitly marked), but Copy
             Ty::Pointer { .. } => marker == MarkerTrait::Copy,
+
+            // `&T` immutable borrow: Copy (a borrow is freely copyable) but NOT
+            // Send — a borrow must not cross an actor boundary. Kept as a
+            // distinct arm from the raw-pointer case above (not merged) so the
+            // borrow marker policy can diverge in P5's send gate without
+            // disturbing FFI-pointer semantics; today the result coincides.
+            #[allow(
+                clippy::match_same_arms,
+                reason = "borrow send-policy is a deliberate seam for P5; do not merge with the raw-pointer arm"
+            )]
+            Ty::Borrow { .. } => marker == MarkerTrait::Copy,
 
             // Function types: always Send, Sync, Clone, Copy (function pointers)
             Ty::Function { .. } => matches!(
@@ -490,15 +849,22 @@ impl TraitRegistry {
 
             // Closures: Send/Sync only if all captured types are Send/Sync
             Ty::Closure { captures, .. } => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    captures.iter().all(|c| self.implements_marker(c, marker))
-                }
+                MarkerTrait::Send | MarkerTrait::Sync => captures
+                    .iter()
+                    .all(|c| self.implements_marker_guarded(c, marker, visiting)),
                 MarkerTrait::Clone => true,
                 _ => false,
             },
 
-            // Var: NOT Send by default
-            Ty::Var(_) => false,
+            // Var: NOT Send by default.
+            // AssocType { base, .. }: a projection's marker disposition cannot
+            // be decided without seeing the impl-side binding. The projection
+            // is collapsed to a concrete `Ty` before reaching MIR; while still
+            // unresolved (generic-fn signature), no marker query can be
+            // meaningfully answered. Conservatively return `false` — callers
+            // that need a marker on a projection must run projection-collapse
+            // first.
+            Ty::Var(_) | Ty::AssocType { .. } => false,
 
             // Trait objects: check if any of the traits has the bound
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
@@ -568,6 +934,7 @@ mod tests {
     fn test_actor_ref_is_send_and_frozen() {
         let registry = TraitRegistry::new();
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "MyActor".to_string(),
             args: vec![],
         });
@@ -581,6 +948,7 @@ mod tests {
         // be captured inside another spawned actor (pipeline pattern).
         let registry = TraitRegistry::new();
         let actor_int = Ty::Named {
+            builtin: Some(BuiltinType::Actor),
             name: "Actor".to_string(),
             args: vec![Ty::I32],
         };
@@ -600,6 +968,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
         let point = Ty::Named {
+            builtin: None,
             name: "Point".to_string(),
             args: vec![],
         };
@@ -613,6 +982,7 @@ mod tests {
         registry.register_type("Handle".to_string(), vec![Ty::I32]);
         registry.register_negative_impl("Handle".to_string(), MarkerTrait::Send);
         let handle = Ty::Named {
+            builtin: None,
             name: "Handle".to_string(),
             args: vec![],
         };
@@ -646,6 +1016,57 @@ mod tests {
     }
 
     #[test]
+    fn test_serializable_marker_uses_encode_decode_and_subset() {
+        let mut registry = TraitRegistry::new();
+        assert!(registry.is_serializable(&Ty::I64));
+        assert!(registry.is_serializable(&Ty::String));
+        assert!(registry.is_serializable(&Ty::Bytes));
+        assert!(registry.is_serializable(&Ty::Tuple(vec![Ty::I64, Ty::Bool])));
+        assert!(registry.is_serializable(&Ty::Array(Box::new(Ty::I64), 4)));
+
+        let ping = Ty::Named {
+            builtin: None,
+            name: "Ping".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Ping".to_string(), vec![Ty::I64]);
+        registry.register_record_type("Ping".to_string());
+        registry.register_serializable_type("Ping".to_string(), vec![Ty::I64]);
+        assert!(registry.is_serializable(&ping));
+
+        let plain = Ty::Named {
+            builtin: None,
+            name: "Plain".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Plain".to_string(), vec![Ty::I64]);
+        assert!(!registry.is_serializable(&plain));
+
+        let fn_ty = Ty::Function {
+            params: vec![Ty::I64],
+            ret: Box::new(Ty::I64),
+        };
+        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_serializable(&fn_ty));
+
+        let bad = Ty::Named {
+            builtin: None,
+            name: "Bad".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Bad".to_string(), vec![fn_ty]);
+        registry.register_record_type("Bad".to_string());
+        registry.register_serializable_type(
+            "Bad".to_string(),
+            vec![Ty::Function {
+                params: vec![Ty::I64],
+                ret: Box::new(Ty::I64),
+            }],
+        );
+        assert!(!registry.is_serializable(&bad));
+    }
+
+    #[test]
     fn test_primitives_are_sync() {
         let registry = TraitRegistry::new();
         assert!(registry.is_sync(&Ty::I32));
@@ -659,6 +1080,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_type("Point".to_string(), vec![Ty::I32, Ty::I32]);
         let point = Ty::Named {
+            builtin: None,
             name: "Point".to_string(),
             args: vec![],
         };
@@ -675,10 +1097,28 @@ mod tests {
         assert!(!registry.is_sync(&ptr));
     }
 
+    /// §4e: an immutable borrow `&T` is `Copy` but NOT `Send` — sending a
+    /// borrow across an actor boundary must be rejected. The rejection flows
+    /// through the dedicated `Ty::Borrow` marker arm (borrow-specific), so it
+    /// is distinguishable from the accidental `*const T` pointer rejection.
+    #[test]
+    fn test_borrow_is_copy_not_send() {
+        let registry = TraitRegistry::new();
+        let borrow = Ty::Borrow {
+            pointee: Box::new(Ty::String),
+        };
+        // Copy: a borrow is freely copyable (it is just a reference).
+        assert!(registry.implements_marker(&borrow, MarkerTrait::Copy));
+        // NOT Send: a borrow must not cross an actor boundary.
+        assert!(!registry.is_send(&borrow));
+        assert!(!registry.implements_marker(&borrow, MarkerTrait::Send));
+    }
+
     #[test]
     fn test_actor_ref_is_sync() {
         let registry = TraitRegistry::new();
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "MyActor".to_string(),
             args: vec![],
         });
@@ -689,6 +1129,7 @@ mod tests {
     fn test_vec_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let vec_i32 = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![Ty::I32],
         };
@@ -703,6 +1144,7 @@ mod tests {
     fn test_hashmap_is_send_when_elements_are_send() {
         let registry = TraitRegistry::new();
         let map = Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
             name: "HashMap".to_string(),
             args: vec![Ty::String, Ty::I32],
         };
@@ -714,6 +1156,7 @@ mod tests {
     fn test_hashset_is_send_when_element_is_send() {
         let registry = TraitRegistry::new();
         let set = Ty::Named {
+            builtin: Some(BuiltinType::HashSet),
             name: "HashSet".to_string(),
             args: vec![Ty::String],
         };
@@ -732,6 +1175,7 @@ mod tests {
             is_mutable: false,
         };
         let set_ptr = Ty::Named {
+            builtin: None,
             name: "HashSet".to_string(),
             args: vec![ptr],
         };
@@ -745,10 +1189,12 @@ mod tests {
         // the element-propagation path with Rc rather than a raw pointer.
         let registry = TraitRegistry::new();
         let rc_i32 = Ty::Named {
+            builtin: None,
             name: "Rc".to_string(),
             args: vec![Ty::I32],
         };
         let set_rc = Ty::Named {
+            builtin: None,
             name: "HashSet".to_string(),
             args: vec![rc_i32],
         };
@@ -761,6 +1207,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
         let holder = Ty::Named {
+            builtin: None,
             name: "Holder".to_string(),
             args: vec![],
         };
@@ -776,6 +1223,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Worker".to_string(), vec![Ty::rc(Ty::I32)]);
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "Worker".to_string(),
             args: vec![],
         });
@@ -789,6 +1237,7 @@ mod tests {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("SimpleActor".to_string(), vec![Ty::I32, Ty::Bool]);
         let actor_ref = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "SimpleActor".to_string(),
             args: vec![],
         });
@@ -801,6 +1250,7 @@ mod tests {
     fn vec_rc_in_named_still_contains_rc() {
         let registry = TraitRegistry::new();
         let vec_rc = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::rc(Ty::I32)],
         };
@@ -813,10 +1263,12 @@ mod tests {
     fn mutual_actorref_cycle_is_rc_free_not_recursive() {
         let mut registry = TraitRegistry::new();
         let a = Ty::Named {
+            builtin: None,
             name: "A".to_string(),
             args: vec![],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "B".to_string(),
             args: vec![],
         };
@@ -836,6 +1288,7 @@ mod tests {
     fn test_rcfree_rejects_recursive_named_types_without_proof() {
         let mut registry = TraitRegistry::new();
         let list = Ty::Named {
+            builtin: None,
             name: "List".to_string(),
             args: vec![],
         };
@@ -852,10 +1305,12 @@ mod tests {
     fn test_rcfree_rejects_mutually_recursive_named_types_without_proof() {
         let mut registry = TraitRegistry::new();
         let a = Ty::Named {
+            builtin: None,
             name: "A".to_string(),
             args: vec![],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "B".to_string(),
             args: vec![],
         };
@@ -875,10 +1330,78 @@ mod tests {
     }
 
     #[test]
+    fn rcfree_admits_recursion_broken_by_vec_indirection() {
+        // W5.016 F4: `enum RedisReply { Array(Vec<RedisReply>); ... }` recurses
+        // through a `Vec` — the heap indirection makes the value finite-size, so
+        // it is RcFree-admissible (the recursive-cycle gate must NOT reject it).
+        let mut registry = TraitRegistry::new();
+        let reply = Ty::Named {
+            builtin: None,
+            name: "RedisReply".to_string(),
+            args: vec![],
+        };
+        let vec_of_reply = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![reply.clone()],
+        };
+        registry.register_rcfree_members("RedisReply".to_string(), vec![vec_of_reply]);
+
+        assert_eq!(registry.rc_free_status(&reply), RcFreeStatus::RcFree);
+        assert!(registry.implements_marker(&reply, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn rcfree_rejects_direct_value_cycle_not_broken_by_indirection() {
+        // W5.016 F4 negative guard: `enum E { V(E) }` recurses by VALUE (no heap
+        // indirection) — infinite-size, MUST stay rejected. Over-admitting this
+        // would push an infinite-size value type to codegen (unbounded layout
+        // recursion / stack overflow).
+        let mut registry = TraitRegistry::new();
+        let e = Ty::Named {
+            builtin: None,
+            name: "E".to_string(),
+            args: vec![],
+        };
+        registry.register_rcfree_members("E".to_string(), vec![e.clone()]);
+
+        assert_eq!(
+            registry.rc_free_status(&e),
+            RcFreeStatus::Recursive("E".to_string())
+        );
+        assert!(!registry.implements_marker(&e, MarkerTrait::RcFree));
+    }
+
+    #[test]
+    fn marker_derivation_terminates_on_vec_indirected_recursive_enum() {
+        // W5.016 F4: the marker derivation must be total on a recursive type
+        // graph reachable through a collection. Before the recursion guard, a
+        // `Vec<Self>`-bearing enum overflowed the stack while deriving any
+        // structural marker. The enum is NOT Copy (heap-owning Vec field) but
+        // the derivation must terminate to report that.
+        let mut registry = TraitRegistry::new();
+        let reply = Ty::Named {
+            builtin: None,
+            name: "RedisReply".to_string(),
+            args: vec![],
+        };
+        let vec_of_reply = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![reply.clone()],
+        };
+        registry.register_type("RedisReply".to_string(), vec![vec_of_reply]);
+
+        // Terminates (no overflow) and a Vec-bearing enum is not Copy.
+        assert!(!registry.implements_marker(&reply, MarkerTrait::Copy));
+    }
+
+    #[test]
     fn test_rcfree_falls_back_to_unqualified_registered_name() {
         let mut registry = TraitRegistry::new();
         registry.register_rcfree_members("Holder".to_string(), vec![Ty::rc(Ty::I32)]);
         let qualified_holder = Ty::Named {
+            builtin: None,
             name: "widgets.Holder".to_string(),
             args: vec![],
         };
@@ -925,6 +1448,42 @@ mod tests {
         assert!(registry.implements_marker(&closure, MarkerTrait::Clone));
     }
 
+    // Fix 1: confirm Vec and HashMap are rejected at the RemotePid serialization
+    // boundary.  The codegen codec walk (`emit_{ser,de}_value`) does not handle
+    // collection types; admitting them via `is_serializable` would silently skip
+    // serialization.  These tests are the gate-level proof that the checker
+    // is already fail-closed for collections — any future change that accidentally
+    // admits Vec/HashMap will break them immediately.
+    #[test]
+    fn vec_payload_rejected_at_serializable_boundary() {
+        let registry = TraitRegistry::new();
+        let vec_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            !registry.is_serializable(&vec_i64),
+            "Vec<i64> must NOT be Serializable at the RemotePid boundary \
+             (codec walk does not support collection types)"
+        );
+    }
+
+    #[test]
+    fn hashmap_payload_rejected_at_serializable_boundary() {
+        let registry = TraitRegistry::new();
+        let map_str_i64 = Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            name: "HashMap".to_string(),
+            args: vec![Ty::String, Ty::I64],
+        };
+        assert!(
+            !registry.is_serializable(&map_str_i64),
+            "HashMap<String, i64> must NOT be Serializable at the RemotePid boundary \
+             (codec walk does not support collection types)"
+        );
+    }
+
     #[test]
     fn test_vec_not_send_when_element_not_send() {
         let registry = TraitRegistry::new();
@@ -933,6 +1492,7 @@ mod tests {
             is_mutable: false,
         };
         let vec_ptr = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![ptr],
         };

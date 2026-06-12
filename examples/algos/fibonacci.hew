@@ -1,5 +1,5 @@
 // Fibonacci - iterative and recursive implementations
-fn fib_recursive(n: int) -> int {
+fn fib_recursive(n: i64) -> i64 {
     if n <= 0 {
         0
     } else if n == 1 {
@@ -9,7 +9,7 @@ fn fib_recursive(n: int) -> int {
     }
 }
 
-fn fib_iterative(n: int) -> int {
+fn fib_iterative(n: i64) -> i64 {
     if n <= 0 {
         return 0;
     }
@@ -28,7 +28,7 @@ fn fib_iterative(n: int) -> int {
     b
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

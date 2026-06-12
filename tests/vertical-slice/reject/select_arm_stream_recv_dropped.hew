@@ -1,0 +1,29 @@
+// Reject fixture (SELECT ship-3): the stream-next arm `<id> from <stream>.recv()`
+// over a `Stream<T>` is NOT one of the three sealed `select` forms in edition
+// 2026 (HEW-SPEC-2026 §4.11.1: actor ask, channel `rx.recv()`, `after`). The
+// `.recv()` shape is accepted only for a `Receiver<T>` (the channel arm); a
+// `Stream<T>` receiver is rejected by the checker select-arm gate at CHECK
+// time. (Stream-next is deferred with its substrate — HEW-FUTURE §1.4 — because
+// no usable `Stream<T>` handle is obtainable today.) The gate fires before MIR,
+// so the rejection is the select-arm diagnostic, not the owned-handle
+// aggregate-extraction fail-closed.
+//
+// Harness verb: hew check (must fail)
+// Expected diagnostic substring: "select arm source must be actor.method(args)"
+import std::stream;
+
+actor Driver {
+    #[on(start)]
+    fn start() {
+        let (_sink, input) = stream.pipe(8);
+        select {
+            item from input.recv() => println("item"),
+            after 1s => println("timeout"),
+        };
+    }
+}
+
+fn main() {
+    let _d = spawn Driver;
+    sleep_ms(20);
+}

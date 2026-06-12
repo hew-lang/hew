@@ -1,5 +1,8 @@
+//! Status: runnable
+//! Description: cli_argparse.hew — Command-line argument parser
+
 // cli_argparse.hew — Command-line argument parser
-// Demonstrates string processing, extern functions, and Vec<String> usage.
+// Demonstrates string processing, extern functions, and Vec<string> usage.
 //
 // Usage:
 //   cli_argparse --verbose --output=result.txt --port=8080 file1.txt file2.txt
@@ -19,7 +22,7 @@ fn print_help() {
     println("Positional arguments are collected as input files.");
 }
 
-fn print_flags(flags: Vec<String>) {
+fn print_flags(flags: Vec<string>) {
     println("Flags:");
     for i in 0 .. flags.len() {
         print("  ");
@@ -27,7 +30,7 @@ fn print_flags(flags: Vec<String>) {
     }
 }
 
-fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) {
+fn print_options(opt_keys: Vec<string>, opt_vals: Vec<string>) {
     println("Options:");
     for i in 0 .. opt_keys.len() {
         print("  ");
@@ -37,7 +40,7 @@ fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) {
     }
 }
 
-fn print_positional(positional: Vec<String>) {
+fn print_positional(positional: Vec<string>) {
     println("Positional:");
     for i in 0 .. positional.len() {
         print("  ");
@@ -53,10 +56,10 @@ fn main() {
         print_help();
         return;
     }
-    let flags: Vec<String> = Vec::new();
-    let opt_keys: Vec<String> = Vec::new();
-    let opt_vals: Vec<String> = Vec::new();
-    let positional: Vec<String> = Vec::new();
+    let flags: Vec<string> = Vec::new();
+    let opt_keys: Vec<string> = Vec::new();
+    let opt_vals: Vec<string> = Vec::new();
+    let positional: Vec<string> = Vec::new();
     var show_help = 0;
     // Parse arguments (skip argv[0] which is the program name)
     for i in 1 .. argc {

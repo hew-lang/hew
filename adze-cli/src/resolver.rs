@@ -1045,6 +1045,7 @@ mod tests {
             dependencies: deps,
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         }
     }
 
@@ -1506,6 +1507,7 @@ mod tests {
             dependencies,
             dev_dependencies: BTreeMap::new(),
             features: BTreeMap::new(),
+            native: None,
         };
 
         let err = resolve_all(&manifest, &reg).unwrap_err();

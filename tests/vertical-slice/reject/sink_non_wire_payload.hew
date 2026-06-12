@@ -1,0 +1,15 @@
+// Reject fixture: Sink<T> / Stream<T> payload must implement Wire (Encode + Decode).
+//
+// LocalPid<Foo> derives Send + Sync + Copy + Clone but NOT Encode or Decode —
+// actor pids are in-process handles, not serialisable values.  Using one as a
+// Sink payload must be rejected by the Wire-capability admissibility gate with a
+// SinkPayloadNotWire diagnostic.
+//
+// Expected: hew check exits non-zero and output contains "Encode + Decode"
+actor Foo {
+    receive fn ping() {}
+}
+
+fn _try_send(s: Sink<LocalPid<Foo>>) {
+    s.send(spawn Foo);
+}

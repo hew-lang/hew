@@ -1,21 +1,86 @@
 # Nextest configuration for the Hew workspace.
 # https://nexte.st/docs/configuration/
 
+# ── Test groups ────────────────────────────────────────────────────────────────
+# subprocess-intensive: tests that spawn the full `hew` compiler binary
+# (compile + codegen + link + run).  Each test consumes several cores while the
+# compiler runs, so allowing all 16 to run in parallel causes self-starvation:
+# compile times balloon and timeout hang-guards fire even though no test is
+# genuinely stuck.  Capping at 8 concurrent subprocess tests leaves headroom for
+# the OS scheduler and avoids the oversubscription that causes eval_e2e flakes.
+[test-groups]
+subprocess-intensive = { max-threads = 8 }
+# process-timing: tests that measure process-group signal delivery timing (SIGKILL
+# propagation to grandchildren, process-group watchdog latency).  Under 16-core
+# concurrent load the OS scheduler takes variable time to deliver signals and
+# reap children; capping at 4 concurrent process-timing tests prevents the
+# scheduler saturation that caused bounded_child_timeout false-failures in S117.
+process-timing = { max-threads = 4 }
+
 [profile.default]
-# Exclude hew-wasm by default (requires wasmtime).
-default-filter = "not package(hew-wasm)"
+# Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
+# generic nextest runs because it spawns the hew-sandbox-vm Node runner; CI
+# enforces it through the provisioned `make sandbox-parity` step.
+default-filter = "not package(hew-wasm) - binary(parity)"
+# Global concurrency cap: defaults to all available cores (num-cpus), which is
+# fine for pure in-process tests.  The subprocess-intensive group above provides
+# the finer-grained cap for tests that spawn child processes.
+test-threads = "num-cpus"
+
+[[profile.default.overrides]]
+# eval_e2e and adze eval tests each spawn the full hew compiler binary (AOT
+# compile + codegen + link + subprocess execute).  Route them into the
+# subprocess-intensive group so at most 8 run concurrently, preventing
+# compiler-process oversubscription that inflates compile times and causes
+# the eval hang-guard to fire spuriously.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
 # Exclude test_runner_e2e tests — they are slower than the main nextest path,
 # and the same scenarios are covered by the ctest E2E suite that runs after the
 # codegen build step.
-default-filter = "not package(hew-wasm) - binary(test_runner_e2e)"
-# Terminate tests that hang: after 3 × 60 s = 180 s of no output the test
-# process is killed and reported as a failure rather than blocking the job
-# indefinitely.  Applies to all platforms.  Replaces the previous Windows-only
-# override (terminate-after = 5, i.e. 300 s) with a stricter cross-platform bound.
-slow-timeout = { period = "60s", terminate-after = 3 }
+# Exclude sandbox parity from generic nextest runs because it needs
+# `npm --prefix hew-sandbox-vm ci`; CI enforces it through the provisioned
+# `make sandbox-parity` step.
+default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity)"
+# Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
+# tests after 3 × 100 s = 300 s without status updates/output.
+slow-timeout = { period = "100s", terminate-after = 3 }
+
+[[profile.ci.overrides]]
+# Codegen exec/e2e integration binaries spawn full compile+link+run child
+# processes; on 4-core hosted runners an unthrottled exec test starves under
+# workspace-wide parallelism and hits the 300s slow-timeout (coro_emission_exec
+# on macos-14). Same medicine as eval_e2e: cap concurrency, change no coverage.
+filter = "binary(~exec)"
+test-group = "subprocess-intensive"
+# Hosted 4-core runners run throttled exec tests past the default 300s kill
+# window even when healthy (each spawns compile+link+run children sharing 4
+# cores with up to 7 siblings). Wider terminate budget on ci only; the tests'
+# internal timeouts still bound genuine hangs.
+slow-timeout = { period = "120s", terminate-after = 4 }
+# One retry absorbs hosted-runner subprocess-spawn flakes (a child `hew run`
+# failing to launch in ~0.02s); the compile-run assertions stay strict, so a
+# real regression fails both attempts.
+retries = 1
+
+[[profile.ci.overrides]]
+# eval_e2e tests spawn the full hew compiler binary (AOT compile + codegen +
+# link + subprocess execute).  Route them into the subprocess-intensive group
+# so at most 8 run concurrently, preventing compiler-process oversubscription
+# that inflates compile times and causes the eval hang-guard to fire spuriously.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
+
+[[profile.ci.overrides]]
+# eval_std_observe_scrape drives a compiled program that binds an ephemeral
+# observe/pprof port and scrapes it; under hosted-runner load the bind/scrape
+# handshake can miss its window (one cold failure on an otherwise green job).
+# One retry absorbs the port-timing jitter; the assertions stay strict.
+filter = "test(eval_std_observe_scrape)"
+retries = 1
 
 [[profile.ci.overrides]]
 # connection_drop_wakes_pending_remote_ask is a known timing-sensitive test
@@ -53,5 +118,136 @@ retries = 1
 filter = "test(eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout)"
 retries = 1
 
+[[profile.ci.overrides]]
+# bounded_child_timeout_kills_grandchild_process_group measures SIGKILL delivery
+# to a process group (spawned via BoundedChild::spawn) and polls for grandchild
+# reaping via /proc checks.  The test already uses adaptive polling (up to 5 s
+# per phase) instead of fixed sleeps, but under 16-core concurrent preflight load
+# the OS scheduler can delay signal delivery past the adaptive window.
+#
+# Two-part mitigation:
+#   1. process-timing group (max-threads = 4): limits concurrent process-group
+#      tests so the scheduler has headroom for signal delivery.
+#   2. retries = 1: absorbs any remaining scheduler jitter that slips past the
+#      group cap, using the strict eventual-invariant assertion already in the test.
+#
+# SHIM: retry absorbs OS scheduler jitter under concurrent load.
+# WHEN obsolete: when the de-flake work replaces the adaptive-poll loop with a
+#   kernel-level handshake (e.g. a pipe from the grandchild that the test reads
+#   with a blocking call rather than a 25ms-tick poll), the scheduler jitter risk
+#   is eliminated and this retry can be removed.
+# WHAT the real solution looks like: grandchild writes its PID to a pipe (not a
+#   file); test blocks on pipe read; signal delivery test proceeds only after the
+#   pipe delivers. Tracked: .tmp/deferred-v05-followups.md
+#   "bounded_child de-flake: pipe-based handshake replaces file-poll".
+# Correctness invariant: the retry does not mask real regressions — a genuine
+#   broken killpg() would fail on BOTH attempts because the grandchild would
+#   still be alive after the kill, causing the kill(pid, 0) == 0 assertion to
+#   fail on both the first try and the retry.
+filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
+test-group = "process-timing"
+retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
+
+[[profile.ci.overrides]]
+# The two-process remote-ask pair spawns a second OS process and round-trips
+# an ask over loopback TCP; on shared hosted runners the connect/ask window
+# intermittently misses ("echo ask returned null", helper exit 101) while the
+# same tests pass deterministically on dedicated hardware (local macOS runs
+# and native arm64 container runs). Hosted arm Linux already proved this
+# family is runner-environment, not code.
+# SHIM: retry absorbs hosted-runner loopback jitter.
+# WHEN obsolete: when the remote-ask client helper gains a bounded
+#   connect-with-deadline (retry/backoff) instead of a one-shot connect.
+# WHAT the real solution looks like: the helper retries the initial node
+#   connect with backoff up to a wall deadline, making a slow accept
+#   indistinguishable from a fast one.
+# Correctness invariant: a real remote-ask regression (null reply from a live
+#   node) fails on both attempts; the retry only absorbs setup-window misses.
+filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper)"
+retries = 1
+test-group = "process-timing"
+
+[[profile.ci.overrides]]
+# child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
+# rebuild across escalation; 0.21s isolated, but at the tail of a fully loaded
+# 16-core run it can exceed its 10s in-test budget (contention-flake, 50x
+# margin — classified 2026-06-10). Route it into the process-timing group so
+# the scheduler has headroom; no retry, the in-test assertions stay strict.
+filter = "test(child_supervisor_recovery_recreates_nested_subtree)"
+test-group = "process-timing"
+
 [profile.ci.junit]
 path = "junit.xml"
+
+[profile.smoke]
+# Smoke profile: fast, deterministic in-process tests only.  Designed to give
+# a pass/fail signal in under 5 minutes before committing to a full build.
+# Used by the `ci-preflight-smoke` tier in the dispatcher's fallback lane.
+#
+# What it runs: pure in-process unit and integration tests that do not spawn
+# the full `hew` compiler binary or the sandbox Node runner, do not need
+# pre-built libhew.a or wasm32 runtimes, and do not connect to network services.
+# Key oracle: `fmt_roundtrip_corpus::every_hew_file_roundtrips_through_formatter`
+# in hew-parser — a deterministic corpus scan that surfaced the S115/S119
+# formatter-AST regressions before the heavy tier ran.
+#
+# What it excludes (intentional; the ci profile covers these):
+#   eval_e2e     — spawns `hew` binary, needs pre-built runtimes, slow
+#   test_runner_e2e — same (subprocess-intensive)
+#   parity        — needs Node runner + npm install
+#   hew-wasm      — requires wasmtime
+#
+# Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
+# (test-rust / make test) still runs on smoke pass and provides full coverage.
+# The smoke tier does NOT replace the ci profile — it precedes it.
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity)"
+test-threads = "num-cpus"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[[profile.smoke.overrides]]
+# Route any eval_e2e tests that slip past the default-filter into the group cap.
+# This is a safety net; the default-filter above should exclude them entirely.
+filter = "binary(eval_e2e)"
+test-group = "subprocess-intensive"
+
+[profile.lane]
+# Lane-iteration tier: in-process unit and IR-shape tests only.
+#
+# Purpose: make per-crate gates fast during lane development so iteration does
+# not pay for the subprocess-spawning exec/e2e corpus on every run.
+# Typical wall-clock: < 2 min per crate on a warm build.
+#
+# Usage:
+#   make test-lane CRATE=hew-types    — single crate, fast tier
+#   make test-lane-all                — full workspace, fast tier
+#   cargo nextest run -p <crate> --profile lane
+#
+# Coverage contract:
+#   - This tier is for ITERATION.  Acceptance requires the plan's named proving
+#     gates (e.g. make test-types, make test-compiler-pipeline).
+#   - Full exec/e2e corpus belongs to the integrated gate (profile.ci).
+#   - profile.ci and the preflight fallback are UNCHANGED by this profile.
+#
+# Binary-name survey (2026-06-10):
+#   Excluded by binary(~exec)   — all *_exec codegen/JIT tests
+#   Excluded by binary(~e2e)    — all *_e2e hew-cli/codegen/runtime tests
+#   Excluded by binary(~oracle) — leak-oracle hew-cli tests
+#   Excluded by binary(machine_lifecycle) — subprocess; name outside the patterns
+#   Excluded by binary(zeroarg_module_enum_emission) — subprocess; name outside patterns
+#   Excluded by binary(jit_trap_bridge)  — JIT-deferred; name outside the patterns
+#   Already excluded from smoke base:    eval_e2e, test_runner_e2e, parity, hew-wasm
+#
+# Matcher semantics (nextest 0.9.132, verified empirically): a bare string in
+# binary(...) is an EXACT-equality match and nextest errors out when it matches
+# no binary name.  Substring exclusion therefore needs the contains matcher
+# `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
+# because those binaries exist.
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge)"
+test-threads = "num-cpus"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.lane.overrides]]
+# Safety net: route any exec-named tests that slip past the default-filter into
+# the subprocess-intensive group.  The default-filter should exclude them entirely.
+filter = "binary(~exec)"
+test-group = "subprocess-intensive"

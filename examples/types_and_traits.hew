@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Types, traits, and dynamic dispatch in Hew.
+
 // Types, traits, and dynamic dispatch in Hew.
 //
 // Run:  hew run examples/types_and_traits.hew
@@ -12,11 +15,11 @@
 
 // ── 1. Structs ────────────────────────────────────────────────────────────────
 type Point {
-    x: int;
-    y: int;
+    x: i64;
+    y: i64;
 }
 
-fn point_sum(p: Point) -> int {
+fn point_sum(p: Point) -> i64 {
     p.x + p.y
 }
 
@@ -25,26 +28,26 @@ fn point_sum(p: Point) -> int {
 // A trait declares a named contract.
 // impl blocks provide the concrete implementation for each type.
 trait Describe {
-    fn describe(val: Self) -> String;
+    fn describe(val: Self) -> string;
 }
 
 type Circle {
-    radius: int;
+    radius: i64;
 }
 
 type Rectangle {
-    width: int;
-    height: int;
+    width: i64;
+    height: i64;
 }
 
 impl Describe for Circle {
-    fn describe(c: Circle) -> String {
+    fn describe(c: Circle) -> string {
         "Circle"
     }
 }
 
 impl Describe for Rectangle {
-    fn describe(r: Rectangle) -> String {
+    fn describe(r: Rectangle) -> string {
         "Rectangle"
     }
 }

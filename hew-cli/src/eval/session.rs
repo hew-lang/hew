@@ -157,6 +157,18 @@ impl Session {
     /// Build a complete Hew program from session state plus a known input kind.
     #[must_use]
     pub fn build_program_with_kind(&self, input: &str, kind: InputKind) -> SyntheticProgram {
+        self.build_program_with_kind_and_auto_print(input, kind, true)
+    }
+
+    /// Build a complete Hew program from session state plus a known input kind,
+    /// with caller-selected expression auto-printing.
+    #[must_use]
+    pub fn build_program_with_kind_and_auto_print(
+        &self,
+        input: &str,
+        kind: InputKind,
+        auto_print_expressions: bool,
+    ) -> SyntheticProgram {
         let mut source = String::new();
         let mut diagnostic_view = None;
 
@@ -191,7 +203,10 @@ impl Session {
                 let input_start = source.len();
                 source.push_str(trimmed);
                 let input_end = source.len();
-                if !trimmed.ends_with(';') {
+                // Block-shaped statements (`if`/`while`/`for` ending in `}`)
+                // need no terminator; a synthetic one triggers the parser's
+                // "unnecessary semicolon" warning on code the user never wrote.
+                if !trimmed.ends_with(';') && !trimmed.ends_with('}') {
                     source.push(';');
                 }
                 source.push_str("\n}\n");
@@ -209,17 +224,36 @@ impl Session {
                 }
                 let trimmed = input.trim();
                 let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-                // Wrap the expression for auto-printing via the
-                // type-generic `println()` builtin.
-                source.push_str("    println(");
-                let input_start = source.len();
-                source.push_str(trimmed);
-                let input_end = source.len();
-                source.push_str(");\n}\n");
-                diagnostic_view = Some(SyntheticDiagnosticView {
-                    source: trimmed.to_string(),
-                    input_span: input_start..input_end,
-                });
+                source.push_str("    ");
+                if auto_print_expressions {
+                    // Wrap the expression for auto-printing via the
+                    // type-generic `println()` builtin.
+                    source.push_str("println(");
+                    let input_start = source.len();
+                    source.push_str(trimmed);
+                    let input_end = source.len();
+                    source.push_str(");\n}\n");
+                    diagnostic_view = Some(SyntheticDiagnosticView {
+                        source: trimmed.to_string(),
+                        input_span: input_start..input_end,
+                    });
+                } else {
+                    let input_start = source.len();
+                    source.push_str(trimmed);
+                    let input_end = source.len();
+                    // Same as the statement wrapper: no synthetic `;` after a
+                    // block-shaped expression (`if`/`match` ending in `}`) —
+                    // it would draw an "unnecessary semicolon" warning.
+                    if trimmed.ends_with('}') {
+                        source.push_str("\n}\n");
+                    } else {
+                        source.push_str(";\n}\n");
+                    }
+                    diagnostic_view = Some(SyntheticDiagnosticView {
+                        source: trimmed.to_string(),
+                        input_span: input_start..input_end,
+                    });
+                }
             }
             InputKind::Command(_) => {
                 // Commands are handled before we get here; return a no-op program.
@@ -236,7 +270,17 @@ impl Session {
 
     /// Build a program that just type-checks an expression and returns its type.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "compatibility wrapper used by eval unit tests")
+    )]
     pub fn build_type_query(&self, expr: &str) -> String {
+        self.build_type_query_program(expr).source
+    }
+
+    /// Build a program that just type-checks an expression and returns its type.
+    #[must_use]
+    pub fn build_type_query_program(&self, expr: &str) -> SyntheticProgram {
         let mut source = String::new();
         for item in &self.items {
             source.push_str(&item.source);
@@ -249,9 +293,20 @@ impl Session {
             source.push('\n');
         }
         let trimmed = expr.trim().strip_suffix(';').unwrap_or(expr.trim());
-        let _ = writeln!(source, "    let __repl_type_query = {trimmed};");
+        source.push_str("    let __repl_type_query = ");
+        let input_start = source.len();
+        source.push_str(trimmed);
+        let input_end = source.len();
+        source.push_str(";\n");
         source.push_str("}\n");
-        source
+        SyntheticProgram {
+            source,
+            kind: InputKind::Expression,
+            diagnostic_view: Some(SyntheticDiagnosticView {
+                source: trimmed.to_string(),
+                input_span: input_start..input_end,
+            }),
+        }
     }
 }
 
@@ -310,7 +365,13 @@ fn persistent_bindings(input: &str) -> Vec<SessionBinding> {
 
     let source = format!("{MAIN_PREFIX}{input}\n}}\n");
     let parse_result = hew_parser::parse(&source);
-    if !parse_result.errors.is_empty() || parse_result.program.items.len() != 1 {
+    // Warning-severity parse diagnostics (e.g. "unnecessary semicolon") do
+    // not invalidate the statement; only hard errors do.
+    let has_fatal_errors = parse_result
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error);
+    if has_fatal_errors || parse_result.program.items.len() != 1 {
         debug_assert!(
             false,
             "statement persistence expected parseable statement input: {input:?}"
@@ -394,6 +455,7 @@ fn summarize_item(item: &Item) -> String {
         Item::Actor(decl) => format!("actor {}", decl.name),
         Item::Supervisor(decl) => format!("supervisor {}", decl.name),
         Item::Machine(decl) => format!("machine {}", decl.name),
+        Item::Record(decl) => format!("record {}", decl.name),
     }
 }
 
@@ -455,6 +517,11 @@ fn collect_pattern_identifiers(pattern: &Pattern, names: &mut Vec<String>) {
         Pattern::Or(left, right) => {
             collect_pattern_identifiers(&left.0, names);
             collect_pattern_identifiers(&right.0, names);
+        }
+        Pattern::Regex { captures, .. } => {
+            for capture_name in captures {
+                push_unique(names, capture_name);
+            }
         }
     }
 }

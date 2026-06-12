@@ -18,4 +18,7 @@
 pub(crate) mod live_actors;
 pub(crate) mod poison_safe;
 
-pub(crate) use poison_safe::{PoisonSafe, PoisonSafeRw};
+pub(crate) use poison_safe::PoisonSafe;
+// live on not(wasm32) — env/link/monitor/transport/hew_node; dead here; consumers in native-only modules
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use poison_safe::PoisonSafeRw;

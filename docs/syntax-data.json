@@ -20,6 +20,7 @@
       "let",
       "var",
       "const",
+      "mut",
       "fn",
       "gen",
       "async",
@@ -29,6 +30,7 @@
       "super",
       "extern",
       "where",
+      "record",
       "type",
       "indirect",
       "enum",
@@ -51,10 +53,15 @@
       "after",
       "from",
       "await",
-      "cooperate",
       "this"
     ],
-    "wire": ["wire", "reserved", "optional", "deprecated", "default"],
+    "wire": [
+      "wire",
+      "reserved",
+      "optional",
+      "deprecated",
+      "default"
+    ],
     "supervisor_config": [
       "child",
       "restart",
@@ -63,19 +70,45 @@
       "permanent",
       "transient",
       "temporary",
+      "brutal_kill",
       "one_for_one",
       "one_for_all",
-      "rest_for_one"
+      "rest_for_one",
+      "simple_one_for_one",
+      "pool"
     ],
-    "logical": ["true", "false"],
-    "machine": ["machine", "state", "event", "on", "when"],
-    "other": ["dyn", "unsafe", "pure"],
-    "reserved_unused": ["try", "catch", "race", "foreign"]
+    "logical": [
+      "true",
+      "false"
+    ],
+    "machine": [
+      "machine",
+      "state",
+      "event",
+      "on",
+      "when",
+      "entry",
+      "exit",
+      "emit"
+    ],
+    "other": [
+      "dyn",
+      "unsafe",
+      "is"
+    ],
+    "reserved_unused": [
+      "try",
+      "catch",
+      "race",
+      "foreign",
+      "cooperate"
+    ]
   },
   "all_keywords": [
     "let",
     "var",
     "const",
+    "mut",
     "fn",
     "if",
     "else",
@@ -108,6 +141,9 @@
     "one_for_one",
     "one_for_all",
     "rest_for_one",
+    "simple_one_for_one",
+    "pool",
+    "brutal_kill",
     "scope",
     "fork",
     "spawn",
@@ -115,6 +151,7 @@
     "await",
     "receive",
     "init",
+    "record",
     "type",
     "this",
     "dyn",
@@ -141,21 +178,29 @@
     "cooperate",
     "catch",
     "defer",
-    "pure",
     "as",
     "machine",
     "state",
     "event",
     "on",
-    "when"
+    "when",
+    "entry",
+    "exit",
+    "emit",
+    "is"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
-    "mut": "Mutable qualifier on parameters",
+    "events": "Machine input-event vocabulary block header (contextual inside machine body)",
+    "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
+    "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",
-    "window": "Supervisor restart window parameter",
-    "max_restarts": "Supervisor max restarts parameter",
+    "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
+    "within": "Supervisor intensity window separator",
+    "shutdown": "Supervisor child graceful-stop deadline clause",
+    "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
+    "wired_to": "Supervisor child sibling-wiring clause",
     "export": "FFI export attribute",
     "json": "Wire serialization format",
     "yaml": "Wire serialization format",
@@ -168,10 +213,34 @@
     "fail": "Overflow policy: fail actor"
   },
   "operators": {
-    "arithmetic": ["+", "-", "*", "/", "%"],
-    "comparison": ["==", "!=", "<", "<=", ">", ">="],
-    "logical": ["&&", "||", "!"],
-    "bitwise": ["&", "|", "^", "~", "<<", ">>"],
+    "arithmetic": [
+      "+",
+      "-",
+      "*",
+      "/",
+      "%"
+    ],
+    "comparison": [
+      "==",
+      "!=",
+      "<",
+      "<=",
+      ">",
+      ">="
+    ],
+    "logical": [
+      "&&",
+      "||",
+      "!"
+    ],
+    "bitwise": [
+      "&",
+      "|",
+      "^",
+      "~",
+      "<<",
+      ">>"
+    ],
     "assignment": [
       "=",
       "+=",
@@ -185,9 +254,21 @@
       "<<=",
       ">>="
     ],
-    "arrow": ["->", "=>", "<-"],
-    "range": ["..", "..="],
-    "other": ["?", "@", ".", "::", "#["]
+    "arrow": [
+      "->",
+      "=>"
+    ],
+    "range": [
+      "..",
+      "..="
+    ],
+    "other": [
+      "?",
+      "@",
+      ".",
+      "::",
+      "#["
+    ]
   },
   "types": {
     "integer": [
@@ -202,7 +283,10 @@
       "isize",
       "usize"
     ],
-    "float": ["f32", "f64"],
+    "float": [
+      "f32",
+      "f64"
+    ],
     "primitive": [
       "bool",
       "char",
@@ -212,8 +296,19 @@
       "never",
       "duration"
     ],
-    "collections": ["HashMap", "HashSet", "Vec"],
-    "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
+    "collections": [
+      "HashMap",
+      "HashSet",
+      "Vec"
+    ],
+    "option_result": [
+      "Option",
+      "Result",
+      "Ok",
+      "Err",
+      "Some",
+      "None"
+    ],
     "concurrency": [
       "ActorRef",
       "Stream",
@@ -223,10 +318,24 @@
       "Generator",
       "AsyncGenerator"
     ],
-    "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
-    "other": ["Range"]
+    "marker_traits": [
+      "Send",
+      "Frozen",
+      "Copy",
+      "Arc",
+      "Rc",
+      "Weak"
+    ],
+    "other": [
+      "Range"
+    ]
   },
-  "string_prefixes": ["f", "r", "re", "b"],
+  "string_prefixes": [
+    "f",
+    "r",
+    "re",
+    "b"
+  ],
   "comment_styles": {
     "line": "//",
     "doc": "///",
@@ -235,6 +344,13 @@
     "block_end": "*/"
   },
   "literal_suffixes": {
-    "duration": ["ns", "us", "ms", "s", "m", "h"]
+    "duration": [
+      "ns",
+      "us",
+      "ms",
+      "s",
+      "m",
+      "h"
+    ]
   }
 }

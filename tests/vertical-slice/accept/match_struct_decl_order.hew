@@ -1,0 +1,17 @@
+// T-1: field declaration order differs from pattern binding order.
+// `type R { b: i64, a: i64 }` — `b` is at FieldOffset(0), `a` at FieldOffset(1).
+// Pattern `R { a, b }` binds both; `a - b` must yield 20 - 10 = 10.
+// If field offsets were resolved alphabetically instead of by declaration order,
+// `a` would load from offset 0 (value 10) and `b` from offset 1 (value 20),
+// yielding 10 - 20 = -10 — a distinct wrong value that the exit-code oracle catches.
+type R {
+    b: i64,
+    a: i64,
+}
+
+fn main() -> i64 {
+    let r = R { b: 10, a: 20 };
+    return match r {
+        R { a, b } => a - b,
+    };
+}

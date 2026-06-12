@@ -1,0 +1,22 @@
+// Accept (W5.020): heap payload in the Ok position. The gate keys on whether
+// ANY variant owns heap, not on arm position, so `Result<string, i64>` must
+// lower the same as `Result<i64, string>`. Both arms run; the owned `string`
+// in the Ok arm is dropped exactly once at the caller's scope exit.
+fn fetch(ok: bool) -> Result<string, i64> {
+    if ok {
+        Ok("payload body")
+    } else {
+        Err(404)
+    }
+}
+
+fn main() {
+    match fetch(true) {
+        Ok(s) => println(s),
+        Err(code) => println("err"),
+    }
+    match fetch(false) {
+        Ok(s) => println(s),
+        Err(code) => println("err"),
+    }
+}

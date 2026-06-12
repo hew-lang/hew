@@ -1,23 +1,15 @@
 //! Integration tests for actor links and monitors.
 
-use hew_runtime::actor::{hew_actor_free, hew_actor_get_error, hew_actor_send, hew_actor_spawn};
+use hew_runtime::actor::hew_actor_get_error;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
-use hew_runtime::internal::types::HewActorState;
 use hew_runtime::link::{hew_actor_link, hew_actor_unlink};
 use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
 use hew_runtime::supervisor::{SYS_MSG_DOWN, SYS_MSG_EXIT};
+use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor};
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
-use std::sync::{Condvar, Mutex, Once};
+use std::ptr;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
-
-static SCHED_INIT: Once = Once::new();
-
-fn ensure_scheduler() {
-    SCHED_INIT.call_once(|| {
-        hew_runtime::scheduler::hew_sched_init();
-    });
-}
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -160,103 +152,68 @@ impl ExitDispatchSignal {
 
 static EXIT_DISPATCH_SIGNAL: ExitDispatchSignal = ExitDispatchSignal::new();
 
-unsafe extern "C" fn test_dispatch(
+unsafe extern "C-unwind" fn test_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
     _size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     // Simple test dispatch - does nothing
+    std::ptr::null_mut()
 }
 
-unsafe extern "C" fn monitor_dispatch(
+unsafe extern "C-unwind" fn monitor_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     MONITOR_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
+    std::ptr::null_mut()
 }
 
-unsafe extern "C" fn exit_dispatch(
+unsafe extern "C-unwind" fn exit_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     msg_type: i32,
     data: *mut c_void,
     data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     EXIT_DISPATCH_SIGNAL.record_dispatch(msg_type, data, data_size);
-}
-
-fn wait_for_actor_state(
-    actor: *mut hew_runtime::actor::HewActor,
-    expected: HewActorState,
-    timeout: Duration,
-) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        // SAFETY: Tests only pass actor pointers returned by hew_actor_spawn
-        // and keep them live for the duration of this polling helper.
-        let state = unsafe { &*actor }.actor_state.load(Ordering::Acquire);
-        if state == expected as i32 {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // SAFETY: Same as above; the caller keeps `actor` valid while waiting.
-    unsafe { &*actor }.actor_state.load(Ordering::Acquire) == expected as i32
+    std::ptr::null_mut()
 }
 
 #[test]
 fn test_link_and_monitor_basic() {
-    // Create two test actors
-    // SAFETY: test_dispatch is a valid function pointer; null state is acceptable.
-    let actor_a = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(test_dispatch)) };
+    let actor_a = TestActor::spawn(test_dispatch);
+    let actor_b = TestActor::spawn(test_dispatch);
 
-    // SAFETY: test_dispatch is a valid function pointer; null state is acceptable.
-    let actor_b = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(test_dispatch)) };
-
-    assert!(!actor_a.is_null());
-    assert!(!actor_b.is_null());
-
-    // Create link between actors
-    // SAFETY: actor_a and actor_b are valid pointers from hew_actor_spawn.
+    // SAFETY: link/unlink/monitor/demonitor take live actor pointers; both
+    // actors remain alive for the test's duration via their TestActor wrappers.
     unsafe {
-        hew_actor_link(actor_a, actor_b);
+        hew_actor_link(actor_a.as_ptr(), actor_b.as_ptr());
+        let ref_id = hew_actor_monitor(actor_a.as_ptr(), actor_b.as_ptr());
+        assert_ne!(ref_id, 0);
+        hew_actor_unlink(actor_a.as_ptr(), actor_b.as_ptr());
+        hew_actor_demonitor(ref_id);
     }
-
-    // Create monitor from A to B
-    // SAFETY: actor_a and actor_b are valid pointers from hew_actor_spawn.
-    let ref_id = unsafe { hew_actor_monitor(actor_a, actor_b) };
-    assert_ne!(ref_id, 0);
-
-    // Remove the link and monitor
-    // SAFETY: actor_a and actor_b are valid pointers from hew_actor_spawn.
-    unsafe {
-        hew_actor_unlink(actor_a, actor_b);
-    }
-    hew_actor_demonitor(ref_id);
-
-    // Clean up
-    // SAFETY: Both actors are valid and being freed exactly once.
-    unsafe {
-        hew_actor_free(actor_a);
-        hew_actor_free(actor_b);
-    }
+    // TestActor::Drop closes and frees both actors.
 }
 
 #[test]
 fn test_null_handling() {
-    // Test that null pointers are handled gracefully
-    // SAFETY: Null pointers are explicitly handled by link/unlink functions.
+    // SAFETY: link/unlink/monitor are documented as no-ops on null inputs.
     unsafe {
-        hew_actor_link(std::ptr::null_mut(), std::ptr::null_mut());
-        hew_actor_unlink(std::ptr::null_mut(), std::ptr::null_mut());
+        hew_actor_link(ptr::null_mut(), ptr::null_mut());
+        hew_actor_unlink(ptr::null_mut(), ptr::null_mut());
+        let ref_id = hew_actor_monitor(ptr::null_mut(), ptr::null_mut());
+        assert_eq!(ref_id, 0);
     }
-
-    // SAFETY: Null pointers are explicitly handled; function returns 0.
-    let ref_id = unsafe { hew_actor_monitor(std::ptr::null_mut(), std::ptr::null_mut()) };
-    assert_eq!(ref_id, 0);
-
     hew_actor_demonitor(0);
     hew_actor_demonitor(99999);
 }
@@ -270,43 +227,38 @@ fn test_monitor_after_crash_delivers_down_without_stale_registration() {
     hew_deterministic_reset();
     MONITOR_DISPATCH_SIGNAL.reset();
 
-    // SAFETY: This test owns the spawned actors, waits for the crash state
-    // before late registration, and frees each actor exactly once.
-    unsafe {
-        let watcher = hew_actor_spawn(std::ptr::null_mut(), 0, Some(monitor_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(test_dispatch));
-        assert!(!watcher.is_null());
-        assert!(!target.is_null());
+    let watcher = TestActor::spawn(monitor_dispatch);
+    let target = TestActor::spawn(test_dispatch);
 
-        let target_id = (*target).id;
-        hew_fault_inject_crash(target_id, 1);
-        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
+    // SAFETY: target is a live actor; reading its id field through the raw
+    // pointer is the runtime's documented way to obtain a fault-injection key.
+    let target_id = unsafe { (*target.as_ptr()).id };
+    hew_fault_inject_crash(target_id, 1);
+    target.send_empty(1);
 
-        assert!(
-            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
-            "target should enter Crashed state"
-        );
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state"
+    );
 
-        let ref_id = hew_actor_monitor(watcher, target);
-        assert_ne!(ref_id, 0, "late monitor should still return a reference");
+    // SAFETY: late monitor registration takes live watcher/target pointers.
+    let ref_id = unsafe { hew_actor_monitor(watcher.as_ptr(), target.as_ptr()) };
+    assert_ne!(ref_id, 0, "late monitor should still return a reference");
 
-        let down_messages = MONITOR_DISPATCH_SIGNAL
-            .wait_for_down_count(1, Duration::from_secs(5))
-            .expect("late monitor registration should deliver DOWN immediately");
-        assert_eq!(
-            down_messages.last().copied(),
-            Some(DownMessageView {
-                monitored_actor_id: target_id,
-                ref_id,
-                reason: HewActorState::Crashed as i32,
-            })
-        );
+    let down_messages = MONITOR_DISPATCH_SIGNAL
+        .wait_for_down_count(1, Duration::from_secs(5))
+        .expect("late monitor registration should deliver DOWN immediately");
+    assert_eq!(
+        down_messages.last().copied(),
+        Some(DownMessageView {
+            monitored_actor_id: target_id,
+            ref_id,
+            reason: HewActorState::Crashed as i32,
+        })
+    );
 
-        hew_actor_demonitor(ref_id);
-        hew_actor_free(watcher);
-        hew_actor_free(target);
-        hew_deterministic_reset();
-    }
+    hew_actor_demonitor(ref_id);
+    hew_deterministic_reset();
 }
 
 #[test]
@@ -318,40 +270,41 @@ fn test_link_after_crash_delivers_exit_without_stale_registration() {
     hew_deterministic_reset();
     EXIT_DISPATCH_SIGNAL.reset();
 
-    // SAFETY: This test owns the spawned actors, waits for the crash state
-    // before late registration, and frees each actor exactly once.
+    let survivor = TestActor::spawn(exit_dispatch);
+    let target = TestActor::spawn(test_dispatch);
+
+    // SAFETY: target is a live actor; reading its id field through the raw
+    // pointer is the runtime's documented way to obtain a fault-injection key.
+    let target_id = unsafe { (*target.as_ptr()).id };
+    hew_fault_inject_crash(target_id, 1);
+    target.send_empty(1);
+
+    assert!(
+        target.wait_for_state(HewActorState::Crashed, Duration::from_secs(5)),
+        "target should enter Crashed state"
+    );
+    // SAFETY: target's wrapper is alive; hew_actor_get_error reads from it.
+    let exit_reason = unsafe { hew_actor_get_error(target.as_ptr()) };
+
+    // SAFETY: link/unlink take live actor pointers.
     unsafe {
-        let survivor = hew_actor_spawn(std::ptr::null_mut(), 0, Some(exit_dispatch));
-        let target = hew_actor_spawn(std::ptr::null_mut(), 0, Some(test_dispatch));
-        assert!(!survivor.is_null());
-        assert!(!target.is_null());
-
-        let target_id = (*target).id;
-        hew_fault_inject_crash(target_id, 1);
-        hew_actor_send(target, 1, std::ptr::null_mut(), 0);
-
-        assert!(
-            wait_for_actor_state(target, HewActorState::Crashed, Duration::from_secs(5)),
-            "target should enter Crashed state"
-        );
-        let exit_reason = hew_actor_get_error(target);
-
-        hew_actor_link(survivor, target);
-
-        let exit_messages = EXIT_DISPATCH_SIGNAL
-            .wait_for_exit_count(1, Duration::from_secs(5))
-            .expect("late link registration should deliver EXIT immediately");
-        assert_eq!(
-            exit_messages.last().copied(),
-            Some(ExitMessageView {
-                crashed_actor_id: target_id,
-                reason: exit_reason,
-            })
-        );
-
-        hew_actor_unlink(survivor, target);
-        hew_actor_free(survivor);
-        hew_actor_free(target);
-        hew_deterministic_reset();
+        hew_actor_link(survivor.as_ptr(), target.as_ptr());
     }
+
+    let exit_messages = EXIT_DISPATCH_SIGNAL
+        .wait_for_exit_count(1, Duration::from_secs(5))
+        .expect("late link registration should deliver EXIT immediately");
+    assert_eq!(
+        exit_messages.last().copied(),
+        Some(ExitMessageView {
+            crashed_actor_id: target_id,
+            reason: exit_reason,
+        })
+    );
+
+    // SAFETY: unlink takes live actor pointers.
+    unsafe {
+        hew_actor_unlink(survivor.as_ptr(), target.as_ptr());
+    }
+    hew_deterministic_reset();
 }

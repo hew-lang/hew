@@ -1,11 +1,11 @@
 // Hew: Counter Service
 // The compiler enforces that actor state is never shared.
 actor Counter {
-    let count: int;
-    receive fn increment(amount: int) {
+    var count: i64;
+    receive fn increment(amount: i64) {
         count = count + amount;
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
 }
@@ -13,11 +13,10 @@ actor Counter {
 // Supervision is a language construct, not a library choice.
 supervisor CounterPool {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
-    child c1: Counter(0);
-    child c2: Counter(0);
+    child c1: Counter(count: 0);
+    child c2: Counter(count: 0);
 }
 
 // Wire types are first-class.
@@ -38,16 +37,24 @@ fn main() {
     println("=== Hew Counter Service ===");
 
     // Spawn the supervisor — it starts and monitors the Counter children.
-    let pool = spawn CounterPool;
-    let c1 = supervisor_child(pool, 0);
-    let c2 = supervisor_child(pool, 1);
+    let sup = spawn CounterPool;
+    let c1 = sup.c1;
+    let c2 = sup.c2;
     // Increment each independently — no shared state.
     c1.increment(10);
     c1.increment(5);
     c2.increment(100);
 
     // Read back the counts.
-    println(f"Counter 1: {await c1.get_count()}");
-    println(f"Counter 2: {await c2.get_count()}");
+    let v1 = await c1.get_count();
+    match v1 {
+        Ok(n) => println(f"Counter 1: {n}"),
+        Err(_) => println("Counter 1: err"),
+    }
+    let v2 = await c2.get_count();
+    match v2 {
+        Ok(n) => println(f"Counter 2: {n}"),
+        Err(_) => println("Counter 2: err"),
+    }
     println("=== Done ===");
 }

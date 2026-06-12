@@ -1,0 +1,30 @@
+// Reject fixture: q004_trait_impl_sig_wrong_arity.
+//
+// Impl method drops the receiver shape (writes a non-receiver-shaped first
+// param) so the post-receiver-skip arity diverges from the trait. Q004 emits
+// TraitImplSignatureMismatch with `arity` detail at the impl method span.
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - TraitImplSignatureMismatch
+//   - "parameter(s)"
+
+pub trait Container {
+    type Item;
+    fn unwrap(self) -> Option<Self::Item>;
+}
+
+pub type Holder {
+    n: i64;
+}
+
+impl Container for Holder {
+    type Item = i64;
+    fn unwrap(h: Holder, extra: i64) -> Option<i64> {
+        Some(h.n)
+    }
+}
+
+fn main() -> i64 {
+    0
+}

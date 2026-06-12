@@ -1,0 +1,46 @@
+//! Multi-suspend suspendable-callee: a closure whose body `await`s a captured
+//! Connection TWICE across the coroutine boundary. The driver
+//! (`Terminator::SuspendingCallClosure`) must re-park the calling actor on the
+//! SECOND await as well as the first — exercising the multi-suspend `.resume`
+//! edge (every park matched by exactly one resume). The first read binds the
+//! server's payload; the second read resumes on EOF (server close) and binds an
+//! empty string (the NEW-1 EOF convention). Correct under HEW_WORKERS=1 proves
+//! the lone worker is freed across BOTH closure suspends.
+
+import std::net;
+
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
+}
+
+actor Reader {
+    let addr: string;
+
+    receive fn go(unused: i64) {
+        sleep_ms(200);
+        let conn = net.connect(addr);
+        let read_twice = || {
+            let first = await conn.read_string();
+            let second = await conn.read_string();
+            f"{first}|{second}"
+        };
+        let body = read_twice();
+        println(f"reader-received: {body}");
+        let _ = conn.close();
+    }
+}
+
+fn main() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    reader.go(0);
+    let client = listener.accept();
+    client.write_string("payload");
+    sleep_ms(300);
+    let _ = client.close();
+    sleep_ms(300);
+    println("server-done");
+}

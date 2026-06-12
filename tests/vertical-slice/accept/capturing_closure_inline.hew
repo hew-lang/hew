@@ -1,0 +1,9 @@
+// Inline capturing closure: `base` is an untyped local integer binding.
+// Previously failed with E_HIR CheckerBoundaryViolation because the
+// const_values coercion path in check_against bypassed capture tracking.
+fn main() {
+    let base = 10;
+    let add_base = |n: i64| base + n;
+    println(add_base(5));  // 15
+    println(add_base(0));  // 10
+}

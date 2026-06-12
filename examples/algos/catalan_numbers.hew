@@ -1,6 +1,6 @@
 // Catalan numbers using dynamic programming
-fn catalan(n: int) -> int {
-    let dp: Vec<int> = Vec::new();
+fn catalan(n: i64) -> i64 {
+    let dp: Vec<i64> = Vec::new();
     dp.push(1); // C(0) = 1
     var i = 1;
     while i <= n {
@@ -14,7 +14,7 @@ fn catalan(n: int) -> int {
     dp.get(n)
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

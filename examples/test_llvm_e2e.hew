@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: End-to-end test for the LLVM API backend.
+
 // End-to-end test for the LLVM API backend.
 // Tests: arithmetic, control flow, function calls, variables.
 fn add(x: i32, y: i32) -> i32 {

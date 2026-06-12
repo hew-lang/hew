@@ -1,0 +1,16 @@
+// A local binding that shadows an imported module name must resolve as a
+// field access, not a fn-value BindingRef.  The import is retained so the
+// HIR fn_registry is populated for `helpers.double`; the checker's
+// `receiver_is_binding` guard resolves the expression as i64 (record field),
+// and the HIR must honour that resolution rather than hijacking it into a
+// fn-value path via the registry hit.
+import helpers;
+
+type Fake {
+    double: i64;
+}
+
+fn main() {
+    let helpers = Fake { double: 7 };
+    println(helpers.double); // 7: field access, not a fn value
+}

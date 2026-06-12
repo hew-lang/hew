@@ -1,0 +1,597 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "stdout is captured by the educational sandbox trace",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 2
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "const.i64",
+              "span": "span:75-76"
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 3
+                }
+              ],
+              "dst": "local:main.1",
+              "op": "const.i64",
+              "span": "span:81-83"
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Point"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "record.new",
+              "span": "span:64-84"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.2"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:56-90"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": "local:main.4",
+              "op": "local.get",
+              "span": "span:98-99"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.4"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.5",
+              "op": "record.get",
+              "span": "span:98-102"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": "local:main.6",
+              "op": "local.get",
+              "span": "span:104-105"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.6"
+                },
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.7",
+              "op": "record.get",
+              "span": "span:104-107"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.5"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.7"
+                }
+              ],
+              "dst": "local:main.8",
+              "op": "i64.checked_add",
+              "span": "span:98-107"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.8"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:90-108"
+            },
+            {
+              "args": [],
+              "dst": "local:main.9",
+              "op": "const.unit",
+              "span": "span:90-108"
+            },
+            {
+              "args": [],
+              "dst": "local:main.10",
+              "op": "const.unit",
+              "span": "span:40-0"
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.10"
+              }
+            ],
+            "op": "return",
+            "span": "span:40-0"
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": false,
+          "name": null,
+          "span": "span:75-76",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": null,
+          "span": "span:81-83",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": "span:64-84",
+          "type": "type:Point"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": "p",
+          "span": "span:60-62",
+          "type": "type:Point"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": "span:98-99",
+          "type": "type:Point"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": "span:98-102",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.6",
+          "mutable": false,
+          "name": null,
+          "span": "span:104-105",
+          "type": "type:Point"
+        },
+        {
+          "id": "local:main.7",
+          "mutable": false,
+          "name": null,
+          "span": "span:104-107",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.8",
+          "mutable": false,
+          "name": null,
+          "span": "span:98-107",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.9",
+          "mutable": false,
+          "name": null,
+          "span": "span:90-108",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.10",
+          "mutable": false,
+          "name": null,
+          "span": "span:40-0",
+          "type": "type:unit"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": "span:40-0"
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [
+      {
+        "fields": [
+          {
+            "index": 0,
+            "name": "x",
+            "type": "type:i64"
+          },
+          {
+            "index": 1,
+            "name": "y",
+            "type": "type:i64"
+          }
+        ],
+        "id": "type:Point",
+        "name": "Point"
+      }
+    ],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:AskError",
+        "kind": "enum",
+        "name": "AskError"
+      },
+      {
+        "id": "type:Instant",
+        "kind": "record",
+        "name": "Instant"
+      },
+      {
+        "id": "type:LocalPid",
+        "kind": "record",
+        "name": "LocalPid"
+      },
+      {
+        "id": "type:Point",
+        "kind": "record",
+        "name": "Point"
+      },
+      {
+        "id": "type:RemotePid",
+        "kind": "record",
+        "name": "RemotePid"
+      },
+      {
+        "id": "type:SendError",
+        "kind": "enum",
+        "name": "SendError"
+      },
+      {
+        "id": "type:VecIter",
+        "kind": "record",
+        "name": "VecIter"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      },
+      {
+        "id": "type:char",
+        "kind": "string",
+        "name": "char"
+      },
+      {
+        "id": "type:duration",
+        "kind": "integer",
+        "name": "duration"
+      },
+      {
+        "id": "type:f64",
+        "kind": "float",
+        "name": "f64"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:never",
+        "kind": "never",
+        "name": "never"
+      },
+      {
+        "id": "type:regex",
+        "kind": "regex",
+        "name": "regex"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:string",
+        "kind": "string",
+        "name": "string"
+      },
+      {
+        "id": "type:u64",
+        "kind": "integer",
+        "name": "u64"
+      },
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "unit"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:24914ce7ee563a7c",
+  "profile": "sandbox.sandbox-vm-export.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [
+      {
+        "content_sha256": "0d6dbc0ff85285f368356ee357726e3abde81e0097d6f51113da3ae6e92865b3",
+        "id": "src:main",
+        "path": "main.hew"
+      }
+    ],
+    "spans": [
+      {
+        "end": {
+          "byte_offset": 0,
+          "column": 1,
+          "line": 1
+        },
+        "id": "span:40-0",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 40,
+          "column": 1,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 90,
+          "column": 5,
+          "line": 8
+        },
+        "id": "span:56-90",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 56,
+          "column": 5,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 62,
+          "column": 11,
+          "line": 7
+        },
+        "id": "span:60-62",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 60,
+          "column": 9,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 84,
+          "column": 33,
+          "line": 7
+        },
+        "id": "span:64-84",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 64,
+          "column": 13,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 76,
+          "column": 25,
+          "line": 7
+        },
+        "id": "span:75-76",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 75,
+          "column": 24,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 83,
+          "column": 32,
+          "line": 7
+        },
+        "id": "span:81-83",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 81,
+          "column": 30,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 108,
+          "column": 23,
+          "line": 8
+        },
+        "id": "span:90-108",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 90,
+          "column": 5,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 99,
+          "column": 14,
+          "line": 8
+        },
+        "id": "span:98-99",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 98,
+          "column": 13,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 102,
+          "column": 17,
+          "line": 8
+        },
+        "id": "span:98-102",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 98,
+          "column": 13,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 107,
+          "column": 22,
+          "line": 8
+        },
+        "id": "span:98-107",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 98,
+          "column": 13,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 105,
+          "column": 20,
+          "line": 8
+        },
+        "id": "span:104-105",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 104,
+          "column": 19,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 107,
+          "column": 22,
+          "line": 8
+        },
+        "id": "span:104-107",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 104,
+          "column": 19,
+          "line": 8
+        }
+      }
+    ]
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:string"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

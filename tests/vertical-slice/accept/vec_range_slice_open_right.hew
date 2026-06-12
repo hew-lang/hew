@@ -1,0 +1,16 @@
+// W3.013 S0 verify: open-right range-slice `xs[a..]` on Vec<i32>.
+//
+// MIR lowers open end to hew_vec_len(vec); hew_vec_slice_range_i32(vec, 1, len).
+//
+// xs = [10, 20, 30, 40, 50]
+// xs[1..] = [20, 30, 40, 50]  →  len = 4  →  exit 4
+fn main() -> i64 {
+    let xs: Vec<i32> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    xs.push(30);
+    xs.push(40);
+    xs.push(50);
+    let s: Vec<i32> = xs[1..];
+    s.len()
+}

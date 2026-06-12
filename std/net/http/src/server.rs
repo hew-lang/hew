@@ -7,7 +7,8 @@
 //! default so slow trickle-feed clients cannot hold the server indefinitely.
 //! Use [`hew_http_server_set_request_timeout_ms`] to tune that deadline.
 
-use hew_cabi::cabi::{malloc_bytes, malloc_cstring, str_to_malloc};
+use crate::headers_vec::string_pair_elem_layout;
+use hew_cabi::cabi::{free_cstring, malloc_bytes, malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
 use std::ffi::{c_char, c_void, CStr};
@@ -552,7 +553,7 @@ pub unsafe extern "C" fn hew_http_request_body_string(
     // SAFETY: ptr is valid for out_len bytes per hew_http_request_body's contract.
     let result = unsafe { malloc_cstring(ptr, out_len) };
     // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
-    unsafe { libc::free(ptr.cast()) };
+    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (frees the malloc_bytes byte buffer from hew_http_request_body; the STRING result is a separate malloc_cstring — this stays libc::free in S1)
     result
 }
 
@@ -939,9 +940,10 @@ pub unsafe extern "C" fn hew_http_request_free(req: *mut HewHttpRequest) {
 
 /// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
 ///
-/// Both pointers are `malloc`-allocated and must be freed by the owner. Hew's
-/// compiled destructor handles this automatically; Rust callers must free them
-/// manually before calling `hew_vec_free`.
+/// Both pointers are header-aware heap strings (allocated via `str_to_malloc`).
+/// The `Vec` is constructed with `hew_vec_new_with_elem_layout` carrying
+/// `string_pair_drop_thunk`, so Hew's compiled destructor frees both fields
+/// via `hew_vec_free_owned` when the binding goes out of scope.
 #[repr(C)]
 struct HewStringPair {
     name: *mut c_char,
@@ -950,27 +952,27 @@ struct HewStringPair {
 
 /// Return a new `Vec<(String, String)>` containing all headers from `req`.
 ///
-/// Each element is a `(name, value)` pair of `malloc`-allocated C strings.
-/// The caller owns the returned vector and its element strings. Hew's compiled
-/// destructor frees the string fields when the `Vec<(String, String)>` goes
-/// out of scope. Returns an empty vector if `req` is null or has no inner
-/// request; never returns null.
+/// Each element is a `(name, value)` pair of header-aware heap strings.  The
+/// returned `HewVec` is backed by an owned-element descriptor
+/// (`string_pair_elem_layout`) so that Hew's compiled destructor can call
+/// `hew_vec_free_owned` when the binding goes out of scope — freeing both
+/// strings in every pair via `string_pair_drop_thunk`.
+///
+/// Returns an empty vector if `req` is null or has no inner request; never
+/// returns null.
 ///
 /// # Safety
 ///
 /// `req` must be a valid [`HewHttpRequest`] pointer, or null.
-///
-/// # Panics
-///
-/// In practice never panics. The internal conversion of
-/// `size_of::<*mut c_char>() * 2` to `i64` is infallible on any supported
-/// platform (pointer sizes are always a small fraction of `i64::MAX`).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) -> *mut HewVec {
-    let elem_size = i64::try_from(2 * std::mem::size_of::<*mut c_char>())
-        .expect("pointer-pair elem_size always fits i64");
-    // SAFETY: allocates a new HewVec with elem_size=16 (two pointers), Plain kind.
-    let vec = unsafe { hew_cabi::vec::hew_vec_new_generic(elem_size, 0) };
+    // Build an owned-element Vec backed by the string-pair descriptor.  The
+    // Hew drop spine calls `hew_vec_free_owned` on this binding, which invokes
+    // `string_pair_drop_thunk` on every live element.
+    let layout = string_pair_elem_layout();
+    // SAFETY: `layout` is a fully-populated descriptor on the caller's stack;
+    // `hew_vec_new_with_elem_layout` copies it into the vec's inline storage.
+    let vec = unsafe { hew_cabi::vec::hew_vec_new_with_elem_layout(&raw const layout) };
     if req.is_null() {
         return vec;
     }
@@ -984,9 +986,17 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
             name: str_to_malloc(header.field.as_str().as_str()),
             value: str_to_malloc(header.value.as_str()),
         };
-        // SAFETY: vec is a valid HewVec; &pair is a valid elem_size-byte region.
+        // push_owned: memcpy the pair into the slot, then `string_pair_clone_thunk`
+        // bumps the refcount on both strings (rc: 1→2).
+        // SAFETY: vec is a valid owned-layout HewVec; &pair is a HewStringPair.
         unsafe {
-            hew_cabi::vec::hew_vec_push_generic(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+            hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
+        }
+        // Release the source copy (rc: 2→1).  The vec slot is now the sole owner.
+        // SAFETY: pair.name and pair.value are header-aware heap strings.
+        unsafe {
+            free_cstring(pair.name); // CSTRING-FREE: str-open (header name — release source after push_owned)
+            free_cstring(pair.value); // CSTRING-FREE: str-open (header value — release source after push_owned)
         }
     }
     vec
@@ -1067,8 +1077,9 @@ mod tests {
             .to_str()
             .expect("error should be utf-8");
         assert_eq!(err_msg, "request already responded to");
-        // SAFETY: err was allocated by hew_stream_last_error (via libc::malloc).
-        unsafe { libc::free(err.cast()) };
+        // SAFETY: err was allocated by hew_stream_last_error via alloc_cstring_from_str
+        // (header-aware, S1 path) — must be released through free_cstring, not bare libc::free.
+        unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (hew_stream_last_error now allocates via alloc_cstring_from_str)
     }
 
     #[test]
@@ -1385,9 +1396,9 @@ mod tests {
                 found = true;
             }
             // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.name.cast()) };
-            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.value.cast()) };
+            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
         assert!(found, "X-Custom header not found in request headers");
 
@@ -1454,9 +1465,9 @@ mod tests {
                 .to_owned();
             pairs.push((name, value));
             // SAFETY: pair.name was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.name.cast()) };
-            // SAFETY: pair.value was malloc'd by hew_http_request_headers.
-            unsafe { libc::free(pair.value.cast()) };
+            unsafe { hew_cabi::cabi::free_cstring(pair.name) }; // CSTRING-FREE: str-open (header name)
+                                                                // SAFETY: pair.value was malloc'd by hew_http_request_headers.
+            unsafe { hew_cabi::cabi::free_cstring(pair.value) }; // CSTRING-FREE: str-open (header value)
         }
 
         let first_pos = pairs
@@ -1549,7 +1560,7 @@ mod tests {
         // SAFETY: ptr is a valid malloc'd C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated via libc::malloc in str_to_malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (take_cstr test helper, str_to_malloc)
         s
     }
 
@@ -1632,7 +1643,7 @@ mod tests {
         let received_str = std::str::from_utf8(received).unwrap();
         assert_eq!(received_str, "{\"key\":\"value\"}");
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = hew_http_request_body malloc_bytes)
 
         let ct_name = c"Content-Type";
         // SAFETY: req and ct_name are valid.
@@ -2077,7 +2088,7 @@ mod tests {
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 0);
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
 
         let text = c"ok";
         // SAFETY: req is valid; text is a valid C string.
@@ -2170,7 +2181,7 @@ mod tests {
         let elapsed = start.elapsed();
         if !body_ptr.is_null() {
             // SAFETY: body_ptr was malloc'd.
-            unsafe { libc::free(body_ptr.cast()) };
+            unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
             let text = c"late";
             // SAFETY: req is valid; text is a valid C string.
             let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
@@ -2225,7 +2236,7 @@ mod tests {
         let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         assert_eq!(body, vec![b'a'; 2048].as_slice());
         // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) };
+        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
 
         let text = c"ok";
         // SAFETY: req is valid; text is a valid C string.

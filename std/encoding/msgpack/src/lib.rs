@@ -6,8 +6,8 @@
 //! `libc::malloc` and must be freed with [`hew_msgpack_free`]. All returned
 //! strings are allocated with `libc::malloc` and NUL-terminated.
 
-// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code.
+// Force-link hew-runtime so the linker can resolve hew_vec_* and
+// hew_bytes_* symbols referenced by hew-cabi and hew-runtime's object code.
 #[cfg(test)]
 extern crate hew_runtime;
 
@@ -329,19 +329,27 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes(
     malloc_bytes(&bytes)
 }
 
-/// Free a buffer previously returned by any of the `hew_msgpack_*` functions.
+/// Free a `malloc_bytes` buffer previously returned by a `hew_msgpack_*`
+/// **encode** function (e.g. [`hew_msgpack_encode`]) — i.e. an opaque `*mut u8`
+/// byte buffer.
+///
+/// This does **not** cover `to_json` results: those are header-aware Hew
+/// strings and are released through `hew_string_drop` / `free_cstring`, never
+/// here. Passing a `to_json` string (or any header-aware C string) to this
+/// function would free `data` instead of the allocation base and corrupt the
+/// heap.
 ///
 /// # Safety
 ///
-/// `ptr` must be a pointer previously returned by a `hew_msgpack_*` function,
-/// and must not have been freed already.
+/// `ptr` must be a pointer previously returned by a `hew_msgpack_*` byte-buffer
+/// (encode) function, and must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: ptr was allocated with libc::malloc and has not been freed.
-    unsafe { libc::free(ptr.cast()) };
+    // SAFETY: ptr is a malloc_bytes buffer and has not been freed.
+    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (hew_msgpack_free: opaque *mut u8 encode buffers = malloc_bytes; to_json strings drop via hew_string_drop, NOT here)
 }
 
 // ---------------------------------------------------------------------------
@@ -381,14 +389,21 @@ pub unsafe extern "C" fn hew_msgpack_from_json_hew(
 
 /// Decode a `bytes` `HewVec` of `MessagePack` data to a JSON string.
 ///
-/// Returns an empty string on error.
+/// Returns an empty string on error or null/empty input.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
+/// `v` must be null or a valid non-null pointer to a `HewVec` (i32 elements).
+/// A null pointer is treated as empty bytes and returns an empty string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
-    // SAFETY: v validity forwarded to hwvec_to_u8.
+    if v.is_null() {
+        // bytes [] literal produces a null HewVec pointer (empty BytesTriple
+        // ptr field passed as the HewVec* argument). Return empty string
+        // rather than panicking.
+        return str_to_malloc("");
+    }
+    // SAFETY: v is non-null per the guard above; hwvec_to_u8 forwards validity.
     let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
     // SAFETY: bytes slice is valid for its length.
     unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) }
@@ -487,7 +502,7 @@ mod tests {
         // SAFETY: ptr is a valid NUL-terminated C string allocated with malloc.
         let value = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { libc::free(ptr.cast()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (read_and_free test helper for to_json strings)
         value
     }
 
@@ -511,7 +526,7 @@ mod tests {
             let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
             assert_eq!(v1, v2);
 
-            libc::free(result.cast());
+            hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
             hew_msgpack_free(buf);
         }
     }
@@ -535,7 +550,7 @@ mod tests {
             let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
             assert_eq!(v1, v2);
 
-            libc::free(result.cast());
+            hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
             hew_msgpack_free(buf);
         }
     }
@@ -633,7 +648,7 @@ mod tests {
             let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
             assert_eq!(v1, v2);
 
-            libc::free(result.cast());
+            hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
             hew_msgpack_free(buf);
         }
     }
@@ -766,7 +781,7 @@ mod tests {
             assert_eq!(actual, expected);
             assert_eq!(read_and_free(hew_msgpack_last_error()), "");
 
-            libc::free(json.cast());
+            hew_cabi::cabi::free_cstring(json); // CSTRING-FREE: str-open (to_json json)
         }
     }
 
@@ -780,7 +795,7 @@ mod tests {
             assert!(!json.is_null());
             assert_eq!(CStr::from_ptr(json).to_str().unwrap(), "[]");
             assert_eq!(read_and_free(hew_msgpack_last_error()), "");
-            libc::free(json.cast());
+            hew_cabi::cabi::free_cstring(json); // CSTRING-FREE: str-open (to_json json)
         }
     }
 
@@ -852,7 +867,7 @@ mod tests {
                 let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
                 assert_eq!(v1, v2, "roundtrip mismatch for {json}");
 
-                libc::free(result.cast());
+                hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
                 hew_msgpack_free(buf);
             }
         }
@@ -875,7 +890,7 @@ mod tests {
             let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
             assert_eq!(v1, v2);
 
-            libc::free(result.cast());
+            hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
             hew_msgpack_free(buf);
         }
     }
@@ -897,7 +912,7 @@ mod tests {
                 let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
                 assert_eq!(v1, v2, "roundtrip mismatch for {json}");
 
-                libc::free(result.cast());
+                hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
                 hew_msgpack_free(buf);
             }
         }
@@ -920,7 +935,7 @@ mod tests {
             let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
             assert_eq!(v1, v2);
 
-            libc::free(result.cast());
+            hew_cabi::cabi::free_cstring(result); // CSTRING-FREE: str-open (to_json result)
             hew_msgpack_free(buf);
         }
     }

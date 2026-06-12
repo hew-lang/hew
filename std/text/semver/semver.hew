@@ -21,71 +21,71 @@ import std::string;
 
 /// A parsed semantic version.
 type Version {
-    pre_release: String;
-    build_meta: String;
-    maj: i32;
-    min: i32;
-    pat: i32;
+    pre_release: string;
+    build_meta: string;
+    maj: i64;
+    min: i64;
+    pat: i64;
 }
 
 /// Methods available on a parsed `Version`.
 trait VersionMethods {
     /// Return the major version number.
-    fn major(ver: Version) -> int;
+    fn major(self) -> i64;
 
     /// Return the minor version number.
-    fn minor(ver: Version) -> int;
+    fn minor(self) -> i64;
 
     /// Return the patch version number.
-    fn patch(ver: Version) -> int;
+    fn patch(self) -> i64;
 
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> String;
+    fn pre(self) -> string;
 
     /// Compare this version to another. Returns -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> int;
+    fn compare(self, other: Version) -> i64;
 
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: String) -> bool;
+    fn matches(self, req: string) -> bool;
 
     /// Return the version as a string.
-    fn to_string(ver: Version) -> String;
+    fn to_string(self) -> string;
 
     /// No-op for compatibility (struct versions don't need manual freeing).
-    fn free(ver: Version);
+    fn free(self);
 }
 
 impl VersionMethods for Version {
     /// Return the major version number.
-    fn major(ver: Version) -> int {
+    fn major(ver: Version) -> i64 {
         ver.maj
     }
     /// Return the minor version number.
-    fn minor(ver: Version) -> int {
+    fn minor(ver: Version) -> i64 {
         ver.min
     }
     /// Return the patch version number.
-    fn patch(ver: Version) -> int {
+    fn patch(ver: Version) -> i64 {
         ver.pat
     }
     /// Return the pre-release label, or an empty string if none.
-    fn pre(ver: Version) -> String {
+    fn pre(ver: Version) -> string {
         ver.pre_release
     }
     /// Compare this version to another. Return -1, 0, or 1.
-    fn compare(ver: Version, other: Version) -> int {
+    fn compare(ver: Version, other: Version) -> i64 {
         // Bind to local to prevent extract_call_target from finding a direct
         // call, which would bypass this body via handle-method rewriting.
         let result = compare_versions(ver, other);
         result
     }
     /// Test whether this version satisfies a version requirement string.
-    fn matches(ver: Version, req: String) -> bool {
+    fn matches(ver: Version, req: string) -> bool {
         let result = matches_req(ver, req);
         result
     }
     /// Return the version as a string.
-    fn to_string(ver: Version) -> String {
+    fn to_string(ver: Version) -> string {
         let result = version_to_string(ver);
         result
     }
@@ -98,10 +98,11 @@ impl VersionMethods for Version {
 // ── Module-level functions ────────────────────────────────────────────
 /// Parse a semantic version string.
 ///
-/// Panics if the string is not a valid semantic version.
-pub fn parse(s: String) -> Version {
+/// Returns `Err(string)` if the string is not a valid semantic version.
+pub fn try_parse(s: string) -> Result<Version, string> {
     // Split off build metadata (+...)
-    var main_part = s;
+    // Clone s so it remains available for error messages and further searches.
+    var main_part = clone s;
     var build = "";
     let plus_idx = s.find("+");
     if plus_idx >= 0 {
@@ -109,7 +110,8 @@ pub fn parse(s: String) -> Version {
         build = s.slice(plus_idx + 1, s.len());
     }
     // Split off pre-release (-...)
-    var version_part = main_part;
+    // Clone main_part so it remains available for further searches.
+    var version_part = clone main_part;
     var pre = "";
     let dash_idx = main_part.find("-");
     if dash_idx >= 0 {
@@ -119,24 +121,38 @@ pub fn parse(s: String) -> Version {
     // Split major.minor.patch
     let first_dot = version_part.find(".");
     if first_dot < 0 {
-        panic(f"semver: invalid version string: {s}");
+        return Err(f"semver: invalid version string: {s}");
     }
     let major_str = version_part.slice(0, first_dot);
     let rest = version_part.slice(first_dot + 1, version_part.len());
     let second_dot = rest.find(".");
     if second_dot < 0 {
-        panic(f"semver: invalid version string: {s}");
+        return Err(f"semver: invalid version string: {s}");
     }
     let minor_str = rest.slice(0, second_dot);
     let patch_str = rest.slice(second_dot + 1, rest.len());
-    let major = string.to_int(major_str) as i32;
-    let minor = string.to_int(minor_str) as i32;
-    let patch = string.to_int(patch_str) as i32;
-    Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch }
+    let major = string.to_int(major_str);
+    let minor = string.to_int(minor_str);
+    let patch = string.to_int(patch_str);
+    Ok(Version { pre_release: pre, build_meta: build, maj: major, min: minor, pat: patch })
+}
+
+/// Parse a semantic version string.
+///
+/// Panics if the string is not a valid semantic version.
+/// Use `try_parse` for a structured `Result<Version, string>` failure surface.
+pub fn parse(s: string) -> Version {
+    match try_parse(s) {
+        Ok(v) => v,
+        Err(err) => {
+            panic(err);
+            Version { pre_release: "", build_meta: "", maj: 0, min: 0, pat: 0 }
+        },
+    }
 }
 
 /// Format a `Version` as its canonical string representation.
-fn version_to_string(v: Version) -> String {
+fn version_to_string(v: Version) -> string {
     let maj = v.maj;
     let min = v.min;
     let pat = v.pat;
@@ -154,23 +170,30 @@ fn version_to_string(v: Version) -> String {
 
 // ── Comparison ────────────────────────────────────────────────────────
 /// Compare two versions according to SemVer 2.0 precedence rules.
-fn compare_versions(a: Version, b: Version) -> int {
-    if a.maj < b.maj {
+fn compare_versions(a: Version, b: Version) -> i64 {
+    // Extract fields into locals so integer comparisons see plain bindings.
+    let a_maj = a.maj;
+    let b_maj = b.maj;
+    let a_min = a.min;
+    let b_min = b.min;
+    let a_pat = a.pat;
+    let b_pat = b.pat;
+    if a_maj < b_maj {
         return -1;
     }
-    if a.maj > b.maj {
+    if a_maj > b_maj {
         return 1;
     }
-    if a.min < b.min {
+    if a_min < b_min {
         return -1;
     }
-    if a.min > b.min {
+    if a_min > b_min {
         return 1;
     }
-    if a.pat < b.pat {
+    if a_pat < b_pat {
         return -1;
     }
-    if a.pat > b.pat {
+    if a_pat > b_pat {
         return 1;
     }
     // Pre-release comparison per SemVer 2.0:
@@ -191,7 +214,7 @@ fn compare_versions(a: Version, b: Version) -> int {
 }
 
 /// Compare two dot-separated pre-release identifier strings.
-fn compare_pre(a: String, b: String) -> int {
+fn compare_pre(a: string, b: string) -> i64 {
     // Compare dot-separated identifiers
     var a_pos = 0;
     var b_pos = 0;
@@ -230,7 +253,7 @@ fn compare_pre(a: String, b: String) -> int {
 }
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
-fn compare_pre_id(a: String, b: String) -> int {
+fn compare_pre_id(a: string, b: string) -> i64 {
     let a_num = string.is_numeric(a);
     let b_num = string.is_numeric(b);
     if a_num && b_num {
@@ -251,11 +274,16 @@ fn compare_pre_id(a: String, b: String) -> int {
     if !a_num && b_num {
         return 1;
     }
-    // Lexicographic comparison for non-numeric
-    if a < b {
+    // Lexicographic comparison for non-numeric identifiers.
+    // `<`/`>` on strings uses IntCmp which only handles integers; route through
+    // the runtime strcmp shim instead.
+    let cmp_r = unsafe {
+        hew_string_compare(a, b)
+    } as i64;
+    if cmp_r < 0 {
         return -1;
     }
-    if a > b {
+    if cmp_r > 0 {
         return 1;
     }
     0
@@ -263,7 +291,7 @@ fn compare_pre_id(a: String, b: String) -> int {
 
 // ── Requirement matching ──────────────────────────────────────────────
 /// Test whether a version satisfies a comma-separated requirement string.
-fn matches_req(v: Version, req: String) -> bool {
+fn matches_req(v: Version, req: string) -> bool {
     // Process comma-separated constraints
     var pos = 0;
     let rlen = req.len();
@@ -290,15 +318,16 @@ fn matches_req(v: Version, req: String) -> bool {
 }
 
 /// Test whether a version satisfies a single version constraint.
-fn matches_single(v: Version, constraint: String) -> bool {
+fn matches_single(v: Version, constraint: string) -> bool {
     let c = constraint.trim();
     let clen = c.len();
     if clen == 0 {
         return true;
     }
     // Detect operator
+    // Clone c so it remains available for the starts_with chain below.
     var op = "=";
-    var ver_str = c;
+    var ver_str = clone c;
     if c.starts_with(">=") {
         op = ">=";
         ver_str = c.slice(2, clen).trim();
@@ -354,4 +383,12 @@ fn matches_single(v: Version, constraint: String) -> bool {
         return v.maj == req_ver.maj && v.min == req_ver.min;
     }
     cmp == 0
+}
+
+// ── FFI ───────────────────────────────────────────────────────────────
+// Lexicographic string comparison: returns negative, zero, or positive.
+// Declared here rather than via `import std::string` to avoid the module
+// compile path that `impl string { ... }` currently blocks on C2.
+extern "C" {
+    fn hew_string_compare(a: string, b: string) -> i32;
 }

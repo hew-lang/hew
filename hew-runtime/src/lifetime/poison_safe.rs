@@ -28,7 +28,78 @@
 
 use std::sync::{Mutex, PoisonError, RwLock, TryLockError};
 
+/// A happens-before beacon that is only materialised under `ThreadSanitizer`.
+///
+/// `TSan` cannot observe the futex-based std `Mutex`/`RwLock` when the
+/// instrumented crate links against a non-instrumented `std` (the
+/// `-Cunsafe-allow-abi-mismatch=sanitizer` configuration the runtime's
+/// `make tsan` lane uses): the uncontended fast path is inlined and visible,
+/// but the contended slow path's release/acquire happen *inside*
+/// non-instrumented `std`, so `TSan` loses the edge and reports every
+/// lock-protected critical section as racing. That blinds the whole
+/// sanitizer lane to real and false races alike.
+///
+/// This beacon reconstructs the lock's ordering as an explicit atomic edge
+/// `TSan` *does* see: while holding the lock, each critical section
+/// [`acquire`](TsanSync::acquire)s (reads the previous releaser's
+/// publication) on entry and [`release`](TsanSync::release)s (publishes for
+/// the next acquirer) on exit. Because the real lock already serialises
+/// critical sections, the acquiring load always reads-from the immediately
+/// preceding releasing store, giving `TSan` the exact happens-before the lock
+/// provides. Compiled out entirely — zero-sized, no atomics, no ops — when
+/// the thread sanitizer is not active.
+#[derive(Debug)]
+struct TsanSync {
+    #[cfg(hew_tsan)]
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl TsanSync {
+    const fn new() -> Self {
+        Self {
+            #[cfg(hew_tsan)]
+            seq: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Acquire the previous critical section's publication. Call after the
+    /// real lock is held so the read-from edge mirrors the lock handoff.
+    #[inline(always)]
+    #[cfg_attr(
+        not(hew_tsan),
+        allow(
+            clippy::unused_self,
+            reason = "beacon is a no-op zero-sized type when TSan is inactive"
+        )
+    )]
+    fn acquire(&self) {
+        #[cfg(hew_tsan)]
+        {
+            let _ = self.seq.load(std::sync::atomic::Ordering::Acquire);
+        }
+    }
+
+    /// Publish this critical section for the next acquirer. Call while the
+    /// real lock is still held, immediately before releasing it.
+    #[inline(always)]
+    #[cfg_attr(
+        not(hew_tsan),
+        allow(
+            clippy::unused_self,
+            reason = "beacon is a no-op zero-sized type when TSan is inactive"
+        )
+    )]
+    fn release(&self) {
+        #[cfg(hew_tsan)]
+        {
+            self.seq.fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 /// Error returned by fail-closed lock accessors when the inner lock is poisoned.
+// live on not(wasm32) — PoisonSafeRw::read/write; dead on wasm32; callers in native-only modules
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PoisonedLock;
 
@@ -38,12 +109,18 @@ pub(crate) struct PoisonedLock;
 /// Use [`PoisonSafe::access`] for exclusive access; the `&mut T`
 /// passed to the closure is valid only for the closure body.
 #[derive(Debug)]
-pub(crate) struct PoisonSafe<T>(Mutex<T>);
+pub(crate) struct PoisonSafe<T> {
+    inner: Mutex<T>,
+    tsan: TsanSync,
+}
 
 impl<T> PoisonSafe<T> {
     /// Construct a new `PoisonSafe<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {
-        Self(Mutex::new(value))
+        Self {
+            inner: Mutex::new(value),
+            tsan: TsanSync::new(),
+        }
     }
 
     /// Exclusive access. Blocks until the mutex is available. Recovers
@@ -51,8 +128,11 @@ impl<T> PoisonSafe<T> {
     /// [`PoisonError::into_inner`].
     #[inline]
     pub(crate) fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let mut guard = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&mut *guard)
+        let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        self.tsan.acquire();
+        let r = f(&mut *guard);
+        self.tsan.release();
+        r
     }
 
     /// Non-blocking exclusive access. Returns `None` if the mutex is
@@ -65,14 +145,15 @@ impl<T> PoisonSafe<T> {
         reason = "called only from #[cfg(test)] paths in scheduler and connection; provided for parity with PoisonSafeRw::try_access"
     )]
     pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        match self.0.try_lock() {
-            Ok(mut guard) => Some(f(&mut *guard)),
-            Err(TryLockError::Poisoned(poisoned)) => {
-                let mut guard = poisoned.into_inner();
-                Some(f(&mut *guard))
-            }
-            Err(TryLockError::WouldBlock) => None,
-        }
+        let mut guard = match self.inner.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        self.tsan.acquire();
+        let r = f(&mut *guard);
+        self.tsan.release();
+        Some(r)
     }
 
     /// Test-only: report whether the inner mutex is currently poisoned.
@@ -80,7 +161,7 @@ impl<T> PoisonSafe<T> {
     /// exposing runtime observability.
     #[cfg(test)]
     pub(crate) fn is_poisoned_for_test(&self) -> bool {
-        self.0.is_poisoned()
+        self.inner.is_poisoned()
     }
 }
 
@@ -89,19 +170,34 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
-pub(crate) struct PoisonSafeRw<T>(RwLock<T>);
+// live on not(wasm32) — env/link/monitor/transport/hew_node; dead on wasm32; callers in native-only modules
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct PoisonSafeRw<T> {
+    inner: RwLock<T>,
+    tsan: TsanSync,
+}
 
+// Methods live on not(wasm32); dead on wasm32; impl suppressed here so lint stays armed on native.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {
-        Self(RwLock::new(value))
+        Self {
+            inner: RwLock::new(value),
+            tsan: TsanSync::new(),
+        }
     }
 
     /// Shared-read access that fails closed on poison.
     #[inline]
     pub(crate) fn read<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, PoisonedLock> {
-        match self.0.read() {
-            Ok(guard) => Ok(f(&*guard)),
+        match self.inner.read() {
+            Ok(guard) => {
+                self.tsan.acquire();
+                let r = f(&*guard);
+                self.tsan.release();
+                Ok(r)
+            }
             Err(_) => Err(PoisonedLock),
         }
     }
@@ -110,15 +206,23 @@ impl<T> PoisonSafeRw<T> {
     /// Recovers from poison transparently.
     #[inline]
     pub(crate) fn read_access<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        let guard = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        f(&*guard)
+        let guard = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        self.tsan.acquire();
+        let r = f(&*guard);
+        self.tsan.release();
+        r
     }
 
     /// Exclusive-write access that fails closed on poison.
     #[inline]
     pub(crate) fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R, PoisonedLock> {
-        match self.0.write() {
-            Ok(mut guard) => Ok(f(&mut *guard)),
+        match self.inner.write() {
+            Ok(mut guard) => {
+                self.tsan.acquire();
+                let r = f(&mut *guard);
+                self.tsan.release();
+                Ok(r)
+            }
             Err(_) => Err(PoisonedLock),
         }
     }
@@ -127,8 +231,11 @@ impl<T> PoisonSafeRw<T> {
     /// Recovers from poison transparently.
     #[inline]
     pub(crate) fn access<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        let mut guard = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        f(&mut *guard)
+        let mut guard = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        self.tsan.acquire();
+        let r = f(&mut *guard);
+        self.tsan.release();
+        r
     }
 
     /// Non-blocking exclusive-write access. Returns `None` if any
@@ -140,20 +247,21 @@ impl<T> PoisonSafeRw<T> {
         reason = "no callers yet; provided for symmetry with PoisonSafe::try_access and future sweeps"
     )]
     pub(crate) fn try_access<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        match self.0.try_write() {
-            Ok(mut guard) => Some(f(&mut *guard)),
-            Err(TryLockError::Poisoned(poisoned)) => {
-                let mut guard = poisoned.into_inner();
-                Some(f(&mut *guard))
-            }
-            Err(TryLockError::WouldBlock) => None,
-        }
+        let mut guard = match self.inner.try_write() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        self.tsan.acquire();
+        let r = f(&mut *guard);
+        self.tsan.release();
+        Some(r)
     }
 
     /// Test-only: report whether the inner `RwLock` is currently poisoned.
     #[cfg(test)]
     pub(crate) fn is_poisoned_for_test(&self) -> bool {
-        self.0.is_poisoned()
+        self.inner.is_poisoned()
     }
 }
 

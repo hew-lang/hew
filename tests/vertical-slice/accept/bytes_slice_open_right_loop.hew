@@ -1,0 +1,14 @@
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn main() -> i64 {
+    let b: bytes = unsafe { hew_bytes_from_str("abcd") };
+    var total = 0;
+    for i in 0..4 {
+        let tail: bytes = b[i..];
+        println(tail.to_string());
+        total += tail.len();
+    }
+    total
+}

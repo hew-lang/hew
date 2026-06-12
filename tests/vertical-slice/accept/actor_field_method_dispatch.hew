@@ -1,0 +1,48 @@
+// Accept fixture: actor method dispatch through a struct-field receiver.
+//
+// `actor B` holds `let out: W;` — a field whose annotated type is a bare
+// actor name. A value of that type is an actor *handle*, not the actor's
+// state by value, so HIR lowering canonicalises the field type to the same
+// `LocalPid<W>` representation `spawn W` produces. Calling a receive method
+// on that field (`out.put(n)` fire, `await out.get()` ask) must route through
+// the actor mailbox exactly like a local `spawn W` binding does — never as a
+// synchronous `W::method(self, ...)` struct call.
+//
+// Regression for `E_HIR: indirect call through an unresolved callable binding
+// has no MIR dispatch path`, which fired before the field receiver was
+// recognised as an actor send/ask. Pins both the fire path (`put`) and the
+// ask path (`get`, reply decoded through `match await`). Ask-shape on the
+// outer `b.total()` makes stdout deterministic regardless of scheduling.
+actor W {
+    var total: i64 = 0;
+    receive fn put(n: i64) {
+        total = total + n;
+    }
+    receive fn get() -> i64 {
+        total
+    }
+}
+
+actor B {
+    let out: W;
+    receive fn go(n: i64) {
+        out.put(n);
+    }
+    receive fn total() -> i64 {
+        match await out.get() {
+            Ok(v) => v,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let w = spawn W;
+    let b = spawn B(out: w);
+    b.go(42);
+    b.go(8);
+    match await b.total() {
+        Ok(v) => println(f"total={v}"),
+        Err(_) => println("err"),
+    }
+}

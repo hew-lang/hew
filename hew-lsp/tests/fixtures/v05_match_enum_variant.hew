@@ -1,0 +1,16 @@
+enum Shape {
+    Circle(i64);
+    Square(i64);
+}
+
+fn match_enum_probe() -> i64 {
+    7
+}
+
+fn match_enum_variant() -> i64 {
+    let s: Shape = Shape::Circle(match_enum_probe());
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Square(side) => side,
+    }
+}

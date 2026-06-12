@@ -1,0 +1,43 @@
+// Accept fixture (NEW-6b): `await <actor>.<ask>() | after d` — deadline elapses
+// before the reply, so the suspending ask resolves to `Err(AskError::Timeout)`.
+//
+// `Slow.block()` parks worker-free on an empty `Receiver::recv()` and never
+// replies. Run under `HEW_WORKERS=1` (see tests/vertical-slice/run.sh): Slow's
+// recv suspends and frees the lone worker, and the deadline timer (its own
+// ticker thread) cancels the in-flight ask and resumes the caller with a typed
+// `Err` — the worker is freed + resumed by the timer, never blocked, and the
+// process never hangs.
+//
+// Exit-code contract: the `after 60ms` deadline fires first → `Err(_)` arm → 7.
+import std::channel::channel;
+
+actor Slow {
+    receive fn block() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        // `tx` stays in scope (never sent / closed) so the recv parks forever.
+        let parked = match await rx.recv() {
+            Some(v) => v,
+            None => -1,
+        };
+        let _ = tx;
+        parked
+    }
+}
+
+actor Caller {
+    receive fn go() -> i64 {
+        let s = spawn Slow;
+        match await s.block() | after 60ms {
+            Ok(v) => v,
+            Err(_e) => 7,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Caller;
+    match await c.go() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Comprehensive End-to-End Test for Hew Language
+
 // Comprehensive End-to-End Test for Hew Language
 // Tests ALL codegen features to verify they work correctly
 
@@ -24,11 +27,11 @@ enum Colour {
 #[wire]
 struct Message {
     data: i32 @1,
-    text: String @2,
+    text: string @2,
 }
 
 // === Helper Functions ===
-fn run_test(name: String, result: i32) -> i32 {
+fn run_test(name: string, result: i32) -> i32 {
     if result == 1 {
         println(f"Test {name} ... PASS");
     } else {
@@ -191,7 +194,7 @@ fn test_functions() -> i32 {
     }
 }
 
-// === Test 7: String Operations ===
+// === Test 7: string Operations ===
 fn test_strings() -> i32 {
     let hello = "Hello";
     let world = "World";

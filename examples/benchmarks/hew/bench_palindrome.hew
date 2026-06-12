@@ -10,7 +10,7 @@ fn is_palindrome(s: string) -> bool {
     return true;
 }
 
-const ITERS: int = 500000;
+const ITERS: i64 = 500000;
 
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzzyxwvutsrqponmlkjihgfedcba";

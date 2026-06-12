@@ -1,0 +1,36 @@
+// Accept fixture (NEW-7): `await rx.recv() | after d` — the deadline elapses
+// before any item is sent, so the suspending recv resolves to `Err(TimeoutError)`.
+//
+// The Sender is held but never written to. Under HEW_WORKERS=1 the recv parks
+// worker-free; the `after 60ms` deadline timer cancels the in-flight recv and
+// resumes the actor with a typed `Err`. The process never hangs.
+//
+// Exit-code contract: Err(_) arm → 7.
+import std::channel::channel;
+
+actor Worker {
+    receive fn run() -> i64 {
+        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+        // `tx` stays in scope (never written / closed) so recv parks until the
+        // deadline fires.
+        let got: Result<Option<i64>, TimeoutError> = await rx.recv() | after 60ms;
+        let _ = tx;
+        match got {
+            Ok(inner) => {
+                match inner {
+                    Some(v) => v,
+                    None => -1,
+                }
+            },
+            Err(_) => 7,
+        }
+    }
+}
+
+fn main() -> i64 {
+    let w = spawn Worker;
+    match await w.run() {
+        Ok(v) => v,
+        Err(_e) => 99,
+    }
+}

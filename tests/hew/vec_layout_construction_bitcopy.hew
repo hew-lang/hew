@@ -1,0 +1,17 @@
+type Point { x: i64, y: i64 }
+
+fn main() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 1, y: 2 });
+    points.push(Point { x: 3, y: 4 });
+
+    let first = points.get(0);
+    println(first.x);
+
+    points.set(0, Point { x: 5, y: 6 });
+    let updated = points.get(0);
+    println(updated.y);
+
+    let popped = points.pop();
+    println(popped.x);
+}

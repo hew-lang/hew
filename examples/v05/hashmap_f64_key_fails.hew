@@ -1,0 +1,15 @@
+//! Status: stable
+//! Description: `HashMap<f64, _>` must be rejected by the type checker with a
+//! structured `BoundsNotSatisfied` diagnostic attributing the missing `Hash`
+//! bound to the witness type `f64`, NOT a stringly-typed `InvalidOperation`
+//! and NOT a `MethodCallNoRewrite` boundary violation at HIR lowering time.
+//!
+//! Authority: the resolver-bound `Map for HashMap<K, V> where K: Hash + Eq`
+//! plus the admissibility predicate fail closed on `f64` because the marker
+//! resolver intentionally excludes floats (NaN ≠ NaN breaks the Hash/Eq
+//! contract).
+
+fn main() {
+    let m: HashMap<f64, i64> = HashMap::new();
+    m.insert(1.0, 42);
+}

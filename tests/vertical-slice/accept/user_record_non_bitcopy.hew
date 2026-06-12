@@ -1,0 +1,11 @@
+// Accept fixture: concrete generic user aggregate with a heap-owning string
+// field. Non-BitCopy user records now lower with drop coverage instead of the
+// old UnsupportedUserRecordValueClass gate.
+type Wrapper<T> {
+    inner: T,
+}
+
+fn main() -> i64 {
+    let w = Wrapper { inner: "owned" };
+    0
+}

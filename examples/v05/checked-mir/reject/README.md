@@ -1,7 +1,7 @@
 # Checked MIR reject fixtures
 
 Each `.hew` source in this directory exercises one `MirCheck` variant.
-`hew compile-v05 <fixture>` must:
+`hew compile <fixture>` must:
 
 - exit non-zero,
 - emit a `MirDiagnostic` whose `kind` matches the fixture's variant,
@@ -10,6 +10,7 @@ Each `.hew` source in this directory exercises one `MirCheck` variant.
 | Fixture                            | `MirCheck` variant           | Status   |
 | ---------------------------------- | ---------------------------- | -------- |
 | `use_after_consume.hew`            | `UseAfterConsume`            | shipping |
+| `use_after_move_into_tuple.hew`    | `UseAfterConsume`            | shipping |
 | `init_before_use.hew`              | `InitialisedBeforeUse`       | shipping |
 | `use_after_consume_in_block.hew`   | `UseAfterConsume`            | shipping |
 | `init_before_use_in_block.hew`     | `InitialisedBeforeUse`       | shipping |

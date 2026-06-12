@@ -1,0 +1,2373 @@
+ElaboratedMirFunction {
+    name: "main",
+    return_ty: Unit,
+    statements: [
+        Bind {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                2,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                6,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                5,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                9,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                8,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                1,
+            ),
+            name: "n",
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                14,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                2,
+            ),
+            name: "has1",
+            site: SiteId(
+                13,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "removed",
+            site: SiteId(
+                16,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "n",
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                2,
+            ),
+            name: "has1",
+            site: SiteId(
+                26,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "removed",
+            site: SiteId(
+                30,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                19,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                4,
+            ),
+            name: "empty",
+            site: SiteId(
+                44,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                4,
+            ),
+            name: "empty",
+            site: SiteId(
+                47,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                46,
+            ),
+            ty: Unit,
+        },
+        Bind {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            site: SiteId(
+                49,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                51,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                54,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            site: SiteId(
+                58,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                6,
+            ),
+            name: "hasc",
+            site: SiteId(
+                57,
+            ),
+            ty: Bool,
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            site: SiteId(
+                64,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                6,
+            ),
+            name: "hasc",
+            site: SiteId(
+                68,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                60,
+            ),
+            ty: Unit,
+        },
+        Drop {
+            binding: BindingId(
+                5,
+            ),
+            name: "words",
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+        },
+        Drop {
+            binding: BindingId(
+                0,
+            ),
+            name: "s",
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                40,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                54,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: Named {
+                name: "HashSet",
+                args: [
+                    String,
+                ],
+                builtin: Some(
+                    HashSet,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 9,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 10,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 11,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 12,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 13,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 14,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 15,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 16,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 17,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 18,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 19,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 20,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 21,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 22,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 23,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 24,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 25,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 26,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 27,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 28,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 29,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "HashSet::new",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 1,
+                callee: "hew_hashset_insert_layout",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 2,
+                callee: "hew_hashset_insert_layout",
+                next: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "hew_hashset_insert_layout",
+                next: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 4,
+                callee: "hew_hashset_len_layout",
+                next: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 5,
+                callee: "hew_hashset_contains_layout",
+                next: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 6,
+                callee: "hew_hashset_remove_layout",
+                next: 7,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 7,
+                callee: "to_string_i64",
+                next: 8,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 8,
+                callee: "string_concat",
+                next: 9,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 9,
+                callee: "string_concat",
+                next: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 10,
+                callee: "to_string_bool",
+                next: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 11,
+                callee: "string_concat",
+                next: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 12,
+                callee: "string_concat",
+                next: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 13,
+                callee: "to_string_bool",
+                next: 14,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 14,
+                callee: "string_concat",
+                next: 15,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 15,
+                callee: "println_str",
+                next: 16,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 16,
+                callee: "hew_hashset_is_empty_layout",
+                next: 17,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 17,
+                callee: "println_bool",
+                next: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 18,
+                callee: "HashSet::new",
+                next: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 19,
+                callee: "hew_hashset_insert_layout",
+                next: 20,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 20,
+                callee: "hew_hashset_insert_layout",
+                next: 21,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 21,
+                callee: "hew_hashset_contains_layout",
+                next: 22,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 22,
+                callee: "hew_hashset_len_layout",
+                next: 23,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 23,
+                callee: "to_string_i64",
+                next: 24,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 24,
+                callee: "string_concat",
+                next: 25,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 25,
+                callee: "string_concat",
+                next: 26,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 26,
+                callee: "to_string_bool",
+                next: 27,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 27,
+                callee: "string_concat",
+                next: 28,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 28,
+                callee: "println_str",
+                next: 29,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 29,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "HashSet",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                HashSet,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashset_free_layout",
+                        },
+                    },
+                    ElabDrop {
+                        place: Local(
+                            1,
+                        ),
+                        ty: Named {
+                            name: "HashSet",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                HashSet,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_hashset_free_layout",
+                        },
+                    },
+                ],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                10,
+            ),
+            name: "val",
+            site: SiteId(
+                107,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    106,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                106,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                107,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                11,
+            ),
+            name: "val",
+            site: SiteId(
+                110,
+            ),
+            ty: I64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    109,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                109,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                110,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_i64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "val",
+            site: SiteId(
+                113,
+            ),
+            ty: U32,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    112,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                112,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                113,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u32",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                13,
+            ),
+            name: "val",
+            site: SiteId(
+                116,
+            ),
+            ty: U64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    115,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                115,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                116,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_u64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                14,
+            ),
+            name: "val",
+            site: SiteId(
+                119,
+            ),
+            ty: Bool,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    118,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                118,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                119,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_bool",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "val",
+            site: SiteId(
+                122,
+            ),
+            ty: Char,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    121,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                121,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                122,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_char",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                16,
+            ),
+            name: "val",
+            site: SiteId(
+                125,
+            ),
+            ty: F64,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    124,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                124,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                125,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Call {
+                block: 0,
+                callee: "to_string_f64",
+                next: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}
+ElaboratedMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    statements: [
+        Use {
+            binding: BindingId(
+                17,
+            ),
+            name: "val",
+            site: SiteId(
+                127,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Return {
+            site: Some(
+                SiteId(
+                    127,
+                ),
+            ),
+            ty: String,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                127,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    blocks: [
+        ElabBlock {
+            id: 0,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+    ],
+    drop_plans: [
+        (
+            Return {
+                block: 0,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+    ],
+    coroutine: None,
+    lambda_captures: [],
+}

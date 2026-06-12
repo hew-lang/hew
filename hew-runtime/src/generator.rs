@@ -16,6 +16,10 @@
 //! 4. When the body returns, the thread sends a `GenValue { is_done: true }`
 //!    "done" sentinel and exits.
 //! 5. [`hew_gen_free`] cancels (if running) and joins the thread.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::ffi::c_void;
 use std::ptr;
@@ -24,6 +28,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::set_last_error;
+use crate::task_scope::{hew_cancel_token_release, hew_cancel_token_retain, HewCancellationToken};
 
 // ── Value envelope ──────────────────────────────────────────────────────
 
@@ -48,6 +53,17 @@ unsafe impl Send for GenValue {}
 /// `yield_rx` and `resume_tx`; the generator thread uses `yield_tx` and
 /// `resume_rx` (accessed through the raw `*mut HewGenCtx` pointer passed
 /// to [`hew_gen_yield`]).
+///
+/// The `parent_cancel_token` slot is a borrowed reference (ref-counted via
+/// [`hew_cancel_token_retain`]) captured at [`hew_gen_ctx_create`] time from
+/// the consumer's `HewExecutionContext::cancel_token`. The generator thread
+/// has no execution-context of its own (it is spawned with a bare
+/// `extern "C" fn` body); the captured snapshot is therefore the only way
+/// the generator-body cancel-observation seam in
+/// `hew-codegen-rs/src/llvm.rs` (`Terminator::Yield` arm) can reach the
+/// enclosing scope's cancel token. Cancellation through the token tree is
+/// observed by the body at every yield via
+/// [`hew_gen_ctx_parent_cancel_token`].
 pub struct HewGenCtx {
     /// Generator thread sends yielded values here (thread-side sender).
     yield_tx: mpsc::Sender<GenValue>,
@@ -61,6 +77,22 @@ pub struct HewGenCtx {
     handle: Option<thread::JoinHandle<()>>,
     /// Set to `true` once the done sentinel has been received.
     done: AtomicBool,
+    /// Defence-in-depth idempotency guard for [`hew_gen_free`] (Defect 3).
+    /// `hew_gen_free` swaps this to `true` before touching any other field; if
+    /// it was already `true` the call is a no-op (the context was already
+    /// cancelled/joined/freed). With the MIR drop-spine fixes (Defects 1+2) the
+    /// context frees exactly once, so this flag never fires in correct programs;
+    /// it exists so that a FUTURE drop-edge miss degrades to a benign LEAK
+    /// rather than heap corruption (a double `Box::from_raw`). It lives in the
+    /// allocation, so the swap-and-check MUST happen before the `Box::from_raw`
+    /// that deallocates it.
+    released: AtomicBool,
+    /// Borrowed reference (ref-counted) to the enclosing
+    /// `HewExecutionContext::cancel_token` of the consumer thread at the
+    /// moment of generator creation. May be null when no execution context
+    /// is installed (test-fixture path) or when the enclosing scope has no
+    /// cancel token. Released in [`hew_gen_free`].
+    parent_cancel_token: *mut HewCancellationToken,
 }
 
 // SAFETY: The two threads partition access to the fields: the consumer
@@ -135,6 +167,31 @@ pub unsafe extern "C" fn hew_gen_ctx_create(
         resume_rx,
         handle: None,
         done: AtomicBool::new(false),
+        released: AtomicBool::new(false),
+        // Capture the consumer thread's enclosing cancel token (if any) so
+        // the generator body's cancel-observation seam can reach the
+        // parent scope's token through `hew_gen_ctx_parent_cancel_token`.
+        // The capture is borrowed (ref-counted via
+        // `hew_cancel_token_retain`); `hew_gen_free` releases it. A null
+        // current context (test fixture / no enclosing scope) yields a
+        // null snapshot, which the FFI is required to tolerate (the
+        // observation helper returns "not cancelled" for null tokens).
+        //
+        // SAFETY: `current_context()` is the thread-local accessor and
+        // returns a pointer that is either null or installed by the
+        // scheduler for the duration of the current dispatch; we read
+        // `cancel_token` only when non-null, and `hew_cancel_token_retain`
+        // is itself null-safe for additional defence-in-depth.
+        parent_cancel_token: unsafe {
+            let ctx_ptr = crate::execution_context::current_context();
+            if ctx_ptr.is_null() {
+                ptr::null_mut()
+            } else {
+                let snapshot = (*ctx_ptr).cancel_token;
+                hew_cancel_token_retain(snapshot);
+                snapshot
+            }
+        },
     }));
 
     // Cast raw pointers to usize so the closure is Send (same pattern
@@ -370,6 +427,19 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
 
     // SAFETY: ctx was Box-allocated and is exclusively owned by caller.
     unsafe {
+        // Defect 3 — idempotency guard. Swap the `released` flag to `true`
+        // BEFORE touching any other field; if it was already `true` the context
+        // has already been cancelled/joined/freed, so a second `hew_gen_free` is
+        // a no-op. This MUST precede the `Box::from_raw` below (which frees the
+        // allocation the flag lives in). The flag never fires in correct
+        // programs — the MIR drop spine (Defects 1+2) frees the context exactly
+        // once — but with it a future drop-edge miss degrades to a benign LEAK
+        // instead of a double `Box::from_raw` heap corruption. `AcqRel` so the
+        // winning thread's prior writes are visible and a loser observes them.
+        if (*ctx).released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         // Signal cancel — ignore errors (thread may have already exited).
         let _ = (*ctx).resume_tx.send(false);
 
@@ -388,8 +458,46 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
             }
         }
 
+        // Release the parent cancel-token snapshot captured at create-time.
+        // Null is tolerated by the FFI; non-null was retained when stored
+        // into the field, so the matched release here returns the token to
+        // its pre-capture refcount.
+        let parent_token = (*ctx).parent_cancel_token;
+        (*ctx).parent_cancel_token = ptr::null_mut();
+        hew_cancel_token_release(parent_token);
+
         drop(Box::from_raw(ctx));
     }
+}
+
+// ── Cancel-token observation seam ───────────────────────────────────────
+
+/// Return the parent `HewCancellationToken` captured at generator-context
+/// creation time. The returned pointer is borrowed; callers MUST NOT release
+/// it (the generator context owns the retain). May be null when no
+/// enclosing scope had a cancel token, in which case callers should treat
+/// it as "not cancelled" (the runtime's
+/// [`crate::task_scope::hew_cancel_token_is_requested`] is null-safe).
+///
+/// This accessor is the load-bearing operand source for the
+/// `hew-codegen-rs` cancel-observation seam at every `Terminator::Yield`:
+/// after the body resumes from `hew_gen_yield`, the body calls this
+/// function and feeds its result into `hew_cancel_token_is_requested` to
+/// detect an out-of-band parent-scope cancel. Without this swap the seam
+/// would observe a const-null operand and never fire.
+///
+/// # Safety
+///
+/// `ctx` must be a valid pointer returned by [`hew_gen_ctx_create`], or
+/// null. Null returns null; non-null borrows from the context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_gen_ctx_parent_cancel_token(
+    ctx: *mut HewGenCtx,
+) -> *mut HewCancellationToken {
+    cabi_guard!(ctx.is_null(), ptr::null_mut());
+    // SAFETY: caller-guaranteed live ctx; the parent_cancel_token slot is
+    // only written at create-time and cleared at free-time.
+    unsafe { (*ctx).parent_cancel_token }
 }
 
 #[cfg(test)]
@@ -506,6 +614,59 @@ mod tests {
         // SAFETY: null is a documented no-op.
         unsafe {
             hew_gen_free(ptr::null_mut());
+        }
+    }
+
+    // ── Defect 3: idempotent free ──────────────────────────────────────
+
+    #[test]
+    fn gen_free_is_idempotent_via_released_flag() {
+        // Defect 3 (defence-in-depth): `hew_gen_free` swaps the `released` flag
+        // to `true` before any teardown, so a second call is a no-op. With the
+        // MIR drop-spine fixes (Defects 1+2) the context frees exactly once;
+        // this proves the runtime backstop so a FUTURE drop-edge miss degrades
+        // to a benign LEAK rather than a double `Box::from_raw`.
+        //
+        // Reading `released` after the real `hew_gen_free` would be a
+        // use-after-free (it deallocates the box), so this test exercises the
+        // swap-guard semantics in isolation on a ctx we KEEP alive: pre-set
+        // `released = true` and assert `hew_gen_free` early-returns WITHOUT
+        // joining the thread or freeing the box (the thread + box are then
+        // reclaimed by a manual teardown that clears the flag).
+        //
+        // SAFETY: ctx is a live box from hew_gen_ctx_create; we never let
+        // hew_gen_free deallocate it while we still observe it.
+        unsafe {
+            let mut count: u32 = 3;
+            let ctx = hew_gen_ctx_create(
+                yielding_body,
+                (&raw mut count).cast::<c_void>(),
+                std::mem::size_of::<u32>(),
+            );
+
+            // Simulate "already released": the swap returns the prior value.
+            let prior = (*ctx).released.swap(true, Ordering::AcqRel);
+            assert!(!prior, "a fresh ctx must start un-released");
+
+            // The thread handle must still be present (no teardown happened).
+            assert!(
+                (*ctx).handle.is_some(),
+                "pre-teardown ctx must still own its join handle"
+            );
+
+            // hew_gen_free now observes released == true and is a no-op: it
+            // must NOT take the join handle nor free the box.
+            hew_gen_free(ctx);
+            assert!(
+                (*ctx).handle.is_some(),
+                "second free (released already true) must be a no-op: the join \
+                 handle must be untouched and the box must not be freed"
+            );
+
+            // Manual teardown: clear the flag and free for real so the thread
+            // joins and the box is reclaimed (no leak from this test).
+            (*ctx).released.store(false, Ordering::Release);
+            hew_gen_free(ctx);
         }
     }
 
@@ -664,6 +825,82 @@ mod tests {
 
             hew_gen_free(ctx1);
             hew_gen_free(ctx2);
+        }
+    }
+
+    // ── Parent cancel-token snapshot (cancel-observation seam) ─────────
+
+    #[test]
+    fn parent_cancel_token_null_when_no_execution_context() {
+        // No execution context installed on this thread → snapshot is null.
+        // SAFETY: ctx is from hew_gen_ctx_create; null snapshot is a
+        // documented FFI shape (callers treat null as "not cancelled").
+        unsafe {
+            let ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+            let token = hew_gen_ctx_parent_cancel_token(ctx);
+            assert!(
+                token.is_null(),
+                "parent cancel snapshot must be null when no execution context is installed"
+            );
+            hew_gen_free(ctx);
+        }
+    }
+
+    #[test]
+    fn parent_cancel_token_null_ctx_returns_null() {
+        // SAFETY: testing the cabi_guard path — null ctx is expected.
+        unsafe {
+            assert!(hew_gen_ctx_parent_cancel_token(ptr::null_mut()).is_null());
+        }
+    }
+
+    #[test]
+    fn parent_cancel_token_observes_parent_scope_cancel() {
+        // Install an execution context whose cancel_token is a fresh root
+        // token, create a generator under that context, and verify that
+        // cancelling the parent token is observable through the
+        // generator-context snapshot via
+        // `hew_cancel_token_is_requested` — the exact path the codegen
+        // cancel-observation seam at every yield consults.
+        //
+        // SAFETY: token + ctx + gen ctx are all valid for the test
+        // duration; we drive the FFI in the same well-defined order as
+        // production code.
+        unsafe {
+            let parent = crate::task_scope::hew_cancel_token_new_child(ptr::null_mut());
+            let mut exec_ctx = crate::execution_context::HewExecutionContext {
+                cancel_token: parent,
+                ..crate::execution_context::HewExecutionContext::default()
+            };
+            let prev = crate::execution_context::set_current_context(&raw mut exec_ctx);
+
+            let gen_ctx = hew_gen_ctx_create(empty_body, ptr::null_mut(), 0);
+            let snapshot = hew_gen_ctx_parent_cancel_token(gen_ctx);
+            assert_eq!(
+                snapshot, parent,
+                "gen-ctx must snapshot the consumer's execution context cancel token"
+            );
+
+            // Before parent cancel: observation returns 0 ("not requested").
+            assert_eq!(
+                crate::task_scope::hew_cancel_token_is_requested(snapshot),
+                0,
+                "fresh parent token must not report cancellation"
+            );
+
+            // Cancel the parent; the snapshot — being the same token —
+            // observes the request immediately.
+            crate::task_scope::hew_cancel_token_cancel(parent, 0);
+            assert_eq!(
+                crate::task_scope::hew_cancel_token_is_requested(snapshot),
+                1,
+                "post-cancel snapshot must report cancellation through the codegen seam"
+            );
+
+            hew_gen_free(gen_ctx);
+            let restored = crate::execution_context::set_current_context(prev);
+            assert_eq!(restored, &raw mut exec_ctx);
+            crate::task_scope::hew_cancel_token_release(parent);
         }
     }
 }

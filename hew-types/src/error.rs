@@ -233,6 +233,26 @@ impl TypeError {
         .with_suggestion(format!("consider changing this to `var {name}`"))
     }
 
+    /// Create a mutability error for an assignment to an immutable actor
+    /// state field outside `init { }`.
+    ///
+    /// `decl_span` is the field's declaration site; the note anchors the
+    /// diagnostic there so the fix (declare the field with `var`) lands on
+    /// the right line.
+    #[must_use]
+    pub fn immutable_field_assignment(span: Span, name: &str, decl_span: Span) -> Self {
+        Self::new(
+            TypeErrorKind::MutabilityError,
+            span,
+            format!("cannot assign to immutable field `{name}` outside `init`"),
+        )
+        .with_note(
+            decl_span,
+            format!("field `{name}` is declared immutable here"),
+        )
+        .with_suggestion(format!("declare the field with `var`: `var {name}: ...`"))
+    }
+
     /// Create a return type mismatch error.
     #[must_use]
     pub fn return_type_mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {
@@ -282,6 +302,30 @@ impl TypeError {
             ],
             source_module: None,
         }
+    }
+
+    /// Create an infinitely-sized recursive value type error.
+    #[must_use]
+    pub fn recursive_value_type(
+        span: Span,
+        type_kind: &str,
+        type_name: &str,
+        member_desc: &str,
+        referenced_type: &str,
+    ) -> Self {
+        Self::new(
+            TypeErrorKind::RecursiveValueType {
+                type_name: type_name.to_string(),
+                referenced_type: referenced_type.to_string(),
+            },
+            span,
+            format!(
+                "{type_kind} `{type_name}` is infinitely sized: {member_desc} contains \
+                 `{referenced_type}` by value; recursive value types are not supported \
+                 in v0.5"
+            ),
+        )
+        .with_suggestion("use a reference or other heap-owning indirection to break the cycle")
     }
 
     /// Create an or-pattern binding symmetry error.
@@ -354,10 +398,25 @@ pub enum TypeErrorKind {
     UndefinedField,
     /// Method not found on type
     UndefinedMethod,
+    /// A trait-bounded method call resolves to multiple distinct declaring
+    /// traits after supertrait expansion and dedup, so static dispatch
+    /// cannot pick one without qualification. Distinct from
+    /// `UndefinedMethod`: the method is found in multiple traits, not
+    /// missing. See W3.022 §4 V6 / V14.
+    AmbiguousTraitMethod,
+    /// An unqualified type name is exported by more than one imported module
+    /// (e.g. both `std::net::smtp` and `std::net::websocket` export `Conn`),
+    /// so the reference cannot bind to a single definition without a module
+    /// qualifier. Distinct from `UndefinedType` (no def) and
+    /// `DuplicateDefinition` (two defs in one module): the name resolves to
+    /// several valid defs across modules.
+    AmbiguousType,
     /// Value cannot be sent to another actor
     InvalidSend,
     /// Operation not supported for this type
     InvalidOperation,
+    /// Execution-context reader used outside an actor handler context
+    ContextReaderOutsideHandler,
     /// Wrong number of arguments
     ArityMismatch,
     /// Generic bounds not satisfied
@@ -378,6 +437,14 @@ pub enum TypeErrorKind {
     YieldOutsideGenerator,
     /// Actor types form a reference cycle via `ActorRef` fields
     ActorRefCycle,
+    /// A value-typed enum/record/struct contains itself by value, directly or
+    /// through another inline value type, making its layout infinitely sized.
+    RecursiveValueType {
+        /// Recursive type being rejected.
+        type_name: String,
+        /// Value type reached by the reported field/variant edge.
+        referenced_type: String,
+    },
     /// Variable defined but never used
     UnusedVariable,
     /// Variable declared `var` but never reassigned
@@ -386,18 +453,22 @@ pub enum TypeErrorKind {
     StyleSuggestion,
     /// Imported module never referenced
     UnusedImport,
+    /// `is TypeName` where the static LHS type already equals the RHS type
+    /// pattern, so the comparison is a compile-time tautology that lowers
+    /// to `true` and silently dead-codes the `else` branch.
+    RedundantIs,
     /// Code after a `return`, `break`, or `continue` is never executed
     UnreachableCode,
     /// A variable binding shadows a binding from an outer scope
     Shadowing,
     /// A function is defined but never called
     DeadCode,
-    /// Pure function calls an impure function or performs a side effect
-    PurityViolation,
     /// Impl block violates the orphan rule: neither the type nor the trait is local
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
+    /// `#[on(upgrade)]` is parsed but rejected until the runtime invokes it.
+    OnUpgradeNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -421,6 +492,373 @@ pub enum TypeErrorKind {
     /// cannot be named in user source. Bindings of this type are inferred from
     /// `fork name = expr` context only.
     TaskNotNameable,
+    /// An operation that requires an `unsafe { ... }` block was performed
+    /// outside of one.  The `operation` field names the specific unsafe
+    /// construct (e.g. `"raw pointer dereference"`, `"extern fn call"`).
+    ///
+    /// Envelope code: `E_M5_UNSAFE_BLOCK_REQUIRED`.
+    UnsafeOperationRequiresBlock {
+        /// Short identifier for the unsafe operation, e.g. `"raw pointer dereference"`.
+        operation: String,
+    },
+    /// A raw-pointer operation was used inside `unsafe { ... }` but the
+    /// compiler does not lower it to HIR/MIR/codegen.  Emitted so
+    /// users get a deterministic, source-located rejection instead of a
+    /// later "unsupported expression" failure deep in lowering.
+    ///
+    /// Envelope code: `E_M5_RAW_POINTER_OP_NOT_LOWERED`.
+    RawPointerOpNotLowered {
+        /// Short identifier for the raw-pointer operation, e.g.
+        /// `"raw pointer dereference"`.
+        operation: String,
+    },
+    /// A trait is used in `dyn` position but violates the v0.5 object-safety
+    /// predicate.  Object safety in v0.5 rejects traits with generic methods
+    /// (`fn foo<U>(self, u: U)`) and traits with `Self`-returning methods
+    /// (`fn clone(self) -> Self`) at every `T → dyn Trait` coercion site.
+    ///
+    /// Envelope code: `E_TRAIT_NOT_OBJECT_SAFE`.
+    TraitNotObjectSafe {
+        /// Trait whose dyn-coercion was rejected.
+        trait_name: String,
+        /// Method name that broke object safety.
+        method_name: String,
+        /// Short reason: `"generic method"` or `"Self-returning method"`.
+        reason: &'static str,
+    },
+    /// A trait object omits required associated-type bindings.
+    ///
+    /// Rust-aligned object safety requires every associated type declared by a
+    /// trait to be fully projected in `dyn Trait` position, e.g.
+    /// `dyn Iterator<Item = int>` instead of bare `dyn Iterator`.
+    ///
+    /// Envelope code: `E_MISSING_ASSOC_TYPE_BINDING`.
+    MissingAssocTypeBinding {
+        /// Trait whose dyn-object projection was incomplete.
+        trait_name: String,
+        /// Associated type names missing from the projection.
+        missing: Vec<String>,
+    },
+    /// A closure implicitly captured a non-`Copy` binding by value.
+    ///
+    /// v0.5 closure captures are by value only; non-copy values must be captured
+    /// with an explicit `move |...|` closure so the source binding is consumed
+    /// at a visible source span.
+    ClosureExplicitMoveRequired {
+        /// Captured binding name.
+        name: String,
+        /// User-facing type of the captured binding.
+        ty: String,
+    },
+    /// A closure capture's body-usage inference produced no resolved
+    /// `ClosureCaptureMode`. This is a structural bug, not a user-code
+    /// shape — the checker→MIR contract requires every fact's `mode` to
+    /// be one of `Copy`/`Move`/`Borrow`/`BorrowMut` before lowering.
+    /// Fail-closed defense.
+    ClosureCaptureModeUnresolved {
+        /// Captured binding name whose mode the checker could not classify.
+        name: String,
+    },
+    /// A closure captures a non-`Sync` binding by mutable reference, and
+    /// the closure body contains a suspend point (`await`, channel recv,
+    /// fork-handle await). Hard error until a future auto-lock pass
+    /// subscribes to this kind and rewrites the closure.
+    NonSyncMutCaptureCrossesSuspend {
+        /// Captured binding name being mutated across the suspend point.
+        capture_name: String,
+        /// Surface-facing label for the suspend point form ("await", "for await", …).
+        suspend_kind: String,
+    },
+    /// The escape classifier produced no `ClosureEscapeKind` at all
+    /// (distinct from returning `Escapes` conservatively). Structural
+    /// bug in the classifier, not user-code shape.
+    ClosureEscapeKindUnresolved,
+    /// Advisory (non-blocking): a closure was conservatively classified
+    /// `Escapes` and could be restructured to admit `Local`. Names the
+    /// inference rule that fired so the user can see why.
+    ClosureEscapeAdvisory {
+        /// Surface-facing label for the rule that rejected `Local`.
+        rule: String,
+    },
+    /// A closure attempted to capture the binding being defined by the same
+    /// closure literal. Recursive closures require a fixed-point surface that
+    /// v0.5 intentionally does not expose.
+    RecursiveClosureUnsupported {
+        /// Recursive binding name.
+        name: String,
+    },
+    /// A dyn associated-type binding could not be projected from the concrete impl.
+    ///
+    /// Envelope code: `E_ASSOC_TYPE_PROJECTION_FAILED`.
+    AssocTypeProjectionFailed {
+        /// Concrete type being coerced into a dyn trait object.
+        type_name: String,
+        /// Trait whose associated type projection failed.
+        trait_name: String,
+        /// Associated type name that failed to project.
+        assoc_name: String,
+    },
+    /// Two `receive fn`s in the same actor hash to the same `msg_id`.
+    ///
+    /// Emitted by [`crate::actor_protocol::ActorProtocolDescriptor::from_handlers`]
+    /// when the default `SipHash-1-3` → low-32-bits derivation produces the
+    /// same `msg_id` for two distinct fully-qualified handler names. The
+    /// checker refuses to publish a descriptor for the offending actor,
+    /// MIR/codegen never see a collided protocol, and the user is told to
+    /// rename one of the handlers. `#[msg_id(N)]` pinning is mentioned in
+    /// the hint but is not yet parseable surface — the later Q87 slice
+    /// introduces the attribute.
+    ActorProtocolCollision {
+        /// Actor whose protocol could not be published.
+        actor_name: String,
+        /// One of the colliding handler names.
+        handler_a: String,
+        /// The other colliding handler name.
+        handler_b: String,
+        /// The 32-bit `msg_id` both handlers hashed to.
+        msg_id: u32,
+    },
+    /// An `extern "rt"` function declaration names a symbol that is not in
+    /// the `stable` section of `scripts/jit-symbol-classification.toml`.
+    ///
+    /// `extern "rt"` is the user-facing surface for JIT-runtime functions that
+    /// the Hew compiler validates at check time. Only symbols in the `stable`
+    /// classification are legal `extern "rt"` targets; `internal` symbols are
+    /// scheduler/lifecycle-only and must not be named in user code.
+    ///
+    /// Envelope code: `E_EXTERN_RT_SYMBOL_UNCLASSIFIED`.
+    ExternRtSymbolUnclassified {
+        /// The symbol name from the `extern "rt"` declaration.
+        symbol_name: String,
+        /// Actionable hint for the user.
+        hint: String,
+    },
+    /// A `gen { }` generator block appeared inside an actor receive handler.
+    ///
+    /// The scheduler holds the actor-state lock for the entire handler
+    /// invocation; a mid-handler yield cannot release it, so generator blocks
+    /// are statically forbidden inside actor receive handlers.
+    ///
+    /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
+    GenBlockInActorReceive,
+    /// A `gen { }` generator block appeared inside a machine transition body.
+    ///
+    /// Machine transition bodies are pure state transformations; generator
+    /// suspension would make the transition non-atomic and is statically
+    /// forbidden.
+    ///
+    /// Envelope code: `E_GENBLOCK_IN_MACHINE_TRANSITION`.
+    GenBlockInMachineTransition,
+    /// An `await` expression appeared inside a machine transition body.
+    ///
+    /// Machine transition bodies are pure state transformations; awaiting a
+    /// task would suspend inside the transition and is statically forbidden.
+    ///
+    /// Envelope code: `E_AWAIT_IN_MACHINE_TRANSITION`.
+    AwaitInMachineTransition,
+    /// A `gen { }` generator block whose body contains no `yield` expression.
+    ///
+    /// The checker infers the yield type from `yield` expressions inside the
+    /// body via unification.  When no `yield` is present the yield type-variable
+    /// remains unbound, so the generator's element type cannot be determined.
+    ///
+    /// Envelope code: `E_EMPTY_GENERATOR`.
+    EmptyGenerator,
+    /// A closure referenced its own let-binding name inside its body.
+    ///
+    /// By-value capture cannot capture a value before construction without
+    /// cycles. Recursive closures require a fixed-point surface that v0.5
+    /// intentionally does not expose; use a named function instead.
+    ///
+    /// Envelope code: `E_CLOSURE_RECURSIVE`.
+    ClosureRecursive {
+        /// The name of the binding the closure attempted to capture recursively.
+        name: String,
+    },
+    /// `Sink<T>` or `Stream<T>` payload type does not implement both `Encode`
+    /// and `Decode` marker traits, which are required for wire transport.
+    ///
+    /// Closures, raw pointers, `dyn Trait` objects, and other non-serialisable
+    /// types cannot cross actor message boundaries via a channel.
+    ///
+    /// Envelope code: `E_SINK_PAYLOAD_NOT_WIRE`.
+    SinkPayloadNotWire {
+        /// User-facing representation of the rejected payload type.
+        payload_ty: String,
+        /// Marker trait names that the payload type is missing (`"Encode"`,
+        /// `"Decode"`, or both).
+        missing_traits: Vec<String>,
+    },
+    /// A constructor or struct-variant match arm contains a payload subpattern
+    /// that is not a plain binding (`x`) or wildcard (`_`).
+    ///
+    /// The v0.5 payload subpattern surface is binding/wildcard-only.  Literal
+    /// tests (`Shape::Line(1)`), nested constructors (`Shape::Line(Other::Foo)`),
+    /// tuple/struct destructures inside a payload, and or-patterns inside a
+    /// payload are not yet lowered.  Accepting them silently would produce an
+    /// incorrect wildcard match; the checker rejects them with this diagnostic
+    /// until the substrate lane adds full nested-predicate support.
+    ///
+    /// Envelope code: `E_UNSUPPORTED_PAYLOAD_SUBPATTERN`.
+    UnsupportedPayloadSubpattern {
+        /// Variant constructor whose payload subpattern was rejected.
+        variant_name: String,
+        /// Short human-readable label for the rejected subpattern kind,
+        /// e.g. `"literal"`, `"nested constructor"`, `"tuple"`, `"struct"`,
+        /// or `"or-pattern"`.
+        kind_label: String,
+    },
+    /// A `re"..."` regex literal (in expression or pattern position) contains
+    /// an invalid regex pattern rejected by the `regex` crate.
+    ///
+    /// The checker validates every regex literal at compile time using the
+    /// same engine the runtime uses, so syntactically invalid patterns are
+    /// a hard error before any code is emitted.
+    ///
+    /// Envelope code: `E_INVALID_REGEX_LITERAL`.
+    InvalidRegexLiteral {
+        /// The offending pattern string (as it appears in source, after
+        /// delimiter normalisation).
+        pattern: String,
+        /// The error message from `regex::Regex::new`.
+        error: String,
+    },
+    /// A regex pattern in a match arm is used against a non-`string`
+    /// scrutinee.  Regex matching is defined only over `string` values.
+    ///
+    /// Envelope code: `E_REGEX_PATTERN_NOT_STRING`.
+    RegexPatternNotString {
+        /// User-facing representation of the actual scrutinee type.
+        actual_ty: String,
+    },
+    /// A trait bound on a generic type parameter uses positional type
+    /// arguments (e.g. `T: Eq<U>`) which is not a recognised bound form.
+    /// The Hew type-checker cannot validate or enforce such bounds; admitting
+    /// them would silently drop the type arguments and reduce `Eq<U>` to bare
+    /// `Eq`, which is misleading.  Use associated-type bindings instead
+    /// (e.g. `Iterator<Item = i64>`) for traits with output types.
+    ///
+    /// Envelope code: `E_UNKNOWN_TRAIT_BOUND_SHAPE`.
+    UnknownTraitBoundShape {
+        /// The trait name that carried the unknown positional type arguments.
+        trait_name: String,
+    },
+    /// A generic actor was spawned without a turbofish type-argument list.
+    ///
+    /// Generic actors declare `<T>` type parameters on their declaration.
+    /// Every `spawn` call for such an actor must supply explicit type arguments
+    /// (`spawn Foo<i64>(...)`) so the type checker can substitute them into the
+    /// PID type and enforce bounds. Inference of actor type-args is not yet
+    /// supported and may be added in a follow-on improvement.
+    ///
+    /// Envelope code: `E_MISSING_ACTOR_TYPE_ARGS`.
+    MissingActorTypeArgs {
+        /// Name of the generic actor whose type arguments were omitted.
+        actor_name: String,
+        /// Number of type parameters the actor declaration declares.
+        expected_arity: usize,
+    },
+    /// A bare actor reference (e.g. `spawn Account(...)`) matches actors
+    /// exported by two or more modules, with no local actor of that name to
+    /// win the local-first resolution.
+    ///
+    /// Resolution is never silent first-wins: the user must qualify the
+    /// reference (`spawn bank.Account(...)`) to pick a module. Mirrors the
+    /// `per-module-type-identity` bare-name policy for `pub type`s.
+    ///
+    /// Envelope code: `E_AMBIGUOUS_ACTOR_REFERENCE`.
+    AmbiguousActorReference {
+        /// The bare actor name as written at the reference site.
+        actor_name: String,
+        /// Short names of every module exporting an actor of that name,
+        /// sorted for deterministic diagnostics.
+        candidate_modules: Vec<String>,
+    },
+    /// A generic actor was spawned with the wrong number of type arguments.
+    ///
+    /// Envelope code: `E_ACTOR_TYPE_ARG_ARITY_MISMATCH`.
+    ActorTypeArgArityMismatch {
+        /// Name of the generic actor.
+        actor_name: String,
+        /// Number of type parameters declared on the actor.
+        expected: usize,
+        /// Number of type arguments supplied at the spawn site.
+        got: usize,
+    },
+    /// A `#[extern_symbol("…")]` attribute's template payload failed the
+    /// Stage-2 grammar check defined in
+    /// `crate::extern_symbol::ExternSymbolTemplate::parse`.
+    ///
+    /// The grammar is deliberately narrow (literal runs of
+    /// `[A-Za-z0-9_]` interleaved with `{T}` placeholders); see the
+    /// `extern_symbol` module for the full spec. `reason` is the
+    /// short, deterministic string from
+    /// `TemplateError::reason()` — Stage-5 diagnostic-precision tests
+    /// pin against these exact spellings.
+    ///
+    /// Envelope code (planned, wired in Stage 3): `E_W3_001_INVALID_EXTERN_SYMBOL_TEMPLATE`.
+    InvalidExternSymbolTemplate {
+        /// Short deterministic reason; safe to pin in tests.
+        reason: String,
+    },
+    /// An impl-block method's declared signature does not match the trait
+    /// method's signature after substituting `Self` with the impl target type
+    /// and the trait's type parameters with the impl-supplied type arguments.
+    ///
+    /// Emitted at the impl method's declaration span so the diagnostic fires
+    /// locally where the user wrote the wrong shape, instead of cascading
+    /// downstream as a confusing "type does not satisfy trait" at a call site.
+    /// See LESSONS row `diagnostic-trust` (P1).
+    ///
+    /// Envelope code: `E_TRAIT_IMPL_SIGNATURE_MISMATCH`.
+    TraitImplSignatureMismatch {
+        /// Trait whose method declaration was violated.
+        trait_name: String,
+        /// Method name whose impl-side signature diverges from the trait.
+        method_name: String,
+        /// Short label for the kind of divergence: `"arity"`, `"parameter"`,
+        /// or `"return type"`. Used by tests to pin diagnostic precision.
+        detail: &'static str,
+    },
+    /// A function carrying `#[intrinsic("…")]` was declared outside the
+    /// designated stdlib-floor modules.
+    ///
+    /// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only.
+    /// Memory/lifecycle intrinsics (`alloc`/`size_of`/typed-ptr/auto-`Drop`)
+    /// and the existing math intrinsics must never be user-declarable; doing so
+    /// would leak unsafe/aliasing primitives onto the surface, violating the
+    /// durable "Hew feels immutable at the surface" tenet. The gate is
+    /// fail-closed: any module not on the floor allowlist — including the
+    /// root/user module — is rejected, so a user program (or any non-floor
+    /// module) cannot wire itself to a compiler intrinsic.
+    ///
+    /// Envelope code: `E_INTRINSIC_OUTSIDE_FLOOR`.
+    IntrinsicOutsideFloor {
+        /// The intrinsic catalog key from the `#[intrinsic("…")]` attribute.
+        intrinsic_key: String,
+        /// The module path where the declaration appeared (`"(root)"` for the
+        /// user's root module). Used by tests to pin diagnostic precision.
+        module: String,
+    },
+    /// A `#[intrinsic("…")]` attribute was placed on an impl-block method
+    /// rather than a top-level free function.
+    ///
+    /// A605 (ratified): `#[intrinsic]` is valid **only** on top-level free
+    /// functions inside a stdlib-floor module. Impl methods, trait-impl
+    /// methods, and actor methods are never intrinsics — the compiler wires
+    /// intrinsics to standalone catalog entries, not to method dispatch
+    /// slots. Fail-closed: a method-shaped declaration is rejected even if
+    /// it appears inside an allowlisted floor module, and is never inserted
+    /// into `intrinsic_declarations`.
+    ///
+    /// Envelope code: `E_INTRINSIC_ON_METHOD`.
+    IntrinsicOnMethod {
+        /// The intrinsic catalog key from the `#[intrinsic("…")]` attribute.
+        intrinsic_key: String,
+        /// The fully-qualified method key (`"Type::method"`) that carried
+        /// the attribute. Used by tests to pin diagnostic precision.
+        method_key: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -437,8 +875,11 @@ impl TypeErrorKind {
             Self::UndefinedFunction => "UndefinedFunction",
             Self::UndefinedField => "UndefinedField",
             Self::UndefinedMethod => "UndefinedMethod",
+            Self::AmbiguousTraitMethod => "AmbiguousTraitMethod",
+            Self::AmbiguousType => "AmbiguousType",
             Self::InvalidSend => "InvalidSend",
             Self::InvalidOperation => "InvalidOperation",
+            Self::ContextReaderOutsideHandler => "ContextReaderOutsideHandler",
             Self::ArityMismatch => "ArityMismatch",
             Self::BoundsNotSatisfied => "BoundsNotSatisfied",
             Self::InferenceFailed => "InferenceFailed",
@@ -449,16 +890,18 @@ impl TypeErrorKind {
             Self::UseAfterMove => "UseAfterMove",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::ActorRefCycle => "ActorRefCycle",
+            Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",
             Self::UnusedMut => "UnusedMut",
             Self::StyleSuggestion => "StyleSuggestion",
             Self::UnusedImport => "UnusedImport",
+            Self::RedundantIs => "RedundantIs",
             Self::UnreachableCode => "UnreachableCode",
             Self::Shadowing => "Shadowing",
             Self::DeadCode => "DeadCode",
-            Self::PurityViolation => "PurityViolation",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
+            Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",
@@ -466,6 +909,36 @@ impl TypeErrorKind {
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
+            Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
+            Self::RawPointerOpNotLowered { .. } => "RawPointerOpNotLowered",
+            Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
+            Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
+            Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
+            Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",
+            Self::NonSyncMutCaptureCrossesSuspend { .. } => "NonSyncMutCaptureCrossesSuspend",
+            Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
+            Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
+            Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
+            Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
+            Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
+            Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
+            Self::GenBlockInActorReceive => "GenBlockInActorReceive",
+            Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",
+            Self::AwaitInMachineTransition => "AwaitInMachineTransition",
+            Self::EmptyGenerator => "EmptyGenerator",
+            Self::ClosureRecursive { .. } => "ClosureRecursive",
+            Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
+            Self::UnsupportedPayloadSubpattern { .. } => "UnsupportedPayloadSubpattern",
+            Self::InvalidRegexLiteral { .. } => "InvalidRegexLiteral",
+            Self::RegexPatternNotString { .. } => "RegexPatternNotString",
+            Self::UnknownTraitBoundShape { .. } => "UnknownTraitBoundShape",
+            Self::InvalidExternSymbolTemplate { .. } => "InvalidExternSymbolTemplate",
+            Self::MissingActorTypeArgs { .. } => "MissingActorTypeArgs",
+            Self::AmbiguousActorReference { .. } => "AmbiguousActorReference",
+            Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
+            Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
+            Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
+            Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
         }
     }
 }
@@ -583,14 +1056,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mismatch_display_uses_int_alias() {
+    fn test_mismatch_display_uses_explicit_width() {
         let err = TypeError::mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
-        assert_eq!(err.to_string(), "expected `int`, found `Option<int>`");
+        assert_eq!(err.to_string(), "expected `i64`, found `Option<i64>`");
         assert_eq!(
             err.kind,
             TypeErrorKind::Mismatch {
-                expected: "int".to_string(),
-                actual: "Option<int>".to_string(),
+                expected: "i64".to_string(),
+                actual: "Option<i64>".to_string(),
             }
         );
     }
@@ -633,6 +1106,7 @@ mod tests {
         let err = TypeError::undefined_field(
             10..20,
             &Ty::Named {
+                builtin: None,
                 name: "Point".into(),
                 args: vec![],
             },
@@ -793,17 +1267,17 @@ mod tests {
         let err = TypeError::return_type_mismatch(0..10, &Ty::String, &Ty::I32);
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `String`, found `i32`"
+            "return type mismatch: expected `string`, found `i32`"
         );
         assert_eq!(err.kind, TypeErrorKind::ReturnTypeMismatch);
     }
 
     #[test]
-    fn test_return_type_mismatch_display_uses_int_alias() {
+    fn test_return_type_mismatch_display_uses_explicit_width() {
         let err = TypeError::return_type_mismatch(0..10, &Ty::I64, &Ty::option(Ty::I64));
         assert_eq!(
             err.to_string(),
-            "return type mismatch: expected `int`, found `Option<int>`"
+            "return type mismatch: expected `i64`, found `Option<i64>`"
         );
     }
 
@@ -977,7 +1451,7 @@ mod tests {
         let err = TypeError::mismatch(0..20, &expected, &actual);
         assert!(err
             .to_string()
-            .contains("expected `fn(i32, bool) -> String`"));
+            .contains("expected `fn(i32, bool) -> string`"));
         assert!(err.to_string().contains("found `(i32, bool)`"));
     }
 
@@ -997,13 +1471,14 @@ mod tests {
     #[test]
     fn test_undefined_field_on_generic_type() {
         let ty = Ty::Named {
+            builtin: None,
             name: "HashMap".into(),
             args: vec![Ty::String, Ty::I32],
         };
         let err = TypeError::undefined_field(0..10, &ty, "colour");
         assert_eq!(
             err.to_string(),
-            "no field `colour` on type `HashMap<String, i32>`"
+            "no field `colour` on type `HashMap<string, i32>`"
         );
     }
 }

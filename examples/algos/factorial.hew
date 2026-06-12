@@ -1,5 +1,5 @@
 // Factorial - iterative implementation
-fn factorial(n: int) -> int {
+fn factorial(n: i64) -> i64 {
     var result = 1;
     var i = 2;
     while i <= n {
@@ -9,7 +9,7 @@ fn factorial(n: int) -> int {
     result
 }
 
-fn check(name: String, got: int, expected: int) -> int {
+fn check(name: string, got: i64, expected: i64) -> i64 {
     if got == expected {
         println("PASS: " + name);
         1

@@ -1,41 +1,50 @@
 //! Behavioural tests for std::encoding::hex.
 
 import std::encoding::hex;
+
 import std::testing;
 
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
     testing.assert_eq(actual.len(), expected.len());
     for i in 0 .. expected.len() {
-        testing.assert_eq(actual.get(i), expected.get(i));
+        testing.assert_eq_u8(actual.get(i), expected.get(i));
     }
 }
 
 // ── Happy-path ────────────────────────────────────────────────────────
-
 #[test]
 fn test_encode_known_value() {
     // [0xDE, 0xAD] → "dead"
-    let data = bytes [222, 173];
+    let data: bytes = bytes::new();
+    data.push(222);
+    data.push(173);
     testing.assert_eq_str(hex.encode(data), "dead");
 }
 
 #[test]
 fn test_encode_upper_known_value() {
-    let data = bytes [222, 173];
+    let data: bytes = bytes::new();
+    data.push(222);
+    data.push(173);
     testing.assert_eq_str(hex.encode_upper(data), "DEAD");
 }
 
 #[test]
 fn test_decode_known_value() {
     let result = hex.decode("dead");
-    assert_bytes_eq(result, bytes [222, 173]);
+    let expected: bytes = bytes::new();
+    expected.push(222);
+    expected.push(173);
+    assert_bytes_eq(result, expected);
 }
 
 // ── Property round-trip ───────────────────────────────────────────────
-
 #[test]
 fn test_round_trip_nonempty() {
-    let original = bytes [0, 127, 255];
+    let original: bytes = bytes::new();
+    original.push(0);
+    original.push(127);
+    original.push(255);
     let encoded = hex.encode(original);
     let decoded = hex.decode(encoded);
     assert_bytes_eq(decoded, original);
@@ -43,14 +52,13 @@ fn test_round_trip_nonempty() {
 
 #[test]
 fn test_round_trip_empty() {
-    let original = bytes [];
+    let original: bytes = bytes::new();
     let encoded = hex.encode(original);
     let decoded = hex.decode(encoded);
     assert_bytes_eq(decoded, original);
 }
 
 // ── Error / boundary ─────────────────────────────────────────────────
-
 #[test]
 fn test_decode_invalid_chars_returns_empty() {
     let result = hex.decode("zzzz");
@@ -65,27 +73,31 @@ fn test_decode_odd_length_returns_empty() {
 }
 
 // ── Boundary bytes ────────────────────────────────────────────────────
-
 #[test]
 fn test_encode_single_byte_zero() {
-    // bytes [0] → "00"
-    testing.assert_eq_str(hex.encode(bytes [0]), "00");
+    // byte 0x00 → "00"
+    let b: bytes = bytes::new();
+    b.push(0);
+    testing.assert_eq_str(hex.encode(b), "00");
 }
 
 #[test]
 fn test_encode_single_byte_0xff() {
-    // bytes [255] → "ff"
-    testing.assert_eq_str(hex.encode(bytes [255]), "ff");
+    // byte 0xFF → "ff"
+    let b: bytes = bytes::new();
+    b.push(255);
+    testing.assert_eq_str(hex.encode(b), "ff");
 }
 
 #[test]
 fn test_encode_upper_single_byte_0xff() {
-    // bytes [255] → "FF"
-    testing.assert_eq_str(hex.encode_upper(bytes [255]), "FF");
+    // byte 0xFF → "FF"
+    let b: bytes = bytes::new();
+    b.push(255);
+    testing.assert_eq_str(hex.encode_upper(b), "FF");
 }
 
 // ── Case-insensitive decode ───────────────────────────────────────────
-
 #[test]
 fn test_decode_uppercase_string() {
     // decode("DEAD") and decode("dead") must produce the same bytes
@@ -106,7 +118,11 @@ fn test_decode_mixed_case_matches_lowercase() {
 fn test_encode_upper_round_trip_via_decode() {
     // encode_upper → decode: confirms decode handles uppercase output of
     // encode_upper, exercising all 16 uppercase hex chars via round-trip.
-    let data = bytes [222, 173, 190, 239];
+    let data: bytes = bytes::new();
+    data.push(222);
+    data.push(173);
+    data.push(190);
+    data.push(239);
     let upper_str = hex.encode_upper(data);
     testing.assert_eq_str(upper_str, "DEADBEEF");
     let decoded = hex.decode(upper_str);
@@ -114,7 +130,6 @@ fn test_encode_upper_round_trip_via_decode() {
 }
 
 // ── Invalid character positions ───────────────────────────────────────
-
 #[test]
 fn test_decode_invalid_char_at_position_0_returns_empty() {
     // First nibble is not a hex digit → empty bytes
@@ -131,14 +146,13 @@ fn test_decode_invalid_char_at_last_nibble_returns_empty() {
 }
 
 // ── Multi-byte property round-trip ────────────────────────────────────
-
 #[test]
 fn test_round_trip_multi_byte_64() {
-    // 64-byte buffer with (i * 31) % 256 — same pattern used in the base64
-    // fixture; exercises a wide range of nibble values including 0xF and 0x0.
+    // 64-byte buffer with (i * 31) % 256 — exercises a wide range of nibble
+    // values including 0xF and 0x0.
     let buf: bytes = bytes::new();
     for i in 0 .. 64 {
-        buf.push((i * 31) % 256);
+        buf.push((i * 31 % 256) as u8);
     }
     let encoded = hex.encode(buf);
     let decoded = hex.decode(encoded);
@@ -147,11 +161,12 @@ fn test_round_trip_multi_byte_64() {
 
 #[test]
 fn test_round_trip_all_256_byte_values() {
+
     // Full byte-value coverage: buffer contains every byte 0–255 exactly once.
     // encode → decode must recover the original sequence.
     let buf: bytes = bytes::new();
-    for i in 0 .. 256 {
-        buf.push(i);
+    for i in 0 as i64 .. 256 as i64 {
+        buf.push(i as u8);
     }
     let encoded = hex.encode(buf);
     // Encoded string must be exactly 512 chars (2 hex digits per byte).

@@ -314,7 +314,9 @@ mod tests {
 
     #[test]
     fn input_completeness_recognizes_invalid_inputs() {
-        assert_eq!(input_completeness("1 + *"), InputCompleteness::Invalid);
+        // A trailing closing paren with no matching opener cannot be
+        // completed by more input.
+        assert_eq!(input_completeness("1 + )"), InputCompleteness::Invalid);
         assert_eq!(input_completeness("let = 1;"), InputCompleteness::Invalid);
     }
 }

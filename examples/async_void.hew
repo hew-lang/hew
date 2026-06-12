@@ -1,9 +1,16 @@
-fn print_message(msg: i32) {
-    println(msg);
-    println(42);
+//! Status: runnable
+//! Description: Actor call-and-await example with no used return value.
+
+actor Messenger {
+    receive fn print_message(msg: i64) -> i64 {
+        println(msg);
+        println(42);
+        0
+    }
 }
 
 fn main() {
-    await print_message(100);
+    let messenger = spawn Messenger;
+    await messenger.print_message(100);
     println(999);
 }

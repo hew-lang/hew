@@ -3,6 +3,10 @@
 //! In Erlang-style actor systems, links are bidirectional: when one linked
 //! actor crashes, all linked actors also crash (unless they are trapping exits).
 //! This module implements the link table and crash propagation logic.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -417,19 +421,21 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
     use std::time::Duration;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
-            pid: id,
             state: std::ptr::null_mut(),
             state_size: 0,
             dispatch: None,
@@ -441,6 +447,7 @@ mod tests {
             coalesce_key_fn: None,
             terminate_fn: None,
             state_drop_fn: None,
+            state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
@@ -454,6 +461,11 @@ mod tests {
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),
             arena: std::ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(std::ptr::null_mut()),
+            cont_tag: AtomicI32::new(crate::internal::types::ContTag::Empty as i32),
+            pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -686,6 +698,25 @@ mod tests {
             let propagate = std::thread::spawn(move || propagate_exit_to_links(target_id, 91));
             entered.wait();
 
+            // The EXIT message has now been delivered: `propagate` is parked
+            // in the hook still holding the LIVE_ACTORS lock, so the
+            // `hew_mailbox_send_sys` call already completed. Verify delivery
+            // from the main thread *before* spawning the free thread. The
+            // thread spawn below is a happens-before edge, so this read +
+            // node free is ordered ahead of the free thread's later mailbox
+            // teardown and the two never race. (Reading the mailbox
+            // concurrently with a pending free instead would race its drain,
+            // ordered only by the std `Barrier` the runtime cannot expose to
+            // ThreadSanitizer.)
+            let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
+            let payload = &*((*node).data.cast::<ExitMessage>());
+            assert_eq!(payload.crashed_actor_id, target_id);
+            assert_eq!(payload.reason, 91);
+            mailbox::hew_msg_node_free(node);
+
             (*linked_actor).actor_state.store(
                 HewActorState::Idle as i32,
                 std::sync::atomic::Ordering::Release,
@@ -706,15 +737,6 @@ mod tests {
             while !free_started.load(std::sync::atomic::Ordering::Acquire) {
                 std::thread::yield_now();
             }
-
-            let mailbox = (*linked_actor).mailbox.cast::<mailbox::HewMailbox>();
-            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
-            assert!(!node.is_null());
-            assert_eq!((*node).msg_type, SYS_MSG_EXIT);
-            let payload = &*((*node).data.cast::<ExitMessage>());
-            assert_eq!(payload.crashed_actor_id, target_id);
-            assert_eq!(payload.reason, 91);
-            mailbox::hew_msg_node_free(node);
 
             std::thread::sleep(Duration::from_millis(50));
             assert!(

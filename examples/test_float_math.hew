@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Float literals
+
 fn main() {
     // Float literals
     let pi: f64 = 3.14159;

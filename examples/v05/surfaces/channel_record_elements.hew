@@ -1,0 +1,54 @@
+//! Status: runnable (v0.5 record elements over std::channel)
+//! Description: Round-trips a heap-owning record through a channel and
+//! breaks out of a `for await` drain early with items still queued.
+//!
+//! A record with a `string` field is a LayoutManaged element: `send` deep-
+//! copies it into the queue envelope via the witness `clone_fn` (the caller
+//! keeps its value), `recv`/`try_recv` move the decoded element to the
+//! consumer, and a receiver dropped with items still queued releases each
+//! unconsumed envelope exactly once via the witness `drop_fn`. The early
+//! `break` below exercises that queue-drop path: two `Tagged` envelopes are
+//! still queued when `rx` goes out of scope.
+
+import std::channel::channel;
+
+type Tagged {
+    label: string;
+    value: i64;
+}
+
+actor DrainRecords {
+    receive fn run(unused: i64) {
+        let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(4);
+        tx.send(Tagged { label: "first", value: 1 });
+        tx.send(Tagged { label: "second", value: 2 });
+        tx.send(Tagged { label: "third", value: 3 });
+        tx.close();
+        for await item in rx {
+            println(item.label);
+            println(item.value);
+            break;
+        }
+        println("stopped early");
+    }
+}
+
+fn main() {
+    let worker = spawn DrainRecords;
+    worker.run(0);
+    sleep_ms(500);
+
+    // Non-blocking sibling: try_recv moves one queued record out; the match
+    // owns the payload and drops it at arm scope exit.
+    let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = channel.new(2);
+    tx.send(Tagged { label: "polled", value: 9 });
+    tx.close();
+    match rx.try_recv() {
+        Some(item) => println(item.label),
+        None => println("empty"),
+    }
+    match rx.try_recv() {
+        Some(item) => println(item.value),
+        None => println("drained"),
+    }
+}

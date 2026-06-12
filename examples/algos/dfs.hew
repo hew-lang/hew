@@ -36,18 +36,18 @@ fn main() {
     let stack: Vec<i32> = Vec::new();
     stack.push(0);
     while stack.len() > 0 {
-        let u = stack.pop();
+        let u: i64 = stack.pop() as i64;
         if visited.get(u) == 0 {
             visited.set(u, 1);
-            order.push(u);
+            order.push(u as i32);
             // Push neighbours in reverse so lower-numbered visited first
-            let start = adj_offsets.get(u);
-            let end = adj_offsets.get(u + 1);
-            var idx = end - 1;
+            let start: i64 = adj_offsets.get(u) as i64;
+            let end: i64 = adj_offsets.get(u + 1) as i64;
+            var idx: i64 = end - 1;
             while idx >= start {
-                let v = adj_nodes.get(idx);
+                let v: i64 = adj_nodes.get(idx) as i64;
                 if visited.get(v) == 0 {
-                    stack.push(v);
+                    stack.push(v as i32);
                 }
                 idx = idx - 1;
             }

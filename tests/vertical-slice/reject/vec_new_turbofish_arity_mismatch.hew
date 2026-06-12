@@ -1,0 +1,11 @@
+// W3.004 S1 reject: turbofish arity mismatch `Vec::<i64, i32>::new()`.
+//
+// Vec takes exactly 1 element-type argument.  Supplying 2 should produce a
+// clear "takes 1 type argument but 2 were supplied" diagnostic and NOT fall
+// through to instantiate_fn_sig_for_call or produce a Vec<?>  type.
+//
+// Expected: compile error (exit non-zero from `hew check`)
+fn main() -> i64 {
+    let _v = Vec::<i64, i32>::new();
+    0
+}

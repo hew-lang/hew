@@ -1,16 +1,18 @@
 # installers/alpine/Dockerfile.llvm
 #
-# Pre-built LLVM+MLIR for Alpine edge (musl).
+# Pre-built LLVM for Alpine edge (musl).
 # This image is pushed to GHCR and reused in CI so we don't rebuild
 # LLVM from source on every release (~30 min → ~2 min).
 #
 # Build:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t ghcr.io/hew-lang/llvm-alpine:22 \
+#     -t ghcr.io/hew-lang/llvm-alpine:22.1.0-v2 \
 #     -f installers/alpine/Dockerfile.llvm .
 #
-# The image contains /opt/llvm-22 with static LLVM+MLIR libraries,
-# cmake configs, and tools (including mlir-tblgen).
+# The image contains /opt/llvm-22 with static LLVM libraries, cmake
+# configs, and the toolchain binaries (llvm-config first among them —
+# llvm-sys requires it; the v1 image shipped without tools and broke
+# every downstream cargo build).
 
 FROM alpine:edge AS builder
 
@@ -28,7 +30,7 @@ RUN git clone --depth 1 --branch "llvmorg-${LLVM_VERSION}" \
     --filter=blob:none --sparse \
     https://github.com/llvm/llvm-project.git /tmp/llvm-project \
     && cd /tmp/llvm-project \
-    && git sparse-checkout set llvm mlir cmake third-party
+    && git sparse-checkout set llvm cmake third-party
 
 # Build LLVM + MLIR (static, minimal targets)
 # Use clang — GCC rejects Clang-specific warning flags propagated by HandleLLVMOptions.
@@ -37,10 +39,10 @@ RUN cd /tmp/llvm-project && cmake -S llvm -B build -G Ninja \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="/opt/llvm-${LLVM_MAJOR}" \
-    -DLLVM_ENABLE_PROJECTS="mlir" \
     -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
-    -DLLVM_BUILD_TOOLS=OFF \
-    -DLLVM_BUILD_UTILS=OFF \
+    -DLLVM_BUILD_TOOLS=ON \
+    -DLLVM_BUILD_UTILS=ON \
+    -DLLVM_INSTALL_UTILS=ON \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_BENCHMARKS=OFF \
     -DLLVM_INCLUDE_EXAMPLES=OFF \
@@ -51,25 +53,16 @@ RUN cd /tmp/llvm-project && cmake -S llvm -B build -G Ninja \
     -DLLVM_ENABLE_ASSERTIONS=OFF \
     -DLLVM_BUILD_LLVM_DYLIB=OFF \
     -DLLVM_LINK_LLVM_DYLIB=OFF \
-    -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
-    -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
     -DBUILD_SHARED_LIBS=OFF
 
-# LLVM 22 has a missing cmake dependency: MLIR's OptUtils.cpp needs
-# TargetLibraryInfo.inc (tablegen-generated) but ninja on arm64 schedules
-# the compilation before the tablegen step. Build LLVMAnalysis first.
 RUN cd /tmp/llvm-project \
-    && ninja -C build -j${NINJA_JOBS} LLVMAnalysis \
     && ninja -C build -j${NINJA_JOBS} \
     && ninja -C build install
 
-# Copy built tools (mlir-tblgen etc.) that aren't installed with BUILD_TOOLS=OFF
-RUN mkdir -p "/opt/llvm-${LLVM_MAJOR}/bin" \
-    && cd /tmp/llvm-project \
-    && for tool in build/bin/*; do \
-         [ -f "$tool" ] && [ -x "$tool" ] && \
-           install -Dm755 "$tool" "/opt/llvm-${LLVM_MAJOR}/bin/$(basename "$tool")"; \
-       done
+# llvm-sys discovers LLVM through llvm-config; fail the image build hard if
+# the installed toolchain is incomplete (the v1 image shipped without it and
+# broke every downstream cargo build).
+RUN "/opt/llvm-${LLVM_MAJOR}/bin/llvm-config" --version
 
 # Clean up source to reduce image size
 RUN rm -rf /tmp/llvm-project
@@ -81,11 +74,11 @@ ARG LLVM_MAJOR=22
 
 COPY --from=builder /opt/llvm-${LLVM_MAJOR} /opt/llvm-${LLVM_MAJOR}
 
-# Install only the tools needed to build hew-codegen (not LLVM)
+# Install the tools needed for downstream cargo builds against this LLVM
 RUN apk add --no-cache \
     cmake samurai build-base clang \
     zlib-dev zlib-static zstd-dev zstd-static \
     libffi-dev linux-headers
 
 LABEL org.opencontainers.image.source="https://github.com/hew-lang/hew"
-LABEL org.opencontainers.image.description="Pre-built LLVM ${LLVM_MAJOR} + MLIR for Alpine (musl) — used by hew-codegen CI"
+LABEL org.opencontainers.image.description="Pre-built LLVM ${LLVM_MAJOR} for Alpine (musl) — used by hew-codegen-rs CI"

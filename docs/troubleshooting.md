@@ -6,18 +6,16 @@ Start with the smallest command that still reproduces the problem:
 
 ```sh
 hew check path/to/main.hew
-hew build path/to/main.hew -o app
-hew run path/to/main.hew
+hew compile path/to/main.hew
 ```
 
-For multi-file compile/typecheck flows, `hew check`, `hew build`, and `hew run`
-operate on a single entry-point file and resolve imports recursively from
-there. Pass `main.hew` (or your real top-level entry file), not every file in
-the tree.
+For multi-file compile/typecheck flows, `hew check` and `hew compile` operate
+on a single entry-point file and resolve imports recursively from there. Pass
+`main.hew` (or your real top-level entry file), not every file in the tree.
 
 For the standard bootstrap flow, start with `adze init <name>` so you get
 `hew.toml`, `main.hew`, and `.gitignore`, then begin with
-`hew check main.hew` / `hew run main.hew`. `hew init` remains the lighter
+`hew check main.hew` / `hew compile main.hew`. `hew init` remains the lighter
 source-only scaffold: it writes `main.hew` plus `README.md`, but no
 `hew.toml`.
 
@@ -26,8 +24,8 @@ source-only scaffold: it writes `main.hew` plus `README.md`, but no
 Common signs:
 
 - `Error: clang not found. Install LLVM to link Hew programs.`
-- raw linker output after `hew build <file.hew> [-o output]`
-- `hew check <file.hew>` succeeds, but `hew build ...` or `hew run ...` fails
+- raw linker output after `hew compile <file.hew>`
+- `hew check <file.hew>` succeeds, but `hew compile ...` fails
 
 What to check:
 
@@ -36,17 +34,11 @@ What to check:
 - Hew forwards raw linker output. Fix missing libraries, bad `--link-lib`
   flags, or target mismatches before chasing compiler internals.
 - For this repo, use `make`, `make release`, `make test`, and other Makefile
-  targets instead of calling Cargo/CMake/ctest directly.
-- Use the toolchain from the root README: Rust stable, LLVM/MLIR 22,
-  CMake >= 3.20, Ninja, and clang/clang++.
-- On Linux, build the embedded codegen with clang/clang++ rather than GCC
-  (see [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
-  the reason — LLVM CMake config propagates Clang-specific warning flags that
-  GCC does not accept).
-- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) and
-  follow [`cross-platform-build-guide.md`](cross-platform-build-guide.md) for
-  bitcode, sysroot, and libc++ issues.
-- After switching LLVM installs, `CC` / `CXX`, or `HEW_STATIC`, run
+  targets instead of calling Cargo directly.
+- Use the toolchain from the root README: Rust stable and LLVM 22.
+- On macOS, use Homebrew LLVM (`LLVM_PREFIX="$(brew --prefix llvm)"`) so
+  `llvm-sys` can locate the static libraries.
+- After switching LLVM installs or `CC` / `CXX`, run
   `make clean` before rebuilding.
 - If the program builds but you need a debugger, use
   `hew debug <file.hew> [-- args...]`.
@@ -55,7 +47,7 @@ What to check:
 
 Common signs:
 
-- a `type mismatch` error such as `expected int, found String`
+- a `type mismatch` error such as `expected i64, found string`
 - `cannot infer type`
 - `return type mismatch: expected ..., found ...`
 
@@ -86,8 +78,8 @@ Common signs:
 
 What to check:
 
-- Run `hew check <file.hew>` or `hew build <file.hew> [-o output]` against the
-  real entry file, not a peer file inside a module directory.
+- Run `hew check <file.hew>` or `hew compile <file.hew>` against the real
+  entry file, not a peer file inside a module directory.
 - For `import greeting;`, Hew looks for `greeting.hew` beside the importer or
   `greeting/greeting.hew` in a directory-form module. The entry file stem must
   match the directory name.
@@ -126,7 +118,7 @@ What to check:
 See also:
 [`../examples/directory_module_demo/README.md`](../examples/directory_module_demo/README.md),
 [`../examples/multifile/README.md`](../examples/multifile/README.md), and
-[`specs/HEW-SPEC.md`](specs/HEW-SPEC.md).
+[`specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md).
 
 ## Pattern matching & exhaustiveness
 
@@ -140,7 +132,7 @@ What to check:
 
 - Matches over enums, `Option<T>`, `Result<T, E>`, machine states, and `bool`
   are fail-closed: cover every case or add `_ => ...`.
-- For scalar or open-ended values such as `int`, a missing catch-all is only a
+- For scalar or open-ended values such as `i64`, a missing catch-all is only a
   warning.
 - When a new variant or state lands, update old match sites before chasing
   downstream type errors.
@@ -260,7 +252,7 @@ What to check:
   multi-file module patterns
 - [`cross-platform-build-guide.md`](cross-platform-build-guide.md) — native
   toolchain setup
-- [`specs/HEW-SPEC.md`](specs/HEW-SPEC.md) — language and module-system rules
+- [`specs/HEW-SPEC-2026.md`](specs/HEW-SPEC-2026.md) — language and module-system rules
 - [`specs/MACHINE-SPEC.md`](specs/MACHINE-SPEC.md) — machine semantics
 - [`diagrams.md`](diagrams.md) — compiler pipeline and runtime diagrams
 

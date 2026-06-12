@@ -6,9 +6,10 @@ use std::ops::Range;
 use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm,
-    NamingCase, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RestartPolicy, SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
+    MachineState, MachineTransition, MatchArm, NamingCase, OverflowPolicy, Param, Pattern,
+    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm,
+    ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
     TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
     TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
     WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
@@ -59,7 +60,6 @@ struct Formatter<'a> {
     comments: Vec<Comment>,
     next_comment: usize,
     prev_source_pos: usize,
-    scope_binding: Option<String>,
 }
 
 impl<'a> Formatter<'a> {
@@ -71,7 +71,6 @@ impl<'a> Formatter<'a> {
             comments,
             next_comment: 0,
             prev_source_pos: 0,
-            scope_binding: None,
         }
     }
 
@@ -307,6 +306,7 @@ impl<'a> Formatter<'a> {
             Item::Actor(decl) => self.format_actor(decl, span_end),
             Item::Supervisor(decl) => self.format_supervisor(decl),
             Item::Machine(decl) => self.format_machine(decl, span_end),
+            Item::Record(decl) => self.format_record(decl),
         }
     }
 
@@ -362,12 +362,67 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
+    fn format_record(&mut self, decl: &RecordDecl) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
+        self.write_indent();
+        self.write_visibility(decl.visibility);
+        self.write("record ");
+        self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.format_opt_where_clause(decl.where_clause.as_ref());
+        match &decl.kind {
+            RecordKind::Named(fields) => {
+                self.write(" {\n");
+                self.indent += 1;
+                for (i, field) in fields.iter().enumerate() {
+                    self.write_outer_doc(field.doc_comment.as_ref());
+                    self.write_indent();
+                    self.write(&field.name);
+                    self.write(": ");
+                    self.format_type_expr(&field.ty.0);
+                    if i + 1 < fields.len() {
+                        self.write(",");
+                    }
+                    self.write("\n");
+                }
+                self.indent -= 1;
+                self.write_indent();
+                self.write("}\n");
+            }
+            RecordKind::Tuple(field_types) => {
+                self.write("(");
+                for (i, (ty, _)) in field_types.iter().enumerate() {
+                    self.format_type_expr(ty);
+                    if i + 1 < field_types.len() {
+                        self.write(", ");
+                    }
+                }
+                self.write(");\n");
+            }
+        }
+    }
+
     fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {
         if let Some(wire) = &decl.wire {
             self.format_wire_type_decl(decl, wire);
             return;
         }
         self.write_outer_doc(decl.doc_comment.as_ref());
+        match decl.resource_marker {
+            crate::ast::ResourceMarker::None => {}
+            crate::ast::ResourceMarker::Resource => {
+                self.write_indent();
+                self.write("#[resource]\n");
+            }
+            crate::ast::ResourceMarker::Linear => {
+                self.write_indent();
+                self.write("#[linear]\n");
+            }
+        }
+        if decl.is_opaque {
+            self.write_indent();
+            self.write("#[opaque]\n");
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         if decl.is_indirect {
@@ -431,7 +486,9 @@ impl<'a> Formatter<'a> {
                         usize::MAX
                     };
                     self.flush_comments_before(pos);
-                    self.format_fn(f, self.source.len());
+                    let has_consuming_self =
+                        decl.consuming_methods.iter().any(|name| name == &f.name);
+                    self.format_type_body_method(f, self.source.len(), has_consuming_self);
                 }
             }
         }
@@ -439,8 +496,45 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
+    fn format_type_body_method(
+        &mut self,
+        decl: &FnDecl,
+        span_end: usize,
+        has_consuming_self: bool,
+    ) {
+        self.write_outer_doc(decl.doc_comment.as_ref());
+        self.format_attributes(&decl.attributes);
+        self.write_indent();
+        if decl.is_async {
+            self.write("async ");
+        }
+        if decl.is_generator {
+            self.write("gen ");
+        }
+        self.write("fn ");
+        self.write(&decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.write("(");
+        if has_consuming_self {
+            self.write("consuming self");
+            if !decl.params.is_empty() {
+                self.write(", ");
+            }
+        }
+        self.format_params(&decl.params);
+        self.write(")");
+        if let Some(ret) = &decl.return_type {
+            self.write(" -> ");
+            self.format_type_expr(&ret.0);
+        }
+        self.format_opt_where_clause(decl.where_clause.as_ref());
+        self.write(" ");
+        self.format_block(&decl.body, span_end);
+        self.newline();
+    }
+
     fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
-        // Emit struct-level naming attributes
+        // Emit type-level naming attributes
         self.format_naming_attr("json", wire.json_case);
         self.format_naming_attr("yaml", wire.yaml_case);
         self.write_indent();
@@ -463,45 +557,62 @@ impl<'a> Formatter<'a> {
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
-        self.write("struct ");
+        match decl.kind {
+            TypeDeclKind::Struct => self.write("struct "),
+            TypeDeclKind::Enum => self.write("enum "),
+        }
         self.write(&decl.name);
         self.write(" {\n");
         self.indent += 1;
-        for (i, item) in decl.body.iter().enumerate() {
-            if let TypeBodyItem::Field { name, ty, .. } = item {
-                self.write_indent();
-                self.write(name);
-                self.write(": ");
-                self.format_type_expr(&ty.0);
-                // Emit wire field metadata
-                if let Some(meta) = wire.field_meta.get(i) {
-                    self.write(" @");
-                    self.write(&meta.field_number.to_string());
-                    self.format_wire_field_modifiers(
-                        meta.is_optional,
-                        meta.is_deprecated,
-                        meta.is_repeated,
-                        meta.since,
-                        meta.json_name.as_deref(),
-                        meta.yaml_name.as_deref(),
-                    );
+        match decl.kind {
+            TypeDeclKind::Struct => {
+                for (i, item) in decl.body.iter().enumerate() {
+                    if let TypeBodyItem::Field { name, ty, .. } = item {
+                        self.write_indent();
+                        self.write(name);
+                        self.write(": ");
+                        self.format_type_expr(&ty.0);
+                        // Emit wire field metadata
+                        if let Some(meta) = wire.field_meta.get(i) {
+                            self.write(" @");
+                            self.write(&meta.field_number.to_string());
+                            self.format_wire_field_modifiers(
+                                meta.is_optional,
+                                meta.is_deprecated,
+                                meta.is_repeated,
+                                meta.since,
+                                meta.json_name.as_deref(),
+                                meta.yaml_name.as_deref(),
+                            );
+                        }
+                        self.write(",");
+                        self.newline();
+                    }
                 }
-                self.write(",");
-                self.newline();
-            }
-        }
-        // Emit reserved field numbers
-        if !wire.reserved_numbers.is_empty() {
-            self.write_indent();
-            self.write("reserved ");
-            for (i, n) in wire.reserved_numbers.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
+                // Emit reserved field numbers
+                if !wire.reserved_numbers.is_empty() {
+                    self.write_indent();
+                    self.write("reserved ");
+                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write("@");
+                        self.write(&n.to_string());
+                    }
+                    self.write(";\n");
                 }
-                self.write("@");
-                self.write(&n.to_string());
             }
-            self.write(";\n");
+            TypeDeclKind::Enum => {
+                // Variant bodies are tagged by variant index, not by per-field
+                // `@N`; reserved tags do not apply.  Delegate to the regular
+                // variant formatter to handle unit / tuple / struct payloads.
+                for item in &decl.body {
+                    if let TypeBodyItem::Variant(v) = item {
+                        self.format_variant(v, true);
+                    }
+                }
+            }
         }
         self.indent -= 1;
         self.writeln("}");
@@ -591,6 +702,10 @@ impl<'a> Formatter<'a> {
 
     fn format_trait(&mut self, decl: &TraitDecl, _span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
+        if let Some(key) = &decl.lang_item {
+            self.write_indent();
+            self.write(&format!("#[lang_item(\"{key}\")]\n"));
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("trait ");
@@ -617,6 +732,7 @@ impl<'a> Formatter<'a> {
                     name,
                     bounds,
                     default,
+                    ..
                 } => {
                     let pos = if self.has_comments() {
                         self.find_keyword_after(&format!("type {name}"), self.prev_source_pos)
@@ -645,10 +761,11 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_method(&mut self, m: &TraitMethod) {
         self.write_outer_doc(m.doc_comment.as_ref());
-        self.write_indent();
-        if m.is_pure {
-            self.write("pure ");
+        if let Some(key) = &m.lang_item {
+            self.write_indent();
+            self.write(&format!("#[lang_item(\"{key}\")]\n"));
         }
+        self.write_indent();
         self.write("fn ");
         self.write(&m.name);
         self.format_fn_signature(
@@ -813,6 +930,7 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_extern_fn(&mut self, f: &ExternFnDecl) {
+        self.format_attributes(&f.attributes);
         self.write_indent();
         self.write("fn ");
         self.write(&f.name);
@@ -832,12 +950,33 @@ impl<'a> Formatter<'a> {
         self.write(";\n");
     }
 
+    #[expect(clippy::too_many_lines, reason = "actor formatting has many sections")]
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_outer_doc(decl.doc_comment.as_ref());
+        if let Some(bytes) = decl.max_heap_bytes {
+            self.write_indent();
+            self.write(&format!("#[max_heap({bytes})]\n"));
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("actor ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.write("<");
+            let mut first = true;
+            for param in &decl.type_params {
+                if !first {
+                    self.write(", ");
+                }
+                first = false;
+                self.write(&param.name);
+                if !param.bounds.is_empty() {
+                    self.write(": ");
+                    self.format_trait_bound_list(&param.bounds);
+                }
+            }
+            self.write(">");
+        }
         if let Some(supers) = &decl.super_traits {
             self.write(": ");
             self.format_trait_bound_list(supers);
@@ -848,8 +987,9 @@ impl<'a> Formatter<'a> {
 
         for field in &decl.fields {
             if self.has_comments() {
+                let kw = if field.is_mutable { "var" } else { "let" };
                 let pos =
-                    self.find_keyword_after(&format!("let {}", field.name), self.prev_source_pos);
+                    self.find_keyword_after(&format!("{kw} {}", field.name), self.prev_source_pos);
                 self.flush_comments_before(pos);
             }
             self.format_field_decl(field);
@@ -945,107 +1085,146 @@ impl<'a> Formatter<'a> {
         self.write_visibility(decl.visibility);
         self.write("machine ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() || !decl.const_params.is_empty() {
+            self.write("<");
+            let mut first = true;
+            for param in &decl.type_params {
+                if !first {
+                    self.write(", ");
+                }
+                first = false;
+                self.write(&param.name);
+                if !param.bounds.is_empty() {
+                    self.write(": ");
+                    self.format_trait_bound_list(&param.bounds);
+                }
+            }
+            for param in &decl.const_params {
+                if !first {
+                    self.write(", ");
+                }
+                first = false;
+                self.write("const ");
+                self.write(&param.name);
+                self.write(": ");
+                match param.ty {
+                    crate::ast::ConstParamTy::Usize => self.write("usize"),
+                }
+                if let Some(default) = param.default {
+                    self.write(" = ");
+                    self.write(&default.to_string());
+                }
+            }
+            self.write(">");
+        }
+        self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
         self.indent += 1;
 
-        for state in &decl.states {
+        // `events { … }` header — the input-event vocabulary.
+        let mut emitted_section = false;
+        if !decl.events.is_empty() {
             self.write_indent();
-            self.write("state ");
-            self.write(&state.name);
-            if state.fields.is_empty() {
+            self.write("events {\n");
+            self.indent += 1;
+            for event in &decl.events {
+                self.write_indent();
+                self.write(&event.name);
+                self.format_machine_field_list(&event.fields);
+                self.write("\n");
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+            emitted_section = true;
+        }
+
+        // `emits { … }` Mealy-output manifest (optional).
+        if !decl.emits.is_empty() {
+            self.newline();
+            self.write_indent();
+            self.write("emits {\n");
+            self.indent += 1;
+            for name in &decl.emits {
+                self.write_indent();
+                self.write(name);
                 self.write(";\n");
-            } else {
-                self.write(" { ");
-                for (i, (name, ty)) in state.fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(" ");
-                    }
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                    self.write(";");
-                }
-                self.write(" }\n");
             }
-        }
-
-        if !decl.states.is_empty() && !decl.events.is_empty() {
-            self.newline();
-        }
-
-        for event in &decl.events {
+            self.indent -= 1;
             self.write_indent();
-            self.write("event ");
-            self.write(&event.name);
-            if event.fields.is_empty() {
-                self.write(";\n");
-            } else {
-                self.write(" { ");
-                for (i, (name, ty)) in event.fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(" ");
-                    }
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                    self.write(";");
-                }
-                self.write(" }\n");
-            }
+            self.write("}\n");
+            emitted_section = true;
         }
 
-        if !decl.events.is_empty() && !decl.transitions.is_empty() {
-            self.newline();
+        // Composite-group membership: substates owned by a composite are
+        // re-emitted inside their `state Composite { … }` block (driven by the
+        // side-table), not as flat top-level states.
+        let composite_members: std::collections::HashSet<&str> = decl
+            .composite_groups
+            .iter()
+            .flat_map(|g| g.members.iter().map(String::as_str))
+            .collect();
+
+        if !decl.states.is_empty() {
+            if emitted_section {
+                self.newline();
+            }
+            for state in &decl.states {
+                if composite_members.contains(state.name.as_str()) {
+                    continue;
+                }
+                self.format_machine_leaf_state(state);
+            }
+            emitted_section = true;
         }
 
-        for transition in &decl.transitions {
-            self.write_indent();
-            self.write("on ");
-            self.write(&transition.event_name);
-            self.write(": ");
-            self.write(&transition.source_state);
-            self.write(" -> ");
-            self.write(&transition.target_state);
-            if let Some(guard) = &transition.guard {
-                self.write(" when ");
-                self.format_expr(&guard.0);
-            }
-            // Omit body when it's just the implicit target state identifier
-            let is_implicit_body = matches!(&transition.body.0,
-                Expr::Identifier(name) if name == &transition.target_state);
-            if is_implicit_body {
-                self.write(";");
-            } else if let Expr::StructInit { name, fields, .. } = &transition.body.0 {
-                // Elided state constructor: emit fields directly without wrapping type name
-                if name == &transition.target_state {
-                    self.write(" { ");
-                    for (i, (fname, fval)) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write(fname);
-                        self.write(": ");
-                        self.format_expr(&fval.0);
-                    }
-                    self.write(" }");
-                } else {
-                    self.write(" { ");
-                    self.format_expr(&transition.body.0);
-                    self.write(" }");
-                }
-            } else if let Expr::Block(block) = &transition.body.0 {
-                self.write(" ");
-                self.format_block(block, span_end);
-            } else {
-                self.write(" { ");
-                self.format_expr(&transition.body.0);
-                self.write(" }");
-            }
+        // Composite blocks (depth-1) reconstructed from the grouping side-table.
+        for group in &decl.composite_groups {
             self.newline();
+            self.format_machine_composite(decl, group, span_end);
+            emitted_section = true;
+        }
+
+        // Top-level transitions, excluding those that belong to a composite's
+        // parent-rule block (those are re-emitted inside the composite).
+        let parent_rule_keys: std::collections::HashSet<(String, String, String)> = decl
+            .composite_groups
+            .iter()
+            .flat_map(|g| {
+                g.members.iter().flat_map(move |m| {
+                    g.parent_transitions
+                        .iter()
+                        .map(move |pt| (m.clone(), pt.event_name.clone(), pt.target_state.clone()))
+                })
+            })
+            .collect();
+
+        let top_transitions: Vec<&MachineTransition> = decl
+            .transitions
+            .iter()
+            .filter(|t| {
+                !parent_rule_keys.contains(&(
+                    t.source_state.clone(),
+                    t.event_name.clone(),
+                    t.target_state.clone(),
+                ))
+            })
+            .collect();
+
+        if !top_transitions.is_empty() {
+            if emitted_section {
+                self.newline();
+            }
+            for transition in &top_transitions {
+                self.write_indent();
+                self.format_machine_transition(transition, span_end);
+                self.newline();
+            }
+            emitted_section = true;
         }
 
         if decl.has_default {
-            if !decl.transitions.is_empty() {
+            if emitted_section {
                 self.newline();
             }
             self.write_indent();
@@ -1056,13 +1235,350 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
+    /// Emit `{ name: Type; … }` after an event/state name, or `;` when empty.
+    fn format_machine_field_list(&mut self, fields: &[(String, Spanned<TypeExpr>)]) {
+        if fields.is_empty() {
+            self.write(";");
+        } else {
+            self.write(" { ");
+            for (i, (name, ty)) in fields.iter().enumerate() {
+                if i > 0 {
+                    self.write(" ");
+                }
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }");
+        }
+    }
+
+    /// Emit one leaf `state` declaration (fields + entry/exit).
+    fn format_machine_leaf_state(&mut self, state: &MachineState) {
+        self.write_indent();
+        self.write("state ");
+        self.write(&state.name);
+        let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+        if has_entry_exit {
+            self.write(" {\n");
+            self.indent += 1;
+            for (name, ty) in &state.fields {
+                self.write_indent();
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";\n");
+            }
+            if let Some(entry) = &state.entry {
+                self.write_indent();
+                self.write("entry ");
+                self.format_block(entry, self.source.len());
+                self.newline();
+            }
+            if let Some(exit) = &state.exit {
+                self.write_indent();
+                self.write("exit ");
+                self.format_block(exit, self.source.len());
+                self.newline();
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+        } else if !state.fields.is_empty() {
+            self.write(" {");
+            for (name, ty) in &state.fields {
+                self.write(" ");
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }\n");
+        } else {
+            self.write(";\n");
+        }
+    }
+
+    /// Emit one machine transition head + body in the `=>` / `reenter` surface.
+    /// Caller writes the leading indent.
+    fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
+        self.write("on ");
+        self.write(&transition.event_name);
+        // Re-emit the `on E(a, b):` head binding from the side-list. The
+        // parser splices a `let a = event.a;` prelude into the body for
+        // lowering; we strip that prelude below so it does not double up.
+        if !transition.event_bindings.is_empty() {
+            self.write("(");
+            for (i, name) in transition.event_bindings.iter().enumerate() {
+                if i > 0 {
+                    self.write(", ");
+                }
+                self.write(name);
+            }
+            self.write(")");
+        }
+        self.write(": ");
+        self.write(&transition.source_state);
+        self.write(" => ");
+        self.write(&transition.target_state);
+        if transition.reenter {
+            self.write(" reenter");
+        }
+        if let Some(guard) = &transition.guard {
+            self.write(" when ");
+            self.format_expr(&guard.0);
+        }
+        // Re-emit the AUTHORED body: strip the composite entry/exit hook
+        // prelude (D2/D3 splices, counted by `composite_prelude_len`) first,
+        // then the head-binding `let a = event.a;` prelude. Both are parser
+        // desugar artifacts the formatter must not echo, or re-parsing would
+        // double-apply them.
+        let hook_stripped;
+        let after_hooks = if transition.composite_prelude_len == 0 {
+            &transition.body.0
+        } else {
+            hook_stripped = Self::strip_leading_block_stmts(
+                &transition.body.0,
+                transition.composite_prelude_len,
+            );
+            &hook_stripped
+        };
+        let stripped_body;
+        let body_expr = if transition.event_bindings.is_empty() {
+            after_hooks
+        } else {
+            stripped_body =
+                Self::strip_event_binding_prelude(after_hooks, &transition.event_bindings);
+            &stripped_body
+        };
+        let is_implicit_body = matches!(body_expr,
+            Expr::Identifier(name) if name == &transition.target_state);
+        if is_implicit_body {
+            self.write(";");
+        } else if let Expr::StructInit { name, fields, .. } = body_expr {
+            if name == &transition.target_state {
+                self.write(" { ");
+                for (i, (fname, fval)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(fname);
+                    self.write(": ");
+                    self.format_expr(&fval.0);
+                }
+                self.write(" }");
+            } else {
+                self.write(" { ");
+                self.format_expr(body_expr);
+                self.write(" }");
+            }
+        } else if let Expr::Block(block) = body_expr {
+            self.write(" ");
+            self.format_block(block, span_end);
+        } else {
+            self.write(" { ");
+            self.format_expr(body_expr);
+            self.write(" }");
+        }
+    }
+
+    /// Drop the first `count` statements of a block body (the composite
+    /// entry/exit hook splice prelude). If only a tail remains, surface it
+    /// directly so the body collapses back to its authored shorthand.
+    fn strip_leading_block_stmts(body: &Expr, count: usize) -> Expr {
+        let Expr::Block(block) = body else {
+            return body.clone();
+        };
+        if count == 0 || count > block.stmts.len() {
+            return body.clone();
+        }
+        let remaining: Vec<Spanned<Stmt>> = block.stmts[count..].to_vec();
+        if remaining.is_empty() {
+            if let Some(tail) = &block.trailing_expr {
+                return tail.0.clone();
+            }
+        }
+        Expr::Block(Block {
+            stmts: remaining,
+            trailing_expr: block.trailing_expr.clone(),
+        })
+    }
+
+    /// Strip the leading `let <binding> = event.<binding>;` prelude statements
+    /// the parser splices in for an `on E(bindings): …` head binding, so the
+    /// formatter can re-emit the head form without the desugar. If, after
+    /// stripping, only a tail expression remains, that tail becomes the body
+    /// (collapsing a one-line `on E(x): S => T { Body }` back to its head form).
+    fn strip_event_binding_prelude(body: &Expr, bindings: &[String]) -> Expr {
+        let Expr::Block(block) = body else {
+            return body.clone();
+        };
+        // Count how many leading statements are the synthesized prelude lets.
+        let mut skip = 0;
+        for (stmt, _) in &block.stmts {
+            if skip >= bindings.len() {
+                break;
+            }
+            let Stmt::Let {
+                pattern: (Pattern::Identifier(name), _),
+                value: Some((Expr::FieldAccess { object, field }, _)),
+                ..
+            } = stmt
+            else {
+                break;
+            };
+            let is_event_field = matches!(&object.0, Expr::Identifier(o) if o == "event");
+            if is_event_field && name == field && bindings.contains(name) {
+                skip += 1;
+            } else {
+                break;
+            }
+        }
+        if skip == 0 {
+            return body.clone();
+        }
+        let remaining: Vec<Spanned<Stmt>> = block.stmts[skip..].to_vec();
+        // If only a tail expression remains, surface it directly so the body
+        // collapses to the canonical struct-init / identifier shorthand.
+        if remaining.is_empty() {
+            if let Some(tail) = &block.trailing_expr {
+                return tail.0.clone();
+            }
+        }
+        Expr::Block(Block {
+            stmts: remaining,
+            trailing_expr: block.trailing_expr.clone(),
+        })
+    }
+
+    /// Re-emit a composite `state Composite { … }` block from the grouping
+    /// side-table: composite fields, entry/exit, `initial`-marked substates,
+    /// then the parent-level transitions authored inside the block.
+    fn format_machine_composite(
+        &mut self,
+        decl: &MachineDecl,
+        group: &crate::ast::CompositeGroup,
+        span_end: usize,
+    ) {
+        self.write_indent();
+        self.write("state ");
+        self.write(&group.name);
+        self.write(" {\n");
+        self.indent += 1;
+
+        for (name, ty) in &group.fields {
+            self.write_indent();
+            self.write(name);
+            self.write(": ");
+            self.format_type_expr(&ty.0);
+            self.write(";\n");
+        }
+        if let Some(entry) = &group.entry {
+            self.write_indent();
+            self.write("entry ");
+            self.format_block(entry, self.source.len());
+            self.newline();
+        }
+        if let Some(exit) = &group.exit {
+            self.write_indent();
+            self.write("exit ");
+            self.format_block(exit, self.source.len());
+            self.newline();
+        }
+
+        for member_name in &group.members {
+            let Some(state) = decl.states.iter().find(|s| &s.name == member_name) else {
+                continue;
+            };
+            self.write_indent();
+            if &group.initial == member_name {
+                self.write("initial ");
+            }
+            // Substate fields exclude the composite-owned shared fields (which
+            // are emitted on the composite, not stamped here).
+            let own_fields: Vec<&(String, Spanned<TypeExpr>)> = state
+                .fields
+                .iter()
+                .filter(|(fname, _)| !group.fields.iter().any(|(gn, _)| gn == fname))
+                .collect();
+            self.format_machine_substate(&state.name, &own_fields, state, span_end);
+        }
+
+        for pt in &group.parent_transitions {
+            self.write_indent();
+            self.format_machine_transition(pt, span_end);
+            self.newline();
+        }
+
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}\n");
+    }
+
+    /// Emit a substate declaration inside a composite block. The `initial`
+    /// modifier (when present) is already written by the caller.
+    fn format_machine_substate(
+        &mut self,
+        name: &str,
+        own_fields: &[&(String, Spanned<TypeExpr>)],
+        state: &MachineState,
+        _span_end: usize,
+    ) {
+        self.write("state ");
+        self.write(name);
+        let has_entry_exit = state.entry.is_some() || state.exit.is_some();
+        if has_entry_exit {
+            self.write(" {\n");
+            self.indent += 1;
+            for (fname, ty) in own_fields {
+                self.write_indent();
+                self.write(fname);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";\n");
+            }
+            if let Some(entry) = &state.entry {
+                self.write_indent();
+                self.write("entry ");
+                self.format_block(entry, self.source.len());
+                self.newline();
+            }
+            if let Some(exit) = &state.exit {
+                self.write_indent();
+                self.write("exit ");
+                self.format_block(exit, self.source.len());
+                self.newline();
+            }
+            self.indent -= 1;
+            self.write_indent();
+            self.write("}\n");
+        } else if !own_fields.is_empty() {
+            self.write(" {");
+            for (fname, ty) in own_fields {
+                self.write(" ");
+                self.write(fname);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                self.write(";");
+            }
+            self.write(" }\n");
+        } else {
+            self.write(";\n");
+        }
+    }
+
     fn format_field_decl(&mut self, f: &FieldDecl) {
         self.write_outer_doc(f.doc_comment.as_ref());
         self.write_indent();
-        self.write("let ");
+        self.write(if f.is_mutable { "var " } else { "let " });
         self.write(&f.name);
         self.write(": ");
         self.format_type_expr(&f.ty.0);
+        if let Some(default) = &f.default {
+            self.write(" = ");
+            self.format_expr(&default.0);
+        }
         self.write(";\n");
     }
 
@@ -1087,7 +1603,19 @@ impl<'a> Formatter<'a> {
                         self.write(", ");
                     }
                     match arg {
-                        AttributeArg::Positional(s) => self.write(s),
+                        AttributeArg::Positional(s) => {
+                            // If the value contains characters that are not valid
+                            // in a bare identifier (e.g. `.` in `"math.sqrt"`),
+                            // re-quote it as a string literal so the output round-trips.
+                            let needs_quotes = s.chars().any(|c| !c.is_alphanumeric() && c != '_');
+                            if needs_quotes {
+                                self.write("\"");
+                                self.write(s);
+                                self.write("\"");
+                            } else {
+                                self.write(s);
+                            }
+                        }
                         AttributeArg::KeyValue { key, value } => {
                             self.write(key);
                             self.write(" = ");
@@ -1106,9 +1634,7 @@ impl<'a> Formatter<'a> {
         self.write_outer_doc(recv.doc_comment.as_ref());
         self.format_attributes(&recv.attributes);
         self.write_indent();
-        if recv.is_pure {
-            self.write("pure ");
-        }
+
         if recv.is_generator {
             self.write("receive gen fn ");
         } else {
@@ -1133,26 +1659,24 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        if let Some(strategy) = &decl.strategy {
-            self.write_indent();
-            self.write("strategy: ");
-            match strategy {
-                SupervisorStrategy::OneForOne => self.write("one_for_one"),
-                SupervisorStrategy::OneForAll => self.write("one_for_all"),
-                SupervisorStrategy::RestForOne => self.write("rest_for_one"),
-            }
-            self.write(";\n");
+        // Always write `strategy:` explicitly. When the declaration omitted it,
+        // the formatter materializes the default (`one_for_one`) so the restart
+        // contract is never silently defaulted at the surface.
+        self.write_indent();
+        self.write("strategy: ");
+        match decl.strategy.unwrap_or(SupervisorStrategy::OneForOne) {
+            SupervisorStrategy::OneForOne => self.write("one_for_one"),
+            SupervisorStrategy::OneForAll => self.write("one_for_all"),
+            SupervisorStrategy::RestForOne => self.write("rest_for_one"),
+            SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
         }
-        if let Some(max) = decl.max_restarts {
+        self.write(";\n");
+        if let Some(intensity) = &decl.intensity {
             self.write_indent();
-            self.write("max_restarts: ");
-            self.write(&max.to_string());
-            self.write(";\n");
-        }
-        if let Some(window) = &decl.window {
-            self.write_indent();
-            self.write("window: ");
-            self.write(window);
+            self.write("intensity: ");
+            self.write(&intensity.restarts.to_string());
+            self.write(" within ");
+            self.write(&intensity.window);
             self.write(";\n");
         }
 
@@ -1169,13 +1693,20 @@ impl<'a> Formatter<'a> {
 
     fn format_child_spec(&mut self, spec: &ChildSpec) {
         self.write_indent();
-        self.write("child ");
+        // `pool` vs `child` is load-bearing — a pool is a dynamic
+        // simple_one_for_one child, not a static one. The old formatter always
+        // wrote `child`, silently dropping pool-ness; preserve it here.
+        self.write(if spec.is_pool { "pool " } else { "child " });
         self.write(&spec.name);
         self.write(": ");
         self.write(&spec.actor_type);
         if !spec.args.is_empty() {
             self.write("(");
-            self.comma_sep(&spec.args, |f, arg| f.format_expr(&arg.0));
+            self.comma_sep(&spec.args, |f, (field_name, arg)| {
+                f.write(field_name);
+                f.write(": ");
+                f.format_expr(&arg.0);
+            });
             self.write(")");
         }
         if let Some(restart) = &spec.restart {
@@ -1186,6 +1717,30 @@ impl<'a> Formatter<'a> {
                 RestartPolicy::Temporary => self.write("temporary"),
             }
         }
+        if let Some(shutdown) = &spec.shutdown {
+            self.write(" shutdown: ");
+            match shutdown {
+                ShutdownDirective::Timeout(d) => self.write(d),
+                ShutdownDirective::BrutalKill => self.write("brutal_kill"),
+                ShutdownDirective::Infinity => self.write("infinity"),
+            }
+        }
+        // `wired_to:` was silently dropped by the old formatter — preserve it.
+        // HashMap iteration order is non-deterministic, so emit keys sorted to
+        // keep the round-trip stable and idempotent.
+        if let Some(wired_to) = &spec.wired_to {
+            if !wired_to.is_empty() {
+                let mut entries: Vec<(&String, &String)> = wired_to.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                self.write(" wired_to: { ");
+                self.comma_sep(&entries, |f, (key, sibling)| {
+                    f.write(key);
+                    f.write(": ");
+                    f.write(sibling);
+                });
+                self.write(" }");
+            }
+        }
         self.write(";\n");
     }
 
@@ -1194,9 +1749,7 @@ impl<'a> Formatter<'a> {
         self.format_attributes(&decl.attributes);
         self.write_indent();
         self.write_visibility(decl.visibility);
-        if decl.is_pure {
-            self.write("pure ");
-        }
+
         if decl.is_async {
             self.write("async ");
         }
@@ -1275,11 +1828,12 @@ impl<'a> Formatter<'a> {
                 is_mutable,
                 pointee,
             } => {
-                self.write("*");
-                if *is_mutable {
-                    self.write("var ");
-                }
+                self.write(if *is_mutable { "*mut " } else { "*const " });
                 self.format_type_expr(&pointee.0);
+            }
+            TypeExpr::Borrow(inner) => {
+                self.write("&");
+                self.format_type_expr(&inner.0);
             }
             TypeExpr::TraitObject(bounds) => {
                 self.write("dyn ");
@@ -1337,9 +1891,27 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_bound(&mut self, bound: &TraitBound) {
         self.write(&bound.name);
-        if let Some(args) = &bound.type_args {
+        if bound.type_args.is_some() || !bound.assoc_type_bindings.is_empty() {
             self.write("<");
-            self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
+            let mut needs_comma = false;
+            if let Some(args) = &bound.type_args {
+                for arg in args {
+                    if needs_comma {
+                        self.write(", ");
+                    }
+                    self.format_type_expr(&arg.0);
+                    needs_comma = true;
+                }
+            }
+            for binding in &bound.assoc_type_bindings {
+                if needs_comma {
+                    self.write(", ");
+                }
+                self.write(&binding.name);
+                self.write(" = ");
+                self.format_type_expr(&binding.ty.0);
+                needs_comma = true;
+            }
             self.write(">");
         }
     }
@@ -1366,6 +1938,21 @@ impl<'a> Formatter<'a> {
 
     fn format_params(&mut self, params: &[Param]) {
         self.comma_sep(params, |f, p| {
+            if p.name == "self"
+                && matches!(
+                    &p.ty.0,
+                    TypeExpr::Named {
+                        name,
+                        type_args: None,
+                    } if name == "Self"
+                )
+            {
+                if p.is_mutable {
+                    f.write("var ");
+                }
+                f.write("self");
+                return;
+            }
             if p.is_mutable {
                 f.write("var ");
             }
@@ -1455,6 +2042,262 @@ impl<'a> Formatter<'a> {
         self.indent -= 1;
         self.write_indent();
         self.write("}");
+    }
+
+    fn format_gen_block(&mut self, body: &Block) {
+        self.write("gen ");
+        if self.can_format_gen_block_inline(body) {
+            self.format_gen_block_inline(body);
+        } else {
+            self.format_block(body, self.source.len());
+        }
+    }
+
+    fn can_format_gen_block_inline(&self, body: &Block) -> bool {
+        let item_count = body.stmts.len() + usize::from(body.trailing_expr.is_some());
+        item_count <= 2
+            && !self.next_block_has_comments()
+            && body
+                .stmts
+                .iter()
+                .all(|(stmt, _)| Self::can_format_stmt_inline(stmt))
+            && body
+                .trailing_expr
+                .as_deref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr))
+    }
+
+    fn next_block_has_comments(&self) -> bool {
+        if self.comments.is_empty() {
+            return false;
+        }
+        let Some((open, close)) = self.next_block_bounds() else {
+            return false;
+        };
+        self.comments[self.next_comment..]
+            .iter()
+            .any(|comment| comment.span.start > open && comment.span.start < close)
+    }
+
+    fn next_block_bounds(&self) -> Option<(usize, usize)> {
+        let from = self.prev_source_pos.min(self.source.len());
+        let open = self.source[from..].find('{').map(|off| from + off)?;
+        let close = find_block_close(self.source, open + 1, self.source.len());
+        (close < self.source.len()).then_some((open, close))
+    }
+
+    fn can_format_stmt_inline(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Let { value, .. } | Stmt::Var { value, .. } => value
+                .as_ref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Stmt::Assign { target, value, .. } => {
+                Self::can_format_expr_inline(&target.0) && Self::can_format_expr_inline(&value.0)
+            }
+            Stmt::Break { value, .. } | Stmt::Return(value) => value
+                .as_ref()
+                .is_none_or(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Stmt::Continue { .. } => true,
+            Stmt::Defer(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::Expression(expr) => Self::can_format_expr_inline(&expr.0),
+            Stmt::If { .. }
+            | Stmt::IfLet { .. }
+            | Stmt::Match { .. }
+            | Stmt::Loop { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::WhileLet { .. } => false,
+        }
+    }
+
+    fn can_format_expr_inline(expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_)
+            | Expr::This
+            | Expr::Yield(None) => true,
+            Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
+                .iter()
+                .all(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Expr::MapLiteral { entries } => entries.iter().all(|(key, value)| {
+                Self::can_format_expr_inline(&key.0) && Self::can_format_expr_inline(&value.0)
+            }),
+            Expr::ArrayRepeat { value, count } => {
+                Self::can_format_expr_inline(&value.0) && Self::can_format_expr_inline(&count.0)
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
+            | Expr::PostfixTry(operand)
+            | Expr::Await(operand)
+            | Expr::Yield(Some(operand)) => Self::can_format_expr_inline(&operand.0),
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
+            } => Self::can_format_expr_inline(&left.0) && Self::can_format_expr_inline(&right.0),
+            Expr::Call { function, args, .. } => {
+                Self::can_format_expr_inline(&function.0)
+                    && args
+                        .iter()
+                        .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::can_format_expr_inline(&receiver.0)
+                    && args
+                        .iter()
+                        .all(|arg| Self::can_format_expr_inline(&arg.expr().0))
+            }
+            Expr::FieldAccess { object, .. } => Self::can_format_expr_inline(&object.0),
+            Expr::Index { object, index } => {
+                Self::can_format_expr_inline(&object.0) && Self::can_format_expr_inline(&index.0)
+            }
+            Expr::Cast { expr, .. } => Self::can_format_expr_inline(&expr.0),
+            Expr::Range { start, end, .. } => {
+                start
+                    .as_ref()
+                    .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+                    && end
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .all(|(_, expr)| Self::can_format_expr_inline(&expr.0))
+                    && base
+                        .as_ref()
+                        .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
+            }
+            Expr::InterpolatedString(parts) => parts.iter().all(|part| match part {
+                StringPart::Literal(_) => true,
+                StringPart::Expr((expr, _)) => Self::can_format_expr_inline(expr),
+            }),
+            Expr::Block(_)
+            | Expr::If { .. }
+            | Expr::IfLet { .. }
+            | Expr::Match { .. }
+            | Expr::Lambda { .. }
+            | Expr::Spawn { .. }
+            | Expr::SpawnLambdaActor { .. }
+            | Expr::Scope { .. }
+            | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::ScopeDeadline { .. }
+            | Expr::Select { .. }
+            | Expr::Join(_)
+            | Expr::Timeout { .. }
+            | Expr::UnsafeBlock(_)
+            | Expr::MachineEmit { .. }
+            | Expr::GenBlock { .. } => false,
+        }
+    }
+
+    fn format_gen_block_inline(&mut self, body: &Block) {
+        self.write("{");
+        if !body.stmts.is_empty() || body.trailing_expr.is_some() {
+            self.write(" ");
+            for (stmt, _) in &body.stmts {
+                self.format_stmt_inline(stmt);
+                self.write(" ");
+            }
+            if let Some((expr, _)) = body.trailing_expr.as_deref() {
+                self.format_expr(expr);
+                self.write(" ");
+            }
+        }
+        self.write("}");
+    }
+
+    fn format_stmt_inline(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Let { pattern, ty, value } => {
+                self.write("let ");
+                self.format_pattern(&pattern.0);
+                if let Some(ty) = ty {
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" = ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Var { name, ty, value } => {
+                self.write("var ");
+                self.write(name);
+                if let Some(ty) = ty {
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" = ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Assign { target, op, value } => {
+                self.format_expr(&target.0);
+                if let Some(op) = op {
+                    self.write(" ");
+                    self.write(compound_assign_op_str(*op));
+                    self.write(" ");
+                } else {
+                    self.write(" = ");
+                }
+                self.format_expr(&value.0);
+                self.write(";");
+            }
+            Stmt::Break { label, value } => {
+                self.write("break");
+                if let Some(label) = label {
+                    self.write(" @");
+                    self.write(label);
+                }
+                if let Some((expr, _)) = value {
+                    self.write(" ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Continue { label } => {
+                self.write("continue");
+                if let Some(label) = label {
+                    self.write(" @");
+                    self.write(label);
+                }
+                self.write(";");
+            }
+            Stmt::Return(value) => {
+                self.write("return");
+                if let Some((expr, _)) = value {
+                    self.write(" ");
+                    self.format_expr(expr);
+                }
+                self.write(";");
+            }
+            Stmt::Defer(expr) => {
+                self.write("defer ");
+                self.format_expr(&expr.0);
+                self.write(";");
+            }
+            Stmt::Expression(expr) => {
+                self.format_expr(&expr.0);
+                self.write(";");
+            }
+            Stmt::If { .. }
+            | Stmt::IfLet { .. }
+            | Stmt::Match { .. }
+            | Stmt::Loop { .. }
+            | Stmt::For { .. }
+            | Stmt::While { .. }
+            | Stmt::WhileLet { .. } => {
+                unreachable!("non-inline statement reached gen block inline formatter")
+            }
+        }
     }
 
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]
@@ -1783,6 +2626,39 @@ impl<'a> Formatter<'a> {
     // Expressions
     // ------------------------------------------------------------------
 
+    /// Return `true` when `expr` must be parenthesised before a postfix operator
+    /// (`.field`, `.method()`, `[index]`, `?`).
+    ///
+    /// Postfix operators bind at the highest precedence in the Pratt loop.  Any
+    /// expression at a strictly lower precedence level — binary ops, prefix unary
+    /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
+    /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
+    /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
+    fn needs_receiver_parens(expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Binary { .. }
+                | Expr::Unary { .. }
+                | Expr::Clone(_)
+                | Expr::Range { .. }
+                | Expr::Is { .. }
+                | Expr::Await(_)
+        )
+    }
+
+    /// Format an expression that appears as the object/receiver of a postfix
+    /// operation (`.`, `[]`, `?`), adding parentheses when required for correct
+    /// re-parsing.
+    fn format_receiver(&mut self, expr: &Expr) {
+        if Self::needs_receiver_parens(expr) {
+            self.write("(");
+            self.format_expr(expr);
+            self.write(")");
+        } else {
+            self.format_expr(expr);
+        }
+    }
+
     /// Format an expression with precedence tracking for correct parenthesization.
     ///
     /// `parent_prec` is the precedence of the enclosing binary operator (0 at top level).
@@ -1826,6 +2702,7 @@ impl<'a> Formatter<'a> {
                     UnaryOp::Not => self.write("!"),
                     UnaryOp::Negate => self.write("-"),
                     UnaryOp::BitNot => self.write("~"),
+                    UnaryOp::RawDeref => self.write("*"),
                 }
                 let needs_parens = matches!(operand.0, Expr::Binary { .. });
                 if needs_parens {
@@ -1838,6 +2715,10 @@ impl<'a> Formatter<'a> {
             }
             Expr::Literal(lit) => self.format_literal(lit),
             Expr::Identifier(name) => self.write(name),
+            Expr::Clone(operand) => {
+                self.write("clone ");
+                self.format_expr(&operand.0);
+            }
             Expr::Tuple(elems) => {
                 self.write("(");
                 self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
@@ -1933,20 +2814,52 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
-                self.format_opt_type_params(type_params.as_ref());
-                self.write("(");
-                self.format_lambda_params(params);
-                self.write(")");
-                if let Some(ret) = return_type {
-                    self.write(" -> ");
-                    self.format_type_expr(&ret.0);
+                if type_params.is_some() {
+                    self.format_opt_type_params(type_params.as_ref());
+                    self.write("(");
+                    self.format_lambda_params(params);
+                    self.write(")");
+                    if let Some(ret) = return_type {
+                        self.write(" -> ");
+                        self.format_type_expr(&ret.0);
+                    }
+                    self.write(" => ");
+                    self.format_expr(&body.0);
+                } else {
+                    self.write("|");
+                    self.format_lambda_params(params);
+                    self.write("|");
+                    if let Some(ret) = return_type {
+                        self.write(" -> ");
+                        self.format_type_expr(&ret.0);
+                        self.write(" ");
+                        if matches!(body.0, Expr::Block(_)) {
+                            self.format_expr(&body.0);
+                        } else {
+                            self.write("{ ");
+                            self.format_expr(&body.0);
+                            self.write(" }");
+                        }
+                    } else {
+                        self.write(" ");
+                        self.format_expr(&body.0);
+                    }
                 }
-                self.write(" => ");
-                self.format_expr(&body.0);
             }
-            Expr::Spawn { target, args } => {
+            Expr::Spawn {
+                target,
+                type_args,
+                args,
+            } => {
                 self.write("spawn ");
                 self.format_expr(&target.0);
+                if !type_args.is_empty() {
+                    self.write("<");
+                    self.comma_sep(type_args, |f, (te, _)| {
+                        f.format_type_expr(te);
+                    });
+                    self.write(">");
+                }
                 if !args.is_empty() {
                     self.write("(");
                     self.comma_sep(args, |f, (name, value)| {
@@ -1963,34 +2876,22 @@ impl<'a> Formatter<'a> {
                 return_type,
                 body,
             } => {
-                self.write("spawn ");
+                self.write("actor ");
                 if *is_move {
                     self.write("move ");
                 }
-                self.write("(");
+                self.write("|");
                 self.format_lambda_params(params);
-                self.write(")");
+                self.write("|");
                 if let Some(ret) = return_type {
                     self.write(" -> ");
                     self.format_type_expr(&ret.0);
                 }
-                self.write(" => ");
+                self.write(" ");
                 self.format_expr(&body.0);
             }
-            Expr::Scope { binding, body } => {
+            Expr::Scope { body } => {
                 self.write("scope ");
-                if let Some(name) = binding {
-                    self.write("|");
-                    self.write(name);
-                    self.write("| ");
-                }
-                let prev_binding = self.scope_binding.clone();
-                self.scope_binding.clone_from(binding);
-                self.format_block(body, self.source.len());
-                self.scope_binding = prev_binding;
-            }
-            Expr::Fork { body } => {
-                self.write("fork ");
                 self.format_block(body, self.source.len());
             }
             Expr::ForkChild { binding, expr } => {
@@ -2000,6 +2901,16 @@ impl<'a> Formatter<'a> {
                     self.write(" = ");
                 }
                 self.format_expr(&expr.0);
+            }
+            Expr::ForkBlock { body } => {
+                self.write("fork ");
+                self.format_block(body, self.source.len());
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                self.write("after(");
+                self.format_expr(&duration.0);
+                self.write(") ");
+                self.format_block(body, self.source.len());
             }
             Expr::InterpolatedString(parts) => {
                 self.write("f\"");
@@ -2027,7 +2938,14 @@ impl<'a> Formatter<'a> {
                 args,
                 ..
             } => {
+                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. });
+                if needs_callee_parens {
+                    self.write("(");
+                }
                 self.format_expr(&function.0);
+                if needs_callee_parens {
+                    self.write(")");
+                }
                 if let Some(type_args) = type_args {
                     self.write("<");
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
@@ -2042,7 +2960,7 @@ impl<'a> Formatter<'a> {
                 method,
                 args,
             } => {
-                self.format_expr(&receiver.0);
+                self.format_receiver(&receiver.0);
                 self.write(".");
                 self.write(method);
                 self.write("(");
@@ -2053,6 +2971,7 @@ impl<'a> Formatter<'a> {
                 name,
                 fields,
                 type_args,
+                base,
             } => {
                 self.write(name);
                 if let Some(type_args) = type_args {
@@ -2066,12 +2985,14 @@ impl<'a> Formatter<'a> {
                     f.write(": ");
                     f.format_expr(&fval.0);
                 });
+                if let Some(base_expr) = base {
+                    if !fields.is_empty() {
+                        self.write(", ");
+                    }
+                    self.write("..");
+                    self.format_expr(&base_expr.0);
+                }
                 self.write(" }");
-            }
-            Expr::Send { target, message } => {
-                self.format_expr(&target.0);
-                self.write(" <- ");
-                self.format_expr(&message.0);
             }
             Expr::Select { arms, timeout } => {
                 self.write("select {\n");
@@ -2103,7 +3024,7 @@ impl<'a> Formatter<'a> {
                 self.write(" | after ");
                 self.format_expr(&duration.0);
             }
-            Expr::Unsafe(block) => {
+            Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
                 self.format_block(block, self.source.len());
             }
@@ -2114,26 +3035,25 @@ impl<'a> Formatter<'a> {
                     self.format_expr(&val.0);
                 }
             }
-            Expr::Cooperate => self.write("cooperate"),
             Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
-                self.format_expr(&object.0);
+                self.format_receiver(&object.0);
                 self.write(".");
                 self.write(field);
             }
             Expr::Index { object, index } => {
-                self.format_expr(&object.0);
+                self.format_receiver(&object.0);
                 self.write("[");
                 self.format_expr(&index.0);
                 self.write("]");
             }
             Expr::Cast { expr, ty } => {
-                self.format_expr(&expr.0);
+                self.format_receiver(&expr.0);
                 self.write(" as ");
                 self.format_type_expr(&ty.0);
             }
             Expr::PostfixTry(expr) => {
-                self.format_expr(&expr.0);
+                self.format_receiver(&expr.0);
                 self.write("?");
             }
             Expr::Range {
@@ -2157,33 +3077,6 @@ impl<'a> Formatter<'a> {
                 self.write("await ");
                 self.format_expr(&inner.0);
             }
-            Expr::ScopeLaunch(block) => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".launch ");
-                self.format_block(block, self.source.len());
-            }
-            Expr::ScopeSpawn(block) => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".spawn ");
-                self.format_block(block, self.source.len());
-            }
-            Expr::ScopeCancel => {
-                let name = self
-                    .scope_binding
-                    .clone()
-                    .unwrap_or_else(|| "s".to_string());
-                self.write(&name);
-                self.write(".cancel()");
-            }
-
             Expr::RegexLiteral(pattern) => {
                 self.write("re\"");
                 self.write(&escape_regex_pattern(pattern));
@@ -2212,6 +3105,34 @@ impl<'a> Formatter<'a> {
                     f.format_expr(&value.0);
                 });
                 self.write("}");
+            }
+            Expr::Is { lhs, rhs } => {
+                // Precedence 9 — same as `==`/`!=`; no parens needed around operands
+                // at lower precedence, but we do need them for nested `is`.
+                self.format_expr_prec(&lhs.0, 9, false);
+                self.write(" is ");
+                self.format_expr_prec(&rhs.0, 9, true);
+            }
+            Expr::MachineEmit { event_name, fields } => {
+                self.write("emit ");
+                self.write(event_name);
+                if fields.is_empty() {
+                    self.write(" {}");
+                } else {
+                    self.write(" { ");
+                    for (i, (name, val)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(name);
+                        self.write(": ");
+                        self.format_expr(&val.0);
+                    }
+                    self.write(" }");
+                }
+            }
+            Expr::GenBlock { body } => {
+                self.format_gen_block(body);
             }
         }
     }
@@ -2349,6 +3270,11 @@ impl<'a> Formatter<'a> {
                 self.write(" | ");
                 self.format_pattern(&right.0);
             }
+            Pattern::Regex { pattern, .. } => {
+                self.write("re\"");
+                self.write(&escape_regex_pattern(pattern));
+                self.write("\"");
+            }
         }
     }
 
@@ -2387,7 +3313,9 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Shr => ">>",
         BinaryOp::Range => "..",
         BinaryOp::RangeInclusive => "..=",
-        BinaryOp::Send => "<-",
+        BinaryOp::WrappingAdd => "&+",
+        BinaryOp::WrappingSub => "&-",
+        BinaryOp::WrappingMul => "&*",
     }
 }
 
@@ -2395,7 +3323,6 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
 /// Values match the Pratt parser's binding powers in parser.rs.
 fn binop_precedence(op: BinaryOp) -> u8 {
     match op {
-        BinaryOp::Send => 1,
         BinaryOp::Or => 3,
         BinaryOp::BitOr => 5,
         BinaryOp::BitXor => 7,
@@ -2405,8 +3332,10 @@ fn binop_precedence(op: BinaryOp) -> u8 {
         BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 15,
         BinaryOp::Range | BinaryOp::RangeInclusive => 17,
         BinaryOp::Shl | BinaryOp::Shr => 19,
-        BinaryOp::Add | BinaryOp::Subtract => 21,
-        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo => 23,
+        // Wrapping add/sub at same precedence as plain add/sub
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::WrappingAdd | BinaryOp::WrappingSub => 21,
+        // Wrapping mul at same precedence as plain mul
+        BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::WrappingMul => 23,
     }
 }
 
@@ -2725,6 +3654,19 @@ enum Colour {
 extern \"C\" {
     fn puts(s: string) -> i32;
     fn exit(code: i32);
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn extern_rt_block_roundtrip() {
+        let src = "\
+extern \"rt\" {
+    fn println(s: string);
+    fn print(s: string);
+    fn assert(cond: bool);
 }
 ";
         let formatted = roundtrip(src);
@@ -3173,10 +4115,10 @@ extern \"C\" {
     }
 
     #[test]
-    fn fork_block_roundtrips() {
+    fn scope_block_roundtrips() {
         let src = "\
 fn main() {
-    let value = fork {
+    let value = scope {
         1
     };
 }
@@ -3196,10 +4138,10 @@ fn main() {
     }
 
     #[test]
-    fn nested_fork_roundtrips() {
+    fn nested_scope_roundtrips() {
         let src = "\
 fn main() {
-    let value = fork {
+    let value = scope {
         fork worker = run();
         fork audit();
         worker
@@ -3236,6 +4178,32 @@ type Wrapper<T> {
 
 fn main() {
     let w = Wrapper { value: \"hello\" };
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn extern_symbol_attribute_round_trips_in_extern_block() {
+        // `#[extern_symbol("…")]` on an `extern "C"` fn
+        // must survive a parse/format round-trip. The string contains `{T}`
+        // which is non-identifier-shaped, so the formatter re-quotes it.
+        let src = "\
+extern \"C\" {
+    #[extern_symbol(\"hew_vec_push_{T}\")]
+    fn hew_vec_push(v: ptr, x: ptr);
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn extern_symbol_attribute_round_trips_on_impl_method() {
+        let src = "\
+impl<T> Vec<T> {
+    #[extern_symbol(\"hew_vec_push_{T}\")]
+    fn push(self, x: T) {
+    }
 }
 ";
         assert_eq!(roundtrip(src), src);

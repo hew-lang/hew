@@ -4,8 +4,8 @@
 // on Point without re-importing it — they share the same module namespace
 // automatically because they live in the same directory.
 pub type Point {
-    x: int;
-    y: int;
+    x: i64;
+    y: i64;
 }
 
 pub fn origin() -> Point {

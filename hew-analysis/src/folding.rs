@@ -110,7 +110,8 @@ fn collect_item_folding(
         | Item::Wire(_)
         | Item::ExternBlock(_)
         | Item::Supervisor(_)
-        | Item::Machine(_) => {
+        | Item::Machine(_)
+        | Item::Record(_) => {
             add_region(source, lo, span, r);
         }
         Item::Import(_) | Item::Const(_) | Item::TypeAlias(_) => {}
@@ -165,10 +166,7 @@ impl<'ast> AstVisitor<'ast> for FoldingVisitor<'_> {
                 | Expr::Lambda { .. }
                 | Expr::SpawnLambdaActor { .. }
                 | Expr::Scope { .. }
-                | Expr::Fork { .. }
-                | Expr::Unsafe(_)
-                | Expr::ScopeLaunch(_)
-                | Expr::ScopeSpawn(_)
+                | Expr::UnsafeBlock(_)
         ) {
             add_region(self.source, self.line_offsets, span, self.ranges);
         }

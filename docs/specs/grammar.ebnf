@@ -4,7 +4,7 @@
    
    This is the authoritative grammar specification for the Hew
    programming language. It is extracted from and kept in sync
-   with the full language specification at docs/specs/HEW-SPEC.md.
+   with the full language specification at docs/specs/HEW-SPEC-2026.md.
    
    Notation follows ISO 14977 EBNF:
      { ... }     — repetition (zero or more)
@@ -28,6 +28,7 @@ Item           = Attribute* Visibility? ( Import
                              | ConstDecl
                              | TypeDecl
                              | TypeAlias
+                             | RecordDecl
                              | TraitDecl
                              | ImplDecl
                              | WireDecl
@@ -42,6 +43,12 @@ Item           = Attribute* Visibility? ( Import
                              | MachineDecl ) ;
 
 TypeAlias      = "type" Ident "=" Type ";" ;
+
+RecordDecl      = "record" Ident TypeParams? WhereClause? RecordBody ;
+RecordBody      = RecordNamedBody | RecordTupleBody ;
+RecordNamedBody = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
+RecordFieldDecl = Ident ":" Type ;
+RecordTupleBody = "(" Type { "," Type } ","? ")" ";" ;
 
 Visibility     = "pub" ( "(" ( "package" | "super" ) ")" )? ;
 
@@ -101,7 +108,7 @@ TypeList       = Type { "," Type } ;
 (* Traits *)
 TraitDecl      = "trait" Ident TypeParams? TraitSuper? WhereClause? "{" { TraitItem } "}" ;
 TraitSuper     = ":" TraitBounds ;
-TraitItem      = "pure"? FnSig ( ";" | Block )
+TraitItem      = FnSig ( ";" | Block )
                | AssociatedType ;
 AssociatedType = "type" Ident ( ":" TraitBounds )? ( "=" Type )? ";" ;
 FnSig          = "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? ;
@@ -124,28 +131,47 @@ OverflowPolicy = "overflow" OverflowKind ;
 OverflowKind   = "block" | "drop_new" | "drop_old" | "fail"
                | "coalesce" "(" Ident ")" CoalesceFallback? ;
 CoalesceFallback = "fallback" OverflowKind ;
-ReceiveFnDecl  = Attribute* "pure"? "receive" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
-ReceiveGenFnDecl = Attribute* "pure"? "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+ReceiveFnDecl  = Attribute* "receive" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+ReceiveGenFnDecl = Attribute* "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 
 (* Supervisors *)
 SupervisorDecl = "supervisor" Ident "{"
                  { SupervisorField | ChildSpec }
                "}" ;
 SupervisorField = "strategy" ":" SupervisorStrategy
-                | "max_restarts" ":" IntLit
-                | "window" ":" IntLit ;
-SupervisorStrategy = "one_for_one" | "one_for_all" | "rest_for_one" ;
-ChildSpec      = "child" Ident ":" Ident ( "(" Args ")" )? RestartPolicy? ;
+                | "intensity" ":" IntLit "within" DurationLit ;
+SupervisorStrategy = "one_for_one" | "one_for_all" | "rest_for_one" | "simple_one_for_one" ;
+ChildSpec      = ( "child" | "pool" ) Ident ":" Ident ( "(" Args ")" )? ChildClause* ;
+ChildClause    = "restart" ":" RestartPolicy
+               | "shutdown" ":" ShutdownDirective
+               | "wired_to" ":" "{" { Ident ( ":" Ident )? ","? } "}" ;
 RestartPolicy  = "permanent" | "transient" | "temporary" ;
+ShutdownDirective = DurationLit | "brutal_kill" | "infinity" ;
 
 (* State Machines *)
-MachineDecl    = "machine" Ident "{" { MachineItem } "}" ;
-MachineItem    = MachineState | MachineEvent | MachineTransition | MachineDefault ;
-MachineState   = "state" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
-MachineEvent   = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
-MachineTransition = "on" Ident ":" StatePattern "->" StatePattern ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
-MachineDefault = "default" (Block | ";") ;
+MachineDecl    = "machine" Ident TypeParams? "{"
+                   EventsHeader
+                   [ EmitsHeader ]
+                   { StateDecl }
+                   { TransitionDecl }
+                   [ DefaultArm ]
+                 "}" ;
+EventsHeader   = "events" "{" { EventDecl } "}" ;
+EventDecl      = Ident ( ";" | "{" { Ident ":" Type (";" | ",") } "}" ";"? ) ;
+EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
+StateDecl      = "state" Ident ( "{"
+                   { Ident ":" Type (";" | ",") }
+                   [ "entry" Block ]
+                   [ "exit"  Block ]
+                   { CompositeMember }
+                 "}" )? ";"? ;
+CompositeMember = [ "initial" ] StateDecl ;
+TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
+                 StatePattern "=>" StatePattern
+                 [ "reenter" ] [ "when" Expr ] TransitionBody ;
+TransitionBody = ";" | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
+DefaultArm     = "default" "{" "state" "}" ;
 
 (* FFI / Extern declarations *)
 ExternBlock    = "extern" StringLit? "{" { ExternFnDecl } "}" ;
@@ -155,10 +181,10 @@ ExternParam    = Ident ":" Type ;
 Variadic       = ".." ;
 
 (* Functions *)
-FnDecl         = "pure"? "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
-AsyncFnDecl    = "pure"? "async" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
-GenFnDecl      = "pure"? "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
-AsyncGenFnDecl = "pure"? "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+FnDecl         = "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+AsyncFnDecl    = "async" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+GenFnDecl      = "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+AsyncGenFnDecl = "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 Params         = Param { "," Param } ;
 Param          = "var"? Ident ":" Type ;
 RetType        = "->" Type ;
@@ -197,14 +223,13 @@ DeferStmt      = "defer" ( Block | Expr ";" ) ;
 ExprStmt       = Expr ";" ;
 
 (* Expressions *)
-Expr           = UnsafeExpr | SendExpr ;
+Expr           = UnsafeExpr | TimeoutExpr ;
 UnsafeExpr     = "unsafe" Block ;
-SendExpr       = TimeoutExpr ( "<-" Expr )? ;      (* Send: actor <- msg *)
 TimeoutExpr    = RangeExpr ( "|" "after" Expr )? ;  (* Timeout: expr | after duration *)
 RangeExpr      = OrExpr ( (".." | "..=") OrExpr )? ;
 OrExpr         = AndExpr { "||" AndExpr } ;
 AndExpr        = EqExpr  { "&&" EqExpr } ;
-EqExpr         = RelExpr { ("==" | "!=") RelExpr } ;
+EqExpr         = RelExpr { ("==" | "!=" | "is") RelExpr } ;
 RelExpr        = BitOrExpr { ("<" | "<=" | ">" | ">=") BitOrExpr } ;
 BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
 BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;
@@ -212,7 +237,13 @@ BitAndExpr     = ShiftExpr { "&" ShiftExpr } ;
 ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
 AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
 MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;
-UnaryExpr      = ("!" | "-" | "~" | "await") UnaryExpr | PostfixExpr ;
+UnaryExpr      = ("!" | "-" | "~" | "await" | "clone") UnaryExpr | PostfixExpr ;
+(* `clone <operand>` is the prefix duplication form. It is contextual: `clone`
+   acts as a prefix only when followed immediately by an operand token
+   (identifier or literal). Otherwise it stays a plain identifier so that
+   `x.clone()`, `fn clone(...)`, and `clone(args)` are unaffected.
+   Binding power matches other unary prefixes, so `clone a + b` parses as
+   `(clone a) + b`. See also §3.4.4 for ownership and cloning semantics. *)
 PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" | "as" Type } ;
 
 Primary        = Literal
@@ -232,9 +263,8 @@ Primary        = Literal
                | Spawn
                | SelectExpr                          (* select { ... } *)
                | JoinExpr                            (* join { ... } *)
-               | Fork                                (* fork { ... } structured-concurrency block *)
-               | ForkChild                          (* fork name = expr or fork expr — only inside a Fork block *)
-               | CooperateExpr
+               | ScopeExpr                          (* scope { ... } structured-concurrency block *)
+               | ForkChild                          (* fork name = expr or fork expr — only inside a scope block *)
                | YieldExpr ;
 
 FieldInitList  = FieldInit { "," FieldInit } ","? ;
@@ -249,8 +279,11 @@ ExprList       = Expr { "," Expr } ;
 Args           = Arg { "," Arg } ;
 Arg            = ( Ident ":" )? Expr ;
 
-(* Closures — arrow syntax only (v0.6.0: pipe syntax |x| removed) *)
-Lambda         = "move"? TypeParams? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+(* Closures *)
+Lambda         = "move"? "|" LambdaParams? "|" Expr
+               | "move"? "||" Expr
+               | "move"? "|" LambdaParams? "|" RetType Block
+               | TypeParams "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
 LambdaParams   = LambdaParam { "," LambdaParam } ;
 LambdaParam    = Ident ( ":" Type )? ;
 
@@ -261,24 +294,27 @@ LambdaActor    = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
 
 (* Concurrency expressions *)
 SelectExpr     = "select" "{" { SelectArm } TimeoutArm? "}" ;
-SelectArm      = Pattern ("from" | "<-") Expr "=>" Expr ","? ;
+SelectArm      = Pattern "from" Expr "=>" Expr ","? ;
 TimeoutArm     = "after" Expr "=>" Expr ","? ;
 
 JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
 
-(* Structured concurrency. `fork` is dual-use: the block form opens a
-   structured-concurrency region; the child form spawns a sibling task
-   within an open block. The token after `fork` disambiguates — `{` opens
-   a block, anything else begins a child expression. Outside a block, a
-   child-form `fork` is a `ForkOutsideForkBlock` error. *)
-Fork           = "fork" Block ;
+(* Structured concurrency.
+   `scope { ... }` opens the structured-concurrency lexical lifetime boundary.
+   Inside that body, `fork name = expr` or bare `fork expr` spawn child tasks.
+   `after(duration) { ... }` inside a scope body introduces a deadline clause
+   that cancels the child tasks if the duration elapses before they all settle.
+   A `fork` or `after` outside a `scope` body is a parse error. *)
+ScopeExpr      = "scope" Block ;
+ScopeDeadline  = "after" "(" Expr ")" Block ;
+(* ScopeDeadline is only valid as a statement inside a ScopeExpr body. *)
 ForkChild      = "fork" ( Ident "=" )? Expr ;
-CooperateExpr  = "cooperate" ;
+(* "cooperate" is reserved for compiler-internal safepoints; it is not a source expression. *)
 YieldExpr      = "yield" Expr? ;
 
 (* Types *)
-(* Type aliases: "int" = i64, "uint" = u64, "byte" = u8, "float" = f64 *)
 (* Primitive types: i8..i64, u8..u64, f32, f64, bool, string, duration *)
+(* Note: "int" and "uint" aliases were removed in v0.5 — use i64 / u64 explicitly. *)
 (* Integer literals default to int (i64), float literals default to float (f64) *)
 Type           = Ident TypeArgs?
                | "Task" "<" Type ">"              (* Task type: Task<T> *)
@@ -299,8 +335,8 @@ Type           = Ident TypeArgs?
                | "[" Type ";" IntLit "]"          (* Fixed array *)
                | "[" Type "]"                     (* Slice *)
                | "fn" "(" TypeList? ")" RetType?  (* Function type *)
-               | "*" Type                         (* Immutable raw pointer *)
-               | "*" "var" Type                   (* Mutable raw pointer *)
+               | "*" "const" Type                 (* Immutable raw pointer *)
+               | "*" "mut" Type                   (* Mutable raw pointer *)
                | "dyn" TraitBound                 (* Trait object *)
                | "dyn" "(" TraitBounds ")"         (* Multi-trait object *)
                | "_" ;                             (* Infer type from context *)
@@ -313,6 +349,7 @@ TypeArgs       = "<" Type { "," Type } ">" ;
 (* Pattern matching *)
 Pattern        = "_"
                | LiteralPattern
+               | RegexLiteral                          (* Regex pattern in match arm: re"..." *)
                | Ident
                | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)

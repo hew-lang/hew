@@ -26,12 +26,6 @@ use std::time::{Duration, Instant};
 
 // Re-export the C ABI functions under test.
 use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
-use hew_runtime::hashmap::{
-    hew_hashmap_contains_key, hew_hashmap_free_impl, hew_hashmap_get_f64, hew_hashmap_get_i32,
-    hew_hashmap_get_i64, hew_hashmap_get_str_impl, hew_hashmap_insert_f64, hew_hashmap_insert_i64,
-    hew_hashmap_insert_impl, hew_hashmap_is_empty, hew_hashmap_len, hew_hashmap_new_impl,
-    hew_hashmap_remove,
-};
 use hew_runtime::iter::{
     hew_iter_free, hew_iter_next, hew_iter_reset, hew_iter_value_i32, hew_iter_vec,
 };
@@ -55,22 +49,25 @@ use hew_runtime::result::{
 use hew_runtime::string::{
     hew_bool_to_string, hew_float_to_string, hew_int_to_string, hew_string_byte_length,
     hew_string_char_at, hew_string_char_at_utf8, hew_string_char_count, hew_string_clone,
-    hew_string_concat, hew_string_contains, hew_string_ends_with, hew_string_equals,
-    hew_string_find, hew_string_from_char, hew_string_index_of, hew_string_is_ascii,
-    hew_string_length, hew_string_repeat, hew_string_replace, hew_string_reverse_utf8,
-    hew_string_slice, hew_string_split, hew_string_starts_with, hew_string_substring_utf8,
-    hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase, hew_string_to_uppercase,
-    hew_string_trim,
+    hew_string_concat, hew_string_contains, hew_string_drop, hew_string_ends_with,
+    hew_string_equals, hew_string_find, hew_string_from_char, hew_string_index_of,
+    hew_string_is_ascii, hew_string_length, hew_string_repeat, hew_string_replace,
+    hew_string_reverse_utf8, hew_string_slice, hew_string_split, hew_string_starts_with,
+    hew_string_substring_utf8, hew_string_to_bytes, hew_string_to_int, hew_string_to_lowercase,
+    hew_string_to_uppercase, hew_string_trim,
 };
 use hew_runtime::vec::{
     hew_vec_clear, hew_vec_clone, hew_vec_contains_f64, hew_vec_contains_i32, hew_vec_contains_i64,
-    hew_vec_contains_str, hew_vec_free, hew_vec_get_f64, hew_vec_get_generic, hew_vec_get_i32,
-    hew_vec_get_i64, hew_vec_get_str, hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64,
-    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_pop_f64, hew_vec_pop_generic,
-    hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_push_f64, hew_vec_push_generic, hew_vec_push_i32,
-    hew_vec_push_i64, hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64, hew_vec_set_generic,
-    hew_vec_set_i32, hew_vec_set_i64, hew_vec_set_str, hew_vec_sort_f64, hew_vec_sort_i32,
-    hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate,
+    hew_vec_contains_str, hew_vec_contains_thunk, hew_vec_free, hew_vec_get_f64,
+    hew_vec_get_generic, hew_vec_get_i32, hew_vec_get_i64, hew_vec_get_layout, hew_vec_get_ptr,
+    hew_vec_get_str, hew_vec_is_empty, hew_vec_len, hew_vec_new, hew_vec_new_f64,
+    hew_vec_new_generic, hew_vec_new_i64, hew_vec_new_str, hew_vec_new_with_layout,
+    hew_vec_pop_f64, hew_vec_pop_generic, hew_vec_pop_i32, hew_vec_pop_i64, hew_vec_pop_layout,
+    hew_vec_push_f64, hew_vec_push_generic, hew_vec_push_i32, hew_vec_push_i64,
+    hew_vec_push_layout, hew_vec_push_str, hew_vec_reverse_i32, hew_vec_set_f64,
+    hew_vec_set_generic, hew_vec_set_i32, hew_vec_set_i64, hew_vec_set_layout, hew_vec_set_str,
+    hew_vec_sort_f64, hew_vec_sort_i32, hew_vec_sort_i64, hew_vec_swap, hew_vec_truncate, ElemKind,
+    HewTypeLayout, HewTypeOwnershipKind,
 };
 use hew_runtime::{hew_clear_error, hew_last_error};
 
@@ -89,11 +86,39 @@ unsafe fn read_cstr<'a>(p: *const c_char) -> &'a str {
         .expect("invalid UTF-8")
 }
 
-/// Free a malloc'd C string.
-unsafe fn free_cstr(p: *mut c_char) {
+/// Free a header-aware Hew `String` producer result.
+///
+/// Every `-> string` C-ABI producer (`concat`, `slice`, case, `trim`,
+/// `replace`, `repeat`, `clone`, numeric-to-string, `substring_utf8`,
+/// `reverse_utf8`, `from_char`, ...) now returns a header-aware allocation
+/// (`[CStringHeader][data]`, data pointer = `base+16`). Such results MUST be
+/// released through the public `hew_string_drop` consumer (which recovers the
+/// base via `data-16`, validates the magic sentinel, and skips static strings)
+/// — never via bare `libc::free`, which would interior-free `base+16` and
+/// corrupt the heap. Genuinely raw `libc::malloc` results (e.g.
+/// `hew_reply_wait` payloads) keep bare `libc::free`.
+unsafe fn free_hew_string(p: *mut c_char) {
     if !p.is_null() {
-        unsafe { libc::free(p.cast()) };
+        unsafe { hew_string_drop(p) };
     }
+}
+
+/// Read a *retained* string-vec element owner (`hew_vec_get_str` /
+/// `hew_vec_pop_str` result) into an owned `String`, then release it via
+/// `hew_string_drop`. The typed string-vec getters hand back a retained owner
+/// (refcount bump) the caller MUST release; reading inline through `read_cstr`
+/// and discarding the pointer leaks that owner (`ASan` flags the leak). The value
+/// is copied out first so it outlives the release.
+unsafe fn read_str_and_drop(p: *const c_char) -> String {
+    assert!(!p.is_null(), "unexpected null string element");
+    // SAFETY: `p` is a live, NUL-terminated, retained element owner.
+    let owned = unsafe { CStr::from_ptr(p) }
+        .to_str()
+        .expect("invalid UTF-8")
+        .to_owned();
+    // SAFETY: `p` is a retained header-aware owner; release exactly once.
+    unsafe { free_hew_string(p.cast_mut()) };
+    owned
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -220,6 +245,9 @@ fn vec_str_lifecycle() {
         let v = hew_vec_new_str();
         assert!(hew_vec_is_empty(v));
 
+        // Producers may hand push_str a C string of any provenance (here plain
+        // headerless `CString`s); the vec stores an independent header-aware
+        // copy, so the caller keeps owning and dropping its own buffers.
         let hello = cstr("hello");
         let world = cstr("world");
         let hew = cstr("hew");
@@ -228,13 +256,22 @@ fn vec_str_lifecycle() {
         hew_vec_push_str(v, world.as_ptr());
         assert_eq!(hew_vec_len(v), 2);
 
-        assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
-        assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "world");
+        // get_str returns a retained owner — read it, then release via the
+        // universal String consumer (header-aware free-at-zero / static skip).
+        let g0 = hew_vec_get_str(v, 0);
+        assert_eq!(read_cstr(g0), "hello");
+        free_hew_string(g0.cast_mut());
+        let g1 = hew_vec_get_str(v, 1);
+        assert_eq!(read_cstr(g1), "world");
+        free_hew_string(g1.cast_mut());
 
-        // Set replaces and frees old string.
+        // Set replaces and releases the old element; the new value is copied in.
         hew_vec_set_str(v, 0, hew.as_ptr());
-        assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hew");
+        let g0b = hew_vec_get_str(v, 0);
+        assert_eq!(read_cstr(g0b), "hew");
+        free_hew_string(g0b.cast_mut());
 
+        // Freeing the vec releases every stored element exactly once.
         hew_vec_free(v);
     }
 }
@@ -258,7 +295,7 @@ fn string_concat() {
         let b = cstr("world");
         let result = hew_string_concat(a.as_ptr(), b.as_ptr());
         assert_eq!(read_cstr(result), "hello world");
-        free_cstr(result);
+        free_hew_string(result);
     }
 }
 
@@ -269,29 +306,39 @@ fn string_concat_with_null() {
         // null + string → just the string
         let r1 = hew_string_concat(ptr::null(), a.as_ptr());
         assert_eq!(read_cstr(r1), "hello");
-        free_cstr(r1);
+        free_hew_string(r1);
 
         // string + null → just the string
         let r2 = hew_string_concat(a.as_ptr(), ptr::null());
         assert_eq!(read_cstr(r2), "hello");
-        free_cstr(r2);
+        free_hew_string(r2);
 
         // null + null → empty string
         let r3 = hew_string_concat(ptr::null(), ptr::null());
         assert_eq!(read_cstr(r3), "");
-        free_cstr(r3);
+        free_hew_string(r3);
     }
 }
 
 #[test]
-fn string_clone_returns_distinct_copy() {
+fn string_clone_shares_buffer_via_retain() {
     unsafe {
         let original = hew_string_concat(cstr("hello").as_ptr(), cstr(" world").as_ptr());
+        // `String` is immutable-shareable: clone is a refcount retain, so the
+        // returned pointer ALIASES the same buffer (the copy-on-write win),
+        // rather than a distinct deep copy.
         let cloned = hew_string_clone(original);
-        assert_ne!(original as usize, cloned as usize);
-        assert_eq!(read_cstr(original), read_cstr(cloned));
-        free_cstr(original);
-        free_cstr(cloned);
+        assert_eq!(
+            original as usize, cloned as usize,
+            "hew_string_clone now retains (shares one buffer), not deep-copies"
+        );
+        assert_eq!(read_cstr(original), "hello world");
+        // Releasing one owner must NOT free the shared buffer; the other owner
+        // still reads it intact (rc went 2 -> 1).
+        free_hew_string(cloned);
+        assert_eq!(read_cstr(original), "hello world");
+        // Final owner releases -> freed (verified clean under ASan).
+        free_hew_string(original);
     }
 }
 
@@ -333,17 +380,17 @@ fn string_slice() {
         let s = cstr("hello world");
         let sliced = hew_string_slice(s.as_ptr(), 6, 11);
         assert_eq!(read_cstr(sliced), "world");
-        free_cstr(sliced);
+        free_hew_string(sliced);
 
         // Clamped: start < 0, end > len.
         let full = hew_string_slice(s.as_ptr(), -5, 999);
         assert_eq!(read_cstr(full), "hello world");
-        free_cstr(full);
+        free_hew_string(full);
 
         // Null input → empty string.
         let empty = hew_string_slice(ptr::null(), 0, 5);
         assert_eq!(read_cstr(empty), "");
-        free_cstr(empty);
+        free_hew_string(empty);
     }
 }
 
@@ -396,11 +443,11 @@ fn string_conversions() {
         // int → string
         let s = hew_int_to_string(42);
         assert_eq!(read_cstr(s), "42");
-        free_cstr(s);
+        free_hew_string(s);
 
         let neg = hew_int_to_string(-7);
         assert_eq!(read_cstr(neg), "-7");
-        free_cstr(neg);
+        free_hew_string(neg);
 
         // string → int
         let n = cstr("123");
@@ -411,16 +458,16 @@ fn string_conversions() {
         let fs = hew_float_to_string(3.14);
         let fs_str = read_cstr(fs);
         assert!(fs_str.starts_with("3.14"), "got: {fs_str}");
-        free_cstr(fs);
+        free_hew_string(fs);
 
         // bool → string
         let t = hew_bool_to_string(true);
         assert_eq!(read_cstr(t), "true");
-        free_cstr(t);
+        free_hew_string(t);
 
         let f = hew_bool_to_string(false);
         assert_eq!(read_cstr(f), "false");
-        free_cstr(f);
+        free_hew_string(f);
     }
 }
 
@@ -468,12 +515,12 @@ fn string_trim() {
         let s = cstr("  hello  ");
         let trimmed = hew_string_trim(s.as_ptr());
         assert_eq!(read_cstr(trimmed), "hello");
-        free_cstr(trimmed);
+        free_hew_string(trimmed);
 
         // Null → empty.
         let empty = hew_string_trim(ptr::null());
         assert_eq!(read_cstr(empty), "");
-        free_cstr(empty);
+        free_hew_string(empty);
     }
 }
 
@@ -485,130 +532,18 @@ fn string_replace() {
         let new = cstr("XX");
         let result = hew_string_replace(s.as_ptr(), old.as_ptr(), new.as_ptr());
         assert_eq!(read_cstr(result), "aaXXcc");
-        free_cstr(result);
+        free_hew_string(result);
 
         // Replace with empty.
         let empty = cstr("");
         let r2 = hew_string_replace(s.as_ptr(), old.as_ptr(), empty.as_ptr());
         assert_eq!(read_cstr(r2), "aacc");
-        free_cstr(r2);
+        free_hew_string(r2);
 
         // Null source → empty.
         let r3 = hew_string_replace(ptr::null(), old.as_ptr(), new.as_ptr());
         assert_eq!(read_cstr(r3), "");
-        free_cstr(r3);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// HashMap via C ABI
-// ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn hashmap_i32_lifecycle() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        assert!(!m.is_null());
-        assert!(hew_hashmap_is_empty(m));
-        assert_eq!(hew_hashmap_len(m), 0);
-
-        let key_a = cstr("a");
-        let key_b = cstr("b");
-
-        hew_hashmap_insert_impl(m, key_a.as_ptr(), 42, ptr::null());
-        hew_hashmap_insert_impl(m, key_b.as_ptr(), 99, ptr::null());
-        assert_eq!(hew_hashmap_len(m), 2);
-        assert!(!hew_hashmap_is_empty(m));
-
-        assert_eq!(hew_hashmap_get_i32(m, key_a.as_ptr()), 42);
-        assert_eq!(hew_hashmap_get_i32(m, key_b.as_ptr()), 99);
-
-        assert!(hew_hashmap_contains_key(m, key_a.as_ptr()));
-
-        let missing = cstr("missing");
-        assert!(!hew_hashmap_contains_key(m, missing.as_ptr()));
-        assert_eq!(hew_hashmap_get_i32(m, missing.as_ptr()), 0);
-
-        // Update existing.
-        hew_hashmap_insert_impl(m, key_a.as_ptr(), 100, ptr::null());
-        assert_eq!(hew_hashmap_get_i32(m, key_a.as_ptr()), 100);
-        assert_eq!(hew_hashmap_len(m), 2); // no new entry
-
-        // Remove.
-        assert!(hew_hashmap_remove(m, key_a.as_ptr()));
-        assert!(!hew_hashmap_contains_key(m, key_a.as_ptr()));
-        assert_eq!(hew_hashmap_len(m), 1);
-
-        // Remove non-existent.
-        assert!(!hew_hashmap_remove(m, missing.as_ptr()));
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_str_values() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        let key = cstr("greeting");
-        let val = cstr("hello");
-
-        hew_hashmap_insert_impl(m, key.as_ptr(), 0, val.as_ptr());
-        let got = hew_hashmap_get_str_impl(m, key.as_ptr());
-        assert_eq!(read_cstr(got), "hello");
-
-        // Overwrite string value.
-        let val2 = cstr("world");
-        hew_hashmap_insert_impl(m, key.as_ptr(), 0, val2.as_ptr());
-        let got2 = hew_hashmap_get_str_impl(m, key.as_ptr());
-        assert_eq!(read_cstr(got2), "world");
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_i64_and_f64() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        let key = cstr("num");
-
-        hew_hashmap_insert_i64(m, key.as_ptr(), i64::MAX);
-        assert_eq!(hew_hashmap_get_i64(m, key.as_ptr()), i64::MAX);
-
-        hew_hashmap_insert_f64(m, key.as_ptr(), 2.718);
-        assert!((hew_hashmap_get_f64(m, key.as_ptr()) - 2.718).abs() < f64::EPSILON);
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_growth_past_load_factor() {
-    unsafe {
-        let m = hew_hashmap_new_impl();
-        // Insert enough keys to force resize (initial cap is 8, load factor 75%).
-        for i in 0..20 {
-            let key = CString::new(format!("key_{i}")).unwrap();
-            hew_hashmap_insert_impl(m, key.as_ptr(), i, ptr::null());
-        }
-        assert_eq!(hew_hashmap_len(m), 20);
-
-        // Verify all entries survived the resize.
-        for i in 0..20 {
-            let key = CString::new(format!("key_{i}")).unwrap();
-            assert!(hew_hashmap_contains_key(m, key.as_ptr()));
-            assert_eq!(hew_hashmap_get_i32(m, key.as_ptr()), i);
-        }
-
-        hew_hashmap_free_impl(m);
-    }
-}
-
-#[test]
-fn hashmap_free_null_is_noop() {
-    unsafe {
-        hew_hashmap_free_impl(ptr::null_mut());
+        free_hew_string(r3);
     }
 }
 
@@ -814,16 +749,19 @@ fn wait_for_dispatches(expected: i32, timeout: Duration) -> bool {
     true
 }
 
-/// Test dispatch function matching the Hew 4-param canonical signature.
-unsafe extern "C" fn test_dispatch(
+/// Test dispatch function matching the Hew context-leading canonical signature.
+unsafe extern "C-unwind" fn test_dispatch(
+    _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     _state: *mut c_void,
     _msg_type: i32,
     _data: *mut c_void,
     _data_size: usize,
-) {
+    _borrow_mode: i32,
+) -> *mut c_void {
     let mut count = DISPATCH_SIGNAL.0.lock().unwrap();
     *count += 1;
     DISPATCH_SIGNAL.1.notify_all();
+    std::ptr::null_mut()
 }
 
 #[test]
@@ -926,15 +864,19 @@ fn actor_send_dispatches_via_scheduler() {
 fn actor_send_multiple_messages() {
     static MULTI_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
-    unsafe extern "C" fn multi_dispatch(
+    unsafe extern "C-unwind" fn multi_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         let mut count = MULTI_SIGNAL.0.lock().unwrap();
         *count += 1;
         MULTI_SIGNAL.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
     ensure_scheduler();
@@ -984,18 +926,22 @@ fn actor_send_multiple_messages() {
 fn actor_dispatch_receives_correct_data() {
     static DATA_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
 
-    unsafe extern "C" fn data_dispatch(
+    unsafe extern "C-unwind" fn data_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         data: *mut c_void,
         data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         if !data.is_null() && data_size >= size_of::<i32>() {
             let val = unsafe { *(data.cast::<i32>()) };
             let mut received = DATA_SIGNAL.0.lock().unwrap();
             *received = val;
             DATA_SIGNAL.1.notify_all();
         }
+
+        std::ptr::null_mut()
     }
 
     ensure_scheduler();
@@ -1034,140 +980,6 @@ fn actor_dispatch_receives_correct_data() {
         assert_eq!(received, 12345);
 
         hew_actor_free(actor);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// HashMap extended operations via C ABI
-// ═══════════════════════════════════════════════════════════════════════
-
-mod hashmap_extended {
-    use super::*;
-    use hew_runtime::hashmap::{
-        hew_hashmap_clear, hew_hashmap_get_or_default_i32, hew_hashmap_keys,
-        hew_hashmap_values_i32, hew_hashmap_values_str,
-    };
-
-    #[test]
-    fn keys_returns_all_keys() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("alpha");
-            let kb = cstr("beta");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 1, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 2, ptr::null());
-
-            let keys = hew_hashmap_keys(m);
-            assert_eq!(hew_vec_len(keys), 2);
-
-            let k0 = read_cstr(hew_vec_get_str(keys, 0));
-            let k1 = read_cstr(hew_vec_get_str(keys, 1));
-            let mut got = vec![k0, k1];
-            got.sort_unstable();
-            assert_eq!(got, vec!["alpha", "beta"]);
-
-            hew_vec_free(keys);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn values_i32_returns_all_values() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("x");
-            let kb = cstr("y");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 10, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 20, ptr::null());
-
-            let vals = hew_hashmap_values_i32(m);
-            assert_eq!(hew_vec_len(vals), 2);
-
-            let mut got = vec![hew_vec_get_i32(vals, 0), hew_vec_get_i32(vals, 1)];
-            got.sort_unstable();
-            assert_eq!(got, vec![10, 20]);
-
-            hew_vec_free(vals);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn values_str_returns_all_string_values() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("a");
-            let kb = cstr("b");
-            let va = cstr("hello");
-            let vb = cstr("world");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 0, va.as_ptr());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 0, vb.as_ptr());
-
-            let vals = hew_hashmap_values_str(m);
-            assert_eq!(hew_vec_len(vals), 2);
-
-            let v0 = read_cstr(hew_vec_get_str(vals, 0));
-            let v1 = read_cstr(hew_vec_get_str(vals, 1));
-            let mut got = vec![v0, v1];
-            got.sort_unstable();
-            assert_eq!(got, vec!["hello", "world"]);
-
-            hew_vec_free(vals);
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn clear_removes_all_entries() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let ka = cstr("one");
-            let kb = cstr("two");
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 1, ptr::null());
-            hew_hashmap_insert_impl(m, kb.as_ptr(), 2, ptr::null());
-            assert_eq!(hew_hashmap_len(m), 2);
-
-            hew_hashmap_clear(m);
-            assert_eq!(hew_hashmap_len(m), 0);
-            assert!(hew_hashmap_is_empty(m));
-            assert!(!hew_hashmap_contains_key(m, ka.as_ptr()));
-            assert!(!hew_hashmap_contains_key(m, kb.as_ptr()));
-
-            // Can reinsert after clear.
-            hew_hashmap_insert_impl(m, ka.as_ptr(), 99, ptr::null());
-            assert_eq!(hew_hashmap_len(m), 1);
-            assert_eq!(hew_hashmap_get_i32(m, ka.as_ptr()), 99);
-
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn get_or_default_returns_value_when_present() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let k = cstr("present");
-            hew_hashmap_insert_impl(m, k.as_ptr(), 42, ptr::null());
-
-            assert_eq!(hew_hashmap_get_or_default_i32(m, k.as_ptr(), -1), 42);
-
-            hew_hashmap_free_impl(m);
-        }
-    }
-
-    #[test]
-    fn get_or_default_returns_default_when_absent() {
-        unsafe {
-            let m = hew_hashmap_new_impl();
-            let missing = cstr("absent");
-
-            assert_eq!(
-                hew_hashmap_get_or_default_i32(m, missing.as_ptr(), -99),
-                -99
-            );
-
-            hew_hashmap_free_impl(m);
-        }
     }
 }
 
@@ -1610,11 +1422,11 @@ mod vec_extended {
             hew_vec_push_str(v, world.as_ptr());
             let c = hew_vec_clone(v);
             assert_eq!(hew_vec_len(c), 2);
-            assert_eq!(read_cstr(hew_vec_get_str(c, 0)), "hello");
-            assert_eq!(read_cstr(hew_vec_get_str(c, 1)), "world");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 1)), "world");
             // Freeing original should not invalidate clone.
             hew_vec_free(v);
-            assert_eq!(read_cstr(hew_vec_get_str(c, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(c, 0)), "hello");
             hew_vec_free(c);
         }
     }
@@ -1797,7 +1609,7 @@ mod vec_extended {
             hew_vec_push_str(v, c.as_ptr());
             hew_vec_truncate(v, 1);
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "aaa");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "aaa");
             hew_vec_free(v);
         }
     }
@@ -1853,9 +1665,9 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "c");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
             hew_vec_free(v);
         }
     }
@@ -1867,7 +1679,7 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1879,9 +1691,9 @@ mod string_extended {
             let d = cstr("::");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "c");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "c");
             hew_vec_free(v);
         }
     }
@@ -1893,9 +1705,9 @@ mod string_extended {
             let d = cstr(",");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 3);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "a");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 1)), "b");
-            assert_eq!(read_cstr(hew_vec_get_str(v, 2)), "");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "a");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "b");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "");
             hew_vec_free(v);
         }
     }
@@ -1916,7 +1728,7 @@ mod string_extended {
             let s = cstr("hello");
             let v = hew_string_split(s.as_ptr(), ptr::null());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1928,7 +1740,7 @@ mod string_extended {
             let d = cstr("");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
             assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_cstr(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
             hew_vec_free(v);
         }
     }
@@ -1939,7 +1751,7 @@ mod string_extended {
             let s = cstr("Hello WORLD 123");
             let r = hew_string_to_lowercase(s.as_ptr());
             assert_eq!(read_cstr(r), "hello world 123");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1948,7 +1760,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_to_lowercase(ptr::null());
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1958,7 +1770,7 @@ mod string_extended {
             let s = cstr("Hello world 123");
             let r = hew_string_to_uppercase(s.as_ptr());
             assert_eq!(read_cstr(r), "HELLO WORLD 123");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1967,7 +1779,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_to_uppercase(ptr::null());
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -1996,7 +1808,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_from_char(i32::from(b'Z'));
             assert_eq!(read_cstr(r), "Z");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2006,7 +1818,7 @@ mod string_extended {
             let s = cstr("ab");
             let r = hew_string_repeat(s.as_ptr(), 3);
             assert_eq!(read_cstr(r), "ababab");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2016,11 +1828,11 @@ mod string_extended {
             let s = cstr("x");
             let r0 = hew_string_repeat(s.as_ptr(), 0);
             assert_eq!(read_cstr(r0), "");
-            free_cstr(r0);
+            free_hew_string(r0);
 
             let rn = hew_string_repeat(s.as_ptr(), -1);
             assert_eq!(read_cstr(rn), "");
-            free_cstr(rn);
+            free_hew_string(rn);
         }
     }
 
@@ -2029,7 +1841,7 @@ mod string_extended {
         unsafe {
             let r = hew_string_repeat(ptr::null(), 5);
             assert_eq!(read_cstr(r), "");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2039,7 +1851,7 @@ mod string_extended {
             let s = cstr("hello");
             let r = hew_string_repeat(s.as_ptr(), 1);
             assert_eq!(read_cstr(r), "hello");
-            free_cstr(r);
+            free_hew_string(r);
         }
     }
 
@@ -2104,10 +1916,21 @@ mod generic_vec_tests {
         z: i32,
     }
 
+    unsafe extern "C" fn point_eq(a: *const c_void, b: *const c_void) -> i32 {
+        let lhs = unsafe { &*a.cast::<Point>() };
+        let rhs = unsafe { &*b.cast::<Point>() };
+        i32::from(lhs == rhs)
+    }
+
+    unsafe extern "C" fn point_eq_must_not_be_called(_a: *const c_void, _b: *const c_void) -> i32 {
+        panic!("empty layout Vec contains must not invoke equality thunk");
+    }
+
     #[test]
     fn push_get_struct() {
         unsafe {
             let v = hew_vec_new_generic(core::mem::size_of::<Point>() as i64, 0);
+            assert!((*v).layout.is_null());
             let pts = [
                 Point { x: 1, y: 2, z: 3 },
                 Point { x: 4, y: 5, z: 6 },
@@ -2122,6 +1945,364 @@ mod generic_vec_tests {
                 assert_eq!(*ptr, *expected);
             }
             hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn layout_descriptor_constructor_records_nullable_abi_pointer() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            assert!(!v.is_null());
+            // layout is copied into the vec's inline storage; the pointer
+            // no longer equals the caller's address but the values are identical.
+            assert!(!(*v).layout.is_null());
+            assert_eq!((*(*v).layout).size, layout.size);
+            assert_eq!((*(*v).layout).align, layout.align);
+            assert_eq!((*(*v).layout).ownership_kind, layout.ownership_kind);
+            assert_eq!((*v).elem_size, core::mem::size_of::<Point>());
+            assert_eq!(hew_vec_len(v), 0);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn layout_bitcopy_record_push_get_set_pop_copies_values() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let first = Point { x: 1, y: 2, z: 3 };
+            let second = Point { x: 4, y: 5, z: 6 };
+            hew_vec_push_layout(v, (&raw const first).cast(), &raw const layout);
+            hew_vec_push_layout(v, (&raw const second).cast(), &raw const layout);
+            assert_eq!(hew_vec_len(v), 2);
+
+            let got_first = &*hew_vec_get_layout(v, 0, &raw const layout).cast::<Point>();
+            assert_eq!(*got_first, first);
+
+            let replacement = Point {
+                x: 10,
+                y: 20,
+                z: 30,
+            };
+            hew_vec_set_layout(v, 0, (&raw const replacement).cast(), &raw const layout);
+            let got_replacement = &*hew_vec_get_layout(v, 0, &raw const layout).cast::<Point>();
+            assert_eq!(*got_replacement, replacement);
+
+            let mut out = core::mem::MaybeUninit::<Point>::uninit();
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                1
+            );
+            assert_eq!(out.assume_init(), second);
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                1
+            );
+            assert_eq!(out.assume_init(), replacement);
+            assert_eq!(
+                hew_vec_pop_layout(v, out.as_mut_ptr().cast(), &raw const layout),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_layout_bitcopy_record_found_and_missing() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let first = Point { x: 1, y: 2, z: 3 };
+            let second = Point { x: 4, y: 5, z: 6 };
+            let missing = Point { x: 1, y: 99, z: 3 };
+            hew_vec_push_layout(v, (&raw const first).cast(), &raw const layout);
+            hew_vec_push_layout(v, (&raw const second).cast(), &raw const layout);
+
+            assert_eq!(
+                hew_vec_contains_thunk(v, (&raw const second).cast(), Some(point_eq)),
+                1
+            );
+            assert_eq!(
+                hew_vec_contains_thunk(v, (&raw const missing).cast(), Some(point_eq)),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_empty_vec_does_not_call_thunk() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            assert_eq!(
+                hew_vec_contains_thunk(
+                    v,
+                    (&raw const needle).cast(),
+                    Some(point_eq_must_not_be_called),
+                ),
+                0
+            );
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn contains_thunk_null_vec_or_value_returns_zero() {
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let needle = Point { x: 1, y: 2, z: 3 };
+            assert_eq!(
+                hew_vec_contains_thunk(ptr::null(), (&raw const needle).cast(), Some(point_eq)),
+                0
+            );
+            let v = hew_vec_new_with_layout(&raw const layout);
+            assert_eq!(hew_vec_contains_thunk(v, ptr::null(), Some(point_eq)), 0);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_null_eq_fn_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_null_eq_fn_fails_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_null_eq_fn_fails_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "null equality thunk must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout contains equality thunk is null"),
+            "null equality thunk must report the fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_contains_thunk_null_eq_fn_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_null_eq_fn_fails_closed"
+        }) {
+            return;
+        }
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), None);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_layout_managed_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_layout_managed_fails_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_layout_managed_fails_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "layout-managed contains must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "layout-managed contains must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_contains_thunk_layout_managed_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_layout_managed_fails_closed"
+        }) {
+            return;
+        }
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_thunk_elem_kind_mismatch_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_contains_thunk_elem_kind_mismatch_fails_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_contains_thunk_elem_kind_mismatch_fails_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "element-kind mismatch must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "element-kind mismatch must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_contains_thunk_elem_kind_mismatch_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_contains_thunk_elem_kind_mismatch_fails_closed"
+        }) {
+            return;
+        }
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            (*v).elem_kind = ElemKind::String;
+            let needle = Point { x: 1, y: 2, z: 3 };
+            let _ = hew_vec_contains_thunk(v, (&raw const needle).cast(), Some(point_eq));
+        }
+    }
+
+    #[test]
+    fn layout_bitcopy_tuple_payload_preserves_byte_shape() {
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        struct TuplePayload(i32, f64);
+
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<TuplePayload>(),
+            align: core::mem::align_of::<TuplePayload>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let payload = TuplePayload(7, 8.5);
+            hew_vec_push_layout(v, (&raw const payload).cast(), &raw const layout);
+            let raw = hew_vec_get_layout(v, 0, &raw const layout);
+
+            let expected = core::slice::from_raw_parts(
+                (&raw const payload).cast::<u8>(),
+                core::mem::size_of::<TuplePayload>(),
+            );
+            let got = core::slice::from_raw_parts(raw.cast::<u8>(), layout.size);
+            assert_eq!(got, expected);
+            hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn layout_managed_push_remains_fail_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_layout_managed_push_remains_fail_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_layout_managed_push_remains_fail_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "layout-managed push must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("PANIC: Vec layout-aware operation is not implemented"),
+            "layout-managed push must report the staged fail-closed diagnostic"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_layout_managed_push_remains_fail_closed() {
+        if std::env::var("HEW_DEATH_TEST").map_or(true, |v| {
+            v != "helper_layout_managed_push_remains_fail_closed"
+        }) {
+            return;
+        }
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        };
+
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let point = Point { x: 1, y: 2, z: 3 };
+            hew_vec_push_layout(v, (&raw const point).cast(), &raw const layout);
         }
     }
 
@@ -2157,6 +2338,66 @@ mod generic_vec_tests {
             let empty = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(empty, 0);
             hew_vec_free(v);
+        }
+    }
+
+    // ── hew_vec_get_ptr stride-mismatch fail-closed guard ──────────────
+    //
+    // `hew_vec_get_ptr` assumes 8-byte pointer-sized elements. Calling it
+    // on a layout vec (elem_size = 24 for Point{x,y,z}) must abort rather
+    // than return silently-wrong data.  The guard is tested via the
+    // subprocess death-test pattern so the libc::abort() does not terminate
+    // the test runner process.
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_ptr_stride_mismatch_fails_closed() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "generic_vec_tests::helper_get_ptr_stride_mismatch_fails_closed",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env(
+                "HEW_DEATH_TEST",
+                "helper_get_ptr_stride_mismatch_fails_closed",
+            )
+            .output()
+            .unwrap();
+        assert!(
+            !status.status.success(),
+            "hew_vec_get_ptr on a wide-element vec must terminate abnormally"
+        );
+        assert!(
+            String::from_utf8_lossy(&status.stderr)
+                .contains("hew_vec_get_ptr called on a vec with elem_size != sizeof(pointer)"),
+            "hew_vec_get_ptr stride mismatch must report the fail-closed diagnostic; \
+             stderr was: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn helper_get_ptr_stride_mismatch_fails_closed() {
+        if std::env::var("HEW_DEATH_TEST")
+            .map_or(true, |v| v != "helper_get_ptr_stride_mismatch_fails_closed")
+        {
+            return;
+        }
+        // Point is 24 bytes (three i64 fields) — wider than a pointer (8 bytes).
+        // A layout vec for Point has elem_size=24; hew_vec_get_ptr must abort.
+        let layout = HewTypeLayout {
+            size: core::mem::size_of::<Point>(),
+            align: core::mem::align_of::<Point>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+        };
+        unsafe {
+            let v = hew_vec_new_with_layout(&raw const layout);
+            let p = Point { x: 1, y: 2, z: 3 };
+            hew_vec_push_layout(v, (&raw const p).cast(), &raw const layout);
+            // This call must abort — elem_size=24 != sizeof(*mut c_void)=8.
+            let _ = hew_vec_get_ptr(v, 0);
         }
     }
 }
@@ -2560,7 +2801,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "hello");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2571,7 +2812,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "éll");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2581,7 +2822,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "本語");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2605,7 +2846,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "olleh");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2615,7 +2856,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "olléh");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2625,7 +2866,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "語本日");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2635,7 +2876,7 @@ mod utf8_string_tests {
         assert!(!result.is_null());
         let rs = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
         assert_eq!(rs, "b🦀a");
-        unsafe { libc::free(result.cast()) };
+        unsafe { free_hew_string(result) };
     }
 
     #[test]
@@ -2645,42 +2886,47 @@ mod utf8_string_tests {
 
     // --- hew_string_to_bytes ---
 
+    /// Read the active region of a `BytesTriple` as a byte slice for assertions.
+    ///
+    /// # Safety
+    /// `t.ptr + t.offset` must be valid for `t.len` bytes (or `t.ptr` null with
+    /// `t.len == 0`).
+    unsafe fn triple_slice(t: &hew_runtime::bytes::BytesTriple) -> &[u8] {
+        if t.len == 0 || t.ptr.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(t.ptr.add(t.offset as usize), t.len as usize) }
+        }
+    }
+
     #[test]
     fn to_bytes_ascii() {
         let s = CString::new("hi").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, i32::from(b'h'));
-        assert_eq!(b1, i32::from(b'i'));
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert!(!t.ptr.is_null());
+        assert_eq!(t.len, 2);
+        assert_eq!(unsafe { triple_slice(&t) }, b"hi");
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 
     #[test]
     fn to_bytes_multibyte() {
         // "é" is 2 bytes: 0xC3 0xA9
         let s = CString::new("é").unwrap();
-        let v = unsafe { hew_string_to_bytes(s.as_ptr()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 2);
-        let b0 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 0) };
-        let b1 = unsafe { hew_runtime::vec::hew_vec_get_i32(v, 1) };
-        assert_eq!(b0, 0xC3);
-        assert_eq!(b1, 0xA9);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        let t = unsafe { hew_string_to_bytes(s.as_ptr()) };
+        assert!(!t.ptr.is_null());
+        assert_eq!(t.len, 2);
+        assert_eq!(unsafe { triple_slice(&t) }, &[0xC3, 0xA9]);
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 
     #[test]
     fn to_bytes_null() {
-        let v = unsafe { hew_string_to_bytes(ptr::null()) };
-        assert!(!v.is_null());
-        let vec = unsafe { &*v };
-        assert_eq!(vec.len, 0);
-        unsafe { hew_runtime::vec::hew_vec_free(v) };
+        // Null input yields an empty triple (null ptr, len 0); drop is a no-op.
+        let t = unsafe { hew_string_to_bytes(ptr::null()) };
+        assert!(t.ptr.is_null());
+        assert_eq!(t.len, 0);
+        unsafe { hew_runtime::bytes::hew_bytes_drop(t.ptr) };
     }
 }
 
@@ -2775,6 +3021,7 @@ mod file_io_tests {
         hew_file_append, hew_file_delete, hew_file_exists, hew_file_read, hew_file_size,
         hew_file_write, hew_path_exists,
     };
+    use hew_runtime::string::hew_string_drop;
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
         let pid = std::process::id();
@@ -2793,8 +3040,11 @@ mod file_io_tests {
             .to_str()
             .expect("invalid UTF-8")
             .to_owned();
-        // SAFETY: `p` was allocated by `libc::strdup`.
-        unsafe { libc::free(p.cast()) };
+        // SAFETY: `hew_file_read` produces a header-aware allocation via
+        // `str_to_malloc`; release it through the public `hew_string_drop`
+        // consumer (recovers the base, validates the header), never bare
+        // `libc::free` which would interior-free `base+16`.
+        unsafe { hew_string_drop(p) };
         s
     }
 
@@ -3252,42 +3502,6 @@ mod registry_tests {
     }
 }
 
-// ── Scope cancellation ──
-
-mod cancellation_tests {
-    use hew_runtime::scope::{
-        hew_scope_cancel, hew_scope_create, hew_scope_free, hew_scope_is_cancelled,
-    };
-
-    #[test]
-    fn is_cancelled_default_false() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert!(!scope.is_null());
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn cancel_sets_flag() {
-        unsafe {
-            let scope = hew_scope_create();
-            assert_eq!(hew_scope_is_cancelled(scope), 0);
-            hew_scope_cancel(scope);
-            assert_eq!(hew_scope_is_cancelled(scope), 1);
-            hew_scope_free(scope);
-        }
-    }
-
-    #[test]
-    fn is_cancelled_null_returns_zero() {
-        unsafe {
-            assert_eq!(hew_scope_is_cancelled(std::ptr::null_mut()), 0);
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════
 // Supervisor RestForOne strategy tests
 // ═══════════════════════════════════════════════════════════════════════
@@ -3307,12 +3521,15 @@ mod rest_for_one_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     static SCHED_INIT: std::sync::Once = std::sync::Once::new();
@@ -3343,6 +3560,9 @@ mod rest_for_one_tests {
                     restart_policy: RESTART_PERMANENT,
                     mailbox_capacity: -1,
                     overflow: OVERFLOW_DROP_NEW,
+                    arena_cap_bytes: 0,
+                    cycle_capable: 0,
+                    on_crash: None,
                 };
                 assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             }
@@ -3448,34 +3668,45 @@ mod supervisor_escalation_tests {
         *count
     }
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn counting_dispatch(
+    unsafe extern "C-unwind" fn counting_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         let mut count = NESTED_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
         NESTED_DISPATCH_COUNT.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn sibling_dispatch(
+    unsafe extern "C-unwind" fn sibling_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
         let mut count = SIBLING_DISPATCH_COUNT.0.lock().unwrap();
         *count += 1;
         SIBLING_DISPATCH_COUNT.1.notify_all();
+
+        std::ptr::null_mut()
     }
 
     unsafe extern "C" fn nested_child_supervisor_init() -> *mut HewSupervisor {
@@ -3497,6 +3728,9 @@ mod supervisor_escalation_tests {
             restart_policy: RESTART_PERMANENT,
             mailbox_capacity: -1,
             overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
         };
 
         if unsafe { hew_supervisor_add_child_spec(child, &raw const spec) } != 0 {
@@ -3548,6 +3782,9 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(child, &raw const spec), 0);
 
@@ -3622,6 +3859,9 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3723,6 +3963,9 @@ mod supervisor_escalation_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(parent, &raw const sibling_spec),
@@ -3749,7 +3992,10 @@ mod supervisor_escalation_tests {
             let first_actor_id = (*first_actor).id;
             hew_actor_trap(first_actor, 1);
 
-            let count = hew_supervisor_wait_restart(child, 1, 10_000);
+            // 30s: this wait twice missed a 10s budget on loaded hosted
+            // Windows runners (0.21s isolated — the bound is contention
+            // headroom, not expected duration).
+            let count = hew_supervisor_wait_restart(child, 1, 30_000);
             assert!(
                 count >= 1,
                 "child supervisor should restart nested actor once"
@@ -3769,7 +4015,8 @@ mod supervisor_escalation_tests {
 
             hew_actor_trap(restarted_actor, 1);
 
-            let count = hew_supervisor_wait_restart(parent, 1, 10_000);
+            // 30s: same contention headroom as the child wait above.
+            let count = hew_supervisor_wait_restart(parent, 1, 30_000);
             assert!(
                 count >= 1,
                 "parent should observe child supervisor escalation"
@@ -3847,12 +4094,15 @@ mod circuit_breaker_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -3874,6 +4124,9 @@ mod circuit_breaker_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const child_spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3921,12 +4174,15 @@ mod dynamic_supervision_tests {
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
 
-    unsafe extern "C" fn noop_dispatch(
+    unsafe extern "C-unwind" fn noop_dispatch(
+        _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
         _state: *mut c_void,
         _msg_type: i32,
         _data: *mut c_void,
         _data_size: usize,
-    ) {
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
     }
 
     #[test]
@@ -3943,6 +4199,9 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
 
             // Not started yet, so child won't be spawned but slot is allocated.
@@ -3971,6 +4230,9 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);
@@ -4013,6 +4275,9 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
 
             // Add more than the old SUP_MAX_CHILDREN (64) limit.
@@ -4040,6 +4305,9 @@ mod dynamic_supervision_tests {
                 restart_policy: RESTART_PERMANENT,
                 mailbox_capacity: 16,
                 overflow: OVERFLOW_DROP_NEW,
+                arena_cap_bytes: 0,
+                cycle_capable: 0,
+                on_crash: None,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);

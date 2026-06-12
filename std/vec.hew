@@ -5,26 +5,22 @@
 
 /// Check if a `Vec<i32>` contains `val`. Returns `true` if found.
 pub fn contains_i32(v: Vec<i32>, val: i32) -> bool { // INTERNAL-ABI: typed for 32-bit integer vector storage
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
 
 /// Check if a `Vec<i64>` contains `val`.
-pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
-    var i = 0;
+pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
@@ -40,62 +36,54 @@ pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typ
 /// println(vec.contains_f64(v, 0.0));   // false
 /// ```
 pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
-    var i = 0;
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
 
-/// Check if a `Vec<String>` contains `val`. Uses string equality.
+/// Check if a `Vec<string>` contains `val`. Uses string equality.
 ///
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("hello");
 /// println(vec.contains_str(v, "hello"));  // true
 /// println(vec.contains_str(v, "world"));  // false
 /// ```
-pub fn contains_str(v: Vec<String>, val: String) -> bool {
-    var i = 0;
+pub fn contains_str(v: Vec<string>, val: string) -> bool {
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return true;
         }
-        i = i + 1;
     }
     false
 }
 
 // ── index_of ──────────────────────────────────────────────────────────────
 /// Return the index of `val` in a `Vec<i32>`, or `-1` if not found.
-pub fn index_of_i32(v: Vec<i32>, val: i32) -> int { // INTERNAL-ABI: typed for 32-bit integer vector storage
-    var i = 0;
+pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 32-bit integer vector storage
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
 
 /// Return the index of `val` in a `Vec<i64>`, or `-1` if not found.
-pub fn index_of_i64(v: Vec<i64>, val: i64) -> int { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
-    var i = 0;
+pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
@@ -112,14 +100,12 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> int { // INTERNAL-ABI: legacy type
 /// println(vec.index_of_f64(v, 2.5));  // 1
 /// println(vec.index_of_f64(v, 9.9));  // -1
 /// ```
-pub fn index_of_f64(v: Vec<f64>, val: f64) -> int {
-    var i = 0;
+pub fn index_of_f64(v: Vec<f64>, val: f64) -> i64 {
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
@@ -129,27 +115,25 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> int {
 /// # Examples
 ///
 /// ```
-/// let v: Vec<String> = Vec::new();
+/// let v: Vec<string> = Vec::new();
 /// v.push("a");
 /// v.push("b");
 /// println(vec.index_of_str(v, "b"));   // 1
 /// println(vec.index_of_str(v, "z"));   // -1
 /// ```
-pub fn index_of_str(v: Vec<String>, val: String) -> int {
-    var i = 0;
+pub fn index_of_str(v: Vec<string>, val: string) -> i64 {
     let n = v.len();
-    while i < n {
+    for i in 0 .. n {
         if v.get(i) == val {
             return i;
         }
-        i = i + 1;
     }
     -1
 }
 
 // ── first / last ──────────────────────────────────────────────────────────
 /// Return `Some` of the first element of a `Vec<i64>`, or `None` if empty.
-pub fn first_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     if v.len() == 0 {
         return None;
     }
@@ -158,26 +142,22 @@ pub fn first_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed ali
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
 pub fn first_f64(v: Vec<f64>) -> Option<f64> {
-    var i = 0;
-    let n = v.len();
-    if n == 0 {
+    if v.len() == 0 {
         return None;
     }
-    Some(v.get(i))
+    Some(v.get(0))
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
-pub fn first_str(v: Vec<String>) -> Option<String> {
-    var i = 0;
-    let n = v.len();
-    if n == 0 {
+pub fn first_str(v: Vec<string>) -> Option<string> {
+    if v.len() == 0 {
         return None;
     }
-    Some(v.get(i))
+    Some(v.get(0))
 }
 
 /// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
-pub fn last_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     let n = v.len();
     if n == 0 {
         return None;
@@ -187,137 +167,117 @@ pub fn last_i64(v: Vec<i64>) -> Option<int> { // INTERNAL-ABI: legacy typed alia
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
 pub fn last_f64(v: Vec<f64>) -> Option<f64> {
-    var i = 0;
     let n = v.len();
     if n == 0 {
         return None;
     }
-    while i + 1 < n {
-        i = i + 1;
-    }
-    Some(v.get(i))
+    Some(v.get(n - 1))
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
-pub fn last_str(v: Vec<String>) -> Option<String> {
-    var i = 0;
+pub fn last_str(v: Vec<string>) -> Option<string> {
     let n = v.len();
     if n == 0 {
         return None;
     }
-    while i + 1 < n {
-        i = i + 1;
-    }
-    Some(v.get(i))
+    Some(v.get(n - 1))
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────
-/// Return the smallest element in a `Vec<i32>`. Panics if empty.
-pub fn min_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
+/// Return `Some` of the smallest element in a `Vec<i32>`, or `None` if empty.
+pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        panic("vec::min_i32: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m as i64)
 }
 
-/// Return the smallest element in a `Vec<i64>`. Panics if empty.
-pub fn min_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+/// Return `Some` of the smallest element in a `Vec<i64>`, or `None` if empty.
+pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     if v.len() == 0 {
-        panic("vec::min_i64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the smallest element in `v`. Panics if `v` is empty.
+/// Return `Some` of the smallest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
-pub fn min_f64(v: Vec<f64>) -> f64 {
+pub fn min_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        panic("vec::min_f64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val < m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the largest element in a `Vec<i32>`. Panics if empty.
-pub fn max_i32(v: Vec<i32>) -> i32 { // INTERNAL-ABI: typed for 32-bit integer vector storage
+/// Return `Some` of the largest element in a `Vec<i32>`, or `None` if empty.
+pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit integer vector storage
     if v.len() == 0 {
-        panic("vec::max_i32: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m as i64)
 }
 
-/// Return the largest element in a `Vec<i64>`. Panics if empty.
-pub fn max_i64(v: Vec<i64>) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<int> in Hew
+/// Return `Some` of the largest element in a `Vec<i64>`, or `None` if empty.
+pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     if v.len() == 0 {
-        panic("vec::max_i64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m)
 }
 
-/// Return the largest element in `v`. Panics if `v` is empty.
+/// Return `Some` of the largest element in `v`, or `None` if `v` is empty.
 /// NaN propagates: if any element is NaN the result is unspecified.
-pub fn max_f64(v: Vec<f64>) -> f64 {
+pub fn max_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
-        panic("vec::max_f64: called on empty vector");
+        return None;
     }
     var m = v.get(0);
-    var i = 1;
     let n = v.len();
-    while i < n {
+    for i in 1 .. n {
         let val = v.get(i);
         if val > m {
             m = val;
         }
-        i = i + 1;
     }
-    m
+    Some(m)
 }

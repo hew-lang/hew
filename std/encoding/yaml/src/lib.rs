@@ -13,7 +13,7 @@ extern crate hew_runtime;
 use base64::Engine as _;
 use hew_cabi::{
     cabi::str_to_malloc,
-    vec::{hwvec_to_u8, u8_to_hwvec, HewVec},
+    vec::{u8_to_hwvec, HewVec},
 };
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -275,61 +275,6 @@ pub unsafe extern "C" fn hew_yaml_type(val: *const HewYamlValue) -> i32 {
     }
 }
 
-/// Get the boolean value from a [`HewYamlValue`].
-///
-/// Returns 1 if `val` is a YAML boolean, 0 otherwise (including null).
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_yaml_is_bool(val: *const HewYamlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, serde_yaml::Value::Bool(_)))
-}
-
-/// Returns 1 if `val` is a YAML integer-valued number, 0 otherwise.
-///
-/// Matches the values that [`hew_yaml_get_int`] can extract without coercion.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_yaml_is_int(val: *const HewYamlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    match &v.inner {
-        serde_yaml::Value::Number(n) if n.is_i64() || n.is_u64() => 1,
-        _ => 0,
-    }
-}
-
-/// Returns 1 if `val` is any YAML number (integer or float), 0 otherwise.
-///
-/// Matches the values that [`hew_yaml_get_float`] can extract — YAML, like
-/// JSON, does not distinguish integer-valued floats at the value level.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_yaml_is_float(val: *const HewYamlValue) -> i32 {
-    if val.is_null() {
-        return 0;
-    }
-    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
-    let v = unsafe { &*val };
-    i32::from(matches!(v.inner, serde_yaml::Value::Number(_)))
-}
-
 /// Returns 1 for `true`, 0 for `false` or if the value is not a boolean.
 ///
 /// # Safety
@@ -555,7 +500,7 @@ pub unsafe extern "C" fn hew_yaml_string_free(s: *mut c_char) {
         return;
     }
     // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { libc::free(s.cast()) };
+    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
 }
 
 // ---------------------------------------------------------------------------
@@ -692,42 +637,9 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
     }
 }
 
-/// Set a bytes field on a YAML mapping as a base64-encoded string.
-///
-/// # Safety
-///
-/// Same as [`hew_yaml_object_set_bool`]. `val` must be a valid bytes
-/// [`HewVec`] pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_yaml_object_set_bytes(
-    obj: *mut HewYamlValue,
-    key: *const c_char,
-    val: *mut HewVec,
-) {
-    if obj.is_null() || key.is_null() || val.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
-    let key_str = unsafe { CStr::from_ptr(key) }
-        .to_str()
-        .unwrap_or("")
-        .to_owned();
-    // SAFETY: val is non-null (checked above) and points to a valid bytes HewVec.
-    let encoded = base64::engine::general_purpose::STANDARD.encode(unsafe { hwvec_to_u8(val) });
-    // SAFETY: obj is non-null (checked above) and valid per caller contract.
-    if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
-        map.insert(
-            serde_yaml::Value::String(key_str),
-            serde_yaml::Value::String(encoded),
-        );
-    }
-}
-
 /// Set a `char` (Unicode codepoint) field on a YAML mapping as an integer.
 ///
-/// `val` is the Unicode codepoint as an `i64`. The public wire descriptor and
-/// C++ consumer use the integer-codepoint range `0..=0x10_FFFF` (see
-/// `IntegerBounds::for_kind(Char)` in `hew-wirecodec/src/plan.rs`).
+/// `val` is the Unicode codepoint as an `i64`, in the range `0..=0x10_FFFF`.
 /// Emitted as a YAML integer.
 ///
 /// # Safety
@@ -1074,7 +986,7 @@ mod tests {
     unsafe fn read_and_free_bytes(ptr: *mut HewVec) -> Vec<u8> {
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid bytes HewVec returned by this crate.
-        let bytes = unsafe { hwvec_to_u8(ptr) };
+        let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(ptr) };
         // SAFETY: ptr was allocated by the runtime allocator.
         unsafe { hew_cabi::vec::hew_vec_free(ptr) };
         bytes

@@ -1,0 +1,52 @@
+//! Non-BitCopy record match destructure — FULL extraction with a
+//! non-escaping bound owned field.
+//!
+//! `Pair { a: x, b: y } => x` binds both owned-string fields, but the arm
+//! body returns only `x` — `y` is bound and never read. Until the binder
+//! sole-owner admission landed, this leaked: `y`'s `RecordFieldLoad` dest
+//! was tainted by `projection_alias_dest` as an interior alias of the
+//! parent aggregate, so `derive_cow_sole_owner` excluded `y` from
+//! `cow_drop_allowed`. The leaf-CoW arm in `build_lifo_drops` then
+//! silently emitted no drop for `y` (it tolerates a missing place rather
+//! than panicking), and `y`'s buffer leaked one allocation per match.
+//!
+//! The fix pairs the scrutinee consume mark with a per-binder
+//! taint-suppression: when `lower_match_project` emits
+//! `MirStatement::Use { intent: Consume }` for a non-captured `BindingRef`
+//! scrutinee, each non-BitCopy binder's base local is recorded in
+//! `match_project_consumed_binder_locals`. `derive_cow_sole_owner` skips
+//! the projection-alias seed for those locals, admitting them to the
+//! sole-owner allow-set. The dataflow `Consumed`/`MaybeConsumed`
+//! exit-state post-filter still removes any binder consumed by the arm
+//! body (`=> y`), so a binder that escapes does not double-free.
+//!
+//! Observable contract: across many iterations the program prints `done`
+//! and exits 0 with bounded RSS. A regressed taint-suppression that
+//! over-admits would double-free (composite + binder both fire) and abort
+//! at `free_cstring`'s sentinel; the prior leak posture grew RSS linearly
+//! with iteration count.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+fn make_pair(n: i64) -> Pair {
+    Pair {
+        a: string_concat("a-", "payload"),
+        b: string_concat("b-", "payload"),
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        let p = make_pair(i);
+        let _s = match p {
+            Pair { a: x, b: y } => x,
+        };
+        i = i + 1;
+    }
+    println("done");
+    0
+}

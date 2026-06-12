@@ -1,11 +1,14 @@
+//! Status: runnable
+//! Description: Distributed actors example — demonstrates the Node API.
+
 // Distributed actors example — demonstrates the Node API.
 // This currently compiles as a local actor demo. The Node API
 // functions are available in the runtime but not yet wired into
 // codegen lowering. Only Node::start/shutdown/register/lookup are
 // typechecker builtins today.
 actor Counter {
-    let count: int;
-    receive fn increment(n: int) {
+    var count: i64;
+    receive fn increment(n: i64) {
         count = count + n;
         println(count);
     }
@@ -13,10 +16,9 @@ actor Counter {
 
 fn main() {
     // ── Local actor (works today) ────────────────────────────
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     counter.increment(5);
     counter.increment(3);
-    await close(counter);
 
     // ── Distributed API (runtime ready, codegen pending) ─────
     // Node::start("0.0.0.0:9000");

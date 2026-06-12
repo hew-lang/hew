@@ -107,6 +107,12 @@ impl WorkStealer {
     pub fn is_empty(&self) -> bool {
         self.stealer.is_empty()
     }
+
+    /// Returns the approximate number of items visible through this stealer.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.stealer.len()
+    }
 }
 
 impl GlobalQueue {

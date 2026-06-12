@@ -1,0 +1,112 @@
+// TCP three-way handshake — Mealy machine (outputs depend on state × event).
+//
+// Transition bodies emit a protocol event and carry the next state struct.
+// The example demonstrates:
+//   - States with payload fields (e.g. SynReceived carries the remote port)
+//   - Emit expressions in transition bodies (Mealy outputs)
+//   - Wildcard source `_` covers remaining (state, event) pairs to satisfy
+//     exhaustiveness; the wildcard is preserved in the HIR and JSON output;
+//     diagram renderers expand it but suppress wildcard-derived self-loops
+//   - Named self-transitions (e.g. SynReceived → SynReceived) are recorded as
+//     is_self_transition=true in the HIR
+//
+// Run:
+//   hew machine diagram examples/machine/tcp_handshake.hew
+//   hew machine diagram examples/machine/tcp_handshake.hew --format mermaid
+//   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
+machine TcpHandshake {
+    events {
+        SynReceive { remote_port: u16; }
+        AckReceive;
+        FinReceive;
+        Reset;
+    }
+
+    emits {
+        AckReceive;
+    }
+
+    state Closed;
+    state SynReceived {
+        remote_port: u16;
+        entry {
+            println("SYN received — sent SYN-ACK");
+        }
+    }
+    state Established {
+        remote_port: u16;
+        entry {
+            println("connection established");
+        }
+    }
+    state CloseWait {
+        entry {
+
+            // Passive close: we received a FIN from the peer.
+            println("received FIN — entering close-wait");
+        }
+    }
+
+    on SynReceive(remote_port): Closed => SynReceived {
+
+        // ── Named transitions ────────────────────────────────────────────────
+
+        // Passive open: peer sends SYN; the `(remote_port)` head binding names the
+        // event payload so the body reads it directly.
+        emit AckReceive {};
+        SynReceived { remote_port: remote_port }
+    }
+    on AckReceive: SynReceived => Established {
+
+        // Peer's ACK completes the handshake.
+        Established { remote_port: self.remote_port }
+    }
+    on FinReceive: Established => CloseWait {
+
+        // Peer initiates close while established.
+        emit AckReceive {};
+        CloseWait
+    }
+    on AckReceive: CloseWait => Closed {
+
+        // Close-wait → closed (we have sent our FIN and got ACK).
+        Closed
+    }
+    on Reset: _ => Closed {
+
+        // Reset collapses to Closed from any state.
+        Closed
+    }
+    on SynReceive: SynReceived => SynReceived reenter {
+
+        // ── Wildcard fallbacks (protocol violations — stay in current state) ─
+
+        // SYN while not Closed: ignore (already connected or waiting).
+        SynReceived { remote_port: self.remote_port }
+    }
+    on SynReceive: Established => Established reenter {
+        Established { remote_port: self.remote_port }
+    }
+    on SynReceive: CloseWait => CloseWait reenter {
+        CloseWait
+    }
+    on AckReceive: Closed => Closed reenter {
+
+        // Unexpected ACK while Closed or Established: ignore.
+        Closed
+    }
+    on AckReceive: Established => Established reenter {
+        Established { remote_port: self.remote_port }
+    }
+    on FinReceive: Closed => Closed reenter {
+
+        // FIN while not Established: ignore (nothing to close).
+        Closed
+    }
+    on FinReceive: SynReceived => SynReceived reenter {
+        SynReceived { remote_port: self.remote_port }
+    }
+    on FinReceive: CloseWait => CloseWait reenter {
+        CloseWait
+    }
+}

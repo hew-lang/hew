@@ -4,9 +4,123 @@
 )]
 use super::*;
 use crate::traits::RcFreeStatus;
+use crate::BuiltinType;
 
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
+}
+
+// ── Layout computation helpers (C-2c) ─────────────────────────────────────────
+
+/// Round `offset` up to the next multiple of `align`.
+///
+/// `align` must be a power of two or 1.  Wrapping arithmetic is used so
+/// overflow stays defined; callers that need overflow protection should
+/// check the result against a known maximum.
+fn align_up(offset: usize, align: usize) -> usize {
+    if align <= 1 {
+        return offset;
+    }
+    // align is a power of two (ensured by callers), so this is branch-free.
+    (offset.wrapping_add(align - 1)) & !(align - 1)
+}
+
+/// Return `(size, align)` for a single Copy-eligible primitive or nested record.
+///
+/// Returns `None` for types that are not hash-eligible primitives or Copy records.
+/// Only types that `ty_is_hash_eligible` would return `Eligible` for are expected
+/// here; the function is conservative and returns `None` for everything else.
+pub(crate) fn primitive_copy_layout(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<(usize, usize)> {
+    match ty {
+        Ty::Bool | Ty::I8 | Ty::U8 => Some((1, 1)),
+        Ty::I16 | Ty::U16 => Some((2, 2)),
+        // f32 is hash-ineligible (caught by ty_is_hash_eligible) but included
+        // for completeness so this function can serve as a general primitive sizer.
+        Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
+        // f64 is hash-ineligible but included for the same reason.
+        Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
+        Ty::Named { name, .. } => {
+            // Try direct lookup first, then strip module prefix (mirrors lookup_type_def).
+            let type_def = type_defs.get(name.as_str()).or_else(|| {
+                name.split_once('.')
+                    .and_then(|(_, local)| type_defs.get(local))
+            })?;
+            compute_copy_record_layout(type_def, type_defs)
+        }
+        _ => None,
+    }
+}
+
+/// Compute `(total_size, max_align)` for a Copy named-record type.
+///
+/// Fields are walked in **declaration order** — the order fields appear in the
+/// source declaration.  This matches the order used by HIR `RecordLayout.fields`,
+/// MIR `RecordLayout.field_tys`, and codegen's LLVM struct body emission, ensuring
+/// that the checker-computed key size/alignment agrees with the binary ABI.
+///
+/// Uses `type_def.field_order` (populated by `register_record_decl` and friends in
+/// `registration.rs`).  For synthetic/test `TypeDef`s where `field_order` is empty
+/// but `fields` is non-empty, falls back to **alphabetical order** so that unit
+/// tests that build `TypeDef`s by hand still produce a deterministic result.  This
+/// fallback should not occur in production paths (the registration pass always
+/// populates `field_order` for named-field records).
+///
+/// Returns `None` when:
+/// - The record has no fields (zero-size keys are an ABI violation).
+/// - A field's layout cannot be determined (type not in scope, generic param, etc.).
+///
+/// The computed size is the C-like struct size: fields are padded to their
+/// natural alignment, and the total size is rounded up to the struct's max-field
+/// alignment (i.e., `sizeof(struct { ... })` in C terms).
+pub(crate) fn compute_copy_record_layout(
+    type_def: &TypeDef,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<(usize, usize)> {
+    if type_def.fields.is_empty() {
+        // Zero-size key is an ABI violation: `hew_hashmap_new_with_layout` aborts
+        // when `key_layout.size == 0`.
+        return None;
+    }
+
+    let mut offset: usize = 0;
+    let mut max_align: usize = 1;
+
+    // Walk fields in declaration order when available (populated by register_record_decl).
+    // Fall back to alphabetical order for synthetic/test TypeDefs so layout tests
+    // that build TypeDefs by hand still produce a deterministic result.
+    let ordered_names: Vec<&String>;
+    let mut alpha_sorted: Vec<&String>;
+    let field_names: &[&String] = if type_def.field_order.is_empty() {
+        alpha_sorted = type_def.fields.keys().collect();
+        alpha_sorted.sort();
+        &alpha_sorted
+    } else {
+        ordered_names = type_def.field_order.iter().collect();
+        &ordered_names
+    };
+
+    for name in field_names {
+        let field_ty = type_def.fields.get(*name)?;
+        let (field_size, field_align) = primitive_copy_layout(field_ty, type_defs)?;
+
+        // Align the field start offset to the field's natural alignment.
+        offset = align_up(offset, field_align);
+        offset = offset.checked_add(field_size)?;
+        if field_align > max_align {
+            max_align = field_align;
+        }
+    }
+
+    // Round the total size up to the struct's natural alignment.
+    let total_size = align_up(offset, max_align);
+    if total_size == 0 {
+        return None;
+    }
+
+    Some((total_size, max_align))
 }
 
 /// Enforce the fail-closed output contract for `lowering_facts` after
@@ -44,7 +158,7 @@ pub(super) fn validate_lowering_facts_output_contract(
         }
         // Condition 2: element_type ↔ abi_variant internal consistency.
         matches!(
-            (fact.kind, fact.element_type, fact.abi_variant),
+            (fact.kind, fact.element_type, &fact.abi_variant),
             (
                 LoweringKind::HashSet,
                 HashSetElementType::I64 | HashSetElementType::U64,
@@ -64,7 +178,7 @@ fn ty_contains_error(ty: &Ty) -> bool {
 
 fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
     match ty {
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             let normalized_args: Vec<Ty> = args
                 .iter()
                 .map(normalize_synthetic_channel_handle_type)
@@ -187,15 +301,15 @@ impl ConcreteCollectionKind {
     fn validate_named_collection(
         self,
         checker: &mut Checker,
-        name: &str,
+        builtin: Option<BuiltinType>,
         args: &[Ty],
         span: &Span,
     ) -> Option<bool> {
         match self {
-            Self::Vec if name == "Vec" && args.len() == 1 => {
+            Self::Vec if builtin == Some(BuiltinType::Vec) && args.len() == 1 => {
                 Some(checker.validate_vec_element_type(&args[0], span))
             }
-            Self::HashSet if name == "HashSet" && args.len() == 1 => {
+            Self::HashSet if builtin == Some(BuiltinType::HashSet) && args.len() == 1 => {
                 // Skip admission when the element type is still unresolved or
                 // erroneous: Ty::Var is not yet decidable (inference may
                 // resolve it), and Ty::Error already has an upstream
@@ -209,7 +323,7 @@ impl ConcreteCollectionKind {
                 }
                 Some(checker.validate_hashset_element_type(&args[0], span))
             }
-            Self::HashMap if name == "HashMap" && args.len() == 2 => {
+            Self::HashMap if builtin == Some(BuiltinType::HashMap) && args.len() == 2 => {
                 // Same: skip admission for undecidable/erroneous args.
                 let resolved_key = checker.subst.resolve(&args[0]);
                 let resolved_val = checker.subst.resolve(&args[1]);
@@ -232,6 +346,7 @@ impl Checker {
         type_defs: &mut HashMap<String, TypeDef>,
         fn_sigs: &mut HashMap<String, FnSig>,
         call_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
+        record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
     ) {
         let covered_inference_vars = self.collect_output_contract_tracked_inference_vars();
         self.validate_expr_output_contract(expr_types, &covered_inference_vars);
@@ -255,6 +370,7 @@ impl Checker {
                 && !signature_contains_error_type(&sig.params, &sig.return_type)
         });
         Self::validate_call_type_args_output_contract(call_type_args, expr_types);
+        Self::validate_record_init_type_args_output_contract(record_init_type_args, expr_types);
         self.validate_assign_target_output_contract();
         self.validate_method_call_output_contract(expr_types);
         self.validate_method_call_receiver_kinds_output_contract(type_defs, fn_sigs);
@@ -360,7 +476,7 @@ impl Checker {
             .errors
             .iter()
             .filter(|e| e.kind == TypeErrorKind::InferenceFailed)
-            .map(|e| SpanKey::from(&e.span))
+            .map(|e| SpanKey::in_module(&e.span, self.current_module_idx))
             .collect();
         let mut leaked_expr_type_spans = Vec::new();
         for (span, ty) in expr_types.iter_mut() {
@@ -423,6 +539,27 @@ impl Checker {
         });
     }
 
+    /// Validates `record_init_type_args` at the checker output boundary.
+    ///
+    /// Mirrors `validate_call_type_args_output_contract` for the record-init
+    /// monomorphisation surface:
+    ///
+    /// 1. **Orphaned span** — the `SpanKey` is absent from the post-validation
+    ///    `expr_types` map (the initialiser expression was pruned for leaked
+    ///    inference vars or cascading errors). The associated type arguments
+    ///    must not cross into HIR / MIR.
+    /// 2. **Leaked inference variable** — any type argument still contains an
+    ///    unresolved `Ty::Var`.  Downstream HIR monomorphisation requires
+    ///    every arg to be fully concrete.
+    fn validate_record_init_type_args_output_contract(
+        record_init_type_args: &mut HashMap<SpanKey, Vec<Ty>>,
+        expr_types: &HashMap<SpanKey, Ty>,
+    ) {
+        record_init_type_args.retain(|key, args| {
+            expr_types.contains_key(key) && args.iter().all(|ty| !ty.has_inference_var())
+        });
+    }
+
     /// Prune `method_call_receiver_kinds` and `method_call_rewrites` entries
     /// whose `SpanKey` is absent from the validated `expr_types` map.
     ///
@@ -437,6 +574,17 @@ impl Checker {
             .retain(|key, _| expr_types.contains_key(key));
         self.method_call_rewrites
             .retain(|key, _| expr_types.contains_key(key));
+        self.actor_method_dispatch.retain(|key, dispatch| {
+            if !expr_types.contains_key(key) {
+                return false;
+            }
+            match dispatch {
+                ActorMethodKind::Fire(_) => true,
+                ActorMethodKind::Ask(_, reply_ty) => {
+                    !reply_ty.has_inference_var() && !reply_ty.contains_error()
+                }
+            }
+        });
     }
 
     /// Validates `method_call_receiver_kinds` at the checker output boundary.
@@ -481,6 +629,9 @@ impl Checker {
                         || type_name.contains('.')
                         || known_type_params.contains(type_name.as_str())
                 }
+                MethodCallReceiverKind::ActorInstance { actor_name } => type_defs
+                    .get(actor_name)
+                    .is_some_and(|type_def| type_def.kind == TypeDefKind::Actor),
                 MethodCallReceiverKind::HandleInstance { type_name } => !type_name.is_empty(),
                 MethodCallReceiverKind::TraitObject { trait_name } => {
                     known_trait_names.contains(trait_name)
@@ -559,14 +710,36 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
-        if !is_supported {
+        // Unresolved type variables and error sentinels pass through so that
+        // type inference can complete without generating a cascade of spurious
+        // "not Wire" diagnostics on partially-inferred programs.
+        if matches!(&inner, Ty::Var(_) | Ty::Error) {
+            return Some(inner);
+        }
+        // A type is a valid Sink/Stream payload if and only if it implements
+        // both the Encode and Decode marker traits (the "Wire capability").
+        // implements_marker performs structural derivation — closures, raw
+        // pointers, dyn-Trait, LocalPid, and other non-serialisable types
+        // naturally fall out here without any explicit allowlist entry.
+        let has_encode = self.registry.implements_marker(&inner, MarkerTrait::Encode);
+        let has_decode = self.registry.implements_marker(&inner, MarkerTrait::Decode);
+        if !has_encode || !has_decode {
+            let mut missing = Vec::new();
+            if !has_encode {
+                missing.push("Encode".to_owned());
+            }
+            if !has_decode {
+                missing.push("Decode".to_owned());
+            }
             self.report_error(
-                TypeErrorKind::InvalidOperation,
+                TypeErrorKind::SinkPayloadNotWire {
+                    payload_ty: inner.user_facing().to_string(),
+                    missing_traits: missing,
+                },
                 span,
                 format!(
-                    "`{type_name}<{}>` is not supported; \
-                     {type_name}<T> is currently only implemented for String and bytes",
+                    "`{type_name}<{}>` payload must implement Wire (Encode + Decode); \
+                     the type does not satisfy the required marker traits",
                     inner.user_facing()
                 ),
             );
@@ -628,12 +801,20 @@ impl Checker {
         }
     }
 
-    fn is_supported_hashmap_key_type(ty: &Ty) -> bool {
-        matches!(ty, Ty::String)
+    fn is_supported_hashmap_key_type(&self, ty: &Ty) -> bool {
+        // W4.001 Stage C3: legacy per-K allowlist retired. Admit any K that
+        // implements both `Hash` and `Eq` markers — the resolver's
+        // `where K: Hash + Eq` bound is the sole admission contract.
+        // Unsatisfied bounds (e.g. `f64: Hash` failing) surface as a
+        // `BoundsNotSatisfied` diagnostic from `record_resolved_hashmap_call`.
+        self.registry.implements_marker(ty, MarkerTrait::Hash)
+            && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
-    fn is_supported_hashmap_value_type(ty: &Ty) -> bool {
-        matches!(ty, Ty::String | Ty::Bool | Ty::Char | Ty::Duration) || ty.is_numeric()
+    fn is_supported_hashmap_value_type(_ty: &Ty) -> bool {
+        // W4.001 Stage C3: resolver imposes no V bound on
+        // `impl<K, V> Map for HashMap<K, V> where K: Hash + Eq`.
+        true
     }
 
     pub(super) fn validate_hashmap_key_value_types(
@@ -656,7 +837,7 @@ impl Checker {
         // inference has settled, mirroring the HashSet lowering-fact pattern.
         if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
             self.deferred_hashmap_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashMapAdmission {
                     span: span.clone(),
                     key_ty: key_ty.clone(),
@@ -666,23 +847,68 @@ impl Checker {
             return true; // optimistically admit; finalization will fail closed
         }
 
-        if Self::is_supported_hashmap_key_type(&resolved_key)
+        // Named record key: defer to finalize_hashmap_admission for full hash-eligibility
+        // check and HashMapLoweringFact production (C-2c).  Optimistically admit here;
+        // finalize will fail closed with a diagnostic if the key is ineligible.
+        if matches!(&resolved_key, Ty::Named { .. }) {
+            self.deferred_hashmap_admission
+                .entry(SpanKey::in_module(span, self.current_module_idx))
+                .or_insert_with(|| DeferredHashMapAdmission {
+                    span: span.clone(),
+                    key_ty: resolved_key.clone(),
+                    val_ty: resolved_val.clone(),
+                    source_module: self.current_module.clone(),
+                });
+            return true;
+        }
+
+        if self.is_supported_hashmap_key_type(&resolved_key)
             && Self::is_supported_hashmap_value_type(&resolved_val)
         {
             return true;
         }
 
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "HashMap<{}, {}> is not supported; HashMap currently requires \
-                 String keys and scalar/string values (bool, char, integer, \
-                 float, duration, or String)",
-                resolved_key.user_facing(),
-                resolved_val.user_facing()
-            ),
-        );
+        // Key fails resolver bounds (e.g. `f64: Hash`). Emit the structured
+        // `BoundsNotSatisfied(Hash/Eq, K)` diagnostic here and return false
+        // so callers fail closed uniformly (bare-type annotation paths via
+        // `validate_concrete_hashmap_type` plus all HashMap method arms,
+        // including the resolver-bypass arms `is_empty` / `keys` /
+        // `values` / `clone`). Method arms that also invoke
+        // `record_resolved_hashmap_call` short-circuit on `Ty::Error`
+        // before reaching the resolver, so no double-emit.
+        if !self.has_bounds_not_satisfied_at(span) {
+            let hash_ok = self
+                .registry
+                .implements_marker(&resolved_key, MarkerTrait::Hash);
+            let eq_ok = self
+                .registry
+                .implements_marker(&resolved_key, MarkerTrait::Eq);
+            let mut missing: Vec<&'static str> = Vec::new();
+            if !hash_ok {
+                missing.push("Hash");
+            }
+            if !eq_ok {
+                missing.push("Eq");
+            }
+            let bound_summary = if missing.is_empty() {
+                "Hash + Eq".to_string()
+            } else {
+                missing
+                    .iter()
+                    .map(|m| format!("K: {m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `Map` \
+                     ({bound_summary})",
+                    resolved_key.user_facing()
+                ),
+            );
+        }
         false
     }
 
@@ -721,7 +947,7 @@ impl Checker {
         // inference has settled, mirroring the HashMap deferred-admission pattern.
         if matches!(resolved, Ty::Var(_)) {
             self.deferred_hashset_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredHashSetAdmission {
                     span: span.clone(),
                     elem_ty: elem_ty.clone(),
@@ -734,15 +960,72 @@ impl Checker {
             return true;
         }
 
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!(
-                "HashSet<{}> is not supported; only HashSet<String> and 64-bit integer element types are currently supported",
-                resolved.user_facing()
-            ),
-        );
+        // Named type: optimistically admit.  `record_hashset_lowering_fact` adds
+        // the element type to `pending_lowering_facts`; `finalize_lowering_facts`
+        // runs hash-eligibility and produces a `HashSetLoweringFact` or emits a
+        // diagnostic (C-2c).
+        if matches!(&resolved, Ty::Named { .. }) {
+            return true;
+        }
+
+        // W4.001 Stage C3: legacy per-element allowlist retired. Admit any
+        // T that implements `Hash + Eq`; otherwise emit a structured
+        // `BoundsNotSatisfied` diagnostic and fail closed (see the
+        // matching rationale in `validate_hashmap_key_value_types`).
+        if self
+            .registry
+            .implements_marker(&resolved, MarkerTrait::Hash)
+            && self.registry.implements_marker(&resolved, MarkerTrait::Eq)
+        {
+            return true;
+        }
+
+        if !self.has_bounds_not_satisfied_at(span) {
+            let hash_ok = self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Hash);
+            let eq_ok = self.registry.implements_marker(&resolved, MarkerTrait::Eq);
+            let mut missing: Vec<&'static str> = Vec::new();
+            if !hash_ok {
+                missing.push("Hash");
+            }
+            if !eq_ok {
+                missing.push("Eq");
+            }
+            let bound_summary = if missing.is_empty() {
+                "Hash + Eq".to_string()
+            } else {
+                missing
+                    .iter()
+                    .map(|m| format!("T: {m}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `Set` \
+                     ({bound_summary})",
+                    resolved.user_facing()
+                ),
+            );
+        }
         false
+    }
+
+    /// Returns true if a `BoundsNotSatisfied` diagnostic has already been
+    /// recorded at the exact span. Used by the collection-admissibility
+    /// fail-closed paths to suppress duplicate emissions when the same
+    /// type annotation is validated via multiple call sites (e.g. once
+    /// from `validate_concrete_hashmap_type` and again from the
+    /// right-hand-side expression's inferred-type validation).
+    fn has_bounds_not_satisfied_at(&self, span: &Span) -> bool {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.errors.iter().any(|e| {
+            matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
+                && SpanKey::in_module(&e.span, self.current_module_idx) == key
+        })
     }
 
     pub(super) fn validate_hashset_owned_element_type(
@@ -756,13 +1039,17 @@ impl Checker {
         self.validate_hashset_element_type(elem_ty, span)
     }
 
-    fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
-        type_params
+    pub(super) fn instantiate_type_def_member(
+        ty: &Ty,
+        type_params: &[String],
+        type_args: &[Ty],
+    ) -> Ty {
+        let map: HashMap<String, Ty> = type_params
             .iter()
             .zip(type_args.iter())
-            .fold(ty.clone(), |instantiated, (param, arg)| {
-                instantiated.substitute_named_param(param, arg)
-            })
+            .map(|(p, a)| (p.clone(), a.clone()))
+            .collect();
+        ty.substitute_named_params_parallel(&map)
     }
 
     pub(super) fn vec_element_contains_structural_array(
@@ -776,11 +1063,14 @@ impl Checker {
             Ty::Tuple(elems) => elems
                 .iter()
                 .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
-            Ty::Named { name, args } if matches!(name.as_str(), "Range" | "Option" | "Result") => {
-                args.iter()
-                    .any(|arg| self.vec_element_contains_structural_array(arg, visiting))
-            }
-            Ty::Named { name, args } => {
+            Ty::Named {
+                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                args,
+                ..
+            } => args
+                .iter()
+                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
+            Ty::Named { name, args, .. } => {
                 let Some(type_def) = self.lookup_type_def(name) else {
                     return false;
                 };
@@ -802,6 +1092,66 @@ impl Checker {
                     VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
                         let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
                         self.vec_element_contains_structural_array(&ty, visiting)
+                    }),
+                });
+                visiting.remove(type_def.name.as_str());
+                result
+            }
+            _ => false,
+        }
+    }
+
+    /// True when a Vec element type transitively carries a function/closure
+    /// value INSIDE a composite (record field, enum variant payload, tuple
+    /// member, Option/Result/Range argument). A direct `Vec<fn(...)>` element
+    /// is the supported boxed-pair class and is NOT flagged here — the caller
+    /// exempts the top-level Function/Closure shape. Composite elements ride
+    /// the layout/owned byte-copy ABIs, which would shallow-copy the embedded
+    /// pair and alias its sole-owner environment box, so they fail closed at
+    /// admission. Recursion shape mirrors
+    /// [`vec_element_contains_structural_array`](Self::vec_element_contains_structural_array).
+    pub(super) fn vec_element_contains_fn_value(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
+            Ty::Function { .. } | Ty::Closure { .. } => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|elem| self.vec_element_contains_fn_value(elem, visiting)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => {
+                self.vec_element_contains_fn_value(inner, visiting)
+            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
+                args,
+                ..
+            } => args
+                .iter()
+                .any(|arg| self.vec_element_contains_fn_value(arg, visiting)),
+            Ty::Named { name, args, .. } => {
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    return false;
+                };
+                if visiting.contains(type_def.name.as_str()) {
+                    return false;
+                }
+                visiting.insert(type_def.name.clone());
+                let result = type_def.fields.values().any(|field_ty| {
+                    let field_ty =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.vec_element_contains_fn_value(&field_ty, visiting)
+                }) || type_def.variants.values().any(|variant| match variant {
+                    VariantDef::Unit => false,
+                    VariantDef::Tuple(tys) => tys.iter().any(|ty| {
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_fn_value(&ty, visiting)
+                    }),
+                    VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
+                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
+                        self.vec_element_contains_fn_value(&ty, visiting)
                     }),
                 });
                 visiting.remove(type_def.name.as_str());
@@ -833,6 +1183,27 @@ impl Checker {
             return false;
         }
 
+        // Composite elements embedding a function value fail closed: the
+        // layout/owned element ABIs byte-copy the element, which would
+        // shallow-copy the closure pair and alias its sole-owner environment.
+        // A direct Vec<fn(...)> element is the supported boxed-pair class.
+        if !matches!(resolved, Ty::Function { .. } | Ty::Closure { .. }) {
+            let mut visiting = HashSet::new();
+            if self.vec_element_contains_fn_value(resolved, &mut visiting) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "Vec<{}> is not supported: the element type contains a function \
+                         value, and each closure environment has a sole owner — store \
+                         the functions directly in a Vec<fn(...)> instead",
+                        resolved.user_facing()
+                    ),
+                );
+                return false;
+            }
+        }
+
         true
     }
 
@@ -844,7 +1215,7 @@ impl Checker {
 
         if resolved.has_inference_var() {
             self.deferred_vec_admission
-                .entry(SpanKey::from(span))
+                .entry(SpanKey::in_module(span, self.current_module_idx))
                 .or_insert_with(|| DeferredVecAdmission {
                     span: span.clone(),
                     elem_ty: elem_ty.clone(),
@@ -864,9 +1235,9 @@ impl Checker {
     ) -> bool {
         let resolved = self.subst.resolve(ty);
         match &resolved {
-            Ty::Named { name, args } => {
+            Ty::Named { builtin, args, .. } => {
                 if let Some(result) =
-                    collection.validate_named_collection(self, name.as_str(), args, span)
+                    collection.validate_named_collection(self, *builtin, args, span)
                 {
                     return result;
                 }
@@ -928,6 +1299,7 @@ impl Checker {
 
     pub(super) fn make_vec_type(&mut self, elem_ty: Ty, span: &Span) -> Ty {
         let ty = Ty::Named {
+            builtin: Some(BuiltinType::Vec),
             name: "Vec".to_string(),
             args: vec![elem_ty],
         };
@@ -949,9 +1321,11 @@ impl Checker {
         }
         match &resolved {
             Ty::String | Ty::Bytes => true,
-            Ty::Named { name, args } if name == "Rc" && args.len() == 1 => {
-                self.rc_payload_drop_supported(&args[0])
-            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Rc),
+                args,
+                ..
+            } if args.len() == 1 => self.rc_payload_drop_supported(&args[0]),
             Ty::Named { name, .. } if self.type_implements_trait(name, "Drop") => false,
             _ => self
                 .registry
@@ -1048,11 +1422,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut type_defs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1129,11 +1505,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut type_defs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1142,11 +1520,19 @@ mod tests {
         );
         assert!(matches!(
             &fn_sigs["normalized_param_fn"].params[0],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(matches!(
             fn_sigs["normalized_return_fn"].return_type,
-            Ty::Named { ref name, ref args } if name == "Receiver" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                ref args,
+                ..
+            } if args.len() == 1
         ));
         assert!(
             !fn_sigs.contains_key("leaked_param_fn"),
@@ -1182,6 +1568,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1217,6 +1604,7 @@ mod tests {
                         },
                     )]),
                     doc_comment: None,
+                    field_order: vec!["tx".to_string()],
                     is_indirect: false,
                 },
             ),
@@ -1233,6 +1621,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1249,6 +1638,7 @@ mod tests {
                     )]),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1257,11 +1647,13 @@ mod tests {
         let mut expr_types = HashMap::new();
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1274,16 +1666,31 @@ mod tests {
         );
         assert!(matches!(
             &type_defs["NormalizedHandles"].fields["tx"],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(matches!(
             &type_defs["NormalizedHandles"].variants["Recv"],
             VariantDef::Tuple(fields)
-                if matches!(fields.as_slice(), [Ty::Named { name, args }] if name == "Receiver" && args.len() == 1)
+                if matches!(
+                    fields.as_slice(),
+                    [Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        args,
+                        ..
+                    }] if args.len() == 1
+                )
         ));
         assert!(matches!(
             &type_defs["NormalizedHandles"].methods["close"].params[0],
-            Ty::Named { name, args } if name == "Sender" && args.len() == 1
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                args,
+                ..
+            } if args.len() == 1
         ));
         assert!(
             !type_defs.contains_key("LeakedField"),
@@ -1298,7 +1705,11 @@ mod tests {
     #[test]
     fn validate_expr_output_contract_reports_and_prunes_ty_var_leak() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let leaked_span = SpanKey { start: 10, end: 20 };
+        let leaked_span = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let leaked_var = TypeVar::fresh();
         let mut expr_types = HashMap::from([(leaked_span.clone(), Ty::Var(leaked_var))]);
 
@@ -1330,8 +1741,16 @@ mod tests {
     fn validate_method_call_receiver_kinds_prunes_unknown_named_type_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let known_key = SpanKey { start: 10, end: 20 };
-        let unknown_key = SpanKey { start: 30, end: 40 };
+        let known_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
+        let unknown_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
 
         checker.method_call_receiver_kinds.insert(
             known_key.clone(),
@@ -1356,6 +1775,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )]);
@@ -1366,11 +1786,13 @@ mod tests {
             HashMap::from([(known_key.clone(), Ty::I64), (unknown_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1391,7 +1813,11 @@ mod tests {
     fn validate_method_call_receiver_kinds_retains_qualified_handle_type_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let handle_key = SpanKey { start: 50, end: 60 };
+        let handle_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         checker.method_call_receiver_kinds.insert(
             handle_key.clone(),
             MethodCallReceiverKind::NamedTypeInstance {
@@ -1405,11 +1831,13 @@ mod tests {
         let mut expr_types = HashMap::from([(handle_key.clone(), Ty::I64)]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1424,10 +1852,15 @@ mod tests {
     fn validate_method_call_receiver_kinds_prunes_unknown_trait_object_entries() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
-        let known_trait_key = SpanKey { start: 70, end: 80 };
+        let known_trait_key = SpanKey {
+            start: 70,
+            end: 80,
+            module_idx: 0,
+        };
         let unknown_trait_key = SpanKey {
             start: 90,
             end: 100,
+            module_idx: 0,
         };
 
         checker.method_call_receiver_kinds.insert(
@@ -1462,11 +1895,13 @@ mod tests {
         ]);
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1493,6 +1928,7 @@ mod tests {
         let param_key = SpanKey {
             start: 110,
             end: 120,
+            module_idx: 0,
         };
         checker.method_call_receiver_kinds.insert(
             param_key.clone(),
@@ -1511,14 +1947,16 @@ mod tests {
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],
                 params: vec![Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }],
                 return_type: Ty::Unit,
                 is_async: false,
-                is_pure: false,
                 accepts_kwargs: false,
                 doc_comment: None,
+                extern_symbol: None,
+                requires_mutable_receiver: false,
             },
         )]);
         let mut type_defs = HashMap::new(); // "T" is not a user-defined type
@@ -1526,11 +1964,13 @@ mod tests {
                                             // the entry before validate_method_call_receiver_kinds_output_contract runs.
         let mut expr_types = HashMap::from([(param_key.clone(), Ty::I64)]);
         let mut call_type_args = HashMap::new();
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         assert!(
@@ -1543,7 +1983,11 @@ mod tests {
     /// present in `expr_types` and whose type arguments contain no inference vars.
     #[test]
     fn validate_call_type_args_output_contract_retains_valid_entries() {
-        let valid_key = SpanKey { start: 10, end: 20 };
+        let valid_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let mut call_type_args = HashMap::from([(valid_key.clone(), vec![Ty::I32, Ty::Bool])]);
         let expr_types = HashMap::from([(valid_key.clone(), Ty::I32)]);
 
@@ -1562,7 +2006,11 @@ mod tests {
     /// is orphaned and must not reach codegen.
     #[test]
     fn validate_call_type_args_output_contract_prunes_orphaned_entries() {
-        let orphan_key = SpanKey { start: 30, end: 40 };
+        let orphan_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
         let mut call_type_args = HashMap::from([(orphan_key.clone(), vec![Ty::I32])]);
         // expr_types is empty — the owning expression was pruned.
         let expr_types: HashMap<SpanKey, Ty> = HashMap::new();
@@ -1580,7 +2028,11 @@ mod tests {
     /// `expr_types`.  Leaked inference state must not cross the output boundary.
     #[test]
     fn validate_call_type_args_output_contract_prunes_leaked_inference_vars() {
-        let present_key = SpanKey { start: 50, end: 60 };
+        let present_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         let inference_var = Ty::Var(crate::ty::TypeVar(42));
         let mut call_type_args =
             HashMap::from([(present_key.clone(), vec![Ty::I32, inference_var])]);
@@ -1599,9 +2051,21 @@ mod tests {
     /// inference state — only the valid entry must survive.
     #[test]
     fn validate_call_type_args_output_contract_mixed() {
-        let valid_key = SpanKey { start: 10, end: 20 };
-        let orphan_key = SpanKey { start: 30, end: 40 };
-        let leaked_key = SpanKey { start: 50, end: 60 };
+        let valid_key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
+        let orphan_key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
+        let leaked_key = SpanKey {
+            start: 50,
+            end: 60,
+            module_idx: 0,
+        };
         let inference_var = Ty::Var(crate::ty::TypeVar(7));
 
         let mut call_type_args = HashMap::from([
@@ -1655,6 +2119,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )]);
@@ -1709,6 +2174,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1723,6 +2189,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1767,6 +2234,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -1786,6 +2254,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )]);
@@ -1829,6 +2298,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         )]);
@@ -1844,6 +2314,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -1902,6 +2373,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1915,6 +2387,7 @@ mod tests {
                     variants: HashMap::new(),
                     methods: HashMap::new(),
                     doc_comment: None,
+                    field_order: vec![],
                     is_indirect: false,
                 },
             ),
@@ -1924,11 +2397,13 @@ mod tests {
         let mut fn_sigs = HashMap::new();
         let mut call_type_args = HashMap::new();
 
+        let mut record_init_type_args = HashMap::new();
         checker.validate_checker_output_contract(
             &mut expr_types,
             &mut type_defs,
             &mut fn_sigs,
             &mut call_type_args,
+            &mut record_init_type_args,
         );
 
         // Both qualified key and bare-name twin must be pruned from type_defs
@@ -1968,7 +2443,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 1, end: 5 };
+        let key = SpanKey {
+            start: 1,
+            end: 5,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             LoweringFact {
@@ -1994,7 +2473,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 10, end: 20 };
+        let key = SpanKey {
+            start: 10,
+            end: 20,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             LoweringFact {
@@ -2021,7 +2504,11 @@ mod tests {
         use crate::lowering_facts::{
             DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringKind,
         };
-        let key = SpanKey { start: 30, end: 40 };
+        let key = SpanKey {
+            start: 30,
+            end: 40,
+            module_idx: 0,
+        };
         let mut facts = HashMap::from([(
             key.clone(),
             // Intentionally wrong pairing: Str element with Int64 ABI.
@@ -2037,6 +2524,653 @@ mod tests {
         assert!(
             facts.is_empty(),
             "internally inconsistent fact (Str/Int64 mismatch) must be pruned"
+        );
+    }
+
+    // ── Layout computation tests (C-2c) ────────────────────────────────────────
+
+    /// Helper: build a minimal Copy record `TypeDef`.
+    fn make_record(name: &str, fields: Vec<(&str, Ty)>) -> TypeDef {
+        let field_order: Vec<String> = fields.iter().map(|(n, _)| n.to_string()).collect();
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: name.to_string(),
+            type_params: vec![],
+            fields: fields
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t))
+                .collect(),
+            field_order,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        }
+    }
+
+    #[test]
+    fn primitive_copy_layout_bool_is_1_1() {
+        assert_eq!(
+            primitive_copy_layout(&Ty::Bool, &HashMap::new()),
+            Some((1, 1))
+        );
+    }
+
+    #[test]
+    fn primitive_copy_layout_i8_u8_is_1_1() {
+        assert_eq!(
+            primitive_copy_layout(&Ty::I8, &HashMap::new()),
+            Some((1, 1))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::U8, &HashMap::new()),
+            Some((1, 1))
+        );
+    }
+
+    #[test]
+    fn primitive_copy_layout_i16_u16_is_2_2() {
+        assert_eq!(
+            primitive_copy_layout(&Ty::I16, &HashMap::new()),
+            Some((2, 2))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::U16, &HashMap::new()),
+            Some((2, 2))
+        );
+    }
+
+    #[test]
+    fn primitive_copy_layout_i32_u32_char_is_4_4() {
+        assert_eq!(
+            primitive_copy_layout(&Ty::I32, &HashMap::new()),
+            Some((4, 4))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::U32, &HashMap::new()),
+            Some((4, 4))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::Char, &HashMap::new()),
+            Some((4, 4))
+        );
+    }
+
+    #[test]
+    fn primitive_copy_layout_i64_u64_duration_is_8_8() {
+        assert_eq!(
+            primitive_copy_layout(&Ty::I64, &HashMap::new()),
+            Some((8, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::U64, &HashMap::new()),
+            Some((8, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&Ty::Duration, &HashMap::new()),
+            Some((8, 8))
+        );
+    }
+
+    #[test]
+    fn primitive_copy_layout_string_returns_none() {
+        // String is heap-managed; not a fixed-layout Copy type.
+        assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn compute_copy_record_layout_empty_record_returns_none() {
+        let td = make_record("Empty", vec![]);
+        assert_eq!(
+            compute_copy_record_layout(&td, &HashMap::new()),
+            None,
+            "zero-field records must return None (zero-size ABI violation)"
+        );
+    }
+
+    #[test]
+    fn compute_copy_record_layout_single_i32_field() {
+        // record Point { x: i32 }  →  size=4, align=4
+        let td = make_record("Point", vec![("x", Ty::I32)]);
+        assert_eq!(
+            compute_copy_record_layout(&td, &HashMap::new()),
+            Some((4, 4))
+        );
+    }
+
+    #[test]
+    fn compute_copy_record_layout_two_i32_fields() {
+        // record Point { x: i32, y: i32 }  →  size=8, align=4
+        let td = make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]);
+        assert_eq!(
+            compute_copy_record_layout(&td, &HashMap::new()),
+            Some((8, 4))
+        );
+    }
+
+    #[test]
+    fn compute_copy_record_layout_mixed_alignment_respects_padding() {
+        // record Padded { a: bool, b: i32 }
+        // Fields sorted alphabetically: a (bool,1,1) then b (i32,4,4)
+        //   offset after a:  0+1 = 1
+        //   offset after padding to align(4): 4
+        //   offset after b:  4+4 = 8
+        //   total size rounded to align(4): 8
+        let td = make_record("Padded", vec![("a", Ty::Bool), ("b", Ty::I32)]);
+        assert_eq!(
+            compute_copy_record_layout(&td, &HashMap::new()),
+            Some((8, 4))
+        );
+    }
+
+    #[test]
+    fn compute_copy_record_layout_declaration_order_is_respected() {
+        // Both records have the same fields but in different declaration order.
+        // Since `make_record` populates `field_order` from the Vec input,
+        // these represent records declared with different field orderings.
+        // This specific case (x:i8 then z:i64 vs z:i64 then x:i8) happens to
+        // produce the same *size* — but the test confirms both variants are
+        // handled correctly using their own field_order.
+        let td1 = make_record("R", vec![("x", Ty::I8), ("z", Ty::I64)]);
+        let td2 = make_record("R", vec![("z", Ty::I64), ("x", Ty::I8)]);
+        // td1 declaration order [x, z]: x(1) at 0 → 1; z(8) align to 8 → 16; total=16
+        // td2 declaration order [z, x]: z(8) at 0 → 8; x(1) at 8 → 9; total=align_up(9,8)=16
+        // Both happen to produce size=16 (same struct size despite different order).
+        assert_eq!(
+            compute_copy_record_layout(&td1, &HashMap::new()),
+            Some((16, 8))
+        );
+        assert_eq!(
+            compute_copy_record_layout(&td2, &HashMap::new()),
+            Some((16, 8))
+        );
+    }
+
+    #[test]
+    fn compute_copy_record_layout_declaration_order_diverges_from_alphabetical() {
+        // record R { y: i32, z: i64, x: i32 }
+        // Declaration order [y, z, x] vs alphabetical order [x, y, z] produce DIFFERENT sizes.
+        //
+        // Declaration order [y, z, x]:
+        //   y(i32,4) at 0 → offset=4
+        //   z(i64,8): align_up(4,8)=8 → offset=16  (4 bytes padding inserted)
+        //   x(i32,4) at 16 → offset=20
+        //   total = align_up(20,8) = 24; align=8
+        //
+        // Alphabetical order [x, y, z]:
+        //   x(i32,4) at 0 → offset=4
+        //   y(i32,4) at 4 → offset=8
+        //   z(i64,8): align_up(8,8)=8 → offset=16  (no padding needed)
+        //   total = align_up(16,8) = 16; align=8
+        //
+        // The divergence demonstrates why declaration order must be used to match codegen.
+        let td_decl = make_record("R", vec![("y", Ty::I32), ("z", Ty::I64), ("x", Ty::I32)]);
+        // Manually build a TypeDef with alphabetical field_order for comparison
+        let td_alpha = {
+            let fields = vec![("x", Ty::I32), ("y", Ty::I32), ("z", Ty::I64)];
+            make_record("R", fields)
+        };
+        let decl_layout = compute_copy_record_layout(&td_decl, &HashMap::new());
+        let alpha_layout = compute_copy_record_layout(&td_alpha, &HashMap::new());
+        assert_eq!(
+            decl_layout,
+            Some((24, 8)),
+            "declaration order [y,z,x] → size=24"
+        );
+        assert_eq!(
+            alpha_layout,
+            Some((16, 8)),
+            "alphabetical order [x,y,z] → size=16"
+        );
+        assert_ne!(
+            decl_layout, alpha_layout,
+            "declaration order and alphabetical order must diverge for this field combination"
+        );
+    }
+
+    #[test]
+    fn finalize_hashmap_named_key_eligible_scalar_value_produces_layout_fact() {
+        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 10..20;
+        // Register a simple Copy record: record Point { x: i32, y: i32 }
+        checker.type_defs.insert(
+            "Point".to_string(),
+            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
+        );
+        // Insert a deferred entry: HashMap<Point, i64>
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            checker.errors.is_empty(),
+            "eligible Named key with i64 value must produce no errors; got: {:?}",
+            checker.errors
+        );
+        let key = SpanKey::in_module(&span, 0);
+        let fact = checker.hashmap_layout_facts.get(&key).expect(
+            "finalize_hashmap_admission must produce a HashMapLoweringFact for eligible Named key",
+        );
+        assert_eq!(
+            fact.state,
+            HashMapLoweringFactState::Pending,
+            "produced fact must be in Pending state"
+        );
+        assert!(
+            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "Point"),
+            "abi must be LayoutKey with key_record_name == Point; got: {:?}",
+            fact.abi
+        );
+        // Point has two i32 fields → size=8, align=4
+        assert_eq!(
+            fact.key_size,
+            Some(8),
+            "key_size must be Some(8) for two-i32 record"
+        );
+        assert_eq!(
+            fact.key_align,
+            Some(4),
+            "key_align must be Some(4) for two-i32 record"
+        );
+    }
+
+    #[test]
+    fn hashmap_source_record_key_i64_fields_is_hash_eligible() {
+        let source = r"
+            record Point { x: i64, y: i64 }
+            fn main() {
+                let m: HashMap<Point, i64> = HashMap::new();
+                m.insert(Point { x: 1, y: 2 }, 10);
+            }
+        ";
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        let point_def = checker.type_defs.get("Point").cloned();
+        assert!(
+            matches!(
+                point_def.as_ref().and_then(|td| td.fields.get("x")),
+                Some(Ty::I64)
+            ),
+            "Point.x should register as i64; got: {point_def:?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "HashMap<Point, i64> with i64 record fields must be admitted; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn finalize_hashmap_named_key_float_field_emits_error() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 50..60;
+        // record Bad { x: f64 } — ineligible due to float
+        checker
+            .type_defs
+            .insert("Bad".to_string(), make_record("Bad", vec![("x", Ty::F64)]));
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Bad".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            !checker.errors.is_empty(),
+            "float-field key must produce a diagnostic"
+        );
+        assert!(
+            checker.hashmap_layout_facts.is_empty(),
+            "no layout fact must be produced for ineligible key"
+        );
+    }
+
+    #[test]
+    fn finalize_hashset_named_elem_eligible_produces_layout_fact() {
+        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 70..80;
+        // record Point { x: i32, y: i32 }
+        checker.type_defs.insert(
+            "Point".to_string(),
+            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
+        );
+        // Simulate record_hashset_lowering_fact adding to pending_lowering_facts
+        // (the Named path is admitted inline, then finalize_lowering_facts is called).
+        // We bypass record_hashset_lowering_fact and inject directly into pending_lowering_facts.
+        checker.pending_lowering_facts.insert(
+            SpanKey::in_module(&span, 0),
+            crate::check::types::PendingLoweringFact {
+                hashset_element_ty: Ty::normalize_named("Point".to_string(), vec![]),
+                source_module: None,
+            },
+        );
+        let _result = checker.finalize_lowering_facts();
+        assert!(
+            checker.errors.is_empty(),
+            "eligible Named element must produce no errors; got: {:?}",
+            checker.errors
+        );
+        let key = SpanKey::in_module(&span, 0);
+        let fact = checker.hashset_layout_facts.get(&key).expect(
+            "finalize_lowering_facts must produce a HashSetLoweringFact for eligible Named element",
+        );
+        assert_eq!(
+            fact.state,
+            HashMapLoweringFactState::Pending,
+            "produced fact must be in Pending state"
+        );
+        assert!(
+            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "Point"),
+            "abi must be Layout with elem_record_name == Point; got: {:?}",
+            fact.abi
+        );
+        assert_eq!(
+            fact.elem_size,
+            Some(8),
+            "elem_size must be Some(8) for two-i32 record"
+        );
+        assert_eq!(
+            fact.elem_align,
+            Some(4),
+            "elem_align must be Some(4) for two-i32 record"
+        );
+    }
+
+    #[test]
+    fn finalize_hashset_named_elem_float_field_emits_error() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 90..100;
+        // record Bad { v: f32 }
+        checker
+            .type_defs
+            .insert("Bad".to_string(), make_record("Bad", vec![("v", Ty::F32)]));
+        checker.pending_lowering_facts.insert(
+            SpanKey::in_module(&span, 0),
+            crate::check::types::PendingLoweringFact {
+                hashset_element_ty: Ty::normalize_named("Bad".to_string(), vec![]),
+                source_module: None,
+            },
+        );
+        let _result = checker.finalize_lowering_facts();
+        assert!(
+            !checker.errors.is_empty(),
+            "float-field element must produce a diagnostic"
+        );
+        assert!(
+            checker.hashset_layout_facts.is_empty(),
+            "no layout fact must be produced for ineligible element"
+        );
+    }
+
+    // ── Additional admissibility tests requested in cross-eco review ────────────
+
+    #[test]
+    fn hashmap_string_field_key_rejected() {
+        // record K { s: string } — string field makes K ineligible (IneligibleManaged)
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 1..10;
+        let mut td = make_record("K", vec![("s", Ty::String)]);
+        td.field_order = vec!["s".to_string()];
+        checker.type_defs.insert("K".to_string(), td);
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("K".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            !checker.errors.is_empty(),
+            "string-field key must be rejected; errors: {:?}",
+            checker.errors
+        );
+        assert!(
+            checker.hashmap_layout_facts.is_empty(),
+            "no layout fact must be produced for string-field key"
+        );
+        // Diagnostic must name the field or type clearly
+        let msg = &checker.errors[0].message;
+        assert!(
+            msg.contains('K') || msg.contains("string"),
+            "error must reference the type or field kind; got: {msg:?}"
+        );
+    }
+
+    #[test]
+    fn hashmap_managed_key_rejected() {
+        // record Handle — is_indirect = true makes it IneligibleManaged
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 2..11;
+        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
+        td.is_indirect = true;
+        checker.type_defs.insert("Handle".to_string(), td);
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Handle".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            !checker.errors.is_empty(),
+            "indirect/managed key must be rejected; errors: {:?}",
+            checker.errors
+        );
+        assert!(
+            checker.hashmap_layout_facts.is_empty(),
+            "no layout fact for indirect key"
+        );
+    }
+
+    #[test]
+    fn hashmap_enum_key_rejected() {
+        // type Color = Enum — Enum kind must be rejected (IneligibleNamedNonRecord)
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 3..12;
+        let td = TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Color".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        };
+        checker.type_defs.insert("Color".to_string(), td);
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Color".to_string(), vec![]),
+                val_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            !checker.errors.is_empty(),
+            "Enum key must be rejected; errors: {:?}",
+            checker.errors
+        );
+        assert!(
+            checker.hashmap_layout_facts.is_empty(),
+            "no layout fact for Enum key"
+        );
+    }
+
+    #[test]
+    fn hashmap_layout_key_with_layout_value_record_admitted() {
+        // HashMap<Point, Pos> — both key and value are Copy named records
+        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState, HashMapValueType};
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 4..13;
+        // record Point { x: i32, y: i32 }
+        checker.type_defs.insert(
+            "Point".to_string(),
+            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
+        );
+        // record Pos { lat: i64, lon: i64 }
+        checker.type_defs.insert(
+            "Pos".to_string(),
+            make_record("Pos", vec![("lat", Ty::I64), ("lon", Ty::I64)]),
+        );
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
+                val_ty: Ty::normalize_named("Pos".to_string(), vec![]),
+                source_module: None,
+            },
+        );
+        checker.finalize_hashmap_admission();
+        assert!(
+            checker.errors.is_empty(),
+            "eligible Named key + Named value must produce no errors; got: {:?}",
+            checker.errors
+        );
+        let key = SpanKey::in_module(&span, 0);
+        let fact = checker
+            .hashmap_layout_facts
+            .get(&key)
+            .expect("layout key + layout value must produce a HashMapLoweringFact");
+        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
+        assert!(
+            matches!(
+                &fact.abi,
+                HashMapAbi::LayoutKey { key_record_name, val: HashMapValueType::Layout }
+                    if key_record_name == "Point"
+            ),
+            "abi must be LayoutKey with val=Layout; got: {:?}",
+            fact.abi
+        );
+        // Point has two i32 fields → size=8, align=4
+        assert_eq!(fact.key_size, Some(8));
+        assert_eq!(fact.key_align, Some(4));
+        // Pos has two i64 fields → size=16, align=8
+        assert_eq!(fact.val_size, Some(16));
+        assert_eq!(fact.val_align, Some(8));
+    }
+
+    #[test]
+    fn hashset_indirect_record_rejected() {
+        // record Handle — is_indirect=true element must be rejected
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 5..14;
+        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
+        td.is_indirect = true;
+        checker.type_defs.insert("Handle".to_string(), td);
+        checker.pending_lowering_facts.insert(
+            SpanKey::in_module(&span, 0),
+            crate::check::types::PendingLoweringFact {
+                hashset_element_ty: Ty::normalize_named("Handle".to_string(), vec![]),
+                source_module: None,
+            },
+        );
+        let _result = checker.finalize_lowering_facts();
+        assert!(
+            !checker.errors.is_empty(),
+            "indirect/managed element must be rejected; errors: {:?}",
+            checker.errors
+        );
+        assert!(
+            checker.hashset_layout_facts.is_empty(),
+            "no layout fact for indirect element"
+        );
+    }
+
+    #[test]
+    fn hashset_string_element_still_uses_string_abi() {
+        // Regression: HashSet<String> must still produce LoweringFact with String ABI.
+        use crate::lowering_facts::HashSetAbi;
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 6..15;
+        checker.pending_lowering_facts.insert(
+            SpanKey::in_module(&span, 0),
+            crate::check::types::PendingLoweringFact {
+                hashset_element_ty: Ty::String,
+                source_module: None,
+            },
+        );
+        let lowering_facts = checker.finalize_lowering_facts();
+        assert!(
+            checker.errors.is_empty(),
+            "String element must produce no errors; got: {:?}",
+            checker.errors
+        );
+        let key = SpanKey::in_module(&span, 0);
+        let fact = lowering_facts
+            .get(&key)
+            .expect("finalize_lowering_facts must produce a LoweringFact for String element");
+        assert_eq!(
+            fact.abi_variant,
+            HashSetAbi::String,
+            "String element must produce String ABI; got: {:?}",
+            fact.abi_variant
+        );
+        assert!(
+            checker.hashset_layout_facts.is_empty(),
+            "String element must NOT produce a HashSetLoweringFact (uses scalar path)"
+        );
+    }
+
+    #[test]
+    fn hashset_i64_element_still_uses_int64_abi() {
+        // Regression: HashSet<i64> must still produce LoweringFact with Int64 ABI.
+        use crate::lowering_facts::HashSetAbi;
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 7..16;
+        checker.pending_lowering_facts.insert(
+            SpanKey::in_module(&span, 0),
+            crate::check::types::PendingLoweringFact {
+                hashset_element_ty: Ty::I64,
+                source_module: None,
+            },
+        );
+        let lowering_facts = checker.finalize_lowering_facts();
+        assert!(
+            checker.errors.is_empty(),
+            "I64 element must produce no errors; got: {:?}",
+            checker.errors
+        );
+        let key = SpanKey::in_module(&span, 0);
+        let fact = lowering_facts
+            .get(&key)
+            .expect("finalize_lowering_facts must produce a LoweringFact for I64 element");
+        assert_eq!(
+            fact.abi_variant,
+            HashSetAbi::Int64,
+            "I64 element must produce Int64 ABI; got: {:?}",
+            fact.abi_variant
+        );
+        assert!(
+            checker.hashset_layout_facts.is_empty(),
+            "I64 element must NOT produce a HashSetLoweringFact (uses scalar path)"
         );
     }
 }

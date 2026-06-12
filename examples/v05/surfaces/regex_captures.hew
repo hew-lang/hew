@@ -1,0 +1,47 @@
+//! Status: runnable (v0.5 std::text::regex captures surface)
+//! Description: Regex capture groups — capture / capture_named / find_all / find_all_submatch.
+//!
+//! Compiles a date pattern with named groups, then pulls submatches out of an
+//! input string three ways: a single indexed/named capture from the first
+//! match, the flat list of whole matches via `find_all`, and the full row-major
+//! submatch table via `find_all_submatch`. `Option` results are matched, never
+//! unwrapped, and the compiled `Pattern` is released with `free()`.
+
+import std::text::regex;
+
+fn main() {
+    let re = regex.new("(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})");
+    let text = "release 2026-06-07, patched 1999-12-31";
+    // First match: one indexed group and one named group.
+    match re.capture(text, 1) {
+        Some(year) => println(f"first year: {year}"),
+        None => println("no date found"),
+    }
+    match re.capture_named(text, "month") {
+        Some(month) => println(f"first month: {month}"),
+        None => println("no month group"),
+    }
+    // Every whole match as a flat Vec<string>.
+    let wholes = re.find_all(text);
+    println(f"matches: {wholes.len()}");
+
+    // Every match's submatches as a row-major table (group 0 = whole match).
+    let rows = re.find_all_submatch(text);
+    println(f"rows={rows.len()} groups_per_row={rows.width()}");
+    for i in 0 .. rows.len() {
+        let whole = match rows.whole(i) {
+            Some(w) => w,
+            None => "?",
+        };
+        let year = match rows.group(i, 1) {
+            Some(g) => g,
+            None => "?",
+        };
+        let day = match rows.group(i, 3) {
+            Some(g) => g,
+            None => "?",
+        };
+        println(f"row {i}: {whole} (year={year} day={day})");
+    }
+    re.free();
+}

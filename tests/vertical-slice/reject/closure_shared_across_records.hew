@@ -1,0 +1,19 @@
+// A closure pair is a sole-owner value: storing the same binding in two
+// record fields would byte-copy the pair and give both records ownership
+// of one environment (double free at scope exit). The second store is a
+// use-after-move anchored at the first.
+type Button {
+    on_click: fn(i64) -> i64;
+}
+
+fn handler(base: i64) -> fn(i64) -> i64 {
+    |x: i64| x + base
+}
+
+fn main() {
+    let h = handler(100);
+    let ok = Button { on_click: h };
+    let cancel = Button { on_click: h };
+    println(ok.on_click(1));
+    println(cancel.on_click(2));
+}

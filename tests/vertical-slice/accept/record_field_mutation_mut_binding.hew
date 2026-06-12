@@ -1,0 +1,10 @@
+record Point { x: i64, y: i64 }
+
+fn main() -> i64 {
+    var p: Point = Point { x: 1, y: 2 };
+    // Full-record rebinding through functional update is the vertical-slice
+    // codegen-compatible mutation form. Direct field-write acceptance is pinned
+    // in hew-types checker tests until MIR field-store lowering grows support.
+    p = Point { x: 40, ..p };
+    p.x + p.y
+}

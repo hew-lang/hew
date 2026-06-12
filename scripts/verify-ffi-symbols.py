@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Verify runtime/codegen FFI coverage and classify the stable JIT host ABI.
+"""Classify and validate the stable JIT host ABI exported by hew-runtime.
 
-Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn exports,
-then extracts all `hew_*` function name string references from C++ codegen source.
-Reports any codegen reference that isn't covered by an actual runtime export.
+Scans all hew-runtime Rust source files for #[no_mangle] extern "C" fn
+exports and validates each one is classified (stable, codegen-stable, or
+internal) in scripts/jit-symbol-classification.toml.
 
-Functions from separate stdlib packages (e.g. hew_http_*, hew_regex_*) are listed
-in STDLIB_PACKAGE_PREFIXES — these are expected to be missing from hew-runtime and
-are linked separately by the driver.
+Three-tier model:
+  stable         -- user-visible runtime surface; user `extern "rt"` blocks
+                    and JIT hosts.
+  codegen-stable -- compiler-emitted; JIT hosts must provide these alongside
+                    stable, but users cannot name them in `extern "rt"`.
+  internal       -- lifecycle/bootstrap; AOT-only, never JIT-reachable.
+
+The codegen-coverage mode (--strict) is retained as a no-op for backward
+compatibility now that the C++ codegen subtree has been retired; the
+Rust IR ladder validates its own symbol references through the type
+checker and inkwell.
 
 Usage:
-    python3 scripts/verify-ffi-symbols.py                        # check and report
-    python3 scripts/verify-ffi-symbols.py --strict               # exit 1 on uncovered refs
-    python3 scripts/verify-ffi-symbols.py --classify stable      # print stable JIT symbols
-    python3 scripts/verify-ffi-symbols.py --classify internal    # print internal JIT symbols
     python3 scripts/verify-ffi-symbols.py --classify stable --validate
-    python3 scripts/verify-ffi-symbols.py --emit-cpp-header path # generate stable-symbol header
+    python3 scripts/verify-ffi-symbols.py --classify stable         # print stable JIT symbols
+    python3 scripts/verify-ffi-symbols.py --classify codegen-stable # print codegen-stable symbols
+    python3 scripts/verify-ffi-symbols.py --classify internal       # print internal JIT symbols
+    python3 scripts/verify-ffi-symbols.py --emit-cpp-header path    # generate stable-symbol header
 """
 
 from __future__ import annotations
@@ -26,7 +33,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CODEGEN_SRC = ROOT / "hew-codegen" / "src"
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
 SOURCE_ENCODING = "utf-8"
@@ -82,7 +88,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--classify",
-        choices=("stable", "internal"),
+        choices=("stable", "codegen-stable", "internal"),
         help="print the sorted JIT host ABI symbols for the requested class",
     )
     parser.add_argument(
@@ -99,9 +105,90 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _find_no_mangle_macros(sources: list[tuple]) -> set[str]:
+    """Return names of macro_rules! macros whose bodies emit #[no_mangle] extern "C" fn.
+
+    Uses a simple balanced-brace walk so that macros with deeply nested bodies
+    (e.g. vec_push_primitive!) are detected correctly even when the function
+    name is a macro variable like ``$name``.
+    """
+    no_mangle_macros: set[str] = set()
+    macro_start_re = re.compile(r"\bmacro_rules!\s+(\w+)\s*\{")
+    for _path, source in sources:
+        for m in macro_start_re.finditer(source):
+            macro_name = m.group(1)
+            brace_start = m.end() - 1  # points at the opening '{'
+            # Walk balanced braces to find the end of the macro body.
+            depth = 0
+            body_end = len(source)
+            for i in range(brace_start, len(source)):
+                ch = source[i]
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        body_end = i + 1
+                        break
+            body = source[brace_start:body_end]
+            if "#[no_mangle]" in body and 'extern "C" fn' in body:
+                no_mangle_macros.add(macro_name)
+    return no_mangle_macros
+
+
+def _extract_macro_generated_exports(
+    sources: list[tuple], no_mangle_macros: set[str]
+) -> set[str]:
+    """Extract the function names produced by invocations of no-mangle-emitting macros.
+
+    Handles both plain invocations::
+
+        vec_push_primitive!(hew_vec_push_i32, i32);
+
+    and invocations with outer attributes passed as the first argument::
+
+        vec_contains_primitive!(
+            #[expect(clippy::float_cmp, reason = "...")]
+            hew_vec_contains_f64,
+            f64
+        );
+
+    The first identifier after any leading ``#[...]`` blocks is taken as the
+    generated function name.
+    """
+    exports: set[str] = set()
+    for macro_name in no_mangle_macros:
+        # Match: macro_name!( [optional #[...] attrs]* first_ident
+        invoc_re = re.compile(
+            re.escape(macro_name) + r"!\s*\(\s*"
+            # Skip zero or more outer attribute blocks (#[...]).  The inner
+            # content may contain parenthesised sub-expressions (e.g.
+            # #[expect(reason = "...")]) but never an unescaped ']'.
+            r"(?:#\[[^\]]*(?:\([^)]*\))?[^\]]*\]\s*)*"
+            r"(\w+)",  # the first identifier = generated function name
+            re.DOTALL,
+        )
+        for _path, source in sources:
+            for m in invoc_re.finditer(source):
+                exports.add(m.group(1))
+    return exports
+
+
 def extract_runtime_exports() -> set[str]:
-    """Scan all hew-runtime .rs files for #[no_mangle] function names."""
-    exports = set()
+    """Scan all hew-runtime .rs files for #[no_mangle] function names.
+
+    Two passes are performed:
+
+    1. Direct scan — finds ``#[no_mangle] pub unsafe extern "C" fn name`` where
+       the name is a literal identifier in the source.
+
+    2. Macro-expansion scan — finds ``macro_rules!`` definitions whose bodies
+       contain ``#[no_mangle]`` + ``extern "C" fn``, then collects the first
+       identifier from every invocation of those macros.  This covers patterns
+       like ``vec_push_primitive!(hew_vec_push_i64, i64)`` where the symbol
+       name is the macro's ``$name`` parameter and is invisible to the regex in
+       pass 1.
+    """
     fn_pattern = re.compile(
         r"#\[no_mangle\]"
         r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip interleaved attrs
@@ -109,21 +196,18 @@ def extract_runtime_exports() -> set[str]:
         r"(\w+)",
         re.DOTALL,
     )
+    sources: list[tuple] = []
+    exports: set[str] = set()
     for rs_file in RUNTIME_SRC.rglob("*.rs"):
         source = rs_file.read_text(encoding=SOURCE_ENCODING)
+        sources.append((rs_file, source))
         for match in fn_pattern.finditer(source):
             exports.add(match.group(1))
+
+    # Pass 2: pick up symbols defined inside macro_rules! bodies.
+    no_mangle_macros = _find_no_mangle_macros(sources)
+    exports.update(_extract_macro_generated_exports(sources, no_mangle_macros))
     return exports
-
-
-def extract_codegen_refs() -> set[str]:
-    """Extract all hew_* function name strings from C++ codegen source."""
-    refs = set()
-    pattern = re.compile(r'"(hew_[a-zA-Z0-9_]+)"')
-    for src_file in CODEGEN_SRC.rglob("*.[ch]*"):
-        for match in pattern.finditer(src_file.read_text(encoding=SOURCE_ENCODING)):
-            refs.add(match.group(1))
-    return refs
 
 
 def is_stdlib_package(name: str) -> bool:
@@ -151,8 +235,8 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 def load_jit_symbol_classification() -> dict[str, set[str]]:
     text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     classification: dict[str, set[str]] = {}
-    for key in ("stable", "internal"):
-        match = re.search(rf"(?ms)^{key}\s*=\s*\[(.*?)^\]", text)
+    for key in ("stable", "stable-stdlib", "codegen-stable", "internal"):
+        match = re.search(rf"(?ms)^{re.escape(key)}\s*=\s*\[(.*?)^\]", text)
         if match is None:
             raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: missing {key} list")
         symbols = re.findall(r'"([^"\n]+)"', match.group(1))
@@ -167,15 +251,29 @@ def validate_jit_symbol_classification(
 ) -> list[str]:
     errors: list[str] = []
     stable = classification["stable"]
+    stable_stdlib = classification["stable-stdlib"]
+    codegen_stable = classification["codegen-stable"]
     internal = classification["internal"]
-    overlap = sorted(stable & internal)
-    if overlap:
-        errors.append(
-            "symbols classified more than once: "
-            + ", ".join(overlap)
-            + f" (update {JIT_SYMBOL_CLASSIFICATION})"
-        )
-    classified = stable | internal
+    # Pairwise overlap checks across all tiers.
+    for tier_a, set_a, tier_b, set_b in [
+        ("stable", stable, "stable-stdlib", stable_stdlib),
+        ("stable", stable, "codegen-stable", codegen_stable),
+        ("stable", stable, "internal", internal),
+        ("stable-stdlib", stable_stdlib, "codegen-stable", codegen_stable),
+        ("stable-stdlib", stable_stdlib, "internal", internal),
+        ("codegen-stable", codegen_stable, "internal", internal),
+    ]:
+        overlap = sorted(set_a & set_b)
+        if overlap:
+            errors.append(
+                f"symbols classified in both {tier_a} and {tier_b}: "
+                + ", ".join(overlap)
+                + f" (update {JIT_SYMBOL_CLASSIFICATION})"
+            )
+    # `stable-stdlib` is intentionally NOT unioned into the runtime-coverage
+    # check: those symbols come from sibling stdlib crates, not hew-runtime,
+    # so they would always show up as "extra" runtime classifications.
+    classified = stable | codegen_stable | internal
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
     if missing:
@@ -232,47 +330,22 @@ def run_classification_mode(args: argparse.Namespace, runtime_exports: set[str])
 
 
 def run_coverage_mode(strict: bool) -> int:
+    """Codegen-coverage mode is a no-op now that the C++ codegen subtree has been retired.
+
+    The historical behaviour walked `hew-codegen/src/**` for `hew_*` string
+    references and reported any that lacked a matching runtime export. With
+    the C++ tree gone, there are no codegen references to scan. Kept as a
+    permissive entry point so existing tooling (`make verify-ffi`, IDE
+    integrations) does not regress.
+    """
     runtime_exports = extract_runtime_exports()
-    codegen_refs = extract_codegen_refs()
-
-    uncovered = []
-    covered = 0
-    skipped_internal = 0
-    skipped_stdlib = 0
-    skipped_template = 0
-
-    for ref in sorted(codegen_refs):
-        reason = classify(ref, runtime_exports)
-        if not reason:
-            if ref in CODEGEN_INTERNAL:
-                skipped_internal += 1
-            elif ref in TEMPLATE_NAMES:
-                skipped_template += 1
-            elif is_stdlib_package(ref):
-                skipped_stdlib += 1
-            else:
-                covered += 1
-        else:
-            uncovered.append(ref)
-
     print(f"Runtime exports: {len(runtime_exports)}")
-    print(f"Codegen references: {len(codegen_refs)}")
-    print(f"  Covered by runtime exports: {covered}")
-    print(f"  Stdlib packages (linked separately): {skipped_stdlib}")
-    print(f"  Codegen-internal (intercepted): {skipped_internal}")
-    print(f"  Template names (suffixed at emit): {skipped_template}")
-    print(f"  Uncovered: {len(uncovered)}")
-
-    if uncovered:
-        print("\nUncovered functions (codegen references with no runtime export):")
-        for name in uncovered:
-            print(f"  - {name}")
-        if strict:
-            print("\nFAILED: uncovered symbols found (--strict mode)")
-            return 1
-    else:
-        print("\nAll codegen references are covered.")
-
+    print(
+        "Codegen-coverage mode is a no-op after the hew-codegen C++/MLIR "
+        "retirement. Use --classify stable --validate for runtime-export "
+        "classification checks."
+    )
+    _ = strict  # silence unused
     return 0
 
 

@@ -19,6 +19,67 @@
 //!
 //! Active on Unix-like platforms (Linux, macOS). Other platforms
 //! (Windows, WASM) get no-op stubs.
+//!
+//! # Trap-as-actor-crash boundary (two-tier policy)
+//!
+//! This module codifies the formal boundary between traps that route to
+//! an actor crash (recoverable) and traps that terminate the process
+//! (program-terminating). The substrate below already implements the
+//! policy; this docstring records the invariant so future changes do not
+//! silently shift the line.
+//!
+//! ## Recoverable tier — actor-crash
+//!
+//! Synchronous fault signals delivered to a worker thread that holds a
+//! valid `sigjmp_buf` recovery context are caught by
+//! `crash_signal_handler`, which calls `siglongjmp` back to the
+//! scheduler. The scheduler marks the actor `Crashed` and continues
+//! processing other actors. The fault classes routed through this path:
+//!
+//! - `SIGSEGV`, `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGTRAP`
+//! - Integer overflow trap (LLVM `*.with.overflow` branch → `ud2` →
+//!   `SIGILL`)
+//! - OOB indexing trap (bounds check → trap)
+//! - Integer divide / modulo / shift traps
+//! - Explicit `panic(...)` and `hew_panic()`
+//! - `HeapExceeded` (arena cap exceeded → `hew_trap_with_code` stamps
+//!   the discriminator before `siglongjmp`)
+//! - `PartitionDetected` (mailbox / duplex disconnect surfaces as a
+//!   typed recv error, not a trap; included here for completeness as a
+//!   fail-closed exit class the supervisor observes)
+//! - FFI null-pointer dereference reaching the runtime
+//!
+//! Stack-overflow on the worker stack is recoverable: handlers run on
+//! the per-worker alternate signal stack installed via `SA_ONSTACK` and
+//! `sigaltstack`. A signal raised while the recovery path is already
+//! running (double-fault) is the boundary — see below.
+//!
+//! ## Program-terminating tier — `_exit`
+//!
+//! The handler calls `libc::_exit(128 + sig)` (async-signal-safe) in
+//! exactly these cases:
+//!
+//! - **Double-fault**: a signal arrives while `in_recovery` is set. See
+//!   the re-entrancy check in `crash_signal_handler` below — if the
+//!   recovery path itself faulted, there is no safe `siglongjmp` target
+//!   and continuing would corrupt scheduler state.
+//! - **No recovery context**: the faulting thread has no valid
+//!   `sigjmp_buf` installed (signal raised in scheduler internals,
+//!   pre-dispatch Rust code, or any worker before `init_worker_recovery`
+//!   has run). Recovery would jump into uninitialised memory.
+//! - **Allocator or scheduler invariant break**: detected by upstream
+//!   code, not the signal handler directly; reachable via the same
+//!   `_exit` path when the invariant guard cannot proceed.
+//!
+//! ## Why this is locked
+//!
+//! Both tiers are load-bearing for v0.5's fail-closed substrate. The
+//! recoverable tier guarantees that a single actor's bug cannot down
+//! the runtime; the terminating tier guarantees that scheduler-internal
+//! corruption cannot silently propagate. Adding a fault class to the
+//! recoverable list requires a corresponding `sigjmp_buf` reachability
+//! proof; demoting a fault class to the terminating list is a
+//! breaking change to the actor-isolation contract.
 
 // ── Shared recovery logic ────────────────────────────────────────────────
 //
@@ -63,6 +124,15 @@ mod shared {
         pub(super) worker_id: u32,
         /// Message type being processed when crash occurred.
         pub(super) msg_type: AtomicI32,
+        /// `true` when the recovery was entered through the runtime's
+        /// intentional direct-longjmp path (a Hew `panic()` or a `HEW_TRAP_*`
+        /// runtime trap), `false` when it was entered through the hardware
+        /// fault signal handler. The intentional path reuses the `SIGSEGV`
+        /// signal number (11) as its marker, so without this flag an
+        /// intentional panic and a genuine SIGSEGV null-deref are reported
+        /// identically — letting real faults hide among the supervised
+        /// panic-and-restart traffic. Reset to `false` on every dispatch.
+        pub(super) intentional_panic: AtomicBool,
     }
 
     impl RecoveryState {
@@ -77,6 +147,7 @@ mod shared {
                 in_recovery: AtomicBool::new(false),
                 worker_id,
                 msg_type: AtomicI32::new(0),
+                intentional_panic: AtomicBool::new(false),
             }
         }
     }
@@ -92,6 +163,7 @@ mod shared {
             7 => "SIGBUS",
             8 => "SIGFPE",
             4 => "SIGILL",
+            5 => "SIGTRAP",
             _ => "UNKNOWN",
         }
     }
@@ -115,6 +187,9 @@ mod shared {
         state.crash_signal.store(0, Ordering::Relaxed);
         state.fault_addr = 0;
         state.in_recovery.store(false, Ordering::Release);
+        // Fresh dispatch: any crash from here is a genuine hardware fault
+        // until the intentional direct-longjmp path explicitly marks itself.
+        state.intentional_panic.store(false, Ordering::Relaxed);
 
         // Extract message type from HewMsgNode for crash reporting.
         let msg_type = if msg.is_null() {
@@ -147,6 +222,7 @@ mod shared {
         let actor = state.current_actor;
         let msg_type = state.msg_type.load(Ordering::Acquire);
         let worker_id = state.worker_id;
+        let intentional = state.intentional_panic.load(Ordering::Acquire);
 
         // Cache actor data before supervisor notification to avoid race.
         // After hew_actor_trap, another thread could process the supervisor
@@ -159,13 +235,12 @@ mod shared {
             // worker thread can transition it, and we haven't freed it).
             unsafe {
                 let id = (*actor).id;
-                let pid = (*actor).pid;
                 let report = crate::crash::build_crash_report(
                     actor, signal,
                     0, // signal_code - not available from siginfo_t in current handler
                     fault_addr, msg_type, worker_id,
                 );
-                (id, pid, Some(report))
+                (id, id, Some(report))
             }
         };
 
@@ -180,12 +255,22 @@ mod shared {
             crate::crash::push_crash_report(report);
         }
 
-        // Enhanced crash logging with cached actor data.
-        let name = signal_name(signal);
+        // Crash logging with cached actor data. Distinguish an intentional Hew
+        // `panic()` / `HEW_TRAP_*` runtime trap (recovered via the direct
+        // longjmp marker, which reuses signal 11) from a genuine hardware fault
+        // so a real null-deref SIGSEGV is reported distinctly instead of being
+        // masked by the identical-looking supervised panic-and-restart traffic.
         if actor_id != 0 {
-            eprintln!(
-                "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
-            );
+            if intentional {
+                eprintln!(
+                    "hew: actor {actor_id} (pid={cached_pid}) panicked (trap code {signal}), msg_type={msg_type}, worker={worker_id}"
+                );
+            } else {
+                let name = signal_name(signal);
+                eprintln!(
+                    "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+                );
+            }
         }
 
         // Clear recovery context.
@@ -216,17 +301,74 @@ mod shared {
     /// The SIGSEGV signal number (11) is used as the canonical "intentional
     /// panic" marker across all platforms.
     pub(super) fn try_direct_longjmp_preamble(state: &mut RecoveryState) -> bool {
+        try_direct_longjmp_preamble_with_code(state, 11) // SIGSEGV
+    }
+
+    /// Like [`try_direct_longjmp_preamble`] but records a custom crash code
+    /// instead of the SIGSEGV default.
+    ///
+    /// Used by callers that need a named exit reason (e.g. `HeapExceeded`)
+    /// rather than the generic SIGSEGV-equivalent marker. The code is stored
+    /// in `crash_signal`, which `handle_crash_recovery_impl` forwards to
+    /// `hew_actor_trap` as the `error_code`, where it lands in the actor's
+    /// `error_code` field and is observable via `hew_actor_get_error`.
+    pub(super) fn try_direct_longjmp_preamble_with_code(
+        state: &mut RecoveryState,
+        code: i32,
+    ) -> bool {
         if !state.jmp_buf_valid.load(Ordering::Acquire) {
             return false;
         }
         if state.in_recovery.swap(true, Ordering::Acquire) {
             return false;
         }
-        // Record intentional panic as SIGSEGV equivalent.
-        state.crash_signal.store(11, Ordering::Release); // SIGSEGV
+        state.crash_signal.store(code, Ordering::Release);
         state.fault_addr = 0;
+        // Mark this recovery as an intentional Hew panic / runtime trap so the
+        // reporter does not mislabel it as a hardware SIGSEGV (the marker code
+        // reuses signal 11). Set before clearing `jmp_buf_valid` so it is
+        // visible by the time recovery reads it.
+        state.intentional_panic.store(true, Ordering::Release);
         state.jmp_buf_valid.store(false, Ordering::Release);
         true
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// B2 de-masking invariant: the runtime's intentional direct-longjmp
+        /// path (a Hew `panic()` / `HEW_TRAP_*` runtime trap) reuses the
+        /// `SIGSEGV` signal number (11) as its recovery marker. Without an
+        /// explicit flag, an intentional supervised panic-and-restart is
+        /// reported identically to a genuine hardware SIGSEGV null-deref, so a
+        /// real first-spawn fault hides among the panic traffic. This pins the
+        /// flag that lets the reporter tell them apart.
+        #[test]
+        fn intentional_panic_flag_distinguishes_trap_from_hardware_fault() {
+            let mut state = RecoveryState::new(0);
+            // Fresh state: a crash would be treated as a genuine hardware fault.
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+
+            // Entering a dispatch leaves the flag false (hardware-fault default):
+            // a SIGSEGV from handler code must still report "crashed with SIGSEGV".
+            // SAFETY: null actor/msg is the documented quiescent case for the
+            // metadata store (no dereference of either pointer).
+            unsafe { prepare_dispatch_impl(&mut state, ptr::null_mut(), ptr::null_mut()) };
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+
+            // The intentional panic/trap path marks the recovery so the reporter
+            // labels it a panic, not a SIGSEGV null-deref.
+            mark_recovery_active_impl(&mut state);
+            assert!(try_direct_longjmp_preamble_with_code(&mut state, 11));
+            assert!(state.intentional_panic.load(Ordering::Acquire));
+
+            // The next dispatch resets it: a subsequent genuine fault is reported
+            // as a real crash rather than being masked by the prior panic.
+            // SAFETY: same quiescent null-pointer case as above.
+            unsafe { prepare_dispatch_impl(&mut state, ptr::null_mut(), ptr::null_mut()) };
+            assert!(!state.intentional_panic.load(Ordering::Acquire));
+        }
     }
 }
 
@@ -351,7 +493,7 @@ mod platform {
     unsafe extern "C" fn recovery_ctx_dtor(ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: ptr was created via Box::into_raw in init_worker_recovery.
-            drop(unsafe { Box::from_raw(ptr.cast::<WorkerRecoveryCtx>()) });
+            drop(unsafe { Box::from_raw(ptr.cast::<WorkerRecoveryCtx>()) }); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -464,7 +606,18 @@ mod platform {
         });
 
         // Install signal handlers.
-        let crash_signals = [libc::SIGSEGV, libc::SIGBUS, libc::SIGFPE, libc::SIGILL];
+        //
+        // SIGTRAP is included because `llvm.trap` lowers to `brk #1` on
+        // Linux aarch64, which the kernel delivers as SIGTRAP (not SIGILL).
+        // On macOS aarch64 `brk #1` delivers SIGILL, so SIGTRAP is harmless
+        // there. On x86-64 `ud2` delivers SIGILL regardless of OS.
+        let crash_signals = [
+            libc::SIGSEGV,
+            libc::SIGBUS,
+            libc::SIGFPE,
+            libc::SIGILL,
+            libc::SIGTRAP,
+        ];
 
         for &sig in &crash_signals {
             // SAFETY: sa is fully initialized. sigaction is safe to call
@@ -526,7 +679,7 @@ mod platform {
 
         // Allocate and install per-thread recovery context.
         let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
-        let ctx_ptr = Box::into_raw(ctx);
+        let ctx_ptr = Box::into_raw(ctx); // ALLOCATOR-PAIRING: GlobalAlloc
         let key = *RECOVERY_KEY
             .get()
             .expect("init_crash_handling must be called before init_worker_recovery");
@@ -653,6 +806,31 @@ mod platform {
         // SAFETY: ctx is non-null and exclusively owned by this thread.
         let ctx = unsafe { &mut *ctx };
         if !super::shared::try_direct_longjmp_preamble(&mut ctx.state) {
+            return;
+        }
+        // SAFETY: jmp_buf was set by sigsetjmp in activate_actor on this
+        // thread. The stack frame that called sigsetjmp is still live.
+        unsafe {
+            siglongjmp(&raw mut ctx.jmp_buf, 1);
+        }
+    }
+
+    /// Like [`try_direct_longjmp`] but records `code` as the crash reason
+    /// instead of the default SIGSEGV (11) marker.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context on the worker thread.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(code: i32) {
+        // SAFETY: accesses the thread-local recovery context via pthread key;
+        // caller guarantees we are in a dispatch context on the correct thread.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: ctx is non-null and exclusively owned by this thread.
+        let ctx = unsafe { &mut *ctx };
+        if !super::shared::try_direct_longjmp_preamble_with_code(&mut ctx.state, code) {
             return;
         }
         // SAFETY: jmp_buf was set by sigsetjmp in activate_actor on this
@@ -926,7 +1104,7 @@ mod platform {
 
     pub(crate) fn init_worker_recovery(worker_id: u32) {
         let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
-        let ctx_ptr = Box::into_raw(ctx);
+        let ctx_ptr = Box::into_raw(ctx); // ALLOCATOR-PAIRING: GlobalAlloc
         let key = *TLS_KEY
             .get()
             .expect("init_crash_handling must be called before init_worker_recovery");
@@ -1036,6 +1214,30 @@ mod platform {
         // scheduler's recovery frame.
         unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
     }
+
+    /// Like [`try_direct_longjmp`] but records `code` as the crash reason
+    /// instead of the default SIGSEGV (11) marker.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context on the worker thread.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(code: i32) {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: `ctx` is non-null (checked above) and exclusively owned by
+        // this thread.
+        let ctx = unsafe { &mut *ctx };
+        if !super::shared::try_direct_longjmp_preamble_with_code(&mut ctx.state, code) {
+            return;
+        }
+        // SAFETY: `jmp_buf` was set by `sigsetjmp` in `activate_actor` on the
+        // same thread. The longjmp unwinds back to the scheduler's recovery frame.
+        unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
+    }
 }
 
 // ── WASM stubs ──────────────────────────────────────────────────────────
@@ -1089,10 +1291,22 @@ mod platform {
     ///
     /// No-op on WASM.
     pub(crate) unsafe fn try_direct_longjmp() {}
+
+    /// No-op on WASM — no crash recovery; arena null propagates to caller.
+    ///
+    /// On WASM there is no signal-based longjmp seam. Cap-exhaustion nulls
+    /// propagate as a null pointer; the Hew runtime's WASM panic (`catch_unwind`)
+    /// path handles the resulting trap if the caller dereferences the null.
+    ///
+    /// # Safety
+    ///
+    /// No-op on WASM.
+    pub(crate) unsafe fn try_direct_longjmp_with_code(_code: i32) {}
 }
 
 // Re-export platform-specific implementations.
 pub(crate) use platform::{
     clear_dispatch_recovery, handle_crash_recovery, init_crash_handling, init_worker_recovery,
     mark_recovery_active, prepare_dispatch_recovery, sigsetjmp, try_direct_longjmp,
+    try_direct_longjmp_with_code,
 };

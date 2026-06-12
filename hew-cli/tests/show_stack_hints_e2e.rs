@@ -11,7 +11,7 @@
 //!
 //! 1. The flag is accepted on `hew check` and never affects exit code.
 //! 2. The scaffold emits at least one `HEW-PERF-001` line for a program that
-//!    contains both a Vec binding and a closure binding.
+//!    contains a known heap-class binding.
 //! 3. Each emitted line uses the documented format
 //!    `<file>:<line>:<col>: info[HEW-PERF-001]: binding `<name>` (<class>) ...`.
 //! 4. A type-erroring program passed to `hew check --show-stack-hints` still
@@ -36,22 +36,21 @@ fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-/// `hew check --show-stack-hints` on a program that allocates a Vec and binds
-/// a lambda must exit zero, must surface at least one HEW-PERF-001 line on
+/// `hew check --show-stack-hints` on a program with a string binding must exit
+/// zero, must surface at least one HEW-PERF-001 line on
 /// stderr, and the rendered lines must point at the fixture file using the
 /// documented `file:line:col: info[HEW-PERF-001]: binding ...` shape.
 #[test]
 fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
-    // Two known-heap-class bindings:
-    //   - `v` resolves to `Vec<int>`        -> AllocationClass::Vec
-    //   - `f` is a closure literal           -> AllocationClass::ClosureEnv
-    // Plus one stack-shaped binding (`r`) that must NOT produce a hint —
-    // a primitive int return does not allocate on the heap.
+    // Known heap-class binding:
+    //   - `s` is a string literal -> AllocationClass::String
+    // Plus one stack-shaped binding (`r`) that must NOT produce a hint — a
+    // primitive i64 value does not allocate on the heap.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<int> = Vec::new();\n\
-        \x20\x20\x20\x20let f = (x: int) -> int => x * 2;\n\
-        \x20\x20\x20\x20let r: int = f(3);\n\
-        \x20\x20\x20\x20println(f\"v.len = {v.len()}, r = {r}\");\n\
+        \x20\x20\x20\x20let s: string = \"hello\";\n\
+        \x20\x20\x20\x20let r: i64 = 3;\n\
+        \x20\x20\x20\x20println(s);\n\
+        \x20\x20\x20\x20println(f\"r = {r}\");\n\
         }\n";
 
     let (_fixture, scaffold_path) = write_fixture(source);
@@ -129,11 +128,11 @@ fn show_stack_hints_flag_emits_perf_001_on_known_allocations() {
 /// `failure.message`, so the user never saw which line caused the error.
 #[test]
 fn show_stack_hints_check_failure_renders_span_diagnostics() {
-    // A program with a deliberate type error: the Vec<[int; 2]> element type
+    // A program with a deliberate type error: the Vec<[i64; 2]> element type
     // is unsupported, producing a type error with a source span. The span
     // underline (`^^^`) must appear in stderr when --show-stack-hints is set.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<[int; 2]> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<[i64; 2]> = Vec::new();\n\
         \x20\x20\x20\x20println(v.len());\n\
         }\n";
 
@@ -183,16 +182,14 @@ fn show_stack_hints_check_failure_renders_span_diagnostics() {
 /// it calls `hew_compile::check_file` for hints first, then separately compiles
 /// and runs the artifact. Both steps must succeed and the two output streams
 /// must not interfere.
-// Disabled during v0.5 cutover: inkwell + libMLIR dual-load corrupts AnalysisManager state. Resolves when the C++ codegen subtree is removed.
-#[ignore = "v0.5: temporarily disabled during cutover; re-enable once the C++ codegen subtree is removed"]
 #[test]
 fn show_stack_hints_run_emits_hints_and_executes_program() {
     require_codegen();
 
-    // A program with a known heap-class binding (`v: Vec<int>`) that also
+    // A program with a known heap-class binding (`v: Vec<i64>`) that also
     // prints a sentinel value so we can verify execution succeeded.
     let source = "fn main() {\n\
-        \x20\x20\x20\x20let v: Vec<int> = Vec::new();\n\
+        \x20\x20\x20\x20let v: Vec<i64> = Vec::new();\n\
         \x20\x20\x20\x20println(f\"len={v.len()}\");\n\
         }\n";
 

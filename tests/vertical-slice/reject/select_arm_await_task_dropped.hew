@@ -1,0 +1,32 @@
+// Reject fixture (SELECT ship-3): the task-await arm `<id> from await <expr>`
+// is NOT one of the three sealed `select` forms in edition 2026
+// (HEW-SPEC-2026 §4.11.1: actor ask, channel `rx.recv()`, `after <duration>`).
+// `Task<T>` is unnameable (§4.3) and `fork name = expr;` is parser-only in this
+// build, so there is no bindable first-class task handle to select on. The
+// checker select-arm gate must reject the form at CHECK time — never a silent
+// lowering, never a late MIR/codegen error.
+//
+// NB: `await <actor>.<method>(...)` is unwrapped to the actor-ask arm, so the
+// awaited source here is a plain call to make the dropped task-await shape
+// explicit.
+//
+// Harness verb: hew check (must fail)
+// Expected diagnostic substring: "select arm source must be actor.method(args)"
+fn compute() -> i64 {
+    7
+}
+
+actor Driver {
+    #[on(start)]
+    fn start() {
+        select {
+            done from await compute() => println(f"done:{done}"),
+            after 1s => println("timeout"),
+        };
+    }
+}
+
+fn main() {
+    let _d = spawn Driver;
+    sleep_ms(20);
+}

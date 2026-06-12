@@ -1,0 +1,13 @@
+// Lambda actor capturing a BitCopy outer binding (tell shape). The
+// capture rides the heap-boxed env record passed as the runtime state
+// pointer; the body reads it back through the state slot on every
+// dispatch. Both tells land in one mailbox, so their prints are FIFO
+// ordered; main prints last after the drain window.
+fn main() {
+    let base = 100;
+    let log = actor |n: i64| { println(f"sum={base + n}"); };
+    log(1);
+    log(2);
+    sleep_ms(300);
+    println("done");
+}

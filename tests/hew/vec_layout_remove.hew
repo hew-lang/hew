@@ -1,0 +1,118 @@
+//! Layout-backed Vec::remove tests (W3.003).
+//!
+//! Exercises index-based remove on a Vec<Point> where Point is a Copy record
+//! with two i64 fields.  The checker rewrites the `remove` call to
+//! `hew_vec_remove_at_layout`; codegen synthesises the hidden HewTypeLayout*
+//! operand; the runtime shifts subsequent elements left using memmove semantics.
+//!
+//! Uses inline `if … { panic(…) }` assertions because the `hew test` extracted-
+//! function context does not yet support module-qualified `testing.*` calls
+//! (pre-existing MethodCallNoRewrite limitation, see deque_test.hew on v05-integration).
+
+type Point { x: i64, y: i64 }
+
+// ── middle removal ────────────────────────────────────────────────────────────
+
+#[test]
+fn test_remove_middle_shrinks_length_and_shifts_tail() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 10, y: 20 });
+    points.push(Point { x: 30, y: 40 });
+    points.push(Point { x: 50, y: 60 });
+
+    // Remove the middle element (index 1).
+    points.remove(1);
+
+    if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
+
+    let first = points.get(0);
+    if first.x != 10 { panic(f"expected first.x=10, got {first.x}"); }
+    if first.y != 20 { panic(f"expected first.y=20, got {first.y}"); }
+
+    let second = points.get(1);
+    if second.x != 50 { panic(f"expected second.x=50, got {second.x}"); }
+    if second.y != 60 { panic(f"expected second.y=60, got {second.y}"); }
+}
+
+// ── first removal ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_remove_first_shifts_all_remaining() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 10, y: 20 });
+    points.push(Point { x: 30, y: 40 });
+    points.push(Point { x: 50, y: 60 });
+
+    // Remove the first element (index 0).
+    points.remove(0);
+
+    if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
+
+    let first = points.get(0);
+    if first.x != 30 { panic(f"expected first.x=30, got {first.x}"); }
+    if first.y != 40 { panic(f"expected first.y=40, got {first.y}"); }
+
+    let second = points.get(1);
+    if second.x != 50 { panic(f"expected second.x=50, got {second.x}"); }
+    if second.y != 60 { panic(f"expected second.y=60, got {second.y}"); }
+}
+
+// ── last removal ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_remove_last_element_leaves_prefix_intact() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 10, y: 20 });
+    points.push(Point { x: 30, y: 40 });
+    points.push(Point { x: 50, y: 60 });
+
+    // Remove the last element (index 2).
+    points.remove(2);
+
+    if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
+
+    let first = points.get(0);
+    if first.x != 10 { panic(f"expected first.x=10, got {first.x}"); }
+    if first.y != 20 { panic(f"expected first.y=20, got {first.y}"); }
+
+    let second = points.get(1);
+    if second.x != 30 { panic(f"expected second.x=30, got {second.x}"); }
+    if second.y != 40 { panic(f"expected second.y=40, got {second.y}"); }
+}
+
+// ── single-element removal ────────────────────────────────────────────────────
+
+#[test]
+fn test_remove_sole_element_leaves_empty_vec() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 50, y: 60 });
+
+    points.remove(0);
+
+    if points.len() != 0 { panic(f"expected len 0, got {points.len()}"); }
+}
+
+// ── chained removals ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_sequential_removals_reach_empty() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 10, y: 20 });
+    points.push(Point { x: 30, y: 40 });
+    points.push(Point { x: 50, y: 60 });
+
+    // Middle → first → sole remaining.
+    points.remove(1);
+    if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
+
+    points.remove(0);
+    if points.len() != 1 { panic(f"expected len 1, got {points.len()}"); }
+
+    let last = points.get(0);
+    if last.x != 50 { panic(f"expected last.x=50, got {last.x}"); }
+    if last.y != 60 { panic(f"expected last.y=60, got {last.y}"); }
+
+    points.remove(0);
+    if points.len() != 0 { panic(f"expected len 0, got {points.len()}"); }
+}
+

@@ -1,0 +1,25 @@
+// Spec §3.8.6 Vec pipeline: map / filter / reduce expand to counted loops
+// over the receiver; the closure argument is bound once and borrowed per
+// element, so capture-carrying closures ride the standard env discipline.
+fn double(x: i64) -> i64 {
+    x * 2
+}
+
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3, 4, 5];
+    let doubled = numbers.map(double);
+    println(doubled[4]); // 10
+    let evens = numbers.filter(|x: i64| x % 2 == 0);
+    println(evens.len()); // 2
+    let total = numbers.reduce(|a: i64, b: i64| a + b, 0);
+    println(total); // 15
+
+    // The spec chain, over a capture-carrying predicate.
+    let threshold = 2;
+    let result = numbers.filter(|x: i64| x > threshold).map(|x: i64| x * 10).reduce(|a: i64, b: i64| a + b, 0);
+    println(result); // 120
+    let words: Vec<string> = ["hew", "is", "lean"];
+    let lengths = words.map(|w: string| w.len());
+    // Summed lengths: 9.
+    println(lengths[0] + lengths[1] + lengths[2]);
+}

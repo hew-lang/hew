@@ -22,6 +22,7 @@ wasm-opt = false
 
 [dependencies]
 hew-analysis = { path = "../hew-analysis" }
+hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }

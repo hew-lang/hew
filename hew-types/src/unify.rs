@@ -56,6 +56,10 @@ impl std::error::Error for UnifyError {}
 ///
 /// # Errors
 /// Returns `UnifyError::OccursCheck` if the type contains the variable.
+#[allow(
+    clippy::result_large_err,
+    reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
+)]
 pub fn bind(subst: &mut Substitution, var: TypeVar, ty: &Ty) -> Result<(), UnifyError> {
     // Don't bind a variable to itself
     if let Ty::Var(v) = ty {
@@ -144,6 +148,10 @@ fn literal_promotion_root(subst: &Substitution, start: TypeVar) -> Option<TypeVa
 #[expect(
     clippy::unnested_or_patterns,
     reason = "keeping function/closure patterns visually distinct"
+)]
+#[allow(
+    clippy::result_large_err,
+    reason = "UnifyError intentionally carries concrete Ty values for diagnostics"
 )]
 pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError> {
     let a_resolved = subst.resolve(a);
@@ -267,18 +275,37 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
         // ActorRef<T> ↔ ActorRef: typed and untyped actor refs are compatible.
         // Both are representationally identical (actor pointers). Allow
         // passing ActorRef<T> where ActorRef is expected, and vice versa.
-        (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
-            if (an == "ActorRef" || an == "Actor")
-                && (bn == "ActorRef" || bn == "Actor")
-                && matches!((aa.len(), ba.len()), (0, 1) | (1, 0)) =>
+        (
+            Ty::Named {
+                builtin: ab,
+                args: aa,
+                ..
+            },
+            Ty::Named {
+                builtin: bb,
+                args: ba,
+                ..
+            },
+        ) if matches!(
+            ab,
+            Some(crate::BuiltinType::ActorRef | crate::BuiltinType::Actor)
+        ) && matches!(
+            bb,
+            Some(crate::BuiltinType::ActorRef | crate::BuiltinType::Actor)
+        ) && matches!((aa.len(), ba.len()), (0, 1) | (1, 0)) =>
         {
             Ok(())
         }
 
         // Also handles module-qualified names: "json.Value" matches "Value"
-        (Ty::Named { name: an, args: aa }, Ty::Named { name: bn, args: ba })
-            if an == bn || Ty::names_match_qualified(an, bn) =>
-        {
+        (
+            Ty::Named {
+                name: an, args: aa, ..
+            },
+            Ty::Named {
+                name: bn, args: ba, ..
+            },
+        ) if an == bn || Ty::names_match_qualified(an, bn) => {
             if aa.len() != ba.len() {
                 return Err(UnifyError::ArityMismatch {
                     expected: aa.len(),
@@ -334,6 +361,25 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 for (a_arg, b_arg) in a_bound.args.iter().zip(b_bound.args.iter()) {
                     unify(subst, a_arg, b_arg)?;
                 }
+                if a_bound.assoc_bindings.len() != b_bound.assoc_bindings.len() {
+                    return Err(UnifyError::ArityMismatch {
+                        expected: a_bound.assoc_bindings.len(),
+                        actual: b_bound.assoc_bindings.len(),
+                    });
+                }
+                for (a_assoc_name, a_assoc_ty) in &a_bound.assoc_bindings {
+                    let Some((_, b_assoc_ty)) = b_bound
+                        .assoc_bindings
+                        .iter()
+                        .find(|(name, _)| name == a_assoc_name)
+                    else {
+                        return Err(UnifyError::Mismatch {
+                            expected: a.clone(),
+                            actual: b.clone(),
+                        });
+                    };
+                    unify(subst, a_assoc_ty, b_assoc_ty)?;
+                }
             }
             Ok(())
         }
@@ -349,40 +395,6 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             expected: a_resolved,
             actual: b_resolved,
         }),
-    }
-}
-
-/// Check if type `a` can be coerced to type `b`.
-///
-/// This is more permissive than unification and allows:
-/// - Never coerces to anything
-/// - Integer literals can coerce to any integer type
-/// - Float literals can coerce to any float type
-#[must_use]
-pub fn can_coerce(a: &Ty, b: &Ty) -> bool {
-    match (a, b) {
-        // Never/Error coerces to anything
-        (Ty::Never | Ty::Error, _) | (_, Ty::Error) => true,
-
-        // Same types
-        _ if a == b => true,
-
-        // Array to slice coercion
-        (Ty::Array(elem_a, _), Ty::Slice(elem_b)) => can_coerce(elem_a, elem_b),
-
-        // Mutable pointer to const pointer
-        (
-            Ty::Pointer {
-                is_mutable: true,
-                pointee: pa,
-            },
-            Ty::Pointer {
-                is_mutable: false,
-                pointee: pb,
-            },
-        ) => can_coerce(pa, pb),
-
-        _ => false,
     }
 }
 
@@ -489,10 +501,12 @@ mod tests {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::Var(v)],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::I32],
         };
@@ -549,22 +563,13 @@ mod tests {
     }
 
     #[test]
-    fn test_can_coerce() {
-        assert!(can_coerce(&Ty::Never, &Ty::I32));
-        assert!(can_coerce(&Ty::I32, &Ty::I32));
-        assert!(!can_coerce(&Ty::I32, &Ty::Bool));
-    }
-
-    #[test]
     fn test_typed_actor_ref_unifies_with_untyped() {
         let typed = Ty::actor_ref(Ty::Named {
+            builtin: None,
             name: "ClientHandler".to_string(),
             args: vec![],
         });
-        let untyped = Ty::Named {
-            name: "ActorRef".to_string(),
-            args: vec![],
-        };
+        let untyped = Ty::builtin_named(crate::BuiltinType::ActorRef, vec![]);
         // Both directions should work
         let mut subst = Substitution::new();
         assert!(
@@ -666,10 +671,12 @@ mod tests {
     fn test_unify_named_different_names() {
         let mut subst = Substitution::new();
         let a = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::I32],
         };
         let b = Ty::Named {
+            builtin: None,
             name: "HashMap".to_string(),
             args: vec![Ty::I32],
         };
@@ -707,10 +714,12 @@ mod tests {
     fn test_actor_ref_arity_mismatch_rejects_nonstandard_pairs() {
         let mut subst = Substitution::new();
         let typed = Ty::Named {
+            builtin: None,
             name: "ActorRef".to_string(),
             args: vec![Ty::I32, Ty::Bool],
         };
         let untyped = Ty::Named {
+            builtin: None,
             name: "ActorRef".to_string(),
             args: vec![],
         };
@@ -743,6 +752,7 @@ mod tests {
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let ty = Ty::Named {
+            builtin: None,
             name: "Vec".to_string(),
             args: vec![Ty::Tuple(vec![Ty::Var(v), Ty::Bool])],
         };
@@ -750,6 +760,7 @@ mod tests {
             &mut subst,
             &ty,
             &Ty::Named {
+                builtin: None,
                 name: "Vec".to_string(),
                 args: vec![Ty::Tuple(vec![Ty::String, Ty::Bool])],
             }
@@ -789,7 +800,7 @@ mod tests {
         let result = unify(&mut subst, &task, &Ty::I64);
         assert!(
             result.is_err(),
-            "Task<int> must not unify with int; got {result:?}"
+            "Task<i64> must not unify with i64; got {result:?}"
         );
     }
 

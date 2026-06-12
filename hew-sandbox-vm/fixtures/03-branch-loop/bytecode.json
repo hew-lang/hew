@@ -1,0 +1,443 @@
+{
+  "capabilities": [
+    {
+      "disposition": "allowed",
+      "id": "core.stdout",
+      "reason": "page stdout shim",
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
+    }
+  ],
+  "compiler_version": "handcrafted-pending-control-flow-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.0",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.1",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.1"
+                }
+              ],
+              "dst": "local:main.2",
+              "op": "i64.checked_add",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": null,
+            "target": "block:main.check"
+          }
+        },
+        {
+          "id": "block:main.check",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": true
+                }
+              ],
+              "dst": "local:main.4",
+              "op": "const.bool",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "condition": {
+              "kind": "local",
+              "value": "local:main.4"
+            },
+            "else_target": "block:main.exit",
+            "op": "br_if",
+            "span": null,
+            "target": "block:main.body"
+          }
+        },
+        {
+          "id": "block:main.body",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.5",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 2
+                }
+              ],
+              "dst": "local:main.6",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.5"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.6"
+                }
+              ],
+              "dst": "local:main.7",
+              "op": "i64.checked_add",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 3
+                }
+              ],
+              "dst": "local:main.8",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.7"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.8"
+                }
+              ],
+              "dst": "local:main.9",
+              "op": "i64.checked_add",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.9"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": null,
+            "target": "block:main.exit"
+          }
+        },
+        {
+          "id": "block:main.exit",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.0"
+                }
+              ],
+              "dst": "local:main.3",
+              "op": "local.get",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.11",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.11"
+                }
+              ],
+              "dst": "local:main.10",
+              "op": "cmp.ge",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.3"
+                }
+              ],
+              "dst": "local:main.13",
+              "op": "local.get",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.13"
+                }
+              ],
+              "dst": "local:main.12",
+              "metadata": {
+                "trace_step": true
+              },
+              "op": "local.get",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.12"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.0",
+          "mutable": true,
+          "name": "total",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.1",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.2",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.3",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.4",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:bool"
+        },
+        {
+          "id": "local:main.5",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.6",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.7",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.8",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.9",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.10",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:bool"
+        },
+        {
+          "id": "local:main.11",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.12",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.13",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [],
+    "enums": [],
+    "machines": [],
+    "records": [],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:bool",
+        "kind": "bool",
+        "name": "bool"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:branch-loop",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": [
+    {
+      "admission": "allowed",
+      "capability": "core.stdout",
+      "id": "sym:core.stdout.println",
+      "module": "core.stdout",
+      "name": "println",
+      "params": [
+        "type:i64"
+      ],
+      "result": "type:unit"
+    }
+  ]
+}

@@ -10,7 +10,7 @@
 // and Checked MIR rejects the program.
 fn main() -> i64 {
     {
-        let x;
+        let x: i64;
         let _y = x;
     };
     return 42;

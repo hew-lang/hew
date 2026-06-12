@@ -24,25 +24,25 @@ more sections in this document into normative status. Within edition
 
 ---
 
-## 1. Concurrency surfaces deferred from edition 2026
+## 1. Concurrency surfaces
 
-### 1.1 Channels (`std::channel::channel<T>`)
+### 1.1 Channels (`std::channel::channel`)
 
-**[Target: v0.6]**
+**[Landed in v0.5; not deferred]**
 
-Earlier drafts exposed `std::channel::channel(N)` returning a `(tx, rx)`
-pair for non-actor dataflow. Edition 2026 covers the same use cases with
-`Stream<T>` / `Sink<T>` (HEW-SPEC-2026 §6.5). Channels are redundant for
-the dataflow shape today; the gap they would fill — rendezvous-style
-unbuffered hand-off (`bounded(0)`) and N:M broadcast — has no deciding
-example yet. Defer until a real workload makes the missing case concrete.
+The v0.5 stdlib ships `std::channel::channel.new(capacity)` returning a
+typed `(Sender<T>, Receiver<T>)` pair. `await rx.recv()` in an execution
+context suspends worker-free and returns `Option<T>`; `rx.try_recv()` is
+non-suspending. A channel receive can also participate in `select` as
+`pat from rx.recv()`. Future channel work may still add new topology
+forms, but the bounded MPSC surface itself is no longer a future item.
 
 ### 1.2 Cancellation tokens
 
 **[Target: v0.6]**
 
-Edition 2026 cancellation is **scope-structural only**: a `fork {}`
-cancels its children when any child fails or when the scope exits. No
+Edition 2026 cancellation is **scope-structural only**: a `scope {}`
+block cancels its children when any child fails or when the scope exits. No
 user-visible `CancellationToken` type, no `Token.cancel()`, no
 `#[noncancellable]` attribute as a stabilised surface (it parses today
 but is gated to future-edition status).
@@ -60,7 +60,36 @@ barrier" rule parse today but lack end-to-end implementation and have
 not been audited against the actor mailbox protocol's failure modes.
 Track under #1236.
 
-### 1.4 Supervision extras beyond ask / restart / escalation
+### 1.4 Deferred `select{}` arms: stream-next and task-await
+
+**[Target: returns with its substrate]**
+
+Edition 2026's `select{}` is a **three-form** sealed construct: actor
+ask (`<id> from <actor>.<method>(...)`), channel receive
+(`<id> from <rx>.recv()`), and timer (`after <duration>`) — see
+HEW-SPEC-2026 §4.11.1. Two arm forms from earlier drafts are deferred,
+each blocked on a missing first-class substrate, not on the `select`
+machinery (the select winner/loser-cleanup codegen seam is already live
+for the shipped arms):
+
+- **Stream-next arm** (`<id> from <stream>.recv()` over `Stream<T>`,
+  binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
+  be obtained today: every acquisition path (`stream.pipe()` tuple
+  extraction, `stream.from_file(...)?` Result extraction) trips the
+  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`,
+  tracked for v0.5.1), and a bare `Stream<T>.recv()` is not yet ABI-wired
+  in codegen. Returns once stream-handle binding lands.
+- **Task-await arm** (`<id> from await <task>`, binding `T` for
+  `Task<T>`). Deferred because `Task<T>` is not nameable (§4.3) and
+  `fork name = expr;` is parser-only in this build, so there is no
+  bindable first-class task handle to select on. Returns with the
+  `fork`/`Task` substrate.
+
+Both forms are rejected at **check** time today (the type checker
+restricts the arm set; codegen is not involved), so re-introducing them
+is purely additive.
+
+### 1.5 Supervision extras beyond ask / restart / escalation
 
 **[Target: v0.6]**
 
@@ -70,14 +99,18 @@ Edition 2026 ships supervisor strategies (`one_for_one`, `one_for_all`,
 hot-swap upgrades, dynamic strategy changes, supervisor introspection
 APIs — are deferred.
 
-### 1.5 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
+### 1.6 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
 
-**[Target: v0.6 / gated on Cluster 4]**
+**[Partially live in v0.5.0 / parameterized forms gated on Cluster 1]**
 
-Generators compile to LLVM coroutines and depend on closure lowering
-being stable. The four spike-fixture failures from PR #1772 are exactly
-the bug class generators expose. Until closures + generators land
-together as Cluster 4, the generator surface is informative.
+Zero-parameter `gen fn` functions compile and run at the current tip; the
+LLVM coroutine machinery, `yield`, `.next()`, and `for x in generator()` path
+are live for that shape. Parameterized generators are still blocked by the
+Cluster 1 spine: function parameters and captured bindings do not yet have
+backend slots in every generator lowering path. The four spike-fixture
+failures from PR #1772 remain the bug class exposed by parameterized and
+capturing generator forms, so those forms stay deferred until the Cluster 1
+parameter/capture lowering is complete.
 
 Surface inventory:
 
@@ -89,7 +122,7 @@ Surface inventory:
 - `#[prefetch(N)]` attribute as an optimisation hint on cross-actor
   generators.
 
-### 1.6 Auto-injected `RwLock`/`Mutex`/`Atomic` wrappers
+### 1.7 Auto-injected `RwLock`/`Mutex`/`Atomic` wrappers
 
 **[REJECTED]**
 
@@ -98,7 +131,7 @@ with the appropriate synchronisation primitive. Reversed 2026-05-09.
 Concurrent unsynchronised mutable bindings are an error in edition 2026;
 the diagnostic includes a fix-it pointing at the right wrapper.
 
-### 1.7 On-crash consuming-handler attribute for `@linear` actor fields
+### 1.8 On-crash consuming-handler attribute for `@linear` actor fields
 
 **[Target: v0.7+]**
 
@@ -115,7 +148,7 @@ teardown on the crash path. The handler's signature, the supervisor's
 delivery guarantee, and the diagnostic that fires when the actor's
 declared restart classification cannot honour the attribute are
 unsettled and need design work alongside the broader supervision-extras
-surface (§1.4). Defer until a real workload demands a `@linear` actor
+surface (§1.5). Defer until a real workload demands a `@linear` actor
 field that is neither escalation-only nor `@resource`-backed.
 
 ---
@@ -176,7 +209,7 @@ Cluster 6's stdlib port-forward.
 
 **[Target: v0.6 / Cluster 6]**
 
-Edition 2026 admits `HashMap<String, V>` for a fixed set of `V`. Generic
+Edition 2026 admits `HashMap<string, V>` for a fixed set of `V`. Generic
 key types and the full hash/equality protocol land with the stdlib port
 in Cluster 6.
 

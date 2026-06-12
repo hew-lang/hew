@@ -1,14 +1,17 @@
+//! Status: runnable
+//! Description: Method Calls Test example.
+
 type Point {
     x: f64;
     y: f64;
 }
 
 trait PointMethods {
-    fn distance(pt: Point) -> f64;
+    fn distance(val: Self) -> f64;
 
-    fn translate(pt: Point, dx: f64, dy: f64) -> Point;
+    fn translate(val: Self, dx: f64, dy: f64) -> Point;
 
-    fn magnitude(pt: Point) -> f64;
+    fn magnitude(val: Self) -> f64;
 }
 
 impl PointMethods for Point {

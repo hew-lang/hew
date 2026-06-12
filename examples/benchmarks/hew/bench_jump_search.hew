@@ -1,6 +1,6 @@
 // Benchmark: Jump Search
 // Jumps ahead by sqrt(n) steps, then does linear search in the block.
-fn isqrt(n: int) -> int {
+fn isqrt(n: i64) -> i64 {
     if n <= 0 {
         return 0;
     }
@@ -13,7 +13,7 @@ fn isqrt(n: int) -> int {
     return x;
 }
 
-fn jump_search(v: Vec<int>, target: int) -> int {
+fn jump_search(v: Vec<i64>, target: i64) -> i64 {
     let n = v.len();
     if n == 0 {
         return 0 - 1;
@@ -59,10 +59,10 @@ fn jump_search(v: Vec<int>, target: int) -> int {
     return found;
 }
 
-const ITERS: int = 1000000;
+const ITERS: i64 = 1000000;
 
 fn main() {
-    let v: Vec<int> = Vec::new();
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. 10000 {
         v.push(i);
     }

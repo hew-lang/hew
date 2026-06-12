@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Test Select Race example.
+
 actor FastWorker {
     receive fn compute(x: i32) -> i32 {
         x * 2

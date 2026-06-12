@@ -16,6 +16,8 @@
 //! }
 //! ```
 
+import std::string;
+
 // ── Number-to-string conversions ─────────────────────────────────────
 /// Convert an integer to its lowercase hexadecimal string representation.
 ///
@@ -28,7 +30,7 @@
 /// fmt.to_hex(0)     // "0"
 /// fmt.to_hex(-16)   // "-10"
 /// ```
-pub fn to_hex(n: int) -> String {
+pub fn to_hex(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -56,7 +58,7 @@ pub fn to_hex(n: int) -> String {
 /// fmt.to_binary(0)    // "0"
 /// fmt.to_binary(-5)   // "-101"
 /// ```
-pub fn to_binary(n: int) -> String {
+pub fn to_binary(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -84,7 +86,7 @@ pub fn to_binary(n: int) -> String {
 /// fmt.to_octal(0)    // "0"
 /// fmt.to_octal(-9)   // "-11"
 /// ```
-pub fn to_octal(n: int) -> String {
+pub fn to_octal(n: i64) -> string {
     if n == 0 {
         return "0";
     }
@@ -102,7 +104,7 @@ pub fn to_octal(n: int) -> String {
 }
 
 /// Map a digit value (0–15) to its lowercase hex character.
-fn hex_digit(d: int) -> String {
+fn hex_digit(d: i64) -> string {
     match d {
         0 => "0",
         1 => "1",
@@ -124,10 +126,12 @@ fn hex_digit(d: int) -> String {
     }
 }
 
-// ── String padding and repetition ────────────────────────────────────
+// ── string padding and repetition ────────────────────────────────────
 /// Pad a string on the left to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
+/// Delegates to `string.pad_left` — prefer that form when importing `std::string`
+/// directly; `fmt.pad_left` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples
 ///
@@ -135,29 +139,23 @@ fn hex_digit(d: int) -> String {
 /// fmt.pad_left("42", 5, " ")   // "   42"
 /// fmt.pad_left("42", 5, "0")   // "00042"
 /// ```
-pub fn pad_left(s: String, width: int, fill: String) -> String {
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    repeat(fill, width - slen) + s
+pub fn pad_left(s: string, width: i64, fill: string) -> string {
+    string.pad_left(s, width, fill)
 }
 
 /// Pad a string on the right to reach the given width.
 ///
 /// If `s` is already at least `width` characters, returns `s` unchanged.
+/// Delegates to `string.pad_right` — prefer that form when importing `std::string`
+/// directly; `fmt.pad_right` is a convenience for code that already imports `fmt`.
 ///
 /// # Examples
 ///
 /// ```
 /// fmt.pad_right("hi", 5, ".")   // "hi..."
 /// ```
-pub fn pad_right(s: String, width: int, fill: String) -> String {
-    let slen = s.len();
-    if slen >= width {
-        return s;
-    }
-    s + repeat(fill, width - slen)
+pub fn pad_right(s: string, width: i64, fill: string) -> string {
+    string.pad_right(s, width, fill)
 }
 
 /// Repeat a string `count` times.
@@ -168,6 +166,6 @@ pub fn pad_right(s: String, width: int, fill: String) -> String {
 /// fmt.repeat("ab", 3)   // "ababab"
 /// fmt.repeat("*", 5)    // "*****"
 /// ```
-pub fn repeat(s: String, count: int) -> String {
+pub fn repeat(s: string, count: i64) -> string {
     s.repeat(count)
 }

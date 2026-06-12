@@ -1,0 +1,5 @@
+first=red
+blank=
+third=blue
+eof=<eof>
+missing=NotFound(2)

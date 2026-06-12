@@ -2,7 +2,6 @@ target/
 .git/
 .worktrees/
 .claude/
-hew-codegen/build/
 docs/
 examples/
 *.tar.gz

@@ -76,15 +76,6 @@ fn typecheck_all_examples() {
 }
 
 #[test]
-fn typecheck_all_codegen_examples() {
-    let dir = repo_root()
-        .join("hew-codegen")
-        .join("tests")
-        .join("examples");
-    test_directory(&dir, "hew-codegen/tests/examples");
-}
-
-#[test]
 fn typecheck_top_level_networking_demos() {
     for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
         assert_typechecks(&repo_root().join(relative), relative);
@@ -117,7 +108,7 @@ fn hashmap_remove_typechecks_as_bool() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap::new();
     m.insert("a", 1);
     let removed: bool = m.remove("a");
     let missing: bool = m.remove("a");
@@ -135,9 +126,9 @@ fn hashmap_remove_no_longer_typechecks_as_option() {
     let output = typecheck_inline(
         r#"
 fn main() {
-    let m: HashMap<String, int> = HashMap::new();
+    let m: HashMap<string, i64> = HashMap::new();
     m.insert("a", 1);
-    let removed: Option<int> = m.remove("a");
+    let removed: Option<i64> = m.remove("a");
 }
 "#,
     );
@@ -145,30 +136,9 @@ fn main() {
         output.errors.iter().any(|e| matches!(
             &e.kind,
             TypeErrorKind::Mismatch { expected, actual }
-                if expected == "Option<int>" && actual == "bool"
+                if expected == "Option<i64>" && actual == "bool"
         )),
-        "expected HashMap.remove Option<int>/bool mismatch, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_i64_key_remove_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-fn main() {
-    let m: HashMap<i64, i64> = HashMap::new();
-    let _ = m.remove(1);
-}
-",
-    );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("HashMap<int, int> is not supported")
-                && e.message.contains("String keys and scalar/string values")
-        }),
-        "expected HashMap<i64, i64>::remove to fail before lowering, got: {:#?}",
+        "expected HashMap.remove Option<i64>/bool mismatch, got: {:#?}",
         output.errors
     );
 }
@@ -178,16 +148,16 @@ fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
     let output = typecheck_inline(
         r"
 type Widget {
-    value: int;
+    value: i64;
 }
 
 impl Widget {
-    fn value_plus_one(w: Widget) -> int {
+    fn value_plus_one(w: Widget) -> i64 {
         w.value + 1
     }
 }
 
-fn use_widget(w: Widget) -> int {
+fn use_widget(w: Widget) -> i64 {
     w.value_plus_one()
 }
 ",
@@ -216,20 +186,20 @@ fn method_call_receiver_kinds_record_trait_object_dispatch() {
     let output = typecheck_inline(
         r"
 trait Greeter {
-    fn greet(g: Self) -> String;
+    fn greet(g: Self) -> string;
 }
 
 type Bot {
-    name: String;
+    name: string;
 }
 
 impl Greeter for Bot {
-    fn greet(bot: Bot) -> String {
+    fn greet(bot: Bot) -> string {
         bot.name
     }
 }
 
-fn use_greeter(g: dyn Greeter) -> String {
+fn use_greeter(g: dyn Greeter) -> string {
     g.greet()
 }
 ",
@@ -287,8 +257,8 @@ fn close_conn(conn: net.Connection) {
 fn method_call_rewrites_record_builtin_runtime_dispatch() {
     let output = typecheck_inline(
         r"
-fn consume(s: Stream<String>) {
-    let _ = s.next();
+fn consume(s: Stream<string>) {
+    let _ = s.recv();
 }
 ",
     );
@@ -300,8 +270,8 @@ fn consume(s: Stream<String>) {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_stream_next"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_stream_next_layout"
         )),
         "expected checker-owned builtin rewrite metadata, got: {:?}",
         output.method_call_rewrites
@@ -336,8 +306,8 @@ fn consume(s: Stream<bytes>) {
 fn method_call_receiver_kinds_record_string_stream_dispatch() {
     let output = typecheck_inline(
         r"
-fn consume(s: Stream<String>) {
-    let _ = s.map((item) => item);
+fn consume(s: Stream<string>) {
+    let _ = s.map(|item| item);
 }
 ",
     );
@@ -365,7 +335,7 @@ fn method_call_receiver_kinds_record_bytes_stream_dispatch() {
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
-    let _ = s.filter((item) => item.len() > 0);
+    let _ = s.filter(|item| item.len() > 0);
 }
 ",
     );
@@ -394,7 +364,7 @@ fn method_call_rewrites_record_handle_runtime_dispatch() {
         r#"
 import std::net::http;
 
-fn respond(req: http.Request) -> int {
+fn respond(req: http.Request) -> i64 {
     req.respond_text(200, "ok")
 }
 "#,
@@ -407,7 +377,7 @@ fn respond(req: http.Request) -> int {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_http_respond_text"
         )),
         "expected checker-owned handle rewrite metadata, got: {:?}",
@@ -434,7 +404,7 @@ fn main() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "hew_file_read"
         )),
         "expected checker-owned module-qualified rewrite metadata, got: {:?}",
@@ -447,7 +417,7 @@ fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: int;
+    value: i64;
 }
 
 fn mutate() {
@@ -462,9 +432,9 @@ fn mutate() {
 }
 
 actor Counter {
-    let total: int;
+    var total: i64;
 
-    receive fn set(v: int) {
+    receive fn set(v: i64) {
         total = v;
     }
 }
@@ -529,7 +499,7 @@ fn f() {
     var c: u64 = 0;
     c = 2;
 
-    var d: int = 0;
+    var d: i64 = 0;
     d = 3;
 }
 ",
@@ -556,7 +526,7 @@ fn f() {
         "expected 2 unsigned targets (u8, u64), got: {:?}",
         output.assign_target_shapes
     );
-    // i32 and int should be marked signed.
+    // i32 and i64 should be marked signed.
     let signed_count = output
         .assign_target_shapes
         .values()
@@ -564,7 +534,7 @@ fn f() {
         .count();
     assert_eq!(
         signed_count, 2,
-        "expected 2 signed targets (i32, int), got: {:?}",
+        "expected 2 signed targets (i32, i64), got: {:?}",
         output.assign_target_shapes
     );
 }
@@ -576,7 +546,7 @@ fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: int;
+    value: i64;
 }
 
 fn mutate() {
@@ -591,9 +561,9 @@ fn mutate() {
 }
 
 actor Counter {
-    let total: int;
+    var total: i64;
 
-    receive fn set(v: int) {
+    receive fn set(v: i64) {
         total = v;
     }
 }
@@ -703,43 +673,65 @@ fn test_directory(dir: &Path, label: &str) {
 
 #[test]
 fn stream_dot_sink_annotation_typechecks() {
-    // A function whose parameter is explicitly spelled `stream.Sink<String>`.
-    // Proves: the qualified spelling resolves to the canonical Sink<String>
-    // type and its write/close methods are available.
+    // A function whose parameter is explicitly spelled `stream.Sink<string>`.
+    // Proves: the qualified spelling resolves to the canonical Sink<string>
+    // type and its send/close methods are available.
     let output = typecheck_inline(
         r"
         import std::stream;
 
-        fn flush_and_close(s: stream.Sink<String>, msg: String) {
-            s.write(msg);
+        fn flush_and_close(s: stream.Sink<string>, msg: string) {
+            s.send(msg);
             s.close();
         }
         ",
     );
     assert!(
         output.errors.is_empty(),
-        "stream.Sink<String> annotation should typecheck cleanly, got: {:#?}",
+        "stream.Sink<string> annotation should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn stream_dot_stream_invalid_int_method_reports_user_facing_int() {
+fn stream_dot_stream_int_element_now_admitted() {
+    // The element-layout witness widened Stream<T> beyond string/bytes:
+    // i64 elements ride the Plain envelope and must typecheck cleanly.
     let output = typecheck_inline(
         r"
         import std::stream;
 
-        fn close_numbers(s: stream.Stream<int>) {
+        fn close_numbers(s: stream.Stream<i64>) {
             s.close();
         }
         ",
     );
     assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("`Stream<int>` is not supported")
-                && !e.message.contains("Stream<i64>")
-        }),
-        "expected Stream<int> diagnostic, got: {:#?}",
+        output.errors.is_empty(),
+        "Stream<i64> must be admitted by the layout witness, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn stream_dot_stream_container_element_reports_user_facing_type() {
+    // Container elements have no clone/drop thunk path — the fail-closed
+    // diagnostic must name the user-facing element type.
+    let output = typecheck_inline(
+        r"
+        import std::stream;
+
+        fn close_rows(s: stream.Stream<Vec<i64>>) {
+            s.close();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("`Stream<Vec<i64>>` is not supported")),
+        "expected Stream<Vec<i64>> fail-closed diagnostic, got: {:#?}",
         output.errors
     );
 }
@@ -751,7 +743,7 @@ fn stream_decode_fails_closed_before_codegen() {
         import std::stream;
 
         wire type Message {
-            id: int @1;
+            id: i64 @1;
         }
 
         fn main() {
@@ -777,7 +769,7 @@ fn sink_encode_fails_closed_before_codegen() {
         import std::stream;
 
         wire type Message {
-            id: int @1;
+            id: i64 @1;
         }
 
         fn main() {
@@ -798,14 +790,14 @@ fn sink_encode_fails_closed_before_codegen() {
 
 #[test]
 fn channel_dot_receiver_annotation_typechecks() {
-    // A function whose parameter is explicitly spelled `channel.Receiver<String>`.
-    // Proves: the qualified spelling resolves to the canonical Receiver<String>
+    // A function whose parameter is explicitly spelled `channel.Receiver<string>`.
+    // Proves: the qualified spelling resolves to the canonical Receiver<string>
     // type and its recv/close methods are available.
     let output = typecheck_inline(
         r"
         import std::channel;
 
-        fn take_one(rx: channel.Receiver<String>) -> Option<String> {
+        fn take_one(rx: channel.Receiver<string>) -> Option<string> {
             let v = rx.recv();
             rx.close();
             v
@@ -814,7 +806,7 @@ fn channel_dot_receiver_annotation_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "channel.Receiver<String> annotation should typecheck cleanly, got: {:#?}",
+        "channel.Receiver<string> annotation should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -824,7 +816,7 @@ fn channel_dot_receiver_annotation_typechecks() {
 // These cover the typechecker's new is_await validation in Stmt::For.
 // ===========================================================================
 
-/// `for await item in rx` over `Receiver<String>` must typecheck cleanly.
+/// `for await item in rx` over `Receiver<string>` must typecheck cleanly.
 #[test]
 fn for_await_receiver_string_ok() {
     let output = typecheck_inline(
@@ -843,12 +835,12 @@ fn for_await_receiver_string_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<String> should typecheck cleanly, got: {:#?}",
+        "for await over Receiver<string> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await val in rx` over `Receiver<int>` must typecheck cleanly.
+/// `for await val in rx` over `Receiver<i64>` must typecheck cleanly.
 #[test]
 fn for_await_receiver_int_ok() {
     let output = typecheck_inline(
@@ -867,7 +859,7 @@ fn for_await_receiver_int_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<int> should typecheck cleanly, got: {:#?}",
+        "for await over Receiver<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -899,14 +891,15 @@ fn for_await_receiver_missing_element_type_errors() {
     );
 }
 
-/// `for await item in rx` over `Receiver<Foo>` (unsupported struct) must error.
+/// `for await item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
+/// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_receiver_unsupported_type_errors() {
+fn for_await_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
 
-        type Foo { x: int }
+        type Foo { x: i64 }
 
         fn make_foo() -> Foo { Foo { x: 1 } }
 
@@ -919,24 +912,48 @@ fn for_await_receiver_unsupported_type_errors() {
         ",
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("not supported in `for await`")
-        ),
-        "expected InvalidOperation for Receiver<Foo> in for await, got: {:#?}",
+        output.errors.is_empty(),
+        "Receiver<Foo> for-await must be admitted by the layout witness, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over `Stream<Row>` must reuse the stream element
-/// validation boundary instead of lowering through the text ABI.
+/// `for await item in rx` over a container element (`Receiver<Vec<i64>>`)
+/// must fail closed — the witness cannot clone or drop a container element.
 #[test]
-fn for_await_stream_unsupported_type_errors() {
+fn for_await_receiver_container_element_errors() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
+                channel.new(4);
+            for await item in rx {
+                println(item.len());
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
+                && e.message.contains("not supported")
+        ),
+        "expected InvalidOperation for Receiver<Vec<i64>> in for await, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in input` over `Stream<Row>` (a `BitCopy` record) rides the
+/// element-layout witness and must typecheck cleanly.
+#[test]
+fn for_await_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
         import std::stream;
 
-        type Row { value: int }
+        type Row { value: i64 }
 
         extern "C" {
             fn fake_stream() -> Stream<Row>;
@@ -951,11 +968,38 @@ fn for_await_stream_unsupported_type_errors() {
         "#,
     );
     assert!(
+        output.errors.is_empty(),
+        "Stream<Row> for-await must be admitted by the layout witness, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `for await item in input` over a container element (`Stream<Vec<i64>>`)
+/// must fail closed at the stream element validation boundary.
+#[test]
+fn for_await_stream_container_element_errors() {
+    let output = typecheck_inline(
+        r#"
+        import std::stream;
+
+        extern "C" {
+            fn fake_stream() -> Stream<Vec<i64>>;
+        }
+
+        fn main() {
+            let input = unsafe { fake_stream() };
+            for await rows in input {
+                println("seen");
+            }
+        }
+        "#,
+    );
+    assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Row>` is not supported")
+                && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
         output.errors
     );
 }
@@ -966,16 +1010,14 @@ fn for_await_stream_unsupported_type_errors() {
 fn for_await_stream_unsupported_type_does_not_cascade() {
     let output = typecheck_inline(
         r#"
-        type Row { value: int }
-
         extern "C" {
-            fn fake_stream() -> Stream<Row>;
+            fn fake_stream() -> Stream<Vec<i64>>;
         }
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await row in input {
-                println(row.missing);
+            for await rows in input {
+                println(rows.missing);
             }
         }
         "#,
@@ -983,15 +1025,15 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
     assert_eq!(
         output.errors.len(),
         1,
-        "expected only the fail-closed Stream<Row> error, got: {:#?}",
+        "expected only the fail-closed Stream<Vec<i64>> error, got: {:#?}",
         output.errors
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Stream<Row>` is not supported")
+                && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Row> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
         output.errors
     );
 }
@@ -1029,7 +1071,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
     let output = typecheck_inline(
         r"
         actor Counter {
-            receive gen fn count_up() -> int {
+            receive gen fn count_up() -> i64 {
                 yield 1;
             }
         }
@@ -1044,7 +1086,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over receive gen Stream<int> should typecheck cleanly, got: {:#?}",
+        "for await over receive gen Stream<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1055,10 +1097,10 @@ fn for_await_receive_generator_int_stream_typechecks() {
 fn for_await_actor_method_stream_requires_receive_gen() {
     let output = typecheck_inline(
         r#"
-        extern "C" { fn fake_stream() -> Stream<String>; }
+        extern "C" { fn fake_stream() -> Stream<string>; }
 
         actor Reader {
-            receive fn lines() -> Stream<String> {
+            receive fn lines() -> Stream<string> {
                 unsafe { fake_stream() }
             }
         }
@@ -1087,7 +1129,7 @@ fn for_await_over_vec_errors() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let v: Vec<int> = Vec::new();
+            let v: Vec<i64> = Vec::new();
             for await item in v {
                 println(item);
             }
@@ -1134,7 +1176,7 @@ fn for_no_await_over_receiver_no_for_await_error() {
         r"
         import std::channel;
 
-        fn consume(rx: channel.Receiver<String>) {
+        fn consume(rx: channel.Receiver<string>) {
             for msg in rx {
                 println(msg);
             }
@@ -1160,7 +1202,7 @@ fn rc_construction_and_methods_typecheck() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let rc: Rc<int> = Rc::new(42);
+            let rc: Rc<i64> = Rc::new(42);
             println(rc.get());
             let rc2 = rc.clone();
             println(rc2.get());
@@ -1170,7 +1212,7 @@ fn rc_construction_and_methods_typecheck() {
     );
     assert!(
         output.errors.is_empty(),
-        "Rc<int> basic usage should type-check cleanly, got: {:#?}",
+        "Rc<i64> basic usage should type-check cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1181,11 +1223,11 @@ fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
         actor Sink {
-            let _unused: int;
-            receive fn consume(val: Rc<int>) {}
+            let _unused: i64;
+            receive fn consume(val: Rc<i64>) {}
         }
         fn main() {
-            let rc: Rc<int> = Rc::new(1);
+            let rc: Rc<i64> = Rc::new(1);
             let a = spawn Sink(_unused: 0);
             a.consume(rc);
         }
@@ -1196,18 +1238,19 @@ fn rc_rejected_at_actor_send_boundary() {
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "Rc<int> must be rejected at actor send boundary with InvalidSend, got: {:#?}",
+        "Rc<i64> must be rejected at actor send boundary with InvalidSend, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
 fn lambda_actor_capture_must_be_send() {
+    // `actor move |params| { body }` captures are checked for Send; Rc<i64> is not Send.
     let output = typecheck_inline(
         r"
         fn main() {
-            let rc: Rc<int> = Rc::new(1);
-            let worker = spawn move (x: int) => {
+            let rc: Rc<i64> = Rc::new(1);
+            let worker = actor move |x: i64| {
                 println(rc.strong_count());
                 println(x);
             };
@@ -1220,21 +1263,48 @@ fn lambda_actor_capture_must_be_send() {
             .errors
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "spawned lambda actor must reject non-Send captures, got: {:#?}",
+        "actor lambda must reject non-Send captures, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn lambda_actor_send_method_requires_send_payload() {
+fn lambda_actor_call_rejects_non_send_payload() {
+    // Call-syntax dispatch on a lambda actor rejects non-Send arguments at the call site
+    // (E_DUPLEX_NON_SEND): the message crosses an actor boundary.
     let output = typecheck_inline(
         r"
         fn main() {
-            let worker = spawn (msg: Rc<int>) => {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            let rc: Rc<i64> = Rc::new(1);
+            worker(rc.strong_count());
+        }
+        ",
+    );
+    // rc.strong_count() returns i64 which IS Send — this should be clean.
+    // The earlier version of this test used a non-Send type as the declared param type,
+    // which is caught at actor-definition time (E_DUPLEX_NON_SEND on the param).
+    // That check is now in actor_lambda_non_send_param_rejected.
+    assert!(
+        output.errors.is_empty(),
+        "call-syntax with Send i64 payload should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn lambda_actor_non_send_param_rejected() {
+    // A lambda actor whose parameter type is not Send is rejected at definition time
+    // (E_DUPLEX_NON_SEND): the message type must be Send to cross the actor boundary.
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: Rc<i64>| {
                 println(msg.strong_count());
             };
-            let rc: Rc<int> = Rc::new(1);
-            worker.send(rc);
+            worker(42);
         }
         ",
     );
@@ -1242,8 +1312,11 @@ fn lambda_actor_send_method_requires_send_payload() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "lambda actor .send() must reject non-Send payloads, got: {:#?}",
+            .any(|e| {
+                e.kind == hew_types::error::TypeErrorKind::InvalidSend
+                    && e.message.contains("E_DUPLEX_NON_SEND")
+            }),
+        "lambda actor with non-Send param type must reject with InvalidSend containing E_DUPLEX_NON_SEND, got: {:#?}",
         output.errors
     );
 }
@@ -1253,12 +1326,12 @@ fn actor_ref_send_method_requires_send_payload() {
     let output = typecheck_inline(
         r"
         actor Sink {
-            let _unused: int;
+            let _unused: i64;
         }
 
         fn main() {
             let sink = spawn Sink(_unused: 0);
-            let rc: Rc<int> = Rc::new(1);
+            let rc: Rc<i64> = Rc::new(1);
             sink.send(rc);
         }
         ",
@@ -1273,44 +1346,238 @@ fn actor_ref_send_method_requires_send_payload() {
     );
 }
 
+/// The `<-` send operator was removed in v0.5.  Both the lexer token and the
+/// parser infix rule are gone; any source using `<-` now fails to parse.
+/// This is the `E_OPERATOR_REMOVED` reject path (§3.3 of the migration guide).
 #[test]
-fn lambda_actor_send_operator_requires_send_payload() {
-    let output = typecheck_inline(
+fn left_arrow_send_operator_is_rejected() {
+    let result = hew_parser::parse(
         r"
         fn main() {
-            let worker = spawn (msg: Rc<int>) => {
-                println(msg.strong_count());
-            };
-            let rc: Rc<int> = Rc::new(1);
-            worker <- rc;
-        }
-        ",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "`<-` must reject non-Send payloads, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn lambda_actor_send_operator_allows_send_payload() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let worker = spawn (msg: int) => {
-                println(msg);
-            };
+            let worker = actor |msg: i64| { println(msg); };
             worker <- 1;
         }
         ",
     );
     assert!(
+        !result.errors.is_empty(),
+        "`<-` must be rejected by the parser (E_OPERATOR_REMOVED), got clean parse"
+    );
+}
+
+/// The legacy `spawn (...) => body` syntax was removed in v0.5.
+/// The parser now emits `E_SPAWN_LAMBDA_SYNTAX_REMOVED`.  Accept path uses the
+/// new `actor |...| { ... }` form.
+#[test]
+fn legacy_spawn_lambda_syntax_is_rejected() {
+    let result = hew_parser::parse(
+        r"
+        fn main() {
+            let worker = spawn (msg: i64) => { println(msg); };
+        }
+        ",
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "`spawn (...) => ...` must be rejected by the parser (E_SPAWN_LAMBDA_SYNTAX_REMOVED)"
+    );
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SPAWN_LAMBDA_SYNTAX_REMOVED")),
+        "expected E_SPAWN_LAMBDA_SYNTAX_REMOVED in error messages, got: {:#?}",
+        result.errors
+    );
+}
+
+/// Accept path for the new `actor |...| { ... }` syntax with call-syntax dispatch.
+/// Replaces the old `lambda_actor_send_operator_allows_send_payload` test.
+#[test]
+fn actor_lambda_new_syntax_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            worker(1);
+        }
+        ",
+    );
+    assert!(
         output.errors.is_empty(),
-        "`<-` with Send payload should typecheck cleanly, got: {:#?}",
+        "`actor |...| {{ ... }}` with call-syntax dispatch should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Ask-shaped lambda actor: accept path — body type matches declared return type.
+#[test]
+fn ask_shaped_actor_return_matches_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let doubler = actor |n: i64| -> i64 {
+                n * 2
+            };
+            doubler(5);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ask-shaped actor with matching return type should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `E_LAMBDA_RETURN_TYPE_MISMATCH`: ask-shaped actor body return type ≠ declared reply type.
+#[test]
+fn ask_shaped_actor_return_mismatch_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let bad = actor |n: i64| -> i64 {
+                "not an i64"
+            };
+            bad(1);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::ReturnTypeMismatch
+                && e.message.contains("E_LAMBDA_RETURN_TYPE_MISMATCH")),
+        "ask-shaped actor with mismatched body type must emit E_LAMBDA_RETURN_TYPE_MISMATCH, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `E_LAMBDA_SELF_ESCAPE`: an actor lambda body that returns a Duplex handle is rejected.
+/// A Duplex (lambda-actor handle) escaping via the body's return value violates the
+/// handle's lifetime bound to the let-binding site.
+#[test]
+fn actor_lambda_self_escape_rejected() {
+    // The inner actor is returned by the outer actor's body, leaking its handle.
+    // The outer actor's body return type would be Duplex<...>, triggering E_LAMBDA_SELF_ESCAPE.
+    let output = typecheck_inline(
+        r"
+        fn helper() {
+            let inner = actor |x: i64| {
+                println(x);
+            };
+            // This outer actor's body returns a Duplex handle — the self-escape pattern.
+            let _outer = actor |_n: i64| -> Duplex<i64, ()> {
+                inner
+            };
+        }
+        ",
+    );
+    // The outer actor's body synthesises to Duplex<i64, ()> because `inner` is a
+    // Duplex. That triggers E_LAMBDA_SELF_ESCAPE (InvalidOperation) before any
+    // return-type-annotation check fires, so the fixture reliably exercises the path.
+    let self_escape_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| {
+            e.kind == TypeErrorKind::InvalidOperation && e.message.contains("E_LAMBDA_SELF_ESCAPE")
+        })
+        .collect();
+    assert!(
+        !self_escape_errors.is_empty(),
+        "expected E_LAMBDA_SELF_ESCAPE diagnostic (InvalidOperation), got: {:?}",
+        output.errors
+    );
+}
+
+/// Lambda actor recursive self-call via let-binding name typechecks clean.
+/// The let-binding name is the recursion handle (architecture §5.9 ratification 2).
+#[test]
+fn lambda_actor_recursive_self_call_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let fib = actor |n: i64| {
+                if n > 1 {
+                    fib(n - 1);
+                }
+            };
+            fib(10);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "recursive self-call in actor body must typecheck clean, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Lambda actor handles are `Duplex<Msg, Reply>` under the hood.  Now that
+/// `Duplex::send()` is a wired method, calling `.send()` on a lambda actor
+/// handle routes through the duplex-method dispatcher and typechecks cleanly
+/// (the payload satisfies the Send bound; `i64` is Copy + Send).
+///
+/// Call-syntax (`worker(1)`) remains the idiomatic surface, but `.send()`
+/// is no longer an error: both surfaces resolve to the same runtime symbol
+/// and the type system cannot distinguish a lambda-actor Duplex from a
+/// raw-duplex Duplex at the method-call site.
+#[test]
+fn lambda_actor_dot_send_now_accepted_via_duplex_method() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            worker.send(1);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`.send()` on a lambda actor handle should typecheck via Duplex::send; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Accept path for tell-shaped lambda actor: `actor |s: string| { ... }` + `log("x")`.
+#[test]
+fn tell_shaped_actor_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            let log = actor |s: string| {
+                println(s);
+            };
+            log("x");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "tell-shaped actor with call-syntax dispatch should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Accept path for ask-shaped lambda actor: `actor |n: i64| -> i64 { n*2 }`.
+#[test]
+fn ask_shaped_actor_typechecks() {
+    let output = typecheck_inline(
+        r"
+        fn main() {
+            let dbl = actor |n: i64| -> i64 { n * 2 };
+            let _r = dbl(5);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "ask-shaped actor with call-syntax dispatch should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1319,9 +1586,9 @@ fn lambda_actor_send_operator_allows_send_payload() {
 /// `Rc::get()` must be rejected when `T` is not `Copy` (`LoadOp` semantics).
 #[test]
 fn rc_non_copy_construction_ok() {
-    // String is non-Copy; Rc::new should accept it (codegen will pass a real
+    // string is non-Copy; Rc::new should accept it (codegen will pass a real
     // drop function instead of null).
-    let output = typecheck_inline(r#"fn main() { let _rc: Rc<String> = Rc::new("hello"); }"#);
+    let output = typecheck_inline(r#"fn main() { let _rc: Rc<string> = Rc::new("hello"); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with a non-Copy inner type should succeed; got errors: {:#?}",
@@ -1334,8 +1601,8 @@ fn rc_copy_struct_construction_ok() {
     let output = typecheck_inline(
         r"
         type Point {
-            x: int
-            y: int
+            x: i64
+            y: i64
         }
 
         fn main() {
@@ -1353,7 +1620,7 @@ fn rc_copy_struct_construction_ok() {
 #[test]
 fn rc_nested_payload_construction_ok() {
     let output =
-        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<String>> = Rc::new(Rc::new("hello")); }"#);
+        typecheck_inline(r#"fn main() { let _rc: Rc<Rc<string>> = Rc::new(Rc::new("hello")); }"#);
     assert!(
         output.errors.is_empty(),
         "Rc::new with nested supported Rc payloads should succeed; got errors: {:#?}",
@@ -1370,7 +1637,7 @@ fn rc_owned_option_payload_rejected() {
                 && e.message
                     .contains("does not recursively drop owned contents")
         }),
-        "Rc::new with Option<String> should fail closed, got: {:#?}",
+        "Rc::new with Option<string> should fail closed, got: {:#?}",
         output.errors
     );
 }
@@ -1380,7 +1647,7 @@ fn rc_owned_struct_payload_rejected() {
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
         fn main() {
@@ -1404,7 +1671,7 @@ fn rc_user_drop_payload_rejected() {
     let output = typecheck_inline(
         r"
         type Token {
-            id: int
+            id: i64
         }
 
         impl Drop for Token {
@@ -1430,14 +1697,14 @@ fn rc_user_drop_payload_rejected() {
 
 #[test]
 fn rc_owned_payload_annotation_rejected() {
-    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<String>>) {}");
+    let output = typecheck_inline(r"fn borrow(_r: Rc<Option<string>>) {}");
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message
                     .contains("does not recursively drop owned contents")
         }),
-        "Rc<Option<String>> annotations should fail closed, got: {:#?}",
+        "Rc<Option<string>> annotations should fail closed, got: {:#?}",
         output.errors
     );
 }
@@ -1447,7 +1714,7 @@ fn rc_generic_wrapper_payload_rejected() {
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
         fn wrap<T>(val: T) -> Rc<T> {
@@ -1471,14 +1738,18 @@ fn rc_generic_wrapper_payload_rejected() {
 
 #[test]
 fn rc_generic_lambda_payload_rejected() {
+    // Generic lambda `<T>(val: T) -> Rc<T> => ...` was removed in v0.5.
+    // The Rc<non-Copy> restriction is still enforced: use a named generic
+    // function, which is the correct post-v0.5 spelling.
     let output = typecheck_inline(
         r#"
         type Labelled {
-            name: String
+            name: string
         }
 
+        fn wrap<T>(val: T) -> Rc<T> { Rc::new(val) }
+
         fn main() {
-            let wrap = <T>(val: T) -> Rc<T> => Rc::new(val);
             let _ = wrap(Labelled { name: "hello" });
         }
         "#,
@@ -1488,7 +1759,7 @@ fn rc_generic_lambda_payload_rejected() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("Rc only accepts Copy payloads")
         }),
-        "generic Rc<T> lambdas should fail closed until payload support is proven, got: {:#?}",
+        "Rc<non-Copy> must be rejected via generic fn (fail-closed), got: {:#?}",
         output.errors
     );
 }
@@ -1496,9 +1767,9 @@ fn rc_generic_lambda_payload_rejected() {
 #[test]
 fn rc_get_non_copy_rejected() {
     // `rc.get()` performs a bitwise copy (LoadOp) which is only sound for
-    // Copy types.  Calling it on Rc<String> must be rejected.
+    // Copy types.  Calling it on Rc<string> must be rejected.
     let output = typecheck_inline(
-        r#"fn main() { let rc: Rc<String> = Rc::new("hello"); let _ = rc.get(); }"#,
+        r#"fn main() { let rc: Rc<string> = Rc::new("hello"); let _ = rc.get(); }"#,
     );
     assert!(
         output
@@ -1564,7 +1835,7 @@ fn wasm_http_server_surface_rejected_before_codegen() {
         r#"
         import std::net::http;
 
-        fn inspect(server: http.Server, req: http.Request) -> String {
+        fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
             req.respond_text(200, "ok");
             server.close();
@@ -1585,17 +1856,17 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 }
 
 #[test]
-fn wasm_fork_block_rejected_before_codegen() {
-    // Edition-2026 fork{} requires the OS-thread-per-task substrate in
+fn wasm_scope_block_rejected_before_codegen() {
+    // Edition-2026 scope{} requires the OS-thread-per-task substrate in
     // hew-runtime/src/task_scope.rs, which is `#[cfg(not(target_arch =
-    // "wasm32"))]`. The checker must reject a fork-block when the target
+    // "wasm32"))]`. The checker must reject a scope-block when the target
     // is wasm32 so the rejection is observable at compile time rather
     // than as a runtime trap or a silent no-op. Tracked at #1451.
     let output = typecheck_inline_wasm(
         r"
-        fn main() -> int {
-            fork {
-                42
+        fn main() {
+            scope {
+                let _ = 42;
             }
         }
         ",
@@ -1603,26 +1874,26 @@ fn wasm_fork_block_rejected_before_codegen() {
     let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
     assert!(
         count >= 1,
-        "expected fork block to be rejected on WASM, got: {:#?}",
+        "expected scope block to be rejected on WASM, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn wasm_fork_with_child_block_rejected_before_codegen() {
-    // The block-form rejection fires once on the outer fork{}; nested
+fn wasm_scope_with_fork_child_rejected_before_codegen() {
+    // The block-form rejection fires once on the outer scope{}; nested
     // children inside the block do not re-fire because Ty::Error short-
     // circuits the body synthesis. The user-facing outcome is what
-    // matters: a fork{} with child tasks is observably rejected on
+    // matters: a scope{} with child tasks is observably rejected on
     // wasm32 with the StructuredConcurrency label naming the substrate
     // dependency.
     let output = typecheck_inline_wasm(
         r"
-        fn compute() -> int { 7 }
-        fn main() -> int {
-            fork {
+        fn compute() -> i64 { 7 }
+        fn main() {
+            scope {
                 fork a = compute();
-                await a
+                await a;
             }
         }
         ",
@@ -1630,7 +1901,7 @@ fn wasm_fork_with_child_block_rejected_before_codegen() {
     let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
     assert!(
         count >= 1,
-        "expected fork{{}} with children to be rejected on WASM, got: {:#?}",
+        "expected scope{{}} with children to be rejected on WASM, got: {:#?}",
         output.errors
     );
 }
@@ -1641,7 +1912,7 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
         r#"
         import std::net;
 
-        fn tune(listener: net.Listener, conn: net.Connection) -> int {
+        fn tune(listener: net.Listener, conn: net.Connection) -> i64 {
             let _accepted = listener.accept();
             conn.set_read_timeout(10);
             conn.close()
@@ -1675,7 +1946,7 @@ fn http_request_body_encoding_arg_checked_via_fallback() {
     assert!(
         output.errors.iter().any(|error| matches!(
             &error.kind,
-            TypeErrorKind::Mismatch { expected, .. } if expected == "String"
+            TypeErrorKind::Mismatch { expected, .. } if expected == "string"
         )),
         "expected http.Request::body encoding arg to be checked via fallback, got: {:#?}",
         output.errors
@@ -1701,7 +1972,7 @@ fn net_listener_close_resolves_via_fallback() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_tcp_listener_close"
         )),
         "expected net.Listener::close fallback rewrite, got: {:?}",
@@ -1728,7 +1999,7 @@ fn http_request_free_resolves_via_fallback() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_http_request_free"
         )),
         "expected http.Request::free fallback rewrite, got: {:?}",
@@ -1784,7 +2055,7 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
         r#"
         import std::process;
 
-        fn await_child(child: process.Child) -> int {
+        fn await_child(child: process.Child) -> i64 {
             child.wait()
         }
 
@@ -1806,8 +2077,8 @@ fn wasm_process_execution_surface_rejected_before_codegen() {
 fn builtin_string_to_int_typechecks_as_int() {
     let output = typecheck_inline(
         r#"
-        fn parse() -> int {
-            let value: int = string_to_int("9223372036854775807");
+        fn parse() -> i64 {
+            let value: i64 = string_to_int("9223372036854775807");
             value
         }
         "#,
@@ -1825,8 +2096,8 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
         r"
         import std::process;
 
-        fn manage(child: process.Child) -> int {
-            let waited: int = child.wait();
+        fn manage(child: process.Child) -> i64 {
+            let waited: i64 = child.wait();
             waited + child.kill()
         }
         ",
@@ -1839,7 +2110,7 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_process_wait"
         )),
         "expected process.Child.wait rewrite, got: {:?}",
@@ -1848,7 +2119,7 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol == "hew_process_kill"
         )),
         "expected process.Child.kill rewrite, got: {:?}",
@@ -1904,7 +2175,7 @@ fn http_client_module_helpers_typecheck_natively() {
         import std::net::http::http_client;
 
         fn main() {
-            let headers: Vec<(String, String)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec::new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -1924,7 +2195,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
         import std::net::http::http_client;
 
         fn main() {
-            let headers: Vec<(String, String)> = Vec::new();
+            let headers: Vec<(string, string)> = Vec::new();
             http_client.set_timeout(250);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
@@ -2324,7 +2595,7 @@ fn rc_param_return_errors_borrowed_rc() {
     // Trailing expression (implicit return) — bare identifier
     let output = typecheck_inline(
         r"
-        fn identity(r: Rc<int>) -> Rc<int> {
+        fn identity(r: Rc<i64>) -> Rc<i64> {
             r
         }
         fn main() {}
@@ -2345,7 +2616,7 @@ fn rc_param_return_errors_borrowed_rc() {
 fn rc_param_explicit_return_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn early(r: Rc<int>, flag: bool) -> Rc<int> {
+        fn early(r: Rc<i64>, flag: bool) -> Rc<i64> {
             if flag {
                 return r;
             }
@@ -2364,13 +2635,93 @@ fn rc_param_explicit_return_errors_borrowed_rc() {
     );
 }
 
+/// F5: returning an immutable-borrow (`&T`) parameter must be rejected — the
+/// borrow's owner lives in the caller's scope and the reference would dangle
+/// after the caller drops it. This is the borrow-outlives-owner check in the
+/// only form the v0.5 surface can express (return position; there is no
+/// borrow-of-local expression).
+#[test]
+fn borrow_param_explicit_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn f(x: &string) -> &string {
+            return x;
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "returning a borrow param should emit BorrowedParamReturn, got errors: {:#?}, warnings: {:#?}",
+        output.errors, output.warnings
+    );
+    // Behavioural-regression guard (LESSONS behavioral-regression-not-just-test-pass):
+    // the diagnostic must be the borrow-specific message, not the Rc wording —
+    // the borrow rejection is a distinct semantic class.
+    assert!(
+        output.errors.iter().any(|e| e.kind
+            == hew_types::error::TypeErrorKind::BorrowedParamReturn
+            && e.message.contains("borrow parameter")
+            && e.message.contains("outlive its owner")),
+        "borrow return must use the borrow-specific diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+/// F5: a borrow param trailing-expr return is also rejected.
+#[test]
+fn borrow_param_trailing_return_errors() {
+    let output = typecheck_inline(
+        r"
+        fn f(x: &string) -> &string {
+            x
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn),
+        "trailing-expr return of a borrow param should emit BorrowedParamReturn, got: {:#?}",
+        output.errors
+    );
+}
+
+/// F5 must not over-reject: a borrow param that is NOT returned is fine. A
+/// function may accept `&T` and use it without the escape error firing.
+#[test]
+fn borrow_param_not_returned_ok() {
+    let output = typecheck_inline(
+        r"
+        fn f(x: &string) -> i64 {
+            return 0;
+        }
+        fn main() {}
+        ",
+    );
+    let borrow_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.kind == hew_types::error::TypeErrorKind::BorrowedParamReturn)
+        .collect();
+    assert!(
+        borrow_errors.is_empty(),
+        "a borrow param that does not escape must not emit BorrowedParamReturn, got: {borrow_errors:#?}",
+    );
+}
+
 /// `break <rc_param>` inside a loop must trigger the error — the broken value
 /// escapes to the enclosing scope with the same aliasing hazard as `return`.
 #[test]
 fn rc_param_break_value_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn escape(r: Rc<int>) -> Rc<int> {
+        fn escape(r: Rc<i64>) -> Rc<i64> {
             loop {
                 break r;
             }
@@ -2396,7 +2747,7 @@ fn rc_param_break_value_errors_borrowed_rc() {
 fn rc_param_block_wrapped_return_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn wrapped(r: Rc<int>) -> Rc<int> {
+        fn wrapped(r: Rc<i64>) -> Rc<i64> {
             { r }
         }
         fn main() {}
@@ -2418,7 +2769,7 @@ fn rc_param_block_wrapped_return_errors_borrowed_rc() {
 fn rc_param_clone_return_no_error() {
     let output = typecheck_inline(
         r"
-        fn safe_identity(r: Rc<int>) -> Rc<int> {
+        fn safe_identity(r: Rc<i64>) -> Rc<i64> {
             r.clone()
         }
         fn main() {}
@@ -2441,7 +2792,7 @@ fn rc_param_clone_return_no_error() {
 fn rc_pass_to_fn_borrow_clean() {
     let output = typecheck_inline(
         r"
-        fn read_rc(r: Rc<int>) -> int {
+        fn read_rc(r: Rc<i64>) -> i64 {
             r.get()
         }
         fn main() {
@@ -2469,7 +2820,7 @@ fn rc_pass_to_fn_borrow_clean() {
 fn rc_param_some_wrap_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
             Some(r)
         }
         fn main() {}
@@ -2492,7 +2843,7 @@ fn rc_param_some_wrap_errors_borrowed_rc() {
 fn rc_param_tuple_wrap_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn wrap(r: Rc<int>) -> (Rc<int>, int) {
+        fn wrap(r: Rc<i64>) -> (Rc<i64>, i64) {
             (r, 0)
         }
         fn main() {}
@@ -2516,9 +2867,9 @@ fn rc_param_struct_init_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
         type Holder {
-            val: Rc<int>,
+            val: Rc<i64>,
         }
-        fn wrap(r: Rc<int>) -> Holder {
+        fn wrap(r: Rc<i64>) -> Holder {
             Holder { val: r }
         }
         fn main() {}
@@ -2541,7 +2892,7 @@ fn rc_param_struct_init_errors_borrowed_rc() {
 fn rc_param_some_clone_no_error() {
     let output = typecheck_inline(
         r"
-        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
             Some(r.clone())
         }
         fn main() {}
@@ -2563,7 +2914,7 @@ fn rc_param_some_clone_no_error() {
 fn rc_new_in_return_no_error() {
     let output = typecheck_inline(
         r"
-        fn fresh(_r: Rc<int>) -> Rc<int> {
+        fn fresh(_r: Rc<i64>) -> Rc<i64> {
             Rc::new(0)
         }
         fn main() {}
@@ -2585,7 +2936,7 @@ fn rc_new_in_return_no_error() {
 fn rc_param_explicit_return_some_errors_borrowed_rc() {
     let output = typecheck_inline(
         r"
-        fn wrap(r: Rc<int>) -> Option<Rc<int>> {
+        fn wrap(r: Rc<i64>) -> Option<Rc<i64>> {
             return Some(r);
         }
         fn main() {}
@@ -2609,10 +2960,10 @@ fn rc_param_explicit_return_some_errors_borrowed_rc() {
 fn rc_param_passed_to_regular_fn_no_error() {
     let output = typecheck_inline(
         r"
-        fn extract(r: Rc<int>) -> int {
+        fn extract(r: Rc<i64>) -> i64 {
             r.get()
         }
-        fn delegate(r: Rc<int>) -> int {
+        fn delegate(r: Rc<i64>) -> i64 {
             extract(r)
         }
         fn main() {}
@@ -2636,7 +2987,7 @@ fn rc_param_passed_to_regular_fn_no_error() {
 fn rc_method_call_store_and_return_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
             var v = Vec::new();
             v.push(r);
             v
@@ -2666,7 +3017,7 @@ fn rc_method_call_store_and_return_errors() {
 fn rc_method_call_store_explicit_return_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
             var v = Vec::new();
             v.push(r);
             return v;
@@ -2691,7 +3042,7 @@ fn rc_method_call_store_explicit_return_errors() {
 fn rc_direct_alias_return_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Rc<int> {
+        fn bad(r: Rc<i64>) -> Rc<i64> {
             let v = r;
             v
         }
@@ -2715,7 +3066,7 @@ fn rc_direct_alias_return_errors() {
 fn rc_aggregate_alias_return_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Option<Rc<int>> {
+        fn bad(r: Rc<i64>) -> Option<Rc<i64>> {
             let v = Some(r);
             v
         }
@@ -2739,7 +3090,7 @@ fn rc_aggregate_alias_return_errors() {
 fn rc_transitive_taint_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Vec<Rc<int>> {
+        fn bad(r: Rc<i64>) -> Vec<Rc<i64>> {
             let a = r;
             var v = Vec::new();
             v.push(a);
@@ -2766,7 +3117,7 @@ fn rc_transitive_taint_errors() {
 fn rc_method_call_store_no_return_no_error() {
     let output = typecheck_inline(
         r"
-        fn not_returned(r: Rc<int>) -> int {
+        fn not_returned(r: Rc<i64>) -> i64 {
             var v = Vec::new();
             v.push(r);
             42
@@ -2790,7 +3141,7 @@ fn rc_method_call_store_no_return_no_error() {
 fn rc_method_call_store_clone_no_error() {
     let output = typecheck_inline(
         r"
-        fn safe(r: Rc<int>) -> Vec<Rc<int>> {
+        fn safe(r: Rc<i64>) -> Vec<Rc<i64>> {
             var v = Vec::new();
             v.push(r.clone());
             v
@@ -2814,7 +3165,7 @@ fn rc_method_call_store_clone_no_error() {
 fn rc_method_call_store_in_branch_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>, cond: bool) -> Vec<Rc<int>> {
+        fn bad(r: Rc<i64>, cond: bool) -> Vec<Rc<i64>> {
             var v = Vec::new();
             if cond {
                 v.push(r);
@@ -2841,8 +3192,8 @@ fn rc_method_call_store_in_branch_errors() {
 fn rc_assignment_taint_return_errors() {
     let output = typecheck_inline(
         r"
-        fn bad(r: Rc<int>) -> Rc<int> {
-            var v: Rc<int> = Rc::new(0);
+        fn bad(r: Rc<i64>) -> Rc<i64> {
+            var v: Rc<i64> = Rc::new(0);
             v = r;
             v
         }
@@ -2867,7 +3218,7 @@ fn rc_assignment_taint_return_errors() {
 fn rc_readonly_method_does_not_taint() {
     let output = typecheck_inline(
         r"
-        fn ok(r: Rc<int>) -> Vec<int> {
+        fn ok(r: Rc<i64>) -> Vec<i64> {
             let v = Vec::new();
             v.contains(r.get());
             v
@@ -2893,9 +3244,9 @@ fn rc_field_assignment_escape_errors() {
     let output = typecheck_inline(
         r"
         type Wrapper {
-            value: Rc<int>,
+            value: Rc<i64>,
         }
-        fn bad(r: Rc<int>) -> Wrapper {
+        fn bad(r: Rc<i64>) -> Wrapper {
             var s = Wrapper { value: Rc::new(0) };
             s.value = r;
             s
@@ -2941,51 +3292,33 @@ fn vec_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<[int; 2]> = Vec::new();
+            let v: Vec<[i64; 2]> = Vec::new();
             println(v.len());
         }",
-        "Vec<[int; 2]> is not supported",
-        "annotated Vec<[int; 2]>",
+        "Vec<[i64; 2]> is not supported",
+        "annotated Vec<[i64; 2]>",
     );
 }
 
-#[test]
-fn vec_from_array_elements_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v = Vec::from([[1, 2]]);
-            println(v.len());
-        }",
-        "Vec<[int; 2]> is not supported",
-        "Vec::from([[1, 2]])",
-    );
-}
+// NOTE: the former `vec_from_array_elements_rejected` and
+// `vec_tuple_with_array_elements_rejected` tests were removed: they constructed
+// the array-element case via array LITERALS (`[1, 2]`), which now type as
+// `Vec<i64>` (array literals desugar to Vec), so the `Vec<[i64; 2]> is not
+// supported` rejection no longer applies to that syntax. The fixed-size-array
+// (`[T; N]`) Vec-element rejection is still covered by the annotation-based
+// tests below (`vec_nested_vec_array_annotation_rejected`,
+// `vec_generic_wrapper_array_annotation_rejected`).
 
 #[test]
 fn vec_nested_vec_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Vec<[int; 2]>> = Vec::new();
+            let v: Vec<Vec<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<[int; 2]> is not supported",
-        "annotated Vec<Vec<[int; 2]>>",
-    );
-}
-
-#[test]
-fn vec_tuple_with_array_elements_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v = Vec::new();
-            v.push((1, [2, 3]));
-            println(v.len());
-        }",
-        "Vec<(int, [int; 2])> is not supported",
-        "Vec tuple element with nested array",
+        "Vec<[i64; 2]> is not supported",
+        "annotated Vec<Vec<[i64; 2]>>",
     );
 }
 
@@ -2998,11 +3331,11 @@ fn vec_generic_wrapper_array_annotation_rejected() {
         }
 
         fn main() {
-            let v: Vec<Box<[int; 2]>> = Vec::new();
+            let v: Vec<Box<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Box<[int; 2]>> is not supported",
-        "annotated Vec<Box<[int; 2]>>",
+        "Vec<Box<[i64; 2]>> is not supported",
+        "annotated Vec<Box<[i64; 2]>>",
     );
 }
 
@@ -3011,11 +3344,11 @@ fn vec_option_wrapper_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Option<[int; 2]>> = Vec::new();
+            let v: Vec<Option<[i64; 2]>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Option<[int; 2]>> is not supported",
-        "annotated Vec<Option<[int; 2]>>",
+        "Vec<Option<[i64; 2]>> is not supported",
+        "annotated Vec<Option<[i64; 2]>>",
     );
 }
 
@@ -3024,11 +3357,11 @@ fn vec_result_wrapper_array_annotation_rejected() {
     assert_invalid_operation_contains(
         r"
         fn main() {
-            let v: Vec<Result<[int; 2], String>> = Vec::new();
+            let v: Vec<Result<[i64; 2], string>> = Vec::new();
             println(v.len());
         }",
-        "Vec<Result<[int; 2], String>> is not supported",
-        "annotated Vec<Result<[int; 2], String>>",
+        "Vec<Result<[i64; 2], string>> is not supported",
+        "annotated Vec<Result<[i64; 2], string>>",
     );
 }
 
@@ -3074,7 +3407,7 @@ fn rc_vec_push_rejected() {
             var v = Vec::new();
             v.push(r);
         }",
-        "Vec.push(Rc<int>)",
+        "Vec.push(Rc<i64>)",
     );
 }
 
@@ -3083,11 +3416,11 @@ fn rc_vec_set_rejected() {
     assert_unsafe_collection_element(
         r"
         fn main() {
-            var v: Vec<Rc<int>> = Vec::new();
+            var v: Vec<Rc<i64>> = Vec::new();
             let r = Rc::new(99);
             v.set(0, r);
         }",
-        "Vec.set(_, Rc<int>)",
+        "Vec.set(_, Rc<i64>)",
     );
 }
 
@@ -3096,11 +3429,11 @@ fn rc_vec_extend_rejected() {
     assert_unsafe_collection_element(
         r"
         fn main() {
-            var v: Vec<Rc<int>> = Vec::new();
-            let w: Vec<Rc<int>> = Vec::new();
+            var v: Vec<Rc<i64>> = Vec::new();
+            let w: Vec<Rc<i64>> = Vec::new();
             v.extend(w);
         }",
-        "Vec.extend(Vec<Rc<int>>)",
+        "Vec.extend(Vec<Rc<i64>>)",
     );
 }
 
@@ -3108,11 +3441,11 @@ fn rc_vec_extend_rejected() {
 fn rc_vec_pop_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Rc<int> {
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Rc<i64> {
             h.v.pop()
         }",
-        "Vec.pop() on Vec<Rc<int>>",
+        "Vec.pop() on Vec<Rc<i64>>",
     );
 }
 
@@ -3120,11 +3453,11 @@ fn rc_vec_pop_rejected() {
 fn rc_vec_get_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Rc<int> {
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Rc<i64> {
             h.v.get(0)
         }",
-        "Vec.get(_) on Vec<Rc<int>>",
+        "Vec.get(_) on Vec<Rc<i64>>",
     );
 }
 
@@ -3132,11 +3465,11 @@ fn rc_vec_get_rejected() {
 fn rc_vec_remove_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Rc<int> {
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Rc<i64> {
             h.v.remove(0)
         }",
-        "Vec.remove(_) on Vec<Rc<int>>",
+        "Vec.remove(_) on Vec<Rc<i64>>",
     );
 }
 
@@ -3144,11 +3477,11 @@ fn rc_vec_remove_rejected() {
 fn rc_vec_map_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Vec<Rc<int>> {
-            h.v.map((x: Rc<int>) => x)
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Vec<Rc<i64>> {
+            h.v.map(|x: Rc<i64>| x)
         }",
-        "Vec.map(_) on Vec<Rc<int>>",
+        "Vec.map(_) on Vec<Rc<i64>>",
     );
 }
 
@@ -3156,11 +3489,11 @@ fn rc_vec_map_rejected() {
 fn rc_vec_filter_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Vec<Rc<int>> {
-            h.v.filter((x: Rc<int>) => x.get() > 0)
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Vec<Rc<i64>> {
+            h.v.filter(|x: Rc<i64>| x.get() > 0)
         }",
-        "Vec.filter(_) on Vec<Rc<int>>",
+        "Vec.filter(_) on Vec<Rc<i64>>",
     );
 }
 
@@ -3168,11 +3501,11 @@ fn rc_vec_filter_rejected() {
 fn rc_vec_fold_rejected() {
     assert_unsafe_collection_element(
         r"
-        type Holder { v: Vec<Rc<int>> }
-        fn extract(h: Holder) -> Rc<int> {
-            h.v.fold(Rc::new(0), (acc: Rc<int>, x: Rc<int>) => x)
+        type Holder { v: Vec<Rc<i64>> }
+        fn extract(h: Holder) -> Rc<i64> {
+            h.v.fold(Rc::new(0), |acc: Rc<i64>, x: Rc<i64>| x)
         }",
-        "Vec.fold(_, _) on Vec<Rc<int>>",
+        "Vec.fold(_, _) on Vec<Rc<i64>>",
     );
 }
 
@@ -3185,7 +3518,7 @@ fn rc_hashmap_insert_value_rejected() {
             let r = Rc::new(42);
             m.insert("key", r);
         }"#,
-        "HashMap.insert(_, Rc<int>)",
+        "HashMap.insert(_, Rc<i64>)",
     );
 }
 
@@ -3198,7 +3531,7 @@ fn rc_hashmap_insert_key_rejected() {
             let r = Rc::new(42);
             m.insert(r, "val");
         }"#,
-        "HashMap.insert(Rc<int>, _)",
+        "HashMap.insert(Rc<i64>, _)",
     );
 }
 
@@ -3207,12 +3540,12 @@ fn rc_hashmap_get_value_rejected() {
     assert_unsafe_collection_element(
         r#"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<i64>>
         }
-        fn leak(h: Holder) -> Option<Rc<int>> {
+        fn leak(h: Holder) -> Option<Rc<i64>> {
             h.items.get("key")
         }"#,
-        "HashMap.get() on HashMap<String, Rc<int>>",
+        "HashMap.get() on HashMap<string, Rc<i64>>",
     );
 }
 
@@ -3221,12 +3554,12 @@ fn rc_hashmap_remove_value_rejected() {
     assert_unsafe_collection_element(
         r#"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<i64>>
         }
         fn remove_key(h: Holder) -> bool {
             h.items.remove("key")
         }"#,
-        "HashMap.remove() on HashMap<String, Rc<int>>",
+        "HashMap.remove() on HashMap<string, Rc<i64>>",
     );
 }
 
@@ -3235,12 +3568,12 @@ fn rc_hashmap_keys_rejected_when_value_type_is_rc() {
     assert_unsafe_collection_element(
         r"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<i64>>
         }
-        fn leak(h: Holder) -> Vec<String> {
+        fn leak(h: Holder) -> Vec<string> {
             h.items.keys()
         }",
-        "HashMap.keys() on HashMap<String, Rc<int>>",
+        "HashMap.keys() on HashMap<string, Rc<i64>>",
     );
 }
 
@@ -3249,12 +3582,12 @@ fn rc_hashmap_values_rejected() {
     assert_unsafe_collection_element(
         r"
         type Holder {
-            items: HashMap<String, Rc<int>>
+            items: HashMap<string, Rc<i64>>
         }
-        fn leak(h: Holder) -> Vec<Rc<int>> {
+        fn leak(h: Holder) -> Vec<Rc<i64>> {
             h.items.values()
         }",
-        "HashMap.values() on HashMap<String, Rc<int>>",
+        "HashMap.values() on HashMap<string, Rc<i64>>",
     );
 }
 
@@ -3267,7 +3600,7 @@ fn rc_hashset_insert_rejected() {
             let r = Rc::new(42);
             s.insert(r);
         }",
-        "HashSet.insert(Rc<int>)",
+        "HashSet.insert(Rc<i64>)",
     );
 }
 
@@ -3280,7 +3613,7 @@ fn rc_nested_in_vec_element_rejected() {
             let r = Rc::new(42);
             v.push(Some(r));
         }",
-        "Vec.push(Option<Rc<int>>)",
+        "Vec.push(Option<Rc<i64>>)",
     );
 }
 
@@ -3293,7 +3626,7 @@ fn rc_tuple_in_vec_element_rejected() {
             let r = Rc::new(42);
             v.push((r, 0));
         }",
-        "Vec.push((Rc<int>, int))",
+        "Vec.push((Rc<i64>, i64))",
     );
 }
 
@@ -3307,7 +3640,7 @@ fn vec_int_push_ok() {
             var v = Vec::new();
             v.push(42);
         }",
-        "Vec<int> push should be fine",
+        "Vec<i64> push should be fine",
     );
 }
 
@@ -3319,7 +3652,7 @@ fn vec_string_push_ok() {
             var v = Vec::new();
             v.push("hello");
         }"#,
-        "Vec<String> push should be fine",
+        "Vec<string> push should be fine",
     );
 }
 
@@ -3331,7 +3664,7 @@ fn hashmap_string_string_insert_ok() {
             var m = HashMap::new();
             m.insert("key", "value");
         }"#,
-        "HashMap<String, String> insert should be fine",
+        "HashMap<string, string> insert should be fine",
     );
 }
 
@@ -3346,28 +3679,98 @@ fn hashset_int_insert_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected inferred HashSet<int> insert to typecheck cleanly, got: {:#?}",
+        "expected inferred HashSet<i64> insert to typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn hashset_inferred_literal_then_i16_insert_rejected_before_codegen() {
+fn hashmap_string_key_index_read_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m.insert("a", "alpha");
+            let _x = m["a"];
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected `m[\"a\"]` over HashMap<string, string> to typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_string_key_index_write_typechecks() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m["a"] = "alpha";
+        }"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected `m[\"a\"] = \"alpha\"` over HashMap<string, string> to typecheck, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_wrong_key_type_index_read_rejected() {
     let output = typecheck_inline(
         r"
         fn main() {
-            var s = HashSet::new();
-            s.insert(42);
-            let x: i16 = 7;
-            s.insert(x);
+            var m: HashMap<string, string> = HashMap::new();
+            let _x = m[5];
         }",
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i16> is not supported")
-        ),
-        "expected inferred HashSet narrowed to i16 to fail before lowering, got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a key-type mismatch for `m[5]` on HashMap<string, _>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn hashmap_wrong_value_type_index_write_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var m: HashMap<string, string> = HashMap::new();
+            m["a"] = 5;
+        }"#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a value-type mismatch for `m[\"a\"] = 5` on HashMap<_, string>, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_string_index_still_rejected() {
+    let output = typecheck_inline(
+        r#"
+        fn main() {
+            var v: Vec<i64> = Vec::new();
+            v.push(1);
+            let _x = v["nope"];
+        }"#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected Vec index to keep rejecting a string subscript, got: {:#?}",
         output.errors
     );
 }
@@ -3434,345 +3837,15 @@ fn loader_registered_module_slice_signature_rejected_before_registration() {
 }
 
 #[test]
-fn hashset_bool_insert_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let s: HashSet<bool> = HashSet::new();
-            s.insert(true);
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected HashSet<bool> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_i32_insert_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let s: HashSet<i32> = HashSet::new();
-            s.insert(7);
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected HashSet<i32> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_u32_insert_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let s: HashSet<u32> = HashSet::new();
-            s.insert(7);
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<u32> is not supported")
-        ),
-        "expected HashSet<u32> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_small_integer_inserts_rejected_before_codegen() {
-    for elem_ty in ["i8", "u8", "i16", "u16"] {
-        let source = format!(
-            r"
-        fn main() {{
-            let s: HashSet<{elem_ty}> = HashSet::new();
-            s.insert(7);
-        }}"
-        );
-        let expected = format!("HashSet<{elem_ty}> is not supported");
-        let output = typecheck_inline(&source);
-        assert!(
-            output.errors.iter().any(|e| {
-                e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                    && e.message.contains(&expected)
-            }),
-            "expected HashSet<{elem_ty}> to fail before lowering, got: {:#?}",
-            output.errors
-        );
-    }
-}
-
-#[test]
-fn hashset_i32_len_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let s: HashSet<i32> = HashSet::new();
-            println(s.len());
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected HashSet<i32>.len() to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_type_field_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        type Config {
-            flags: HashSet<bool>;
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected HashSet<bool> field annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_param_annotation_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn count(flags: HashSet<bool>) -> i64 {
-            flags.len()
-        }
-
-        fn main() {
-            println(count(HashSet::new()));
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected HashSet<bool> parameter annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_return_annotation_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn make() -> HashSet<bool> {
-            HashSet::new()
-        }
-
-        fn main() {
-            println(make().len());
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected HashSet<bool> return annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_nested_in_vec_annotation_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let xs: Vec<HashSet<bool>> = Vec::new();
-            println(xs.len());
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected Vec<HashSet<bool>> annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_i32_nested_in_option_param_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn count(flags: Option<HashSet<i32>>) -> i64 {
-            0
-        }
-
-        fn main() {
-            println(count(None));
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected Option<HashSet<i32>> parameter annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_nested_in_result_return_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r#"
-        fn make() -> Result<HashSet<bool>, String> {
-            Err("nope")
-        }
-
-        fn main() {
-            println(make().is_err());
-        }"#,
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected Result<HashSet<bool>, String> return annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_i32_nested_in_type_field_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        type Config {
-            flags: HashMap<String, HashSet<i32>>;
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected HashMap<String, HashSet<i32>> field annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_nested_in_actor_field_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        actor Worker {
-            let flags: Vec<HashSet<bool>>;
-
-            receive fn ping() {}
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected actor field annotation with nested HashSet<bool> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_i32_nested_in_machine_state_field_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        machine Traffic {
-            state Red { flags: Option<HashSet<i32>>; }
-            event Tick;
-            on Tick: Red -> Red;
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected machine state field annotation with nested HashSet<i32> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_bool_in_wire_enum_tuple_variant_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        wire enum Packet {
-            Flags(HashSet<bool>);
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<bool> is not supported")
-        ),
-        "expected wire enum tuple variant with HashSet<bool> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashset_i32_nested_in_wire_enum_struct_variant_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        wire enum Packet {
-            Flags { values: Vec<HashSet<i32>> };
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashSet<i32> is not supported")
-        ),
-        "expected wire enum struct variant with nested HashSet<i32> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
 fn hashmap_string_i64_annotation_typechecks_before_codegen() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<String, i64> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap::new();
             m.insert("answer", 42);
             println(m.len());
         }"#,
-        "HashMap<String, i64> should stay within the current ABI",
+        "HashMap<string, i64> should stay within the current ABI",
     );
 }
 
@@ -3784,70 +3857,7 @@ fn inferred_hashmap_string_string_map_literal_typechecks_before_codegen() {
             let env = {"HOST": "localhost", "PORT": "8080"};
             println(env.contains_key("HOST"));
         }"#,
-        "inferred HashMap<String, String> map literal should stay within the current ABI",
-    );
-}
-
-#[test]
-fn hashmap_i64_key_len_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let m: HashMap<i64, i64> = HashMap::new();
-            println(m.len());
-        }",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("HashMap<int, int> is not supported")
-                && e.message.contains("String keys and scalar/string values")
-        ),
-        "expected HashMap<i64, i64> to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn hashmap_tuple_value_annotation_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r"
-        type Config {
-            points: HashMap<String, (i32, i32)>;
-        }
-
-        fn main() {}",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("HashMap<String, (i32, i32)> is not supported")
-        ),
-        "expected HashMap<String, (i32, i32)> field annotation to fail before lowering, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn inferred_hashmap_tuple_value_map_literal_rejected_before_codegen() {
-    let output = typecheck_inline(
-        r#"
-        fn main() {
-            let x: i32 = 1;
-            let y: i32 = 2;
-            let points = {"origin": (x, y)};
-            println(points.len());
-        }"#,
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("HashMap<String, (i32, i32)> is not supported")
-        ),
-        "expected inferred HashMap<String, (i32, i32)> literal to fail before lowering, got: {:#?}",
-        output.errors
+        "inferred HashMap<string, string> map literal should stay within the current ABI",
     );
 }
 
@@ -3856,7 +3866,7 @@ fn vec_clone_method_typechecks_and_returns_vec() {
     assert_inline_typechecks_cleanly(
         r"
         fn main() {
-            let v: Vec<int> = Vec::new();
+            let v: Vec<i64> = Vec::new();
             let c = v.clone();
             c.push(42);
             println(c.len());
@@ -3870,7 +3880,7 @@ fn hashmap_clone_method_typechecks_and_returns_hashmap() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<String, int> = HashMap::new();
+            let m: HashMap<string, i64> = HashMap::new();
             let c = m.clone();
             c.insert("key", 7);
             println(c.contains_key("key"));
@@ -3884,7 +3894,7 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let s: HashSet<String> = HashSet::new();
+            let s: HashSet<string> = HashSet::new();
             let c = s.clone();
             c.insert("value");
             println(c.contains("value"));
@@ -3904,14 +3914,14 @@ fn rc_in_named_struct_field_vec_push_rejected() {
     assert_unsafe_collection_element(
         r"
         type Holder {
-            val: Rc<int>
+            val: Rc<i64>
         }
         fn main() {
             var v = Vec::new();
             let h = Holder { val: Rc::new(1) };
             v.push(h);
         }",
-        "Vec.push(Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+        "Vec.push(Holder { val: Rc<i64> }) — named struct wrapping Rc should be rejected",
     );
 }
 
@@ -3920,14 +3930,14 @@ fn rc_in_named_struct_field_hashmap_value_rejected() {
     assert_unsafe_collection_element(
         r#"
         type Holder {
-            val: Rc<int>
+            val: Rc<i64>
         }
         fn main() {
             var m = HashMap::new();
             let h = Holder { val: Rc::new(1) };
             m.insert("k", h);
         }"#,
-        "HashMap.insert(_, Holder { val: Rc<int> }) — named struct wrapping Rc should be rejected",
+        "HashMap.insert(_, Holder { val: Rc<i64> }) — named struct wrapping Rc should be rejected",
     );
 }
 
@@ -3936,7 +3946,7 @@ fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
     assert_unsafe_collection_element(
         r"
         type Inner {
-            x: Rc<int>
+            x: Rc<i64>
         }
         type Outer {
             inner: Inner
@@ -3946,7 +3956,7 @@ fn rc_in_doubly_nested_named_struct_vec_push_rejected() {
             let o = Outer { inner: Inner { x: Rc::new(1) } };
             v.push(o);
         }",
-        "Vec.push(Outer wrapping Inner wrapping Rc<int>) — doubly-nested named struct should be rejected",
+        "Vec.push(Outer wrapping Inner wrapping Rc<i64>) — doubly-nested named struct should be rejected",
     );
 }
 
@@ -3955,14 +3965,14 @@ fn rc_in_named_enum_variant_vec_push_rejected() {
     assert_unsafe_collection_element(
         r"
         enum MaybeHolder {
-            Some(Rc<int>);
+            Some(Rc<i64>);
             None;
         }
         fn main() {
             var v = Vec::new();
             v.push(MaybeHolder::Some(Rc::new(1)));
         }",
-        "Vec.push(MaybeHolder::Some(Rc<int>)) — named enum wrapping Rc should be rejected",
+        "Vec.push(MaybeHolder::Some(Rc<i64>)) — named enum wrapping Rc should be rejected",
     );
 }
 
@@ -3971,8 +3981,8 @@ fn plain_named_struct_no_rc_vec_push_ok() {
     assert_no_unsafe_collection_element(
         r"
         type Point {
-            x: int,
-            y: int
+            x: i64,
+            y: i64
         }
         fn main() {
             var v = Vec::new();
@@ -3991,7 +4001,7 @@ fn plain_named_struct_no_rc_vec_push_ok() {
 fn rc_param_iflet_body_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
-        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(_v) = opt {
                 r
             } else {
@@ -4017,7 +4027,7 @@ fn rc_param_iflet_body_trailing_expr_errors() {
 fn rc_param_iflet_else_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
-        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(_v) = opt {
                 Rc::new(0)
             } else {
@@ -4042,7 +4052,7 @@ fn rc_param_iflet_else_trailing_expr_errors() {
 fn rc_param_iflet_both_branches_trailing_expr_errors() {
     let output = typecheck_inline(
         r"
-        fn escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+        fn escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(_v) = opt {
                 r
             } else {
@@ -4070,7 +4080,7 @@ fn rc_param_iflet_both_branches_trailing_expr_errors() {
 fn rc_param_shadowing_local_return_is_clean() {
     let output = typecheck_inline(
         r"
-        fn shadow(r: Rc<int>) -> Rc<int> {
+        fn shadow(r: Rc<i64>) -> Rc<i64> {
             let r = Rc::new(99);
             r
         }
@@ -4094,7 +4104,7 @@ fn rc_param_shadowing_local_return_is_clean() {
 fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
     let output = typecheck_inline(
         r"
-        fn shadow_then_escape(r: Rc<int>, opt: Option<int>) -> Rc<int> {
+        fn shadow_then_escape(r: Rc<i64>, opt: Option<i64>) -> Rc<i64> {
             if let Some(v) = opt {
                 let r = Rc::new(v);
                 r
@@ -4123,7 +4133,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
 // are explicitly deferred to a future escape-analysis pass:
 //
 // 1. Generic passthrough: `fn id<T>(x: T) -> T { x }` is safe when called
-//    with value types (int, String, String, structs) but unsound when `T = Rc<U>`.
+//    with value types (i64, string, string, structs) but unsound when `T = Rc<U>`.
 //    Definition-site checking was removed because it rejects all generic
 //    identity patterns.  Needs call-site / monomorphisation-time checking.
 //
@@ -4163,7 +4173,7 @@ fn hashmap_unresolved_key_type_fails_closed_at_boundary() {
 
 #[test]
 fn hashmap_unresolved_val_type_fails_closed_at_boundary() {
-    // Key is constrained (String), value is not.
+    // Key is constrained (string), value is not.
     let output = typecheck_inline(
         r"
         fn main() {
@@ -4223,7 +4233,7 @@ fn hashmap_valid_string_key_int_val_not_rejected() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected no errors for HashMap<String, int>, got: {:#?}",
+        "expected no errors for HashMap<string, i64>, got: {:#?}",
         output.errors
     );
 }
@@ -4235,12 +4245,12 @@ fn hashmap_annotation_with_infer_hole_key_fails_closed() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, String> = HashMap::new();
+            let m: HashMap<_, string> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<_, String> with unresolved key, got no errors"
+        "expected error for HashMap<_, string> with unresolved key, got no errors"
     );
 }
 
@@ -4346,7 +4356,7 @@ fn hashset_valid_string_element_not_rejected() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected no errors for HashSet<String>, got: {:#?}",
+        "expected no errors for HashSet<string>, got: {:#?}",
         output.errors
     );
 }
@@ -4490,18 +4500,18 @@ fn hashset_annotation_only_unresolved_fails_closed_without_lowering_fact() {
 
 #[test]
 fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
-    // HashMap<_, String> with an unresolved key hole must produce at most one
+    // HashMap<_, string> with an unresolved key hole must produce at most one
     // InferenceFailed per span.  finalize_hashmap_admission must not add a
     // second error on top of the inference-holes diagnostic.
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<_, String> = HashMap::new();
+            let m: HashMap<_, string> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<_, String> with unresolved key, got no errors"
+        "expected error for HashMap<_, string> with unresolved key, got no errors"
     );
     let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in output
@@ -4512,7 +4522,7 @@ fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
         let key = format!("{:?}", e.span);
         assert!(
             seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<_, String>: {errors:#?}",
+            "duplicate InferenceFailed at span {key} for HashMap<_, string>: {errors:#?}",
             errors = output.errors
         );
     }
@@ -4520,17 +4530,17 @@ fn hashmap_annotation_key_hole_no_duplicate_inference_failed() {
 
 #[test]
 fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
-    // HashMap<String, _> with an unresolved value hole must produce at most one
+    // HashMap<string, _> with an unresolved value hole must produce at most one
     // InferenceFailed per span.
     let output = typecheck_inline(
         r"
         fn main() {
-            let m: HashMap<String, _> = HashMap::new();
+            let m: HashMap<string, _> = HashMap::new();
         }",
     );
     assert!(
         !output.errors.is_empty(),
-        "expected error for HashMap<String, _> with unresolved value, got no errors"
+        "expected error for HashMap<string, _> with unresolved value, got no errors"
     );
     let mut seen_spans: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in output
@@ -4541,7 +4551,7 @@ fn hashmap_annotation_val_hole_no_duplicate_inference_failed() {
         let key = format!("{:?}", e.span);
         assert!(
             seen_spans.insert(key.clone()),
-            "duplicate InferenceFailed at span {key} for HashMap<String, _>: {errors:#?}",
+            "duplicate InferenceFailed at span {key} for HashMap<string, _>: {errors:#?}",
             errors = output.errors
         );
     }
@@ -4580,8 +4590,8 @@ fn registration_fn_param_hashset_hole_single_error() {
 
 #[test]
 fn registration_fn_param_hashmap_key_hole_single_error() {
-    // `fn f(x: HashMap<_, String>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<_, String>) {}");
+    // `fn f(x: HashMap<_, string>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<_, string>) {}");
     let inference_failed: Vec<_> = output
         .errors
         .iter()
@@ -4590,7 +4600,7 @@ fn registration_fn_param_hashmap_key_hole_single_error() {
     assert_eq!(
         inference_failed.len(),
         1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<_, String>), \
+        "expected exactly one InferenceFailed for fn f(x: HashMap<_, string>), \
          got {}: {:#?}",
         inference_failed.len(),
         output.errors
@@ -4599,8 +4609,8 @@ fn registration_fn_param_hashmap_key_hole_single_error() {
 
 #[test]
 fn registration_fn_param_hashmap_val_hole_single_error() {
-    // `fn f(x: HashMap<String, _>) {}` must produce exactly one InferenceFailed.
-    let output = typecheck_inline("fn f(x: HashMap<String, _>) {}");
+    // `fn f(x: HashMap<string, _>) {}` must produce exactly one InferenceFailed.
+    let output = typecheck_inline("fn f(x: HashMap<string, _>) {}");
     let inference_failed: Vec<_> = output
         .errors
         .iter()
@@ -4609,7 +4619,7 @@ fn registration_fn_param_hashmap_val_hole_single_error() {
     assert_eq!(
         inference_failed.len(),
         1,
-        "expected exactly one InferenceFailed for fn f(x: HashMap<String, _>), \
+        "expected exactly one InferenceFailed for fn f(x: HashMap<string, _>), \
          got {}: {:#?}",
         inference_failed.len(),
         output.errors
@@ -4654,8 +4664,8 @@ fn type_def_with_error_field_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Broken {
-            value: [int];
-            ok: int;
+            value: [i64];
+            ok: i64;
         }
         ",
     );
@@ -4679,8 +4689,8 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         enum Broken {
-            Bad([int]);
-            Good(int);
+            Bad([i64]);
+            Good(i64);
         }
         ",
     );
@@ -4704,15 +4714,15 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: int;
+            value: i64;
         }
 
         impl Widget {
-            fn good(w: Widget) -> int {
+            fn good(w: Widget) -> i64 {
                 w.value
             }
 
-            fn broken(w: Widget, bad: [int]) -> int {
+            fn broken(w: Widget, bad: [i64]) -> i64 {
                 w.value
             }
         }
@@ -4747,15 +4757,15 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: int;
+            value: i64;
         }
 
         impl Widget {
-            fn good(w: Widget) -> int {
+            fn good(w: Widget) -> i64 {
                 w.value
             }
 
-            fn broken(w: Widget) -> [int] {
+            fn broken(w: Widget) -> [i64] {
                 w.value
             }
         }
@@ -4796,11 +4806,11 @@ fn lambda_unknown_return_annotation_single_error() {
     let output = typecheck_inline(
         r"
         fn main() {
-            let _f = () -> UnknownType => 1;
+            let _f = || -> UnknownType { 1 };
         }
         ",
     );
-    assert_single_unknown_return_error(&output, "unknown lambda return annotation", "int");
+    assert_single_unknown_return_error(&output, "unknown lambda return annotation", "i64");
 }
 
 #[test]
@@ -4862,18 +4872,19 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 // the surrounding context has narrowed T.
 // ===========================================================================
 
-/// `recv()` on a `Receiver<int>` channel where the element type is inferred
-/// from a downstream `let v: int = rx.recv()` annotation must emit the int-
-/// specific symbol (`hew_channel_recv_int`) rather than the string variant.
+/// `recv()` on a `Receiver<i64>` channel where the element type is inferred
+/// from a downstream `let v: i64 = rx.recv()` annotation must still record
+/// the layout-witness rewrite (`hew_channel_recv_layout`) once deferred
+/// resolution completes — the element kind rides the witness, not the symbol.
 #[test]
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
 
-        fn take_one() -> Option<int> {
+        fn take_one() -> Option<i64> {
             let (tx, rx) = channel.new(4);
-            let v: Option<int> = rx.recv();
+            let v: Option<i64> = rx.recv();
             tx.close();
             v
         }
@@ -4887,35 +4898,35 @@ fn deferred_channel_recv_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_channel_recv_int"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_channel_recv_layout"
         )),
-        "expected hew_channel_recv_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
-    // The string variant must NOT be recorded for this call site.
+    // The retired per-type symbols must never be recorded.
     assert!(
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_channel_recv"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_channel_recv" || c_symbol == "hew_channel_recv_int"
         )),
-        "hew_channel_recv (string variant) must not be recorded for int channel: {:?}",
+        "retired per-type recv symbols must not be recorded: {:?}",
         output.method_call_rewrites
     );
 }
 
-/// `recv()` on a `Receiver<String>` channel where the element type is inferred
-/// from the usage of the received value must emit `hew_channel_recv`.
+/// `recv()` on a `Receiver<string>` channel where the element type is inferred
+/// from the usage of the received value must emit `hew_channel_recv_layout`.
 #[test]
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
 
-        fn take_one() -> Option<String> {
+        fn take_one() -> Option<string> {
             let (tx, rx) = channel.new(4);
-            let v: Option<String> = rx.recv();
+            let v: Option<string> = rx.recv();
             tx.close();
             v
         }
@@ -4929,25 +4940,25 @@ fn deferred_channel_recv_string_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_channel_recv"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_channel_recv_layout"
         )),
-        "expected hew_channel_recv rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
-/// `try_recv()` on a `Receiver<int>` where the element type is constrained
-/// after the call site must resolve to the int-specific symbol.
+/// `try_recv()` on a `Receiver<i64>` where the element type is constrained
+/// after the call site must resolve to the layout-witness `try_recv` entry.
 #[test]
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
         import std::channel::channel;
 
-        fn try_take() -> Option<int> {
+        fn try_take() -> Option<i64> {
             let (tx, rx) = channel.new(4);
-            let v: Option<int> = rx.try_recv();
+            let v: Option<i64> = rx.try_recv();
             tx.close();
             v
         }
@@ -4961,17 +4972,17 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_channel_try_recv_int"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_channel_try_recv_layout"
         )),
-        "expected hew_channel_try_recv_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_try_recv_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 /// `send()` must defer when both the channel inner type and the sent value are
-/// still `Ty::Var` at the call site, then pick the int-specific symbol once a
-/// later `recv()` annotation constrains the shared channel type.
+/// still `Ty::Var` at the call site, then record the layout-witness send
+/// rewrite once a later `recv()` annotation constrains the shared channel type.
 #[test]
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
@@ -4983,7 +4994,7 @@ fn deferred_channel_send_int_constrained_after_call() {
             if let Some(v) = rx.recv() {
                 tx.send(v);
             }
-            let _: Option<int> = rx.recv();
+            let _: Option<i64> = rx.recv();
         }
         ",
     );
@@ -4995,10 +5006,10 @@ fn deferred_channel_send_int_constrained_after_call() {
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
-                if c_symbol == "hew_channel_send_int"
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_channel_send_layout"
         )),
-        "expected hew_channel_send_int rewrite after deferred resolution, got: {:?}",
+        "expected hew_channel_send_layout rewrite after deferred resolution, got: {:?}",
         output.method_call_rewrites
     );
 }
@@ -5031,10 +5042,208 @@ fn deferred_channel_unresolved_inner_fails_closed() {
     assert!(
         !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol }
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                 if c_symbol.contains("hew_channel_recv")
         )),
         "no recv rewrite should be recorded when inner type is unresolved: {:?}",
         output.method_call_rewrites
+    );
+}
+
+#[test]
+fn let_propagate_sugar_valid_in_result_fn() {
+    // `let r? = expr;` desugars to `let r = expr?;`.  When the RHS is
+    // Result<T,E> and the enclosing function also returns Result<_,E>,
+    // the type-checker must accept it without errors.  The bound name `r`
+    // must have type T (the Ok-payload), not Result<T,E>.
+    let output = typecheck_inline(
+        r"
+        fn make_result(x: i64) -> Result<i64, string> {
+            Ok(x * 2)
+        }
+        fn use_sugar(x: i64) -> Result<i64, string> {
+            let r? = make_result(x);
+            Ok(r + 1)
+        }
+        fn main() { use_sugar(5); }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for valid `let r? = Result<_,_>` in Result-returning fn, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn let_propagate_sugar_typed_annotation_accepted() {
+    // `let r?: T = expr;` — the type annotation applies to the unwrapped
+    // Ok-payload (T), not to the Result.  The checker must accept this and
+    // bind `r` as type T.
+    let output = typecheck_inline(
+        r"
+        fn make_result(x: i64) -> Result<i64, string> {
+            Ok(x)
+        }
+        fn use_typed_sugar(x: i64) -> Result<i64, string> {
+            let r?: i64 = make_result(x);
+            Ok(r)
+        }
+        fn main() { use_typed_sugar(3); }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Expected no errors for `let r?: i64 = Result<i64,_>`, got: {:?}",
+        output.errors
+    );
+}
+
+/// NEW-7: `await stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
+/// canonical suspending consumer surface.
+#[test]
+fn await_stream_recv_bytes_typechecks() {
+    let output = typecheck_inline(
+        "import std::stream;\n\
+         #[opaque]\n\
+         type Pair {}\n\
+         extern \"C\" {\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
+         \x20   fn hew_stream_pair_stream_bytes(pair: Pair) -> Stream<bytes>;\n\
+         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         }\n\
+         actor Runner {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
+         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
+         \x20       unsafe { hew_stream_pair_free(pair); }\n\
+         \x20       let item = await input.recv();\n\
+         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let r = spawn Runner(); r.go(0); }\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "await stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
+        output.errors
+    );
+}
+
+/// NEW-7 widened: an `i64` element rides the element-layout witness — the
+/// suspend lowering is no longer bound to string/bytes, so
+/// `await stream.recv()` over `Stream<i64>` typechecks cleanly.
+#[test]
+fn await_stream_recv_int_element_admitted() {
+    let output = typecheck_inline(
+        "import std::stream;\n\
+         #[opaque]\n\
+         type Pair {}\n\
+         extern \"C\" {\n\
+         \x20   fn hew_stream_channel(capacity: i64) -> Pair;\n\
+         \x20   fn hew_stream_pair_stream_i64(pair: Pair) -> Stream<i64>;\n\
+         \x20   fn hew_stream_pair_free(pair: Pair);\n\
+         }\n\
+         actor Runner {\n\
+         \x20   receive fn go(unused: i64) {\n\
+         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
+         \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
+         \x20       unsafe { hew_stream_pair_free(pair); }\n\
+         \x20       let item = await input.recv();\n\
+         \x20       match item { Some(v) => {}, None => {}, }\n\
+         \x20   }\n\
+         }\n\
+         fn main() { let r = spawn Runner(); r.go(0); }\n",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "await stream.recv() over Stream<i64> must be admitted by the \
+         element-layout witness, got: {:#?}",
+        output.errors
+    );
+}
+
+// ── WASM gate: std::crypto::encrypt and std::crypto::sign (native-only) ──────
+
+/// `std::crypto::encrypt` module calls are rejected on wasm32 with a structured
+/// `PlatformLimitation` diagnostic.  The encrypt and sign modules are backed by
+/// native-only staticlib companion crates absent from the wasm32 link set.
+#[test]
+fn wasm_rejects_crypto_encrypt_module_calls() {
+    // The gate fires at the method call level; argument types need not be valid.
+    let output = typecheck_inline_wasm(
+        "import std::crypto::encrypt;\n\
+         fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
+                && e.message.contains("std::crypto::encrypt")
+        }),
+        "expected PlatformLimitation for encrypt module call on wasm32, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `std::crypto::sign` module calls are rejected on wasm32 with a structured
+/// `PlatformLimitation` diagnostic.
+#[test]
+fn wasm_rejects_crypto_sign_module_calls() {
+    let output = typecheck_inline_wasm(
+        r"
+        import std::crypto::sign;
+
+        fn main() {
+            let kp = sign.keypair();
+            let msg = bytes [0x01, 0x02, 0x03];
+            let _ = sign.sign(msg, kp.private_key);
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
+                && e.message.contains("std::crypto::sign")
+        }),
+        "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Native target parity: the same encrypt/sign module calls that are rejected
+/// on wasm32 must NOT produce a `PlatformLimitation` error on the native target.
+#[test]
+fn native_allows_crypto_encrypt_and_sign_module_calls() {
+    let encrypt_output = typecheck_inline(
+        "import std::crypto::encrypt;\n\
+         fn main() { let _ = encrypt.seal(bytes [0x61], bytes [0x62]); }",
+    );
+    assert!(
+        !encrypt_output
+            .errors
+            .iter()
+            .any(|e| { e.kind == hew_types::error::TypeErrorKind::PlatformLimitation }),
+        "encrypt module must not be rejected on native target, got: {:#?}",
+        encrypt_output.errors
+    );
+
+    let sign_output = typecheck_inline(
+        r"
+        import std::crypto::sign;
+
+        fn main() {
+            let kp = sign.keypair();
+            let msg = bytes [0x01, 0x02, 0x03];
+            let _ = sign.sign(msg, kp.private_key);
+        }
+        ",
+    );
+    assert!(
+        !sign_output
+            .errors
+            .iter()
+            .any(|e| { e.kind == hew_types::error::TypeErrorKind::PlatformLimitation }),
+        "sign module must not be rejected on native target, got: {:#?}",
+        sign_output.errors
     );
 }

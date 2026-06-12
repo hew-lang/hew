@@ -1,0 +1,8 @@
+type Wrapper<T> {
+    inner: T,
+}
+
+fn main() -> i64 {
+    let w = Wrapper { inner: 42 };
+    w.inner
+}

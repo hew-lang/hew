@@ -8,6 +8,7 @@ mod app;
 mod client;
 #[cfg(unix)]
 mod discovery;
+mod events;
 mod theme;
 mod ui;
 
@@ -59,6 +60,7 @@ struct Cli {
 
 #[derive(Debug)]
 enum ConnectError {
+    #[cfg_attr(not(unix), allow(dead_code))]
     NoProfilerForPid(u32),
     #[cfg(unix)]
     MultipleProfilers(Vec<AmbiguousProfiler>),

@@ -2,7 +2,7 @@
 //
 // Uses Point from geo.hew — no import needed because peer files share the
 // same module namespace.  Both abs_int and manhattan become part of `geo`.
-pub fn abs_int(n: int) -> int {
+pub fn abs_int(n: i64) -> i64 {
     if n < 0 {
         -n
     } else {
@@ -10,11 +10,11 @@ pub fn abs_int(n: int) -> int {
     }
 }
 
-pub fn manhattan(a: Point, b: Point) -> int {
+pub fn manhattan(a: Point, b: Point) -> i64 {
     abs_int(a.x - b.x) + abs_int(a.y - b.y)
 }
 
-pub fn chebyshev(a: Point, b: Point) -> int {
+pub fn chebyshev(a: Point, b: Point) -> i64 {
     let dx = abs_int(a.x - b.x);
     let dy = abs_int(a.y - b.y);
     if dx > dy {

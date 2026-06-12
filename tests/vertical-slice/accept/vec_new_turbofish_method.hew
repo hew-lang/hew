@@ -1,0 +1,13 @@
+// W3.004 S1 turbofish method form: `Vec::new::<T>()` with no annotation.
+//
+// Mirrors vec_new_turbofish_type.hew but with the turbofish on the method
+// segment instead of the type segment.  Both spellings are represented
+// identically in the HIR call node so the same fix covers both forms.
+//
+// Expected exit 7.
+fn main() -> i64 {
+    let v = Vec::new::<i64>();
+    v.push(3);
+    v.push(7);
+    v.get(1)
+}

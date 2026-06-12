@@ -11,11 +11,13 @@ members = [
   "std/encoding/toml",
   "std/encoding/xml",
   "std/encoding/yaml",
+  "std/encoding/binary",
   "std/encoding/hex",
   "std/crypto/crypto",
   "std/crypto/encrypt",
   "std/crypto/jwt",
   "std/crypto/password",
+  "std/crypto/sign",
   "std/net/dns",
   "std/net/http",
   "std/net/ipnet",
@@ -29,35 +31,40 @@ members = [
   "std/time/datetime",
   "std/text/regex",
   "std/text/semver",
+  "std/text/template",
+  "std/text/unicode",
   "std/sort",
+  "std/random",
   "std/encoding/compress",
   "std/math",
+  "std/mem",
   "std/misc/uuid",
   "std/misc/log",
   "hew-cli",
-  "hew-serialize",
   "hew-lexer",
   "hew-lib",
   "hew-lsp",
   "hew-parser",
   "hew-runtime",
+  "hew-runtime-testkit",
   "hew-types",
   "hew-observe",
   "hew-wasm",
+  "hew-sandbox-wasm",
   "hew-analysis",
-  "hew-astgen",
   "hew-compile",
   "hew-hir",
   "hew-mir",
   "hew-codegen-rs",
-  "hew-wirecodec",
   "hew-capability-gen",
+  "hew-testutil",
+  "xtask",
 ]
 exclude = ["hew-parser/fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.5.0-pre"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Stephen Olesen <slepp@slepp.ca>"]

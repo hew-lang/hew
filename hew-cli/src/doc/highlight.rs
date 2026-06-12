@@ -37,6 +37,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         Token::Let
         | Token::Var
         | Token::Const
+        | Token::Mut
         | Token::Fn
         | Token::If
         | Token::Else
@@ -94,21 +95,28 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Cooperate
         | Token::Catch
         | Token::Defer
-        | Token::Pure
         | Token::As
         | Token::Machine
         | Token::State
         | Token::Event
         | Token::On
-        | Token::When => KW,
+        | Token::When
+        | Token::Entry
+        | Token::Exit
+        | Token::Emit
+        | Token::Record
+        | Token::Is => KW,
 
         // ── Constants (strategy values + booleans) ────────────────────
         Token::Permanent
         | Token::Transient
         | Token::Temporary
+        | Token::BrutalKill
         | Token::OneForOne
         | Token::OneForAll
         | Token::RestForOne
+        | Token::SimpleOneForOne
+        | Token::Pool
         | Token::True
         | Token::False => CONST,
 
@@ -134,7 +142,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::NotEqual
         | Token::FatArrow
         | Token::Arrow
-        | Token::LeftArrow
         | Token::LessEqual
         | Token::GreaterEqual
         | Token::AmpAmp
@@ -170,7 +177,10 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::LessLessEqual
         | Token::GreaterGreaterEqual
         | Token::At
-        | Token::Dot => OP,
+        | Token::Dot
+        | Token::AmpPlus
+        | Token::AmpMinus
+        | Token::AmpStar => OP,
 
         // ── Delimiters, punctuation, errors ──────────────────────────
         Token::LeftParen

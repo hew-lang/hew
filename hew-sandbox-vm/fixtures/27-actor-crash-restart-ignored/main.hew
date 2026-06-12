@@ -1,0 +1,19 @@
+actor Boom {
+  on explode() {
+    panic("boom")
+  }
+
+  on crash(error: String) -> String {
+    println("crash hook")
+    "restart"
+  }
+
+  on stop() {
+    println("stopped")
+  }
+}
+
+fn main() {
+  let boom = spawn Boom()
+  boom <- explode()
+}

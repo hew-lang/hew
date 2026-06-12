@@ -99,12 +99,21 @@ fn get_tls_last_error() -> String {
 }
 
 fn empty_hew_vec() -> HewVec {
+    // SAFETY: `layout`/`elem_layout` are null so neither inline storage is read;
+    // zeroed bytes are a valid (unused) initialiser for the storage fields.
+    let layout_storage = unsafe { core::mem::zeroed() };
+    // SAFETY: see above — `elem_layout` is null, so the storage is never read.
+    let elem_layout_storage = unsafe { core::mem::zeroed() };
     HewVec {
         data: std::ptr::null_mut(),
         len: 0,
         cap: 0,
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
+        layout: std::ptr::null(),
+        layout_storage,
+        elem_layout: std::ptr::null(),
+        elem_layout_storage,
     }
 }
 
@@ -114,12 +123,21 @@ fn build_hew_vec(bytes: &[u8]) -> Option<HewVec> {
     if ptr.is_null() {
         return None;
     }
+    // SAFETY: `layout`/`elem_layout` are null so neither inline storage is read;
+    // zeroed bytes are a valid (unused) initialiser for the storage fields.
+    let layout_storage = unsafe { core::mem::zeroed() };
+    // SAFETY: see above — `elem_layout` is null, so the storage is never read.
+    let elem_layout_storage = unsafe { core::mem::zeroed() };
     Some(HewVec {
         data: ptr,
         len,
         cap: len.max(1),
         elem_size: 1,
         elem_kind: hew_cabi::vec::ElemKind::Plain,
+        layout: std::ptr::null(),
+        layout_storage,
+        elem_layout: std::ptr::null(),
+        elem_layout_storage,
     })
 }
 
@@ -532,7 +550,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         // SAFETY: `ptr` was allocated with `libc::malloc` by `hew_tls_last_error`.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (frees hew_tls_last_error = str_to_malloc)
         message
     }
 
@@ -548,7 +566,7 @@ mod tests {
     fn free_vec(vec: &HewVec) {
         if !vec.data.is_null() {
             // SAFETY: test vectors are allocated with `libc::malloc` in `build_hew_vec`.
-            unsafe { libc::free(vec.data.cast::<c_void>()) };
+            unsafe { libc::free(vec.data.cast::<c_void>()) }; // CSTRING-FREE: libc-bytes (test build_hew_vec data = malloc_bytes)
         }
     }
 

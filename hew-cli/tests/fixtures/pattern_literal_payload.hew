@@ -1,0 +1,24 @@
+// Acceptance fixture: literal payload pattern matching.
+// Matches on a specific literal value in an enum constructor payload.
+// Oracle: "zero" when payload is 0, "nonzero" otherwise, "nothing" for None.
+enum MyOpt {
+    Some(i64);
+    None;
+}
+
+fn describe(v: MyOpt) -> string {
+    match v {
+        MyOpt::Some(0) => "zero",
+        MyOpt::Some(n) => "nonzero",
+        MyOpt::None => "nothing",
+    }
+}
+
+fn main() {
+    print(describe(MyOpt::Some(0)));
+    print("\n");
+    print(describe(MyOpt::Some(5)));
+    print("\n");
+    print(describe(MyOpt::None));
+    print("\n");
+}

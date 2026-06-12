@@ -6,11 +6,11 @@ use clap::Parser;
 use crate::args::{self, Cli, Command};
 
 pub(crate) trait CommandDispatcher {
-    fn build(&mut self, args: &args::BuildArgs);
-    fn compile_v05(&mut self, args: &args::CompileV05Args);
+    fn compile(&mut self, args: &args::CompileArgs);
     fn run(&mut self, args: &args::RunArgs);
     fn debug(&mut self, args: &args::DebugArgs);
     fn check(&mut self, args: &args::CheckArgs);
+    fn build(&mut self, args: &args::BuildArgs);
     fn doc(&mut self, args: &args::DocArgs);
     fn eval(&mut self, args: &args::EvalArgs);
     fn test(&mut self, args: &args::TestArgs);
@@ -23,66 +23,44 @@ pub(crate) trait CommandDispatcher {
     fn completions(&mut self, args: &args::CompletionsArgs);
     fn version(&mut self);
     fn help(&mut self);
+    fn observe(&mut self, args: &args::ObserveArgs);
+    fn lsp(&mut self, args: &args::LspArgs);
+    fn package(&mut self, args: &args::PackageArgs);
 }
 
 pub(crate) struct MainCommandDispatcher;
 
-/// Print the v0.5 cutover error and exit non-zero.
-///
-/// The C++ codegen path is unsafe to invoke on this branch: inkwell's
-/// presence in the binary link surface and the C++ codegen's `libMLIR`
-/// registration collide through `libLLVM` globals, corrupting LLVM
-/// `AnalysisManager` state and crashing the process. Until the C++ codegen
-/// subtree is removed, every subcommand that reaches the C++ codegen
-/// (`run`, `build`, `eval`, `test`, `debug`) short-circuits here instead
-/// of producing a malformed artefact or a SIGSEGV.
-fn exit_with_cutover_error(subcommand: &str) -> ! {
-    eprintln!(
-        "error: `hew {subcommand}` is temporarily unavailable during the v0.5 compiler cutover.\n\
-         \n\
-         The C++ codegen path is unsafe to invoke while inkwell is in the binary's link\n\
-         surface (libMLIR + libLLVM dual-load corrupts LLVM AnalysisManager state).\n\
-         The `run`, `build`, `eval`, `test`, and `debug` subcommands all reach that\n\
-         path and are short-circuited together until the C++ codegen subtree is\n\
-         removed.\n\
-         \n\
-         Use `hew compile-v05 <file>` for the integer-only spine subset on this branch,\n\
-         or wait for the cutover to complete on `main`."
-    );
-    std::process::exit(1);
-}
-
 impl CommandDispatcher for MainCommandDispatcher {
-    fn build(&mut self, _args: &args::BuildArgs) {
-        exit_with_cutover_error("build");
+    fn compile(&mut self, args: &args::CompileArgs) {
+        crate::cmd_compile(args);
     }
 
-    fn compile_v05(&mut self, args: &args::CompileV05Args) {
-        crate::cmd_compile_v05(args);
+    fn run(&mut self, args: &args::RunArgs) {
+        crate::cmd_run(args);
     }
 
-    fn run(&mut self, _args: &args::RunArgs) {
-        exit_with_cutover_error("run");
-    }
-
-    fn debug(&mut self, _args: &args::DebugArgs) {
-        exit_with_cutover_error("debug");
+    fn debug(&mut self, args: &args::DebugArgs) {
+        crate::cmd_debug(args);
     }
 
     fn check(&mut self, args: &args::CheckArgs) {
         crate::cmd_check(args);
     }
 
+    fn build(&mut self, args: &args::BuildArgs) {
+        crate::cmd_build(args);
+    }
+
     fn doc(&mut self, args: &args::DocArgs) {
         crate::doc::cmd_doc(args);
     }
 
-    fn eval(&mut self, _args: &args::EvalArgs) {
-        exit_with_cutover_error("eval");
+    fn eval(&mut self, args: &args::EvalArgs) {
+        crate::eval::cmd_eval(args);
     }
 
-    fn test(&mut self, _args: &args::TestArgs) {
-        exit_with_cutover_error("test");
+    fn test(&mut self, args: &args::TestArgs) {
+        crate::test_runner::cmd_test(args);
     }
 
     fn watch(&mut self, args: &args::WatchArgs) {
@@ -124,19 +102,31 @@ impl CommandDispatcher for MainCommandDispatcher {
         eprintln!();
         std::process::exit(1);
     }
+
+    fn observe(&mut self, args: &args::ObserveArgs) {
+        crate::cmd_observe(args);
+    }
+
+    fn lsp(&mut self, args: &args::LspArgs) {
+        crate::cmd_lsp(args);
+    }
+
+    fn package(&mut self, args: &args::PackageArgs) {
+        crate::cmd_package(args);
+    }
 }
 
 pub(crate) fn parse_cli_or_exit() -> Cli {
-    try_parse_cli_with_build_fallback(std::env::args_os()).unwrap_or_else(|error| error.exit())
+    try_parse_cli_with_compile_fallback(std::env::args_os()).unwrap_or_else(|error| error.exit())
 }
 
 pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl CommandDispatcher) {
     match command {
-        Some(Command::Build(args)) => dispatcher.build(args),
-        Some(Command::CompileV05(args)) => dispatcher.compile_v05(args),
+        Some(Command::Compile(args)) => dispatcher.compile(args),
         Some(Command::Run(args)) => dispatcher.run(args),
         Some(Command::Debug(args)) => dispatcher.debug(args),
         Some(Command::Check(args)) => dispatcher.check(args),
+        Some(Command::Build(args)) => dispatcher.build(args),
         Some(Command::Doc(args)) => dispatcher.doc(args),
         Some(Command::Eval(args)) => dispatcher.eval(args),
         Some(Command::Test(args)) => dispatcher.test(args),
@@ -148,25 +138,28 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Playground(args)) => dispatcher.playground(args),
         Some(Command::Completions(args)) => dispatcher.completions(args),
         Some(Command::Version) => dispatcher.version(),
+        Some(Command::Observe(args)) => dispatcher.observe(args),
+        Some(Command::Lsp(args)) => dispatcher.lsp(args),
+        Some(Command::Package(args)) => dispatcher.package(args),
         None => dispatcher.help(),
     }
 }
 
-fn try_parse_cli_with_build_fallback<I>(args: I) -> Result<Cli, clap::Error>
+fn try_parse_cli_with_compile_fallback<I>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = OsString>,
 {
     let raw_args: Vec<OsString> = args.into_iter().collect();
     match Cli::try_parse_from(raw_args.clone()) {
         Ok(cli) => Ok(cli),
-        Err(error) => match build_fallback_args(&raw_args) {
+        Err(error) => match compile_fallback_args(&raw_args) {
             Some(fallback_args) => Cli::try_parse_from(fallback_args),
             None => Err(error),
         },
     }
 }
 
-fn build_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
+fn compile_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
     let input = raw_args.get(1)?.to_str()?;
     if !looks_like_hew_source_path(input) {
         return None;
@@ -174,7 +167,7 @@ fn build_fallback_args(raw_args: &[OsString]) -> Option<Vec<OsString>> {
 
     let mut fallback_args = Vec::with_capacity(raw_args.len() + 1);
     fallback_args.push(raw_args[0].clone());
-    fallback_args.push(OsString::from("build"));
+    fallback_args.push(OsString::from("compile"));
     fallback_args.extend(raw_args[1..].iter().cloned());
     Some(fallback_args)
 }
@@ -190,48 +183,45 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    #[cfg(unix)]
-    use std::os::unix::ffi::OsStringExt;
-
     use crate::args::{
-        BuildArgs, CommonBuildArgs, CompileV05Args, CompletionsArgs, ShellChoice, WireCheckArgs,
-        WireCommand, WireSubcommand,
+        CompileArgs, CompletionsArgs, ShellChoice, WireCheckArgs, WireCommand, WireSubcommand,
     };
 
     use super::{
-        build_fallback_args, dispatch_command, try_parse_cli_with_build_fallback, CommandDispatcher,
+        compile_fallback_args, dispatch_command, try_parse_cli_with_compile_fallback,
+        CommandDispatcher,
     };
 
     #[test]
-    fn parse_cli_inserts_build_for_top_level_hew_file() {
-        let cli = try_parse_cli_with_build_fallback(
-            ["hew", "sample.hew", "-o", "sample"]
+    fn parse_cli_inserts_compile_for_top_level_hew_file() {
+        let cli = try_parse_cli_with_compile_fallback(
+            ["hew", "sample.hew", "--emit-dir", "out"]
                 .into_iter()
                 .map(OsString::from),
         )
-        .expect("fallback should parse as build");
+        .expect("fallback should parse as compile");
 
         match cli.command {
-            Some(crate::args::Command::Build(args)) => {
+            Some(crate::args::Command::Compile(args)) => {
                 assert_eq!(args.input, PathBuf::from("sample.hew"));
-                assert_eq!(args.output, Some(PathBuf::from("sample")));
+                assert_eq!(args.emit_dir, Some(PathBuf::from("out")));
             }
-            other => panic!("expected build command, got {other:?}"),
+            other => panic!("expected compile command, got {other:?}"),
         }
     }
 
     #[test]
     fn parse_cli_keeps_explicit_subcommand_intact() {
         let cli =
-            try_parse_cli_with_build_fallback(["hew", "version"].into_iter().map(OsString::from))
+            try_parse_cli_with_compile_fallback(["hew", "version"].into_iter().map(OsString::from))
                 .expect("explicit subcommand should parse");
 
         assert!(matches!(cli.command, Some(crate::args::Command::Version)));
     }
 
     #[test]
-    fn parse_cli_returns_original_error_when_no_build_fallback_applies() {
-        assert!(try_parse_cli_with_build_fallback(
+    fn parse_cli_returns_original_error_when_no_compile_fallback_applies() {
+        assert!(try_parse_cli_with_compile_fallback(
             ["hew", "missing-subcommand"]
                 .into_iter()
                 .map(OsString::from)
@@ -240,81 +230,61 @@ mod tests {
     }
 
     #[test]
-    fn build_fallback_args_only_rewrites_top_level_hew_paths() {
+    fn compile_fallback_args_only_rewrites_top_level_hew_paths() {
         assert_eq!(
-            build_fallback_args(&[
+            compile_fallback_args(&[
                 OsString::from("hew"),
                 OsString::from("sample.hew"),
-                OsString::from("--emit-mlir"),
+                OsString::from("--emit-dir"),
+                OsString::from("out"),
             ]),
             Some(vec![
                 OsString::from("hew"),
-                OsString::from("build"),
+                OsString::from("compile"),
                 OsString::from("sample.hew"),
-                OsString::from("--emit-mlir"),
+                OsString::from("--emit-dir"),
+                OsString::from("out"),
             ])
         );
         assert_eq!(
-            build_fallback_args(&[OsString::from("hew"), OsString::from("version")]),
+            compile_fallback_args(&[OsString::from("hew"), OsString::from("version")]),
             None
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn parse_cli_preserves_non_utf8_args_until_fallback_decision() {
-        let cli = try_parse_cli_with_build_fallback([
-            OsString::from("hew"),
-            OsString::from("build"),
-            OsString::from_vec(vec![0xFF]),
-        ])
-        .expect("clap should accept non-utf8 build paths");
-
-        match cli.command {
-            Some(crate::args::Command::Build(args)) => {
-                assert_eq!(args.input, PathBuf::from(OsString::from_vec(vec![0xFF])));
-            }
-            other => panic!("expected build command, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn dispatch_command_routes_build_to_dispatcher() {
-        let build = BuildArgs {
-            input: PathBuf::from("sample.hew"),
-            output: None,
-            debug: false,
-            link_libs: Vec::new(),
-            target: None,
-            emit_ast: false,
-            emit_json: false,
-            emit_msgpack: false,
-            emit_mlir: false,
-            emit_llvm: false,
-            emit_obj: false,
-            common: CommonBuildArgs::default(),
-        };
-        let command = crate::args::Command::Build(build);
-        let mut dispatcher = RecordingDispatcher::default();
-
-        dispatch_command(Some(&command), &mut dispatcher);
-
-        assert_eq!(dispatcher.calls, vec!["build:sample.hew"]);
-    }
-
-    #[test]
-    fn dispatch_command_routes_compile_v05_to_dispatcher() {
-        let command = crate::args::Command::CompileV05(CompileV05Args {
+    fn dispatch_command_routes_compile_to_dispatcher() {
+        let command = crate::args::Command::Compile(CompileArgs {
             input: PathBuf::from("sample.hew"),
             emit_dir: None,
             dump_mir: None,
-            no_wasm: false,
+            target: None,
+            format: crate::args::DiagnosticFormat::Text,
         });
         let mut dispatcher = RecordingDispatcher::default();
 
         dispatch_command(Some(&command), &mut dispatcher);
 
-        assert_eq!(dispatcher.calls, vec!["compile-v05:sample.hew"]);
+        assert_eq!(dispatcher.calls, vec!["compile:sample.hew"]);
+    }
+
+    #[test]
+    fn dispatch_command_routes_build_to_dispatcher() {
+        let command = crate::args::Command::Build(crate::args::BuildArgs {
+            input: PathBuf::from("sample.hew"),
+            output: None,
+            target: None,
+            emit_obj: false,
+            debug: false,
+            link_libs: Vec::new(),
+            common: crate::args::CommonBuildArgs::default(),
+            format: crate::args::DiagnosticFormat::Text,
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["build:sample.hew"]);
     }
 
     #[test]
@@ -352,19 +322,36 @@ mod tests {
         assert_eq!(dispatcher.calls, vec!["help"]);
     }
 
+    #[test]
+    fn dispatch_command_routes_observe_to_dispatcher() {
+        let command = crate::args::Command::Observe(crate::args::ObserveArgs {
+            args: vec!["--demo".to_string()],
+        });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["observe"]);
+    }
+
+    #[test]
+    fn dispatch_command_routes_lsp_to_dispatcher() {
+        let command = crate::args::Command::Lsp(crate::args::LspArgs { args: vec![] });
+        let mut dispatcher = RecordingDispatcher::default();
+
+        dispatch_command(Some(&command), &mut dispatcher);
+
+        assert_eq!(dispatcher.calls, vec!["lsp"]);
+    }
+
     #[derive(Default)]
     struct RecordingDispatcher {
         calls: Vec<String>,
     }
 
     impl CommandDispatcher for RecordingDispatcher {
-        fn build(&mut self, args: &BuildArgs) {
-            self.calls.push(format!("build:{}", args.input.display()));
-        }
-
-        fn compile_v05(&mut self, args: &CompileV05Args) {
-            self.calls
-                .push(format!("compile-v05:{}", args.input.display()));
+        fn compile(&mut self, args: &CompileArgs) {
+            self.calls.push(format!("compile:{}", args.input.display()));
         }
 
         fn run(&mut self, _args: &crate::args::RunArgs) {
@@ -377,6 +364,10 @@ mod tests {
 
         fn check(&mut self, _args: &crate::args::CheckArgs) {
             self.calls.push("check".to_string());
+        }
+
+        fn build(&mut self, args: &crate::args::BuildArgs) {
+            self.calls.push(format!("build:{}", args.input.display()));
         }
 
         fn doc(&mut self, _args: &crate::args::DocArgs) {
@@ -433,6 +424,18 @@ mod tests {
 
         fn help(&mut self) {
             self.calls.push("help".to_string());
+        }
+
+        fn observe(&mut self, _args: &crate::args::ObserveArgs) {
+            self.calls.push("observe".to_string());
+        }
+
+        fn lsp(&mut self, _args: &crate::args::LspArgs) {
+            self.calls.push("lsp".to_string());
+        }
+
+        fn package(&mut self, _args: &crate::args::PackageArgs) {
+            self.calls.push("package".to_string());
         }
     }
 }

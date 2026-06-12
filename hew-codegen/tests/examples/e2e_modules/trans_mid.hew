@@ -1,3 +1,0 @@
-import "trans_base.hew";
-
-pub fn mid_fn() -> int { base_fn() + 1 }

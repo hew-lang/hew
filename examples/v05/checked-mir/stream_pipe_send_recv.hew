@@ -1,0 +1,35 @@
+// MIR-corpus fixture: typed byte stream pipe — awaited send/recv + close.
+//
+// Pins the suspending sink write (lowered as a Suspend carrier; the
+// `hew_sink_write_bytes` symbol materialises at codegen), the
+// layout-witness stream recv, and the sink/stream close releases
+// (`hew_sink_close` / `hew_stream_close`).
+import std::stream;
+
+actor Echo {
+    let n: i64;
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.bytes_pipe(4);
+        for i in 0 .. n {
+            await sink.send(f"x{i}".to_bytes());
+        }
+        sink.close();
+        var done = false;
+        while !done {
+            let item = await input.recv();
+            match item {
+                Some(b) => println(b.to_string()),
+                None => {
+                    done = true;
+                },
+            }
+        }
+        input.close();
+    }
+}
+
+fn main() {
+    let e = spawn Echo(n: 2);
+    e.run(0);
+    sleep_ms(200);
+}

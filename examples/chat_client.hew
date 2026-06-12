@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
+//! Description: Chat Client example.
+
 import std::net;
 
 import std::io;
@@ -5,7 +8,7 @@ import std::io;
 import std::os;
 
 extern "C" {
-    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_bytes_to_string(data: bytes) -> string;
 }
 
 actor ServerReader {
@@ -29,8 +32,8 @@ actor ServerReader {
 }
 
 fn main() {
-    var port: String = "9000";
-    var name: String = "guest";
+    var port: string = "9000";
+    var name: string = "guest";
     let argc = os.args_count();
     if argc > 1 {
         port = os.args(1);
@@ -39,8 +42,8 @@ fn main() {
         name = os.args(2);
     }
     let addr = f"127.0.0.1:{port}";
-    let connect_timeout_sec: i32 = 5;
-    let connect_timeout_usec: i32 = 0;
+    let connect_timeout_sec: i64 = 5;
+    let connect_timeout_usec: i64 = 0;
     let conn = net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec);
     match conn.set_read_timeout(-1) {
         Ok(_) => {},

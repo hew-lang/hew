@@ -26,10 +26,31 @@ LANE_REASON=""
 CHANGED_FILES=()
 COMMANDS=()
 PROFILE_JSON_PATH=""
+LIST_CI_REQUIRED=0
+
+# ── CI-required command patterns (single source of truth) ─────────────────────
+# These are the command substrings that the fallback lane MUST include so that
+# a local `make ci-preflight` predicts the merge-queue outcome.  The
+# check-preflight-ci-parity.sh script reads these via --ci-required rather than
+# maintaining its own independent list.  Update here when the CI workflows or
+# the fallback lane change.
+#
+# Each entry is a tab-separated pair: LABEL<TAB>PATTERN
+# PATTERN is a substring matched against the dispatcher's fallback-lane output.
+CI_REQUIRED_CHECKS=(
+    "Rust fmt check (ci.yml: cargo fmt --all -- --check)	make ci-preflight-smoke"
+    "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make ci-preflight-smoke"
+    "verify-ffi (ci.yml: make verify-ffi)	make lint"
+    "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
+    "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
+    "playground-check (release-gate.yml: make playground-check)	make playground-check"
+    "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
+    "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
+)
 
 usage() {
     cat <<'EOF'
-Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--] [path...]
+Usage: scripts/ci-preflight-dispatcher.sh [--dry-run] [--fail-fast] [--base <ref>] [--profile-json <path>] [--ci-required] [--] [path...]
 
 Dispatch a conservative local CI preflight based on changed files.
 
@@ -40,6 +61,8 @@ Dispatch a conservative local CI preflight based on changed files.
 - If the first-slice routing is unclear, the script runs the broader local check profile.
 - --profile-json <path> Write per-command timing as a JSON array to <path> (one object per
                         command, with "cmd", "elapsed_s", "status" fields).
+- --ci-required         Print the CI-required check patterns (LABEL<TAB>PATTERN) and exit 0.
+                        Used by check-preflight-ci-parity.sh to avoid a second source of truth.
 EOF
 }
 
@@ -128,6 +151,15 @@ is_types_path() {
     return 1
 }
 
+is_compiler_pipeline_path() {
+    case "$1" in
+        hew-hir/*|hew-mir/*|hew-codegen-rs/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 is_cli_path() {
     case "$1" in
         # Direct CLI crates.
@@ -135,11 +167,20 @@ is_cli_path() {
             return 0
             ;;
         # CLI pipeline support crates: compile pipeline, C ABI helpers,
-        # wire/codec, AST serialization, code generators.  Changes here
-        # are covered by cargo nextest run -p hew-cli -p adze-cli because
-        # hew-cli links the full pipeline including hew-runtime (which
-        # links hew-cabi) and hew-compile.
-        hew-compile/*|hew-cabi/*|hew-serialize/*|hew-wirecodec/*|hew-astgen/*|hew-capability-gen/*)
+        # and code generators.  Changes here are covered by
+        # cargo nextest run -p hew-cli -p adze-cli because hew-cli links
+        # the full pipeline including hew-runtime (which links hew-cabi)
+        # and hew-compile.
+        hew-compile/*|hew-cabi/*|hew-capability-gen/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_observe_path() {
+    case "$1" in
+        hew-observe/Cargo.toml|hew-observe/src/*)
             return 0
             ;;
     esac
@@ -149,6 +190,24 @@ is_cli_path() {
 is_runtime_path() {
     case "$1" in
         hew-runtime/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_runtime_testkit_path() {
+    case "$1" in
+        hew-runtime-testkit/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_hew_lib_path() {
+    case "$1" in
+        hew-lib/*)
             return 0
             ;;
     esac
@@ -182,18 +241,51 @@ is_lsp_path() {
     return 1
 }
 
-is_codegen_path() {
+is_wasm_path() {
     case "$1" in
-        hew-codegen/*)
+        hew-wasm/*)
             return 0
             ;;
     esac
     return 1
 }
 
-is_wasm_path() {
+is_sandbox_fixture_path() {
     case "$1" in
-        hew-wasm/*)
+        hew-sandbox-vm/fixtures/*|hew-sandbox-vm/test/build-fixtures.test.mjs|xtask/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_sandbox_parity_path() {
+    case "$1" in
+        hew-sandbox-wasm/tests/parity.rs|hew-sandbox-wasm/Cargo.toml|\
+        hew-sandbox-vm/src/interpreter/parity-runner.ts|hew-sandbox-vm/package.json|\
+        examples/playground/basics/hello_world.hew|examples/playground/basics/fibonacci.hew|\
+        examples/playground/concurrency/counter_actor.hew|examples/playground/concurrency/actor_pipeline.hew|\
+        examples/playground/concurrency/supervisor.hew|examples/playground/machines/traffic_light.hew)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_vertical_slice_path() {
+    # tests/pkg-import is the cross-module package-import sibling of the
+    # vertical-slice oracle: same end-to-end compiler ladder, same lane.
+    case "$1" in
+        tests/vertical-slice/*|tests/pkg-import/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_hew_tests_path() {
+    case "$1" in
+        tests/hew/*)
             return 0
             ;;
     esac
@@ -206,37 +298,6 @@ is_scripts_config_path() {
             return 0
             ;;
     esac
-    return 1
-}
-
-path_changes_ctest_plumbing() {
-    local path="$1"
-    local diff_text=""
-    local file_content=""
-
-    if [[ -n "$BASE_REF" ]]; then
-        diff_text+=$(git diff --no-ext-diff --unified=0 "$BASE_REF...HEAD" -- "$path" || true)
-        diff_text+=$'\n'
-    fi
-
-    diff_text+=$(git diff --no-ext-diff --cached --unified=0 -- "$path" || true)
-    diff_text+=$'\n'
-    diff_text+=$(git diff --no-ext-diff --unified=0 -- "$path" || true)
-
-    if git ls-files --others --exclude-standard -- "$path" | grep -Fxq "$path" && [[ -f "$path" ]]; then
-        while IFS= read -r line; do
-            file_content+="+${line}"$'\n'
-        done <"$path"
-        diff_text+=$'\n'
-        diff_text+="$file_content"
-    fi
-
-    if printf '%s\n' "$diff_text" | grep -Eq \
-        '^[+-](test-codegen|test-wasm|test-cpp):|^[+-][[:space:]]*ctest([[:space:]]|$)|^[+-][[:space:]]*cd[[:space:]]+hew-codegen/build([[:space:]]|$)|^[+-].*CTEST_[A-Z_]+|^[+-][[:space:]]*\$\(MAKE\)[[:space:]]+(test-codegen|test-wasm|test-cpp)([[:space:]]|$)|^[+-][[:space:]]*run:[[:space:]].*(ctest([[:space:]]|$)|make[[:space:]]+test-codegen([[:space:]]|$)|make[[:space:]]+test-wasm([[:space:]]|$)|make[[:space:]]+test-cpp([[:space:]]|$))'
-    then
-        return 0
-    fi
-
     return 1
 }
 
@@ -266,6 +327,10 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 0
             ;;
+        --ci-required)
+            LIST_CI_REQUIRED=1
+            shift
+            ;;
         --)
             shift
             EXPLICIT_PATHS=1
@@ -285,13 +350,35 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if (( LIST_CI_REQUIRED == 1 )); then
+    for entry in "${CI_REQUIRED_CHECKS[@]}"; do
+        printf '%s\n' "$entry"
+    done
+    exit 0
+fi
+
 if [[ -n "$BASE_REF" ]] && ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     die "unknown base ref: $BASE_REF"
 fi
 
+ci_preflight_base_unresolved=0
+
 if (( EXPLICIT_PATHS == 0 )); then
     if [[ -z "$BASE_REF" ]]; then
-        if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        if [[ -n "${CI_PREFLIGHT_BASE:-}" ]]; then
+            if git rev-parse --verify "$CI_PREFLIGHT_BASE" >/dev/null 2>&1; then
+                BASE_REF="$CI_PREFLIGHT_BASE"
+            else
+                ci_preflight_base_unresolved=1
+                echo "warning: CI_PREFLIGHT_BASE=$CI_PREFLIGHT_BASE did not resolve; falling back" >&2
+            fi
+        fi
+    fi
+
+    if [[ -z "$BASE_REF" ]]; then
+        if (( ci_preflight_base_unresolved == 0 )) && [[ -z "${CI:-}" && -z "${GITHUB_ACTIONS:-}" ]] && git rev-parse --verify v05-integration >/dev/null 2>&1; then
+            BASE_REF="v05-integration"
+        elif git rev-parse --verify origin/main >/dev/null 2>&1; then
             BASE_REF="origin/main"
         elif git rev-parse --verify main >/dev/null 2>&1; then
             BASE_REF="main"
@@ -317,14 +404,19 @@ has_grammar=0
 has_parser=0
 has_types=0
 has_cli=0
+has_compiler_pipeline=0
 has_runtime_net=0
+has_observe=0
+has_runtime_testkit=0
+has_vertical_slice=0
+has_hew_tests=0
 has_scripts_config=0
-has_codegen=0
 has_wasm=0
-needs_scripts_config_codegen=0
-needs_codegen_lint=0
 needs_codegen_release_smoke=0
 needs_stdlib_lint=0
+needs_hew_suite=0
+needs_sandbox_fixture_check=0
+needs_sandbox_parity=0
 
 for path in "${CHANGED_FILES[@]}"; do
     case "$path" in
@@ -334,6 +426,10 @@ for path in "${CHANGED_FILES[@]}"; do
             case "$path" in
                 *.hew)
                     needs_stdlib_lint=1
+                    # Any .hew stdlib change can affect test-hew or test-stdlib
+                    # outcomes; run both suites via the ratchet so regressions
+                    # surface before push.
+                    needs_hew_suite=1
                     ;;
                 *)
                     if ! is_stdlib_net_path "$path"; then
@@ -344,35 +440,67 @@ for path in "${CHANGED_FILES[@]}"; do
             ;;
     esac
 
-    if is_grammar_path "$path"; then
+    if is_sandbox_parity_path "$path"; then
+        has_scripts_config=1
+        needs_sandbox_parity=1
+    elif is_sandbox_fixture_path "$path"; then
+        has_scripts_config=1
+        needs_sandbox_fixture_check=1
+    elif is_grammar_path "$path"; then
         has_grammar=1
     elif is_docs_path "$path"; then
         continue
     elif is_scripts_config_path "$path"; then
         has_scripts_config=1
-        if path_changes_ctest_plumbing "$path"; then
-            needs_scripts_config_codegen=1
-        fi
     elif is_parser_path "$path"; then
         has_parser=1
     elif is_types_path "$path"; then
         has_types=1
+    elif is_compiler_pipeline_path "$path"; then
+        has_compiler_pipeline=1
     elif is_cli_path "$path"; then
         has_cli=1
-    elif is_runtime_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
+    elif is_observe_path "$path"; then
+        has_observe=1
+    elif is_runtime_path "$path" || is_hew_lib_path "$path" || is_stdlib_net_path "$path" || is_analysis_path "$path" || is_lsp_path "$path"; then
         has_runtime_net=1
-    elif is_codegen_path "$path"; then
-        has_codegen=1
-        needs_codegen_lint=1
-        needs_codegen_release_smoke=1
+    elif is_runtime_testkit_path "$path"; then
+        has_runtime_testkit=1
+    elif is_vertical_slice_path "$path"; then
+        has_vertical_slice=1
+    elif is_hew_tests_path "$path"; then
+        has_hew_tests=1
     elif is_wasm_path "$path"; then
         has_wasm=1
+        needs_sandbox_fixture_check=1
     else
+        # Fail closed for repo areas without a proven narrow target, such as
+        # tests/corpus, tools, installers, editors, and hew-observe/test-harness.
         fallback_lane=1
     fi
 done
 
-bucket_count=$((has_grammar + has_parser + has_types + has_cli + has_runtime_net + has_scripts_config + has_codegen + has_wasm))
+compiler_related=0
+if (( has_compiler_pipeline == 1 || has_vertical_slice == 1 )); then
+    compiler_related=1
+fi
+
+if (( compiler_related == 1 )); then
+    # HIR/MIR/codegen and vertical-slice fixture changes are part of the same
+    # end-to-end compiler ladder.  Keep mixed parser/types/CLI edits narrow by
+    # running the compiler-pipeline lane instead of falling back solely because
+    # adjacent compiler stages changed together.
+    has_parser=0
+    has_types=0
+    has_cli=0
+fi
+
+runtime_related=0
+if (( has_runtime_net == 1 || has_observe == 1 || has_runtime_testkit == 1 )); then
+    runtime_related=1
+fi
+
+bucket_count=$((has_grammar + has_parser + has_types + has_cli + compiler_related + runtime_related + has_hew_tests + has_scripts_config + has_wasm))
 
 if (( fallback_lane == 1 )); then
     LANE="fallback"
@@ -381,8 +509,24 @@ elif (( bucket_count == 0 )); then
     LANE="docs"
     LANE_REASON="docs-only change"
 elif (( bucket_count > 1 )); then
-    LANE="fallback"
-    LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
+    # Before falling back unconditionally, check for narrow multi-bucket
+    # combinations where the union of narrow targets provably covers all
+    # changed crates' reverse-dep closure.  Only promote when every bucket
+    # in the set is covered by a known-complete narrow target.
+    #
+    # Conservative invariant: any unrecognised combination falls back.
+    # Every promoted combination must have a dispatcher test case.
+    #
+    #   parser + types:  test-types runs hew-types + hew-parser + hew-lexer,
+    #     covering both buckets.  Dependency closure: types ← parser ← lexer
+    #     (no runtime/codegen downstream in this narrow set).
+    if (( has_parser == 1 && has_types == 1 && bucket_count == 2 )); then
+        LANE="types"
+        LANE_REASON="parser + type-checker changed; test-types covers both (parser + types dep closure)"
+    else
+        LANE="fallback"
+        LANE_REASON="multiple targeted buckets changed; keeping the first slice conservative"
+    fi
 elif (( has_scripts_config == 1 )); then
     LANE="scripts-config"
     LANE_REASON="build / scripts / workflow configuration changed"
@@ -395,12 +539,28 @@ elif (( has_parser == 1 )); then
 elif (( has_types == 1 )); then
     LANE="types"
     LANE_REASON="type-checker surface changed"
-elif (( has_runtime_net == 1 )); then
-    LANE="runtime-net"
-    LANE_REASON="runtime / std/net / analysis / lsp surface changed"
-elif (( has_codegen == 1 )); then
-    LANE="codegen"
-    LANE_REASON="hew-codegen C++ / MLIR surface changed"
+elif (( compiler_related == 1 )); then
+    if (( has_compiler_pipeline == 1 )); then
+        LANE="compiler-pipeline"
+        LANE_REASON="HIR / MIR / codegen compiler pipeline changed"
+    else
+        LANE="vertical-slice"
+        LANE_REASON="vertical-slice fixtures changed"
+    fi
+elif (( runtime_related == 1 )); then
+    if (( has_observe == 1 && has_runtime_net == 0 && has_runtime_testkit == 0 )); then
+        LANE="observe"
+        LANE_REASON="hew-observe runtime observability surface changed"
+    elif (( has_runtime_testkit == 1 && has_runtime_net == 0 && has_observe == 0 )); then
+        LANE="runtime-testkit"
+        LANE_REASON="runtime testkit surface changed"
+    else
+        LANE="runtime-net"
+        LANE_REASON="runtime / std/net / analysis / lsp / observability surface changed"
+    fi
+elif (( has_hew_tests == 1 )); then
+    LANE="hew-tests"
+    LANE_REASON="Hew test files changed"
 elif (( has_wasm == 1 )); then
     LANE="wasm"
     LANE_REASON="hew-wasm browser WASM surface changed"
@@ -415,9 +575,6 @@ case "$LANE" in
     scripts-config)
         add_command "cargo fmt --all -- --check"
         add_command "make test-rust"
-        if (( needs_scripts_config_codegen == 1 )); then
-            add_command "make test-codegen"
-        fi
         ;;
     grammar)
         add_command "cargo fmt --all -- --check"
@@ -439,18 +596,47 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-cli"
         ;;
+    compiler-pipeline)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "make test-compiler-pipeline"
+        add_command "make test-vertical-slice"
+        add_command "make test-pkg-import"
+        ;;
+    vertical-slice)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "make test-vertical-slice"
+        add_command "make test-pkg-import"
+        ;;
+    observe)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci -p hew-observe"
+        ;;
+    runtime-testkit)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "cargo nextest run --profile ci -p hew-runtime-testkit -p hew-runtime"
+        ;;
+    hew-tests)
+        add_command "cargo fmt --all -- --check"
+        add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "make test-hew-ratchet"
+        add_command "make test-stdlib-ratchet"
+        ;;
     runtime-net)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
+        add_command "make stdlib"
+        add_command "scripts/check-libhew-fresh.sh"
         add_command "make test-runtime-net"
-        ;;
-    codegen)
-        # hew-codegen/* changes: run test-codegen (ctest).
-        # codegen-lint and test-release-binary are appended below as add-ons
-        # (needs_codegen_lint and needs_codegen_release_smoke are already set).
-        add_command "cargo fmt --all -- --check"
-        add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-codegen"
+        if (( has_observe == 1 )); then
+            add_command "cargo nextest run --profile ci -p hew-observe"
+        fi
+        if (( has_runtime_testkit == 1 )); then
+            add_command "cargo nextest run --profile ci -p hew-runtime-testkit"
+        fi
         ;;
     wasm)
         # hew-wasm/* changes: run the WASM lib tests and the playground build
@@ -461,19 +647,30 @@ case "$LANE" in
         add_command "make playground-check"
         ;;
     fallback)
-        # make lint already runs cargo clippy --workspace --tests; no pre-clippy needed.
+        # Smoke tier first: fast fail-early on format, clippy, and deterministic
+        # in-process oracles (including fmt_roundtrip_corpus) before committing
+        # to the heavy build + E2E suite.  The smoke tier completes in <5 min and
+        # catches the most common regression classes (bad formatting, clippy
+        # violations, formatter-AST bugs) without building and running test-codegen.
+        #
+        # On smoke pass, the heavy tier runs in full — no coverage is dropped.
+        # make lint follows smoke because it adds hew-fmt-check (Hew file
+        # formatting), runtime-poison-safe-lint, lint-wasm-todo, and verify-ffi
+        # which the smoke tier does not include.
+        #
+        # Hew-language suites run after the Rust workspace to keep the ratchet
+        # verdict separate from the Rust test verdict.
+        add_command "make ci-preflight-smoke"
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"
+        add_command "make test-hew-ratchet"
+        add_command "make test-stdlib-ratchet"
         ;;
     *)
         die "unhandled lane: $LANE"
         ;;
 esac
-
-if (( needs_codegen_lint == 1 )); then
-    add_command "make codegen-lint"
-fi
 
 if (( needs_codegen_release_smoke == 1 )); then
     # Build the release binary and run a hew run smoke test.  This specifically
@@ -485,6 +682,23 @@ fi
 
 if (( needs_stdlib_lint == 1 )); then
     add_command "make stdlib-lint"
+fi
+
+if (( needs_hew_suite == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "hew-tests" ]]; then
+    # A .hew file under std/ changed: run both suites through their ratchets.
+    # This catches breakage in test-hew (which imports stdlib) and in test-stdlib
+    # (type-check of the modified file itself) before the diff reaches CI.
+    # Skip when LANE is fallback or hew-tests: both already include the ratchets.
+    add_command "make test-hew-ratchet"
+    add_command "make test-stdlib-ratchet"
+fi
+
+if (( needs_sandbox_fixture_check == 1 )); then
+    add_command "make sandbox-fixtures-check"
+fi
+
+if (( needs_sandbox_parity == 1 )); then
+    add_command "make sandbox-parity"
 fi
 
 # Test-only override for dispatcher command execution. This keeps failure-policy
@@ -531,6 +745,21 @@ case "$LANE" in
     cli)
         PROFILE_LABEL="cli"
         ;;
+    compiler-pipeline)
+        PROFILE_LABEL="compiler-pipeline"
+        ;;
+    vertical-slice)
+        PROFILE_LABEL="vertical-slice"
+        ;;
+    observe)
+        PROFILE_LABEL="observe"
+        ;;
+    runtime-testkit)
+        PROFILE_LABEL="runtime-testkit"
+        ;;
+    hew-tests)
+        PROFILE_LABEL="hew-tests"
+        ;;
     runtime-net)
         PROFILE_LABEL="runtime-net"
         ;;
@@ -548,6 +777,9 @@ case "$LANE" in
         CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_DOCS"
         ;;
     fallback)
+        CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
+        ;;
+    compiler-pipeline|vertical-slice|hew-tests|scripts-config)
         CMD_TIMEOUT="$PREFLIGHT_TIMEOUT_FALLBACK"
         ;;
     *)

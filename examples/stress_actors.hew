@@ -1,11 +1,14 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: stress_actors.hew - Complex actor system with supervisor tree
+
 // stress_actors.hew - Complex actor system with supervisor tree
 // This program tests the compiler's ability to handle multiple actor types,
 // complex supervision hierarchies, and message passing patterns.
 
 // Main coordinator actor that manages the entire system
 actor SystemCoordinator {
-    let active_workers: i32;
-    let total_tasks: i32;
+    var active_workers: i32;
+    var total_tasks: i32;
     receive fn start_system(num_workers: i32) -> i32 {
         active_workers = num_workers;
         total_tasks = 0;
@@ -31,7 +34,7 @@ actor SystemCoordinator {
 // Worker actor that processes individual tasks
 actor WorkerActor {
     let worker_id: i32;
-    let tasks_processed: i32;
+    var tasks_processed: i32;
     receive fn process_task(task_data: i32) -> i32 {
 
         // Simulate work by doing some computation
@@ -46,8 +49,8 @@ actor WorkerActor {
 
 // Database actor that manages persistent state
 actor DatabaseActor {
-    let connection_count: i32;
-    let query_count: i32;
+    var connection_count: i32;
+    var query_count: i32;
     receive fn execute_query(query: i32) -> i32 {
         query_count = query_count + 1;
         // Simulate database operation
@@ -67,8 +70,8 @@ actor DatabaseActor {
 
 // Cache actor for fast data access
 actor CacheActor {
-    let cache_hits: i32;
-    let cache_misses: i32;
+    var cache_hits: i32;
+    var cache_misses: i32;
     receive fn get_cached_value(key: i32) -> i32 {
 
         // Simulate cache lookup
@@ -93,8 +96,8 @@ actor CacheActor {
 
 // Logger actor for system-wide logging
 actor LoggerActor {
-    let log_count: i32;
-    let error_count: i32;
+    var log_count: i32;
+    var error_count: i32;
     receive fn log_message(level: i32, message: i32) -> i32 {
         log_count = log_count + 1;
         if level > 3 { // Error level
@@ -109,8 +112,8 @@ actor LoggerActor {
 
 // Monitor actor that watches other actors
 actor MonitorActor {
-    let monitored_actors: i32;
-    let restart_count: i32;
+    var monitored_actors: i32;
+    var restart_count: i32;
     receive fn monitor_actor(actor_id: i32) -> i32 {
         monitored_actors = monitored_actors + 1;
         0
@@ -134,8 +137,7 @@ actor MonitorActor {
 // Main supervisor that orchestrates the entire system
 supervisor MainSupervisor {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 10;
+    intensity: 5 within 10s;
 }
 
 // Helper function used by WorkerActor

@@ -1,0 +1,29 @@
+// Exercises a single match expression dispatching over a mixed-shape enum
+// with unit, tuple-payload, and struct-payload variants in a single
+// declaration.
+//
+// This fixture verifies:
+//   1. All three variant shapes coexist in one enum: tag-width and payload
+//      sizing accommodate the widest variant.
+//   2. A single `match` arm-chain dispatches correctly to each shape,
+//      destructures payload as needed, and yields distinct values.
+enum Shape {
+    Point;
+    Line(i64);
+    Box { w: i64, h: i64 };
+}
+
+fn measure(s: Shape) -> i64 {
+    match s {
+        Shape::Point => 0,
+        Shape::Line(x) => x,
+        Shape::Box { w, h } => w * h,
+    }
+}
+
+fn main() {
+    println(measure(Shape::Point));
+    println(measure(Shape::Line(7)));
+    println(measure(Shape::Box { w: 2, h: 5 }));
+    println("done");
+}

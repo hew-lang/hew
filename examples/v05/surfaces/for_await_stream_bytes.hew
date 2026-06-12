@@ -1,0 +1,27 @@
+//! Status: runnable (v0.5 for-await over Stream<bytes>)
+//! Description: Drains a byte stream with `for await`.
+
+import std::stream;
+
+actor DrainBytes {
+    let frames: i64;
+
+    receive fn run(unused: i64) {
+        let (sink, input) = stream.bytes_pipe(8);
+        for i in 0 .. frames {
+            let frame = f"frame-{i}".to_bytes();
+            await sink.send(frame);
+        }
+        sink.close();
+        for await frame in input {
+            println(f"recv {frame.to_string()}");
+        }
+        println("done");
+    }
+}
+
+fn main() {
+    let worker = spawn DrainBytes(frames: 3);
+    worker.run(0);
+    sleep_ms(500);
+}

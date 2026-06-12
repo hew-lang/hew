@@ -1,0 +1,22 @@
+// Regression: mixed-width range bounds (i32..i64) must produce a loop
+// variable typed at the wider bound (i64), not the narrower start bound.
+//
+// Before the fix, HIR derived the loop-variable element type from
+// `start_hir.ty` (i32), while the checker resolved `Range<i64>`.  LLVM
+// then rejected `call i64 @id_i64(i32 %arg)`.  The element type is now
+// read from the checker-recorded `Range<T>` at the iterable span.
+//
+// `for i in a..b` with a:i32=2, b:i64=6 sums {2,3,4,5} = 14.
+// main() returns 14 as the exit code.
+
+fn id_i64(x: i64) -> i64 { x }
+
+fn main() -> i64 {
+    let a: i32 = 2;
+    let b: i64 = 6;
+    var sum: i64 = 0;
+    for i in a..b {
+        sum = sum + id_i64(i);
+    }
+    sum
+}

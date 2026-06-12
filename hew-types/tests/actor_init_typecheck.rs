@@ -95,7 +95,7 @@ fn test_actor_no_init_still_works() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            var count: i32;
             receive fn inc() {
                 count = count + 1;
             }

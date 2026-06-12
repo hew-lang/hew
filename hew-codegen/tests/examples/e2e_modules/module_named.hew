@@ -1,6 +1,0 @@
-import mylib::{greet};
-
-fn main() {
-    let msg = greet("named");
-    println(msg);
-}

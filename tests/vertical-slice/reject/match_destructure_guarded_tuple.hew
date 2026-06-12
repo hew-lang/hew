@@ -1,0 +1,33 @@
+//! Reject: a guard on a tuple match-destructure arm.
+//!
+//! A tuple project pattern (`(a, b)`) is irrefutable, so
+//! `lower_match_project` lowers exactly the first arm's body with no
+//! ordered fallthrough chain. An arm guard (`Pattern if <cond>`) has no
+//! fallthrough target: a `false` guard cannot retry a later arm, so the
+//! guarded arm would run regardless and consume the scrutinee out from
+//! under the intended arm. The binding below would take `a` from the
+//! `if false` arm, yielding `a-payload` instead of the `b-payload` the
+//! second arm specifies.
+//!
+//! The fix rejects any guarded record/tuple destructure fail-closed with
+//! `E_NOT_YET_IMPLEMENTED: guarded record/tuple match destructure`, and a
+//! note steering the user to move the condition into the arm body
+//! (`=> if <cond> { … } else { … }`) or match on an enum, whose guarded
+//! arms lower as an ordered fallthrough chain.
+//!
+//! Observable contract: `hew check` fails non-zero with the
+//! NotYetImplemented diagnostic. A regression that admits guarded project
+//! arms would let this file `check` green and run the wrong arm.
+
+fn make_pair() -> (string, string) {
+    (string_concat("a-", "payload"), string_concat("b-", "payload"))
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let _v = match p {
+        (a, _) if false => a,
+        (_, b) => b,
+    };
+    0
+}

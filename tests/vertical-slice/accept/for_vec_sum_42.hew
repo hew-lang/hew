@@ -1,0 +1,12 @@
+fn main() -> i64 {
+    let values: Vec<i64> = Vec::new();
+    values.push(10);
+    values.push(20);
+    values.push(12);
+
+    var sum: i64 = 0;
+    for x in values {
+        sum = sum + x;
+    }
+    return sum;
+}

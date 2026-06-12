@@ -1,12 +1,15 @@
+//! Status: runnable
+//! Description: File reader with actor message passing - Hew language example
+
 // File reader with actor message passing - Hew language example  
 // Demonstrates reading a file and printing via actor message passing
 actor Printer {
-    receive fn print_message(msg: int) {
+    receive fn print_message(msg: i64) {
         println(f"Received value: {msg}");
     }
 }
 
-fn fibonacci(n: int) -> int {
+fn fibonacci(n: i64) -> i64 {
     if n <= 1 {
         n
     } else {
@@ -14,11 +17,13 @@ fn fibonacci(n: int) -> int {
     }
 }
 
+import std::fs;
+
 fn main() {
     println("=== File Reader + Actor Pipeline ===");
 
-    // Read file contents directly 
-    let contents = read_file("examples/test_input.txt");
+    // Read file contents directly
+    let contents = fs.read("examples/test_input.txt");
     print(contents);
     println("---");
 
@@ -28,6 +33,6 @@ fn main() {
     let fib10 = fibonacci(10);
     printer.print_message(fib5);
     printer.print_message(fib10);
-    await close(printer);
+    sleep_ms(50);
     println("=== Done ===");
 }

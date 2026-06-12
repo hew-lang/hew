@@ -1,0 +1,17 @@
+// Reject fixture (NEW-6a): `await conn.read_string() | after d` in a
+// default-call-convention function has no parkable continuation for the timer
+// to resume. The compiler fails closed at MIR lowering time — the same guard
+// as for `await conn.read() | after d` (NEW-6c).
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-suspendable context"
+import std::net;
+
+fn helper(conn: Connection) {
+    let _ = await conn.read_string() | after 50ms;
+}
+
+fn main() {
+    let conn = net.connect("127.0.0.1:9");
+    helper(conn);
+}

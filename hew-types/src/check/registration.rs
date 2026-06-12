@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 /// Embedded source for `std/io/closable.hew`.
 ///
@@ -12,6 +13,13 @@ use super::*;
 /// inline programs in tests).
 const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 
+/// Embedded source for `std/concurrency/lambda_actor.hew`.
+///
+/// Like `std::io::closable`, this is a pure-Hew stdlib surface whose
+/// methods must be visible to inline typechecker tests even when the
+/// module graph did not pre-populate `resolved_items`.
+const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_actor.hew");
+
 /// Embedded source for the built-in actor monitor handle wrapper.
 ///
 /// This copy intentionally omits the `import std::io::closable;` line used by
@@ -19,7 +27,17 @@ const CLOSABLE_HEW: &str = include_str!("../../../std/io/closable.hew");
 /// `Closable` / `CloseError` surface directly before parsing this snippet.
 const MONITOR_REF_HEW: &str = r#"
 pub type MonitorRef {
-    ref_id: int;
+    ref_id: i64;
+}
+
+/// Error returned by `link(handle)`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
+/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
+/// has already exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
 }
 
 impl Closable for MonitorRef {
@@ -40,9 +58,142 @@ impl Drop for MonitorRef {
 }
 
 extern "C" {
-    fn hew_actor_demonitor(ref_id: int);
+    fn hew_actor_demonitor(ref_id: i64);
 }
 "#;
+
+/// Embedded source for `std/failure.hew`.
+///
+/// Parsed at import-registration time for `std::failure` so the
+/// `CrashInfo` struct and `CrashAction` enum used in `#[on(crash)]` hook
+/// signatures are visible in the checker even in programs that were not
+/// loaded through the module-graph path (e.g. inline programs in tests).
+///
+/// Mirrors the on-disk `std/failure.hew` byte-for-byte modulo the same
+/// `import` line elision applied to `MONITOR_REF_HEW`: inline tests do
+/// not flow through the import resolver, so the embedded snippet omits
+/// any top-of-file imports the file itself does not need (none today).
+const FAILURE_HEW: &str = r"
+pub type CrashInfo {
+    code: i64;
+}
+
+pub enum CrashAction {
+    Restart;
+    Escalate;
+    Kill;
+}
+";
+
+/// Embedded source for the built-in `LookupError` enum used as the `Err`
+/// variant of `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
+///
+/// Inline tests do not flow through the import resolver, so this stdlib
+/// surface is registered directly into the checker via
+/// `register_stdlib_hew_items` the same way `LinkError` / `CrashAction`
+/// are bootstrapped from `MONITOR_REF_HEW` / `FAILURE_HEW`.
+const LOOKUP_ERROR_HEW: &str = r"
+pub enum LookupError {
+    NotFound;
+}
+";
+
+/// Stdlib-floor modules permitted to DECLARE `#[intrinsic("…")]` functions.
+///
+/// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only — no
+/// user-reachable module may declare an intrinsic. Each entry is a `.`-joined
+/// module path matched against the checker's `current_module`
+/// (e.g. `ModuleId { path: ["std", "math"] }` → `"std.math"`).
+///
+/// The list is an explicit, enumerated allowlist (not a prefix match): a module
+/// is a floor module only if its full dotted path is present here. This is the
+/// security boundary's authority — keep it as small as the floor requires.
+///
+/// Current members:
+/// - `std.math` — the math intrinsics (`exp`/`log`/`sqrt`/…) are declared as
+///   typed `#[intrinsic("math.*")]` stubs in `std/math/math.hew`; the catalog
+///   supplies the lowering. NOTE (W5.005): the `math.*` rows use
+///   `CompilerIntrinsic` linkage and route through builtin method-rewrites —
+///   they are NOT emitted as callable floor functions and a direct
+///   `Terminator::Call` to one is fail-closed at MIR (`NotYetImplemented`).
+///   Migrating math onto the same callable-floor mechanism as `mem.*`
+///   (synthesized bodies via `intrinsic_id`) is tracked follow-up work, not
+///   part of F1b.
+/// - `std.mem` — the memory-intrinsic floor (`mem.alloc`/`mem.realloc`/
+///   `mem.dealloc` + byte-level `mem.ptr_offset`/`mem.ptr_copy`) declared as
+///   typed `#[intrinsic("mem.*")]` stubs in `std/mem/mem.hew` (W5.005 / F1b).
+///   The pointer ops are byte-level monomorphic (A612) — no `<T>`. These are
+///   unsafe heap primitives; A605 keeps them compiler-internal-only — no user
+///   surface may reach them. Codegen synthesizes their trampoline bodies from
+///   the catalog id threaded on `RawMirFunction::intrinsic_id` (Decision 4
+///   Option A); an unrecognised id is fail-closed (D343), never a silent
+///   empty-body no-op.
+const INTRINSIC_FLOOR_MODULES: &[&str] = &["std.math", "std.mem"];
+
+#[must_use]
+pub fn intrinsic_floor_modules() -> &'static [&'static str] {
+    INTRINSIC_FLOOR_MODULES
+}
+
+/// Returns `true` iff `module` is a stdlib-floor module permitted to declare
+/// `#[intrinsic]` functions (see [`INTRINSIC_FLOOR_MODULES`]).
+///
+/// Fail-closed: the root/user module (`None`) is never a floor module, and any
+/// module path not in the explicit allowlist is rejected.
+fn is_intrinsic_floor_module(module: Option<&str>) -> bool {
+    module.is_some_and(|m| INTRINSIC_FLOOR_MODULES.contains(&m))
+}
+
+/// Raw TOML text of `scripts/jit-symbol-classification.toml`, embedded at
+/// compile time so `extern "rt"` validation does not require a runtime file
+/// read and works in test environments without a workspace checkout.
+const JIT_CLASSIFICATION_TOML: &str =
+    include_str!("../../../scripts/jit-symbol-classification.toml");
+
+/// Parse the `stable = [ ... ]` and `stable-stdlib = [ ... ]` blocks from
+/// `JIT_CLASSIFICATION_TOML` and return their union.
+///
+/// Returns a `HashSet<&'static str>` so membership checks are O(1).
+/// The parsing is line-based (no full TOML dep): each quoted string inside
+/// either block is extracted. The `codegen-stable` and `internal` blocks
+/// are excluded — those tiers are not user-callable via `extern "rt"`.
+///
+/// `stable` covers runtime exports; `stable-stdlib` covers sibling stdlib
+/// crate exports (e.g. `hew_datetime_*`) that user code is permitted to
+/// name from an `extern "rt"` block and that the native linker pulls in.
+///
+/// WHY no dep: the block format is simple and has been stable since the file
+/// was introduced; adding a toml dep to hew-types for a single string-list
+/// parse is unjustified overhead.
+fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
+    static SET: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        let mut set = std::collections::HashSet::new();
+        for header in ["stable = [", "stable-stdlib = ["] {
+            let mut inside = false;
+            for line in JIT_CLASSIFICATION_TOML.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with(header) {
+                    inside = true;
+                    continue;
+                }
+                if inside && trimmed == "]" {
+                    break;
+                }
+                if inside {
+                    if let Some(rest) = trimmed.strip_prefix('"') {
+                        if let Some(sym) = rest.split('"').next() {
+                            if !sym.is_empty() {
+                                set.insert(sym);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        set
+    })
+}
 
 impl Checker {
     fn refresh_handle_bearing_structs(&mut self) {
@@ -104,7 +255,7 @@ impl Checker {
             Ty::Array(element_ty, _) | Ty::Slice(element_ty) => {
                 self.ty_contains_owned_handle(element_ty, visiting)
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 self.canonical_owned_handle_type_name(name).is_some()
                     || args
                         .iter()
@@ -119,6 +270,8 @@ impl Checker {
             | Ty::U16
             | Ty::U32
             | Ty::U64
+            | Ty::Isize
+            | Ty::Usize
             | Ty::F32
             | Ty::F64
             | Ty::IntLiteral
@@ -127,6 +280,7 @@ impl Checker {
             | Ty::Char
             | Ty::String
             | Ty::Bytes
+            | Ty::CancellationToken
             | Ty::Duration
             | Ty::Unit
             | Ty::Never
@@ -134,13 +288,23 @@ impl Checker {
             | Ty::Function { .. }
             | Ty::Closure { .. }
             | Ty::Pointer { .. }
+            // `&T` borrow is non-owning: a borrow never holds an owned handle
+            // (the owner is borrowed from, elsewhere). Mirrors the Pointer arm.
+            | Ty::Borrow { .. }
             | Ty::TraitObject { .. }
             | Ty::Error
             // Task<T> is compiler-internal; it does not appear in user-declared
             // struct field types (there is no surface annotation for Task<T>),
             // so this arm is structurally unreachable today. Explicit rather
             // than wildcard so the sweep stays honest.
-            | Ty::Task(_) => false,
+            | Ty::Task(_)
+            // Ty::AssocType is a projection carrier present only in generic
+            // signatures during checking; field-type validation walks
+            // user-declared struct/record/enum fields, which cannot themselves
+            // be associated-type projections (no `field: T::Item` surface).
+            // If a future surface admits projections in field types, this arm
+            // must descend into `base`.
+            | Ty::AssocType { .. } => false,
         }
     }
 
@@ -168,7 +332,7 @@ impl Checker {
             .map(str::to_string)
     }
 
-    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+    fn structural_member_types_for_type(type_def: &TypeDef) -> Vec<Ty> {
         let mut member_types: Vec<Ty> = type_def.fields.values().cloned().collect();
         for variant in type_def.variants.values() {
             match variant {
@@ -179,8 +343,19 @@ impl Checker {
                 }
             }
         }
+        member_types
+    }
+
+    fn register_rcfree_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+        let member_types = Self::structural_member_types_for_type(type_def);
         self.registry
             .register_rcfree_members(type_name.to_string(), member_types);
+    }
+
+    fn register_serializable_members_for_type(&mut self, type_name: &str, type_def: &TypeDef) {
+        let member_types = Self::structural_member_types_for_type(type_def);
+        self.registry
+            .register_serializable_type(type_name.to_string(), member_types);
     }
 
     #[expect(
@@ -203,6 +378,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -213,6 +389,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -224,6 +401,10 @@ impl Checker {
         self.register_builtin_fn("sqrt", vec![Ty::F64], Ty::F64);
         self.register_builtin_fn("min", vec![Ty::I64, Ty::I64], Ty::I64);
         self.register_builtin_fn("max", vec![Ty::I64, Ty::I64], Ty::I64);
+        self.register_builtin_fn("pow", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("floor", vec![Ty::F64], Ty::F64);
+        self.register_builtin_fn("ceil", vec![Ty::F64], Ty::F64);
+        self.register_builtin_fn("round", vec![Ty::F64], Ty::F64);
         self.register_builtin_fn("to_float", vec![Ty::I64], Ty::F64);
 
         // String operations
@@ -234,6 +415,7 @@ impl Checker {
             vec!["T".to_string()],
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             }],
@@ -250,25 +432,29 @@ impl Checker {
         let close_t = TypeVar::fresh();
         self.register_builtin_fn(
             "close",
-            vec![Ty::actor_ref(Ty::Var(close_t))],
-            Ty::actor_ref(Ty::Var(close_t)),
+            vec![Ty::local_pid(Ty::Var(close_t))],
+            Ty::local_pid(Ty::Var(close_t)),
         );
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
         // Actor link/monitor (Erlang-style fault propagation)
+        // `link` is idempotent on already-linked actors; `AlreadyLinked` and
+        // `TargetDead` are the error discriminants (declared in std/link_monitor.hew,
+        // B3 slice). `monitor` returns the handle the caller uses to stop watching.
         let link_t = TypeVar::fresh();
-        self.register_builtin_fn("link", vec![Ty::actor_ref(Ty::Var(link_t))], Ty::Unit);
+        self.register_builtin_fn(
+            "link",
+            vec![Ty::local_pid(Ty::Var(link_t))],
+            Ty::result(Ty::Unit, Ty::link_error()),
+        );
         let unlink_t = TypeVar::fresh();
-        self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
+        self.register_builtin_fn("unlink", vec![Ty::local_pid(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
-            vec![Ty::actor_ref(Ty::Var(monitor_t))],
-            Ty::Named {
-                name: "MonitorRef".to_string(),
-                args: vec![],
-            },
+            vec![Ty::local_pid(Ty::Var(monitor_t))],
+            Ty::monitor_ref(),
         );
 
         // Supervisor child access
@@ -276,13 +462,13 @@ impl Checker {
         let sup_child_ret = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_child",
-            vec![Ty::actor_ref(Ty::Var(sup_child_t)), Ty::I64],
-            Ty::actor_ref(Ty::Var(sup_child_ret)),
+            vec![Ty::local_pid(Ty::Var(sup_child_t)), Ty::I64],
+            Ty::local_pid(Ty::Var(sup_child_ret)),
         );
         let sup_stop_t = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_stop",
-            vec![Ty::actor_ref(Ty::Var(sup_stop_t))],
+            vec![Ty::local_pid(Ty::Var(sup_stop_t))],
             Ty::Unit,
         );
 
@@ -294,10 +480,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -310,10 +498,12 @@ impl Checker {
             HashMap::from([("T".to_string(), vec!["Display".to_string()])]),
             vec![
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
                 Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -331,6 +521,7 @@ impl Checker {
             "Vec::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -339,6 +530,7 @@ impl Checker {
             "Vec::with_capacity",
             vec![Ty::I64],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -347,6 +539,7 @@ impl Checker {
             "HashMap::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh()), Ty::Var(TypeVar::fresh())],
             },
@@ -355,6 +548,7 @@ impl Checker {
             "HashSet::new",
             vec![],
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
@@ -385,6 +579,7 @@ impl Checker {
             "string_split",
             vec![Ty::String, Ty::String],
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::String],
             },
@@ -417,27 +612,55 @@ impl Checker {
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
-        self.register_builtin_fn(
-            "Node::register",
-            vec![Ty::String, Ty::Var(TypeVar::fresh())],
-            Ty::Unit,
+        // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+        // The second argument is tightened to `LocalPid<T>` so that passing a
+        // `RemotePid<T>` or bare `u64` is caught at the checker rather than
+        // failing with a cryptic codegen error. Codegen already assumes a
+        // `LocalPid<T>` alloca (it calls `hew_actor_pid` to extract the u64
+        // before forwarding to `hew_node_api_register_by_pid`).
+        {
+            let t = TypeVar::fresh();
+            self.register_builtin_fn(
+                "Node::register",
+                vec![Ty::String, Ty::local_pid(Ty::Var(t))],
+                Ty::I32,
+            );
+        }
+        // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
+        // The runtime extern returns a packed `u64` pid (0 == not found); the
+        // codegen branch lowers this into a `Result` construction inline.
+        self.register_builtin_fn_with_bounds(
+            "Node::lookup",
+            vec!["T".to_string()],
+            HashMap::new(),
+            vec![Ty::String],
+            Ty::result(
+                Ty::remote_pid(Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+                Ty::Named {
+                    builtin: None,
+                    name: "LookupError".to_string(),
+                    args: vec![],
+                },
+            ),
         );
-        self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
 
         // std::math module — always available, no import needed
         self.modules.insert("math".to_string());
         // Single-argument math functions: f64 → f64
         for name in &[
-            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "abs_f", "tanh", "log2",
-            "log10", "exp2",
+            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "tanh", "log2", "log10", "exp2",
         ] {
             self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
         }
+        self.register_builtin_num_math_fn("math.abs", 1);
         // Two-argument math functions: (f64, f64) → f64
-        for name in &["pow", "max", "min", "max_f", "min_f"] {
-            self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64, Ty::F64], Ty::F64);
-        }
-        self.register_builtin_fn("math.clamp_f", vec![Ty::F64, Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("math.pow", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_num_math_fn("math.max", 2);
+        self.register_builtin_num_math_fn("math.min", 2);
         // Constants (zero-argument): () → f64
         for name in &["pi", "e"] {
             self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);
@@ -456,28 +679,121 @@ impl Checker {
             Ty::I64,
         );
 
-        // Register the eleven `impl Display for <primitive>` blanket impls
-        // declared in `std/builtins.hew`.  Without this, method-form
-        // primitive Display dispatch (`x.fmt()` for `x: i64` etc.) cannot
-        // find an entry in `primitive_trait_impls` because the file is not
-        // routed through any `import` that would invoke
-        // `register_stdlib_hew_items` for the root module.  The Display
-        // *marker* (`MarkerTrait::Display`) already satisfies `T: Display`
-        // bounds for `print` / `println`, but receiver-keyed method dispatch
-        // (Stage A2 / A3) reads the impl table directly.  See #1669.
+        // Duplex / channel constructors — compiler builtins.
+        //
+        // WHY: slice 5 codegen and the HIR-level accept fixtures below need these
+        //   names resolvable without importing a stdlib module.
+        // WHEN-OBSOLETE: once `std::channel` (stdlib slice 6) ships, the stdlib
+        //   module replaces these registrations and these calls are removed.
+        // WHAT-REAL-SOLUTION: `std/channel.hew` module with proper source definitions.
+        //
+        // `duplex_pair<S: Send, R: Send>(capacity: int) -> (Duplex<S, R>, Duplex<R, S>)`
+        // Returns a cross-wired pair of Duplex handles backed by a shared buffer.
+        // All construction goes through this; there is no per-direction constructor
+        // (`hew_duplex_new` was removed in the M2 runtime refactor).
+        self.register_builtin_fn_with_bounds(
+            "duplex_pair",
+            vec!["S".to_string(), "R".to_string()],
+            HashMap::from([
+                ("S".to_string(), vec!["Send".to_string()]),
+                ("R".to_string(), vec!["Send".to_string()]),
+            ]),
+            vec![Ty::I64],
+            Ty::Tuple(vec![
+                Ty::duplex(
+                    Ty::Named {
+                        builtin: None,
+                        name: "S".to_string(),
+                        args: vec![],
+                    },
+                    Ty::Named {
+                        builtin: None,
+                        name: "R".to_string(),
+                        args: vec![],
+                    },
+                ),
+                Ty::duplex(
+                    Ty::Named {
+                        builtin: None,
+                        name: "R".to_string(),
+                        args: vec![],
+                    },
+                    Ty::Named {
+                        builtin: None,
+                        name: "S".to_string(),
+                        args: vec![],
+                    },
+                ),
+            ]),
+        );
+
+        // `duplex<S: Send, R: Send>(capacity: int) -> Duplex<S, R>`
+        // Constructs a detached Duplex handle with no peer. A transport must be
+        // attached via `.attach(transport)` before send/recv will succeed (the
+        // go-nil / detached pattern per §5.16.7 + Q16).
+        self.register_builtin_fn_with_bounds(
+            "duplex",
+            vec!["S".to_string(), "R".to_string()],
+            HashMap::from([
+                ("S".to_string(), vec!["Send".to_string()]),
+                ("R".to_string(), vec!["Send".to_string()]),
+            ]),
+            vec![Ty::I64],
+            Ty::duplex(
+                Ty::Named {
+                    builtin: None,
+                    name: "S".to_string(),
+                    args: vec![],
+                },
+                Ty::Named {
+                    builtin: None,
+                    name: "R".to_string(),
+                    args: vec![],
+                },
+            ),
+        );
+
+        // `channel<T: Send>(capacity: int) -> (Sink<T>, Stream<T>)`
+        // Constructs a unidirectional channel pair: the Sink writes, the Stream reads.
+        self.register_builtin_fn_with_bounds(
+            "channel",
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Send".to_string()])]),
+            vec![Ty::I64],
+            Ty::Tuple(vec![
+                Ty::sink(Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+                Ty::stream(Ty::Named {
+                    builtin: None,
+                    name: "T".to_string(),
+                    args: vec![],
+                }),
+            ]),
+        );
+
+        // Register the compiled-in primitive/builtin receiver impls that must
+        // be visible without an explicit stdlib import: Display blanket impls
+        // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
+        // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
             self.register_builtin_monitor_ref_surface();
+            self.register_builtin_failure_surface();
+            self.register_builtin_lookup_error_surface();
         }
     }
 
-    /// Parse the compiled-in `std/builtins.hew` source and feed only its
-    /// `Item::Impl` blocks through the existing stdlib registration path.
+    /// Parse compiled-in stdlib receiver impl sources and feed only the
+    /// selected `Item::Impl` blocks through the existing stdlib registration
+    /// path.
     ///
     /// `register_stdlib_hew_items` runs Pass 1 (types/traits/functions) and
-    /// Pass 2 (impl methods) on its input.  We deliberately filter to just
-    /// the impl items so:
+    /// Pass 2 (impl methods) on its input.  For `std/builtins.hew` we
+    /// deliberately filter to just the impl items so:
     ///
     /// - The `pub trait Display { fn fmt(...) }` declaration is not
     ///   inserted into `trait_defs`, leaving the existing user-redeclare
@@ -512,8 +828,9 @@ impl Checker {
         if !parsed.errors.is_empty() {
             return;
         }
-        // Pre-register the trait definitions from builtins.hew into
-        // `trait_defs` WITHOUT claiming `type_def_spans` for them.  The
+        // Pre-register the public trait/type definitions from builtins.hew
+        // into `trait_defs` / `type_defs` WITHOUT claiming `type_def_spans`
+        // for them.  The
         // checker output-boundary validator (admissibility.rs:491-505)
         // retains `MethodCallReceiverKind::PrimitiveTraitImpl` entries only
         // when their `trait_name` is present in `trait_defs`; without this
@@ -528,16 +845,31 @@ impl Checker {
         // `x.fmt()` dispatch continues to find the builtins-registered
         // impl regardless of which `trait_defs[Display]` shape is current.
         for (item, _) in &parsed.program.items {
-            if let Item::Trait(tr) = item {
-                if !tr.visibility.is_pub() {
-                    continue;
+            match item {
+                Item::Trait(tr) if tr.visibility.is_pub() => {
+                    let info = Self::trait_info_from_decl(tr);
+                    self.trait_defs
+                        .entry(tr.name.clone())
+                        .or_insert_with(|| info.clone());
+                    let qualified = format!("builtins.{}", tr.name);
+                    self.trait_defs.entry(qualified).or_insert(info);
+                    // Harvest #[lang_item("...")] from the stdlib-shipped trait
+                    // declaration so HIR f-string lowering can discover the
+                    // canonical Display::fmt name through `LangItemRegistry`
+                    // even when the user's program never declares the trait
+                    // itself. Without this, every `f"…"` lowering in user code
+                    // would fail-closed with "no lang-item registered for key
+                    // `display_fmt`". Seed WITHOUT claiming `lang_item_spans`
+                    // (mirrors the trait_defs pre-registration above): when the
+                    // file under check IS builtins.hew, the normal source pass
+                    // re-registers the same `Display` trait and must not trip a
+                    // duplicate-definition error against this seed.
+                    self.seed_trait_lang_items(tr);
                 }
-                let info = Self::trait_info_from_decl(tr);
-                self.trait_defs
-                    .entry(tr.name.clone())
-                    .or_insert_with(|| info.clone());
-                let qualified = format!("builtins.{}", tr.name);
-                self.trait_defs.entry(qualified).or_insert(info);
+                Item::TypeDecl(td) if td.visibility.is_pub() => {
+                    self.pre_register_type_decl(td);
+                }
+                _ => {}
             }
         }
         // Now feed only the `Item::Impl` blocks through the existing
@@ -565,6 +897,60 @@ impl Checker {
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
         self.register_stdlib_hew_items("builtins", &impl_items);
+        self.register_compiled_stdlib_receiver_impls(
+            "string",
+            include_str!("../../../std/string.hew"),
+            &["string"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "io",
+            include_str!("../../../std/io.hew"),
+            &["bytes"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "option",
+            include_str!("../../../std/option.hew"),
+            &["Option"],
+        );
+        self.register_compiled_stdlib_receiver_impls(
+            "result",
+            include_str!("../../../std/result.hew"),
+            &["Result"],
+        );
+    }
+
+    fn register_compiled_stdlib_receiver_impls(
+        &mut self,
+        module_short: &str,
+        source: &str,
+        receiver_names: &[&str],
+    ) {
+        let parsed = hew_parser::parse(source);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/{module_short}.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if !parsed.errors.is_empty() {
+            return;
+        }
+        let impl_items: Vec<Spanned<Item>> = parsed
+            .program
+            .items
+            .into_iter()
+            .filter(|(item, _)| {
+                let Item::Impl(id) = item else {
+                    return false;
+                };
+                let TypeExpr::Named { name, .. } = &id.target_type.0 else {
+                    return false;
+                };
+                receiver_names.iter().any(|receiver| name == receiver)
+            })
+            .collect();
+        if !impl_items.is_empty() {
+            self.register_stdlib_hew_items(module_short, &impl_items);
+        }
     }
 
     fn register_builtin_closable_surface(&mut self) {
@@ -611,6 +997,52 @@ impl Checker {
         }
     }
 
+    /// Register the built-in `CrashInfo` / `CrashAction` surface so
+    /// `#[on(crash)]` lifecycle hooks can name them in their signatures
+    /// without `import std::failure;`.  Inline tests (no stdlib search
+    /// path) rely on this; on-disk programs reach the same types via
+    /// the module graph.
+    fn register_builtin_failure_surface(&mut self) {
+        let identity = "module:std::failure";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(FAILURE_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/failure.hew failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("failure", &items);
+        }
+    }
+
+    /// Register the built-in `LookupError` enum so `Node::lookup<T>` callers
+    /// can pattern-match `Err(LookupError::NotFound)` without an explicit
+    /// import (inline-test parity with `LinkError` / `CrashAction`).
+    fn register_builtin_lookup_error_surface(&mut self) {
+        let identity = "module:std::lookup_error";
+        if self.registered_stdlib_hew_sources.contains(identity) {
+            return;
+        }
+        self.registered_stdlib_hew_sources
+            .insert(identity.to_string());
+        let parsed = hew_parser::parse(LOOKUP_ERROR_HEW);
+        debug_assert!(
+            parsed.errors.is_empty(),
+            "std/builtins.hew::LookupError failed to parse: {:?}",
+            parsed.errors
+        );
+        if parsed.errors.is_empty() {
+            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            self.register_stdlib_hew_items("lookup_error", &items);
+        }
+    }
+
     pub(super) fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {
         self.register_builtin_sig(
             name,
@@ -639,6 +1071,21 @@ impl Checker {
                 return_type,
                 ..FnSig::default()
             },
+        );
+    }
+
+    fn register_builtin_num_math_fn(&mut self, name: &str, arity: usize) {
+        let t = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        self.register_builtin_fn_with_bounds(
+            name,
+            vec!["T".to_string()],
+            HashMap::from([("T".to_string(), vec!["Num".to_string()])]),
+            vec![t.clone(); arity],
+            t,
         );
     }
 
@@ -697,16 +1144,49 @@ impl Checker {
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                // Pre-seed the machine name so that resolve_type_expr
+                                // inside state/event field resolution sees the machine
+                                // as locally-non-generic instead of injecting a fresh var.
+                                // Also seed the synthesised `<Name>Event` companion so
+                                // imported machines surface their event union as a
+                                // locally-defined type for the non-root module body.
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
+                            }
+                            _ => {}
                         }
                     }
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
-                    for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.pre_register_type_decl(td);
+                    for (item, item_span) in &module.items {
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.pre_register_type_decl(td);
+                            }
+                            // Register machine state/event binding tables for the
+                            // non-root module path, mirroring the root-loop arm at
+                            // line ~1029. Deliberately skips
+                            // `register_machine_type_namespace_names` (which claims
+                            // `type_def_spans`) because the import-surface path
+                            // handles namespace dedup for exported names; claiming
+                            // spans here would cause false duplicate-definition
+                            // errors when the import path later registers the same
+                            // machine. Idempotency guard matches `pre_register_type_decl`.
+                            Item::Machine(md) if !self.type_defs.contains_key(&md.name) => {
+                                self.register_machine_decl(md, item_span);
+                            }
+                            _ => {}
                         }
                     }
                     for e in &mut self.errors[err_before..] {
@@ -720,6 +1200,7 @@ impl Checker {
                         }
                     }
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -729,38 +1210,44 @@ impl Checker {
         for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(None, &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
                     self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    if !self.register_type_namespace_name(None, &ad.name, span) {
                         continue;
                     }
                     self.register_actor_decl(ad);
+                    self.source_type_defs.insert(ad.name.clone());
                 }
                 Item::Wire(wd) => {
-                    if !self.register_type_namespace_name(&wd.name, span) {
+                    if !self.register_type_namespace_name(None, &wd.name, span) {
                         continue;
                     }
                     self.register_wire_decl(wd);
+                    self.source_type_defs.insert(wd.name.clone());
                 }
                 Item::TypeAlias(ta) => {
-                    if !self.register_type_namespace_name(&ta.name, span) {
+                    if !self.register_type_namespace_name(None, &ta.name, span) {
                         continue;
                     }
                     let mut hole_vars = Vec::new();
                     let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
                     self.type_aliases.insert(ta.name.clone(), resolved);
                     self.record_type_def_inference_holes(&ta.name, hole_vars);
+                    self.source_type_defs.insert(ta.name.clone());
                 }
                 Item::Trait(td) => {
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(None, &td.name, span) {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(td);
+                    let mut trait_errors = Vec::new();
+                    let info = Self::trait_info_from_decl_with_diagnostics(td, &mut trait_errors);
+                    self.errors.extend(trait_errors);
                     self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
                     // Record super-trait relationships
@@ -769,22 +1256,50 @@ impl Checker {
                             supers.iter().map(|s| s.name.clone()).collect();
                         self.trait_super.insert(td.name.clone(), super_names);
                     }
+                    // Harvest `#[lang_item("…")]` attributes into the
+                    // lang-item registry so downstream passes (HIR f-string
+                    // lowering) can discover the trait/method names by role
+                    // rather than by hard-coded surface symbols. Trait-level
+                    // tags register with `method_name: None`; method-level
+                    // tags carry the enclosing trait's name so HIR can build
+                    // the `<SelfType>::<method>` impl symbol.
+                    self.register_trait_lang_items(td, span.clone());
                 }
                 Item::Supervisor(sd) => {
                     self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-                    let children: Vec<(String, String)> = sd
-                        .children
-                        .iter()
-                        .map(|c| (c.name.clone(), c.actor_type.clone()))
-                        .collect();
-                    self.supervisor_children.insert(sd.name.clone(), children);
+                    // Partition children by kind in source order. Slot index for each
+                    // child is its 0-based position within its own partition, matching
+                    // the runtime layout (children[] for static, pool_slots[] for pool).
+                    let mut statics = Vec::new();
+                    let mut pools = Vec::new();
+                    for c in &sd.children {
+                        let entry = (c.name.clone(), c.actor_type.clone());
+                        if c.is_pool {
+                            pools.push(entry);
+                        } else {
+                            statics.push(entry);
+                        }
+                    }
+                    self.supervisor_children.insert(
+                        sd.name.clone(),
+                        crate::check::types::SupervisorChildren { statics, pools },
+                    );
                 }
                 Item::Machine(md) => {
-                    if !self.register_machine_type_namespace_names(&md.name, span) {
+                    if !self.register_machine_type_namespace_names(None, &md.name, span) {
                         continue;
                     }
-                    self.register_machine_decl(md);
+                    self.register_machine_decl(md, span);
                     self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                }
+                Item::Record(rd) => {
+                    if !self.register_type_namespace_name(None, &rd.name, span) {
+                        continue;
+                    }
+                    self.register_record_decl(rd);
+                    self.local_type_defs.insert(rd.name.clone());
+                    self.source_type_defs.insert(rd.name.clone());
                 }
                 Item::Import(_)
                 | Item::Const(_)
@@ -808,6 +1323,7 @@ impl Checker {
     /// checking can construct local values. The import path's later
     /// `register_type_decl` call overwrites those signatures for `pub` types
     /// with the fully side-effected version.
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
         if self.type_defs.contains_key(&td.name) {
             return;
@@ -820,12 +1336,31 @@ impl Checker {
             params.iter().map(|p| p.name.clone()).collect()
         });
 
+        // Reject duplicate type parameter names — same check as `register_type_decl`.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
+
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut variants = HashMap::new();
         let mut hole_vars = Vec::new();
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -835,10 +1370,12 @@ impl Checker {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
+                    field_order.push(name.clone());
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -903,6 +1440,7 @@ impl Checker {
             name: td.name.clone(),
             type_params: type_param_names,
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
@@ -914,13 +1452,33 @@ impl Checker {
         self.handle_bearing_dirty = true;
     }
 
-    pub(super) fn register_type_namespace_name(&mut self, name: &str, span: &Span) -> bool {
-        if let Some(prev_span) = self.type_def_spans.get(name).cloned() {
+    /// Reserve a type-name in the given module's namespace and reject a second
+    /// declaration of the same name *within the same module*.
+    ///
+    /// `module_short` is the defining module (the last import-path segment for
+    /// stdlib / user modules; `None` for the root program and flat file imports,
+    /// which share one namespace). Two distinct modules may each declare a type
+    /// of the same bare name — the durable cross-module identity is the qualified
+    /// `{module}.{name}` key inserted by `register_qualified_type_alias`. The bare
+    /// `type_def_spans` entry is still populated for the span-lookup consumers
+    /// (cycle / actor-ref diagnostics); it is last-write-wins across modules and
+    /// is no longer the uniqueness authority.
+    pub(super) fn register_type_namespace_name(
+        &mut self,
+        module_short: Option<&str>,
+        name: &str,
+        span: &Span,
+    ) -> bool {
+        let owner_key = (module_short.map(str::to_string), name.to_string());
+        if let Some(prev_span) = self.type_namespace_owners.get(&owner_key).cloned() {
             self.report_duplicate_type_namespace_name(name, span, prev_span);
             return false;
         }
 
-        self.type_def_spans.insert(name.to_string(), span.clone());
+        self.type_namespace_owners.insert(owner_key, span.clone());
+        self.type_def_spans
+            .entry(name.to_string())
+            .or_insert_with(|| span.clone());
         true
     }
 
@@ -939,23 +1497,31 @@ impl Checker {
 
     pub(super) fn register_machine_type_namespace_names(
         &mut self,
+        module_short: Option<&str>,
         machine_name: &str,
         span: &Span,
     ) -> bool {
-        if let Some(prev_span) = self.type_def_spans.get(machine_name).cloned() {
+        let machine_key = (module_short.map(str::to_string), machine_name.to_string());
+        if let Some(prev_span) = self.type_namespace_owners.get(&machine_key).cloned() {
             self.report_duplicate_type_namespace_name(machine_name, span, prev_span);
             return false;
         }
 
         let event_type_name = format!("{machine_name}Event");
-        if let Some(prev_span) = self.type_def_spans.get(&event_type_name).cloned() {
+        let event_key = (module_short.map(str::to_string), event_type_name.clone());
+        if let Some(prev_span) = self.type_namespace_owners.get(&event_key).cloned() {
             self.report_duplicate_type_namespace_name(&event_type_name, span, prev_span);
             return false;
         }
 
+        self.type_namespace_owners.insert(machine_key, span.clone());
+        self.type_namespace_owners.insert(event_key, span.clone());
         self.type_def_spans
-            .insert(machine_name.to_string(), span.clone());
-        self.type_def_spans.insert(event_type_name, span.clone());
+            .entry(machine_name.to_string())
+            .or_insert_with(|| span.clone());
+        self.type_def_spans
+            .entry(event_type_name)
+            .or_insert_with(|| span.clone());
         true
     }
 
@@ -967,16 +1533,38 @@ impl Checker {
         };
 
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut variants = HashMap::new();
         let mut hole_vars = Vec::new();
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+
+        // Reject duplicate type parameter names within the same declaration.
+        // The parser cannot catch this because `parse_type_params` has no
+        // seen-name accumulator; the checker is the authoritative gatekeeper.
+        {
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for name in &type_param_names {
+                if !seen.insert(name.as_str()) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::DuplicateDefinition,
+                        0..0,
+                        format!(
+                            "type parameter `{name}` is defined more than once in `{}`",
+                            td.name
+                        ),
+                    ));
+                }
+            }
+        }
+
         let type_param_bounds =
             self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
         let enum_return_args: Vec<Ty> = type_param_names
             .iter()
             .map(|name| Ty::Named {
+                builtin: None,
                 name: name.clone(),
                 args: vec![],
             })
@@ -986,10 +1574,12 @@ impl Checker {
             match item {
                 TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
+                    field_order.push(name.clone());
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
+                        builtin: None,
                         name: td.name.clone(),
                         args: enum_return_args.clone(),
                     };
@@ -1059,14 +1649,31 @@ impl Checker {
             name: td.name.clone(),
             type_params: type_param_names.clone(),
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
             is_indirect: td.is_indirect,
         };
 
-        // Register with trait registry for Send/Frozen derivation
-        let field_types: Vec<_> = type_def.fields.values().cloned().collect();
+        // Register with trait registry for Send/Frozen/Copy/... derivation.
+        //
+        // Structural markers (`Copy`, `Send`, `Clone`, …) derive from a Named
+        // type's reachable member types. For a struct/record those are its
+        // fields; for an ENUM they are the variant PAYLOAD types — an enum with
+        // a `string`-payload variant is NOT Copy even though it has no named
+        // fields. The marker registry stores member types by name, and its
+        // derivation walks them with `all(...)` (vacuously true on an empty
+        // list), so an enum registered with only its (empty) `fields` would be
+        // spuriously Copy/Frozen. Register the variant-inclusive member set for
+        // enums so the marker derivation is correct (W5.016: the spurious-Copy
+        // bug routed owned-payload enum Vecs down the BitCopy path → runtime
+        // stride panic).
+        let field_types: Vec<_> = if kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&type_def)
+        } else {
+            type_def.fields.values().cloned().collect()
+        };
         let all_fields_encodable = td.wire.is_none()
             && kind == TypeDefKind::Struct
             && field_types
@@ -1074,6 +1681,9 @@ impl Checker {
                 .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
 
         self.registry.register_type(td.name.clone(), field_types);
+        if td.wire.is_some() || kind == TypeDefKind::Enum {
+            self.register_serializable_members_for_type(&td.name, &type_def);
+        }
         self.register_rcfree_members_for_type(&td.name, &type_def);
 
         self.type_defs.insert(td.name.clone(), type_def);
@@ -1093,12 +1703,127 @@ impl Checker {
         }
     }
 
+    /// Register a `record` declaration into the type table.
+    ///
+    /// Named-field form: populates `type_defs.fields` so that
+    /// `check_struct_init` and `check_field_access` resolve field types by
+    /// name.
+    ///
+    /// Tuple-positional form: registers a constructor `fn_sig` so that
+    /// `R(1, 2)` resolves as a function call returning `Ty::Named { name: R
+    /// }`.  The `fields` map is left empty — this deliberately prevents
+    /// `.0`/`.1` index-style access (A-D2: positional destructuring only).
+    ///
+    /// In both cases `type_defs` receives a `TypeDef` with
+    /// `kind = TypeDefKind::Record` so the field-write rejection in
+    /// `statements.rs` can identify record types.
+    pub(super) fn register_record_decl(&mut self, rd: &RecordDecl) {
+        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let type_param_bounds =
+            self.collect_type_param_bounds(rd.type_params.as_ref(), rd.where_clause.as_ref());
+
+        // Build the return type for constructors: `R` or `R<T1, T2, …>`
+        let enum_return_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                builtin: None,
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+        let return_type = Ty::Named {
+            builtin: None,
+            name: rd.name.clone(),
+            args: enum_return_args,
+        };
+
+        let mut fields: HashMap<String, Ty> = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
+        let mut hole_vars = Vec::new();
+        // Positional field types for tuple records, collected for marker
+        // derivation (A-4). Named-record fields come from `type_def.fields`.
+        let mut tuple_field_types: Vec<Ty> = Vec::new();
+
+        match &rd.kind {
+            RecordKind::Named(record_fields) => {
+                for rf in record_fields {
+                    let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
+                    field_order.push(rf.name.clone());
+                    fields.insert(rf.name.clone(), field_ty);
+                }
+            }
+            RecordKind::Tuple(positional_types) => {
+                // Resolve each positional field type for the constructor signature.
+                let param_tys: Vec<Ty> = positional_types
+                    .iter()
+                    .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
+                    .collect();
+
+                // Capture positional types for marker registration before moving
+                // param_tys into fn_sigs. The `fields` map intentionally stays
+                // empty — `.0`/`.1` access is not permitted on tuple records (A-D2).
+                tuple_field_types.clone_from(&param_tys);
+
+                // Register a constructor function so `R(1, 2)` resolves via
+                // `check_call`.  The `fields` map intentionally stays empty —
+                // `.0`/`.1` access is not permitted on tuple records (A-D2).
+                self.fn_sigs.insert(
+                    rd.name.clone(),
+                    FnSig {
+                        type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
+                        params: param_tys,
+                        return_type: return_type.clone(),
+                        ..FnSig::default()
+                    },
+                );
+            }
+        }
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Record,
+            name: rd.name.clone(),
+            type_params: type_param_names.clone(),
+            fields,
+            field_order,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: rd.doc_comment.clone(),
+            is_indirect: false,
+        };
+
+        // Register all field types for marker derivation (Eq/Hash/Send/Frozen/
+        // Clone/Copy). Named-field records use type_def.fields; tuple records
+        // use the positional types captured above (type_def.fields is empty for
+        // tuple records by design — A-D2).
+        let field_types: Vec<Ty> = if tuple_field_types.is_empty() {
+            type_def.fields.values().cloned().collect()
+        } else {
+            tuple_field_types
+        };
+        self.registry
+            .register_type(rd.name.clone(), field_types.clone());
+        // Mark this as a record type so implements_marker applies the correct
+        // value-type semantics (Resource always false; all other markers field-driven).
+        self.registry.register_record_type(rd.name.clone());
+        self.registry
+            .register_serializable_type(rd.name.clone(), field_types);
+        self.register_rcfree_members_for_type(&rd.name, &type_def);
+
+        self.type_defs.insert(rd.name.clone(), type_def);
+        self.record_type_def_inference_holes(&rd.name, hole_vars);
+        self.handle_bearing_dirty = true;
+    }
+
     /// Register codec methods for a wire type.
     ///
     /// - Wire structs expose binary + JSON/YAML helpers.
     /// - Wire enums expose JSON/YAML helpers.
     pub(super) fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1142,7 +1867,6 @@ impl Checker {
                     FnSig {
                         params,
                         return_type,
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -1171,7 +1895,6 @@ impl Checker {
                 FnSig {
                     params,
                     return_type,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
@@ -1190,6 +1913,7 @@ impl Checker {
     /// expected kind for the format.
     pub(super) fn register_encode_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
+            builtin: None,
             name: type_name.to_string(),
             args: vec![],
         };
@@ -1207,7 +1931,6 @@ impl Checker {
                     method_name.to_string(),
                     FnSig {
                         return_type,
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -1231,7 +1954,6 @@ impl Checker {
                 FnSig {
                     params,
                     return_type,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
@@ -1333,12 +2055,108 @@ impl Checker {
         clippy::too_many_lines,
         reason = "machine registration covers states, events, and generated methods"
     )]
-    pub(super) fn register_machine_decl(&mut self, md: &MachineDecl) {
-        let machine_ty = Ty::normalize_named(md.name.clone(), vec![]);
+    pub(super) fn register_machine_decl(&mut self, md: &MachineDecl, span: &Span) {
+        // Build the machine's self-type: `Machine` or `Machine<T, U, …>`.
+        // MachineDecl.type_params is Vec<TypeParam> — we extract bare names
+        // here for the self-type and collect declared trait bounds into a
+        // side table consulted at use sites (struct-state brace init) and
+        // mirrored onto unit-state constructor FnSigs for the call path.
+        //
+        // Validate before collect_type_param_bounds erases positional type args.
+        self.validate_type_param_bound_shapes(
+            Some(&md.type_params),
+            md.where_clause.as_ref(),
+            span,
+        );
+        let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
+        // Collect inline `<T: Trait>` and `where T: Trait` bounds into a
+        // single side table keyed by machine name then param name. At
+        // the checker layer, a bound's source (inline vs where clause)
+        // does not affect the enforcement question — the bound is
+        // "satisfied at the instantiation site iff the substituted
+        // type implements the trait" regardless of where the bound
+        // was authored — so duplicates on the same (param, trait) pair
+        // dedupe. Source provenance is preserved at the parser layer
+        // (separate `type_params` / `where_clause` fields on
+        // `MachineDecl`) so future lowering layers that want to point
+        // diagnostics at the predicate's span can recover it.
+        let type_param_bounds =
+            self.collect_type_param_bounds(Some(&md.type_params), md.where_clause.as_ref());
+        if !type_param_bounds.is_empty() {
+            self.machine_type_param_bounds
+                .insert(md.name.clone(), type_param_bounds.clone());
+        }
+        // W3.039 Stage 2: register const-generic parameter declarations
+        // into the side table so instantiation-site validation
+        // (Stage 3 — gated on W3.033c) can recover arity, types, and
+        // defaults without re-walking the parser AST. We also enforce
+        // here that const-param names do not shadow type-param names.
+        if !md.const_params.is_empty() {
+            let type_param_names: std::collections::HashSet<&str> =
+                md.type_params.iter().map(|p| p.name.as_str()).collect();
+            let mut const_param_decls: Vec<super::types::MachineConstParamDecl> =
+                Vec::with_capacity(md.const_params.len());
+            let mut seen_const_names: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for cp in &md.const_params {
+                if type_param_names.contains(cp.name.as_str()) {
+                    self.errors.push(crate::error::TypeError::new(
+                        crate::error::TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "const parameter `{}` on machine `{}` shadows a type parameter \
+                             of the same name",
+                            cp.name, md.name
+                        ),
+                    ));
+                    continue;
+                }
+                if !seen_const_names.insert(cp.name.as_str()) {
+                    self.errors.push(crate::error::TypeError::new(
+                        crate::error::TypeErrorKind::DuplicateDefinition,
+                        span.clone(),
+                        format!(
+                            "duplicate const parameter `{}` on machine `{}`",
+                            cp.name, md.name
+                        ),
+                    ));
+                    continue;
+                }
+                let ty = match cp.ty {
+                    hew_parser::ast::ConstParamTy::Usize => {
+                        super::types::MachineConstParamTy::Usize
+                    }
+                };
+                const_param_decls.push(super::types::MachineConstParamDecl {
+                    name: cp.name.clone(),
+                    ty,
+                    default: cp.default,
+                });
+            }
+            if !const_param_decls.is_empty() {
+                self.machine_const_params
+                    .insert(md.name.clone(), const_param_decls);
+            }
+        }
+        let machine_generic_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                builtin: None,
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
+        let machine_ty = Ty::Named {
+            builtin: None,
+            name: md.name.clone(),
+            args: machine_generic_args.clone(),
+        };
+
         let event_type_name = format!("{}Event", md.name);
         let event_ty = Ty::Named {
+            builtin: None,
             name: event_type_name.clone(),
-            args: vec![],
+            args: machine_generic_args.clone(),
         };
 
         // Build state variants
@@ -1347,12 +2165,15 @@ impl Checker {
         for state in &md.states {
             if state.fields.is_empty() {
                 variants.insert(state.name.clone(), VariantDef::Unit);
-                // Register unit state constructor as a function
+                // Register unit state constructor as a function. For generic
+                // machines (e.g. `machine Worker<T>`), the constructor returns
+                // `Worker<T>` so callers can instantiate with concrete args.
                 self.fn_sigs.insert(
                     state.name.clone(),
                     FnSig {
+                        type_params: type_param_names.clone(),
+                        type_param_bounds: type_param_bounds.clone(),
                         return_type: machine_ty.clone(),
-                        is_pure: true,
                         ..FnSig::default()
                     },
                 );
@@ -1377,8 +2198,9 @@ impl Checker {
         let type_def = TypeDef {
             kind: TypeDefKind::Machine,
             name: md.name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
+            field_order: vec![],
             variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -1423,8 +2245,9 @@ impl Checker {
         let event_type_def = TypeDef {
             kind: TypeDefKind::Enum,
             name: event_type_name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             fields: HashMap::new(),
+            field_order: vec![],
             variants: event_variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -1451,11 +2274,545 @@ impl Checker {
                 "state_name".to_string(),
                 FnSig {
                     return_type: Ty::String,
-                    is_pure: true,
                     ..FnSig::default()
                 },
             );
         }
+    }
+
+    fn report_machine_transition_forbidden_exprs(
+        &mut self,
+        machine_name: &str,
+        transition: &hew_parser::ast::MachineTransition,
+    ) -> bool {
+        let mut hits = Vec::new();
+        Self::collect_machine_transition_forbidden_exprs(
+            &transition.body.0,
+            &transition.body.1,
+            &mut hits,
+        );
+        for (kind, span, label) in &hits {
+            let message = match kind {
+                TypeErrorKind::GenBlockInMachineTransition => format!(
+                    "E_GENBLOCK_IN_MACHINE_TRANSITION: `gen {{ }}` blocks are forbidden inside \
+                     machine `{machine_name}` transition `{}`: {} -> {}; transition bodies \
+                     must be pure and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                TypeErrorKind::AwaitInMachineTransition => format!(
+                    "E_AWAIT_IN_MACHINE_TRANSITION: `{label}` is forbidden inside machine \
+                     `{machine_name}` transition `{}`: {} -> {}; transition bodies must be pure \
+                     and cannot suspend",
+                    transition.event_name, transition.source_state, transition.target_state
+                ),
+                _ => unreachable!("machine transition purity scanner only emits its own kinds"),
+            };
+            self.report_error(kind.clone(), span, message);
+        }
+        !hits.is_empty()
+    }
+
+    fn collect_machine_transition_forbidden_block(
+        block: &Block,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        for (stmt, span) in &block.stmts {
+            Self::collect_machine_transition_forbidden_stmt(stmt, span, hits);
+        }
+        if let Some(expr) = &block.trailing_expr {
+            Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_stmt(
+        stmt: &Stmt,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Var { value, .. }
+            | Stmt::Break { value, .. }
+            | Stmt::Return(value) => {
+                if let Some((expr, expr_span)) = value {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_block(then_block, hits);
+                if let Some(else_block) = else_block {
+                    if let Some(if_stmt) = &else_block.if_stmt {
+                        Self::collect_machine_transition_forbidden_stmt(
+                            &if_stmt.0, &if_stmt.1, hits,
+                        );
+                    }
+                    if let Some(block) = &else_block.block {
+                        Self::collect_machine_transition_forbidden_block(block, hits);
+                    }
+                }
+            }
+            Stmt::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::For {
+                is_await,
+                iterable,
+                body,
+                ..
+            } => {
+                if *is_await {
+                    hits.push((
+                        TypeErrorKind::AwaitInMachineTransition,
+                        span.clone(),
+                        "for await",
+                    ));
+                }
+                Self::collect_machine_transition_forbidden_exprs(&iterable.0, &iterable.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::WhileLet { expr, body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Stmt::Defer(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Expression(expr) => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Stmt::Continue { .. } => {}
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fail-closed transition purity scanner must cover every AST expression shape"
+    )]
+    fn collect_machine_transition_forbidden_exprs(
+        expr: &Expr,
+        span: &Span,
+        hits: &mut Vec<(TypeErrorKind, Span, &'static str)>,
+    ) {
+        match expr {
+            Expr::GenBlock { body } => {
+                hits.push((
+                    TypeErrorKind::GenBlockInMachineTransition,
+                    span.clone(),
+                    "gen",
+                ));
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::Await(inner) => {
+                hits.push((
+                    TypeErrorKind::AwaitInMachineTransition,
+                    span.clone(),
+                    "await",
+                ));
+                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
+            }
+            Expr::Binary { left, right, .. }
+            | Expr::Is {
+                lhs: left,
+                rhs: right,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&left.0, &left.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&right.0, &right.1, hits);
+            }
+            Expr::Unary { operand, .. }
+            | Expr::Clone(operand)
+            | Expr::ForkChild { expr: operand, .. }
+            | Expr::PostfixTry(operand)
+            | Expr::Yield(Some(operand)) => {
+                Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
+            }
+            Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+                for (expr, expr_span) in exprs {
+                    Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                }
+            }
+            Expr::ArrayRepeat { value, count } => {
+                Self::collect_machine_transition_forbidden_exprs(&value.0, &value.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&count.0, &count.1, hits);
+            }
+            Expr::MapLiteral { entries } => {
+                for ((key, key_span), (value, value_span)) in entries {
+                    Self::collect_machine_transition_forbidden_exprs(key, key_span, hits);
+                    Self::collect_machine_transition_forbidden_exprs(value, value_span, hits);
+                }
+            }
+            Expr::Block(block) | Expr::Scope { body: block } | Expr::ForkBlock { body: block } => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::UnsafeBlock(block) => {
+                Self::collect_machine_transition_forbidden_block(block, hits);
+            }
+            Expr::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&condition.0, &condition.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(
+                    &then_block.0,
+                    &then_block.1,
+                    hits,
+                );
+                if let Some(else_block) = else_block {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &else_block.0,
+                        &else_block.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::IfLet {
+                expr,
+                body,
+                else_body,
+                ..
+            } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+                if let Some(block) = else_body {
+                    Self::collect_machine_transition_forbidden_block(block, hits);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                Self::collect_machine_transition_forbidden_exprs(&scrutinee.0, &scrutinee.1, hits);
+                for arm in arms {
+                    if let Some((guard, guard_span)) = &arm.guard {
+                        Self::collect_machine_transition_forbidden_exprs(guard, guard_span, hits);
+                    }
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&body.0, &body.1, hits);
+            }
+            Expr::Spawn { target, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&target.0, &target.1, hits);
+                for (_, (arg, arg_span)) in args {
+                    Self::collect_machine_transition_forbidden_exprs(arg, arg_span, hits);
+                }
+            }
+            Expr::ScopeDeadline { duration, body } => {
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+                Self::collect_machine_transition_forbidden_block(body, hits);
+            }
+            Expr::InterpolatedString(parts) => {
+                for part in parts {
+                    if let StringPart::Expr((expr, expr_span)) = part {
+                        Self::collect_machine_transition_forbidden_exprs(expr, expr_span, hits);
+                    }
+                }
+            }
+            Expr::Call { function, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&function.0, &function.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&receiver.0, &receiver.1, hits);
+                for arg in args {
+                    let (arg_expr, arg_span) = arg.expr();
+                    Self::collect_machine_transition_forbidden_exprs(arg_expr, arg_span, hits);
+                }
+            }
+            Expr::StructInit { fields, base, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+                if let Some(base) = base {
+                    Self::collect_machine_transition_forbidden_exprs(&base.0, &base.1, hits);
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                for arm in arms {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.source.0,
+                        &arm.source.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &arm.body.0,
+                        &arm.body.1,
+                        hits,
+                    );
+                }
+                if let Some(timeout) = timeout {
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.duration.0,
+                        &timeout.duration.1,
+                        hits,
+                    );
+                    Self::collect_machine_transition_forbidden_exprs(
+                        &timeout.body.0,
+                        &timeout.body.1,
+                        hits,
+                    );
+                }
+            }
+            Expr::Timeout { expr, duration } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&duration.0, &duration.1, hits);
+            }
+            Expr::FieldAccess { object, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+            }
+            Expr::Index { object, index } => {
+                Self::collect_machine_transition_forbidden_exprs(&object.0, &object.1, hits);
+                Self::collect_machine_transition_forbidden_exprs(&index.0, &index.1, hits);
+            }
+            Expr::Cast { expr, .. } => {
+                Self::collect_machine_transition_forbidden_exprs(&expr.0, &expr.1, hits);
+            }
+            Expr::Range { start, end, .. } => {
+                if let Some(start) = start {
+                    Self::collect_machine_transition_forbidden_exprs(&start.0, &start.1, hits);
+                }
+                if let Some(end) = end {
+                    Self::collect_machine_transition_forbidden_exprs(&end.0, &end.1, hits);
+                }
+            }
+            Expr::MachineEmit { fields, .. } => {
+                for (_, (field, field_span)) in fields {
+                    Self::collect_machine_transition_forbidden_exprs(field, field_span, hits);
+                }
+            }
+            Expr::Literal(_)
+            | Expr::Identifier(_)
+            | Expr::Yield(None)
+            | Expr::This
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_) => {}
+        }
+    }
+
+    /// Validate that no trait bound in the given type parameters or
+    /// where-clause carries positional type arguments (e.g. `T: Eq<U>`).
+    /// Such forms are not valid in Hew — the checker cannot enforce
+    /// phantom-parameterised marker bounds, and admitting them would silently
+    /// erase the type arguments in `collect_type_param_bounds`, reducing
+    /// `Eq<U>` to bare `Eq` without any diagnostic.
+    ///
+    /// Emits `UnknownTraitBoundShape` at `span` for every offending bound.
+    /// Must be called before `collect_type_param_bounds` erases `type_args`.
+    /// Covers fn/impl/impl-method/machine declaration positions.
+    pub(super) fn validate_type_param_bound_shapes(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        span: &Span,
+    ) {
+        // Check inline type-param bounds: e.g. `<T: Eq<U>>`.
+        if let Some(params) = type_params {
+            for param in params {
+                for bound in &param.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` on type parameter `{}` carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name, param.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        // Check where-clause bounds: `where T: Eq<U>`.
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                for bound in &predicate.bounds {
+                    if bound.type_args.as_ref().is_some_and(|a| !a.is_empty()) {
+                        self.report_error(
+                            TypeErrorKind::UnknownTraitBoundShape {
+                                trait_name: bound.name.clone(),
+                            },
+                            span,
+                            format!(
+                                "trait bound `{}` in where-clause carries positional \
+                                 type arguments, which are not supported; use associated-type \
+                                 bindings (`Trait<Assoc = Ty>`) instead",
+                                bound.name,
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Thin wrapper for the fn-decl path; delegates to
+    /// `validate_type_param_bound_shapes` using the function's own
+    /// type-param list, where-clause, and declaration span.
+    pub(super) fn validate_fn_type_param_bound_shapes(&mut self, fd: &FnDecl) {
+        self.validate_type_param_bound_shapes(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &fd.decl_span,
+        );
+    }
+
+    /// Validate that every trait named in a machine's generic bounds resolves
+    /// to a registered trait. Emits `UndefinedType` at the machine decl span
+    /// for any unknown name. Called from `check_machine_exhaustiveness`,
+    /// after Pass 2 has populated `trait_defs` for all in-scope traits.
+    ///
+    /// Walks both inline `<T: Trait>` bounds (via `md.type_params`) and
+    /// `where T: Trait` clause predicates (via `md.where_clause`). The
+    /// where-clause arm also verifies the predicate's left-hand side
+    /// names one of the machine's own declared type parameters — a
+    /// `where Foo: Trait` for an undeclared `Foo` is a closed user
+    /// error (`UndefinedType` at the predicate span) rather than a
+    /// silently-ignored predicate.
+    pub(super) fn validate_machine_type_param_bounds(&mut self, md: &MachineDecl, span: &Span) {
+        for param in &md.type_params {
+            for bound in &param.bounds {
+                if self.is_known_trait(&bound.name) {
+                    continue;
+                }
+                let similar = crate::error::find_similar(
+                    &bound.name,
+                    self.trait_defs.keys().map(String::as_str),
+                );
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!(
+                        "unknown trait `{bound}` in bound on type parameter `{param_name}` of machine `{machine}`",
+                        bound = bound.name,
+                        param_name = param.name,
+                        machine = md.name,
+                    ),
+                    similar,
+                );
+            }
+        }
+
+        let Some(where_clause) = md.where_clause.as_ref() else {
+            return;
+        };
+        let declared_params: std::collections::HashSet<&str> =
+            md.type_params.iter().map(|p| p.name.as_str()).collect();
+        for predicate in &where_clause.predicates {
+            // Left-hand side of the predicate must name one of the
+            // machine's declared type params. `where Foo: Resource`
+            // for a `Foo` that isn't in `<…>` is a user error.
+            let lhs_name = match &predicate.ty.0 {
+                hew_parser::ast::TypeExpr::Named { name, type_args } if type_args.is_none() => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            };
+            match lhs_name {
+                Some(name) if declared_params.contains(name) => {}
+                Some(name) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::UndefinedType,
+                        predicate.ty.1.clone(),
+                        format!(
+                            "where-clause predicate references `{name}` which is not a declared type parameter of machine `{machine}`",
+                            machine = md.name,
+                        ),
+                    ));
+                }
+                None => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::UndefinedType,
+                        predicate.ty.1.clone(),
+                        format!(
+                            "where-clause predicate on machine `{machine}` must name a single type parameter",
+                            machine = md.name,
+                        ),
+                    ));
+                }
+            }
+            for bound in &predicate.bounds {
+                if self.is_known_trait(&bound.name) {
+                    continue;
+                }
+                let similar = crate::error::find_similar(
+                    &bound.name,
+                    self.trait_defs.keys().map(String::as_str),
+                );
+                let lhs_label = lhs_name.unwrap_or("<predicate>");
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    &predicate.ty.1,
+                    format!(
+                        "unknown trait `{bound}` in where-clause bound on `{lhs_label}` of machine `{machine}`",
+                        bound = bound.name,
+                        machine = md.name,
+                    ),
+                    similar,
+                );
+            }
+        }
+    }
+
+    /// Resolve a trait-bound name against the registered trait table,
+    /// accepting both unqualified and module-qualified forms.
+    fn is_known_trait(&self, name: &str) -> bool {
+        if self.trait_defs.contains_key(name) {
+            return true;
+        }
+        if let Some(uq) = self.strip_module_qualifier(name) {
+            if self.trait_defs.contains_key(uq) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check that the machine's state × event matrix is fully covered.
@@ -1464,6 +2821,7 @@ impl Checker {
         reason = "exhaustiveness checking requires many validation steps"
     )]
     pub(super) fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
+        self.validate_machine_type_param_bounds(md, span);
         let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
         let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
 
@@ -1488,6 +2846,9 @@ impl Checker {
         let mut wildcard_events: HashSet<String> = HashSet::new();
 
         for transition in &md.transitions {
+            let transition_has_forbidden_expr =
+                self.report_machine_transition_forbidden_exprs(&md.name, transition);
+
             // Fix 2: Reject unknown event names
             if !event_names.contains(&transition.event_name.as_str()) {
                 self.errors.push(TypeError::new(
@@ -1558,14 +2919,45 @@ impl Checker {
                 covered.insert(key);
             }
 
+            // Push the machine's declared generic-param bounds so that
+            // `type_param_carries_bound` / resolver projection inside the
+            // transition body see `T: Resource` and recognise `T` as
+            // satisfying its bound. Pops at the end of this iteration's
+            // body block.
+            let mut machine_scope_holes = Vec::new();
+            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
+                Some(&md.type_params),
+                md.where_clause.as_ref(),
+                &mut machine_scope_holes,
+            );
+            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.push(machine_bounds_scope);
+            }
+
             // Fix 6: Transition body validation with source-state field scoping.
             // Bind `state` as the machine type, and track the source state so
             // that `state.field` access resolves correctly for payload states.
             // (`state` rather than `self` to avoid confusion with actor self)
             self.env.push_scope();
+            // Bind `state` as the machine self-type, preserving generic args
+            // so that field access on generic machines resolves correctly.
+            let transition_machine_args: Vec<Ty> = md
+                .type_params
+                .iter()
+                .map(|param| Ty::Named {
+                    builtin: None,
+                    name: param.name.clone(),
+                    args: vec![],
+                })
+                .collect();
             self.env.define(
                 "state".to_string(),
-                Ty::normalize_named(md.name.clone(), vec![]),
+                Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: transition_machine_args,
+                },
                 false,
             );
             // Bind `event` as the event companion enum type so that
@@ -1574,8 +2966,17 @@ impl Checker {
             self.env.define(
                 "event".to_string(),
                 Ty::Named {
+                    builtin: None,
                     name: event_type_name,
-                    args: vec![],
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|param| Ty::Named {
+                            builtin: None,
+                            name: param.name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
                 },
                 false,
             );
@@ -1596,9 +2997,102 @@ impl Checker {
             if let Some((guard_expr, guard_span)) = &transition.guard {
                 self.check_against(guard_expr, guard_span, &Ty::Bool);
             }
-            self.synthesize(&transition.body.0, &transition.body.1);
+            if !transition_has_forbidden_expr {
+                // Check the transition body against the machine type so that the
+                // expected-type context flows into struct-variant pre-seeding
+                // (expressions.rs enum-struct-variant arm).  Without an expected
+                // type, `synthesize` cannot seed the type-params for generic
+                // machines and bare state constructors like `Faulted { error: … }`
+                // fail to resolve when the state has a generic field.
+                let expected_machine_ty = Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: md
+                        .type_params
+                        .iter()
+                        .map(|param| Ty::Named {
+                            builtin: None,
+                            name: param.name.clone(),
+                            args: vec![],
+                        })
+                        .collect(),
+                };
+                self.check_against(&transition.body.0, &transition.body.1, &expected_machine_ty);
+            }
             self.current_machine_transition = None;
             self.env.pop_scope();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.pop();
+            }
+        }
+
+        // Check state entry/exit lifecycle blocks.
+        //
+        // Scope: `state` (the machine value) is in scope; `event` is NOT
+        // bound here — entry/exit are state lifecycle hooks, not transition
+        // event scopes.  Referencing `event` inside an entry/exit block is
+        // therefore an undefined-variable error, which is the intended
+        // fail-closed behaviour.
+        for state in &md.states {
+            let has_lifecycle = state.entry.is_some() || state.exit.is_some();
+            if !has_lifecycle {
+                continue;
+            }
+
+            // Push generic-param bounds so that type-param-bound resolution
+            // inside a lifecycle block mirrors what transition bodies see.
+            let mut machine_scope_holes = Vec::new();
+            let machine_bounds_scope = self.collect_type_param_scope_with_assoc_bindings(
+                Some(&md.type_params),
+                md.where_clause.as_ref(),
+                &mut machine_scope_holes,
+            );
+            let pushed_machine_bounds = !machine_bounds_scope.bounds.is_empty();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.push(machine_bounds_scope);
+            }
+
+            self.env.push_scope();
+            // Bind `state` as the machine self-type — identical binding to
+            // the one used inside transition bodies, so that field access on
+            // payload states resolves correctly.
+            let machine_args: Vec<Ty> = md
+                .type_params
+                .iter()
+                .map(|param| Ty::Named {
+                    builtin: None,
+                    name: param.name.clone(),
+                    args: vec![],
+                })
+                .collect();
+            self.env.define(
+                "state".to_string(),
+                Ty::Named {
+                    builtin: None,
+                    name: md.name.clone(),
+                    args: machine_args,
+                },
+                false,
+            );
+            // NOTE: `event` is deliberately NOT bound here.
+            let previous_lifecycle = self
+                .current_machine_lifecycle
+                .replace((md.name.clone(), state.name.clone()));
+
+            if let Some(entry_block) = &state.entry {
+                // Entry blocks are statement-sequences; their trailing value
+                // (if any) is discarded — we check without an expected type.
+                self.check_block(entry_block, None);
+            }
+            if let Some(exit_block) = &state.exit {
+                self.check_block(exit_block, None);
+            }
+
+            self.current_machine_lifecycle = previous_lifecycle;
+            self.env.pop_scope();
+            if pushed_machine_bounds {
+                self.current_type_param_bounds.pop();
+            }
         }
 
         // Check that every (state, event) pair is covered
@@ -1621,40 +3115,128 @@ impl Checker {
     }
 
     pub(super) fn register_actor_decl(&mut self, ad: &ActorDecl) {
+        let identity = ad.name.clone();
+        self.register_actor_decl_as(ad, &identity);
+    }
+
+    /// Register an actor declaration under an explicit identity key.
+    ///
+    /// `identity` is the bare name for root/flat actors and the dotted
+    /// `{module_short}.{name}` form for module actors (see
+    /// [`Self::actor_identity`]). Every per-actor side table — `type_defs`,
+    /// the Send registry, type-param bounds, init params — is keyed by this
+    /// identity so two same-named actors from different modules occupy
+    /// distinct entries instead of last-write-wins clobbering.
+    pub(super) fn register_actor_decl_as(&mut self, ad: &ActorDecl, identity: &str) {
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         let mut hole_vars = Vec::new();
         for field in &ad.fields {
             let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
+            field_order.push(field.name.clone());
             fields.insert(field.name.clone(), field_ty);
         }
 
+        // Extract type-param names from the declaration so the TypeDef's
+        // positional `type_params` vector is populated for bound lookups in
+        // `enforce_actor_instantiation_bounds`. This mirrors the machine
+        // registration path; actors without type params get an empty vec.
+        let type_param_names: Vec<String> =
+            ad.type_params.iter().map(|tp| tp.name.clone()).collect();
+
         let type_def = TypeDef {
             kind: TypeDefKind::Actor,
-            name: ad.name.clone(),
-            type_params: vec![],
+            name: identity.to_string(),
+            type_params: type_param_names,
             fields,
+            field_order,
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: ad.doc_comment.clone(),
             is_indirect: false,
         };
 
-        // Actors are always Send
-        self.registry.register_actor(ad.name.clone());
-        self.register_rcfree_members_for_type(&ad.name, &type_def);
+        // Record trait bounds for generic type parameters (e.g. `<T: Send>`).
+        // The bounds table is keyed by actor name and consulted at spawn sites
+        // by `enforce_actor_instantiation_bounds`. Non-generic actors produce
+        // an empty map; the helper short-circuits on empty `type_args` anyway.
+        let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
+        if !type_param_bounds.is_empty() {
+            self.actor_type_param_bounds
+                .insert(identity.to_string(), type_param_bounds);
+        }
 
-        self.type_defs.insert(ad.name.clone(), type_def);
-        self.record_type_def_inference_holes(&ad.name, hole_vars);
+        // `#[every]` periodic handlers are armed by spawn-site codegen
+        // (`emit_periodic_handler_arming`); record which actors declare them
+        // so `check_supervisor` can reject child specs whose runtime spawn
+        // path would silently skip the arming.
+        if let Some(periodic_rf) = ad
+            .receive_fns
+            .iter()
+            .find(|rf| rf.attributes.iter().any(|a| a.name == "every"))
+        {
+            self.actors_with_periodic_handlers
+                .insert(ad.name.clone(), periodic_rf.name.clone());
+        }
+
+        // Actors are always Send
+        self.registry.register_actor(identity.to_string());
+        self.register_rcfree_members_for_type(identity, &type_def);
+
+        self.type_defs.insert(identity.to_string(), type_def);
+        self.record_type_def_inference_holes(identity, hole_vars);
+        // A new handle-bearing candidate entered `type_defs`; invalidate the
+        // cached handle-bearing classification the same way the qualified
+        // type-alias path does.
+        self.handle_bearing_dirty = true;
+
+        // Collect init() parameter shapes for supervisor wired_to type-compatibility checks.
+        // Stores (param_name, outer_type, first_type_arg) for each init param.
+        // Only `TypeExpr::Named` params are represented; complex types store the outer name only.
+        //
+        // Always insert — actors with no init block get an empty vec so that a
+        // `wired_to:` reference to such an actor correctly fires
+        // "no parameter named X" (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`) rather
+        // than silently passing through the "unknown actor" early-return.
+        let params: Vec<(String, String, Option<String>)> = if let Some(init) = &ad.init {
+            init.params
+                .iter()
+                .map(|p| {
+                    let (outer, inner) = match &p.ty.0 {
+                        TypeExpr::Named { name, type_args } => (
+                            name.clone(),
+                            type_args.as_ref().and_then(|args| {
+                                args.first().and_then(|(te, _)| {
+                                    if let TypeExpr::Named { name: n, .. } = te {
+                                        Some(n.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }),
+                        ),
+                        _ => (String::new(), None),
+                    };
+                    (p.name.clone(), outer, inner)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        self.actor_init_params.insert(identity.to_string(), params);
     }
 
     pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {
         // Wire types are similar to regular types but use string field types
         let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
         for field in &wd.fields {
             let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
+                builtin: None,
                 name: field.ty.clone(),
                 args: vec![],
             });
+            field_order.push(field.name.clone());
             fields.insert(field.name.clone(), ty);
         }
 
@@ -1695,6 +3277,7 @@ impl Checker {
             name: wd.name.clone(),
             type_params: vec![],
             fields,
+            field_order,
             variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -1703,6 +3286,7 @@ impl Checker {
 
         let field_types: Vec<_> = type_def.fields.values().cloned().collect();
         self.registry.register_type(wd.name.clone(), field_types);
+        self.register_serializable_members_for_type(&wd.name, &type_def);
         self.register_rcfree_members_for_type(&wd.name, &type_def);
 
         self.type_defs.insert(wd.name.clone(), type_def);
@@ -1711,15 +3295,134 @@ impl Checker {
     }
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
+        Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    }
+
+    /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
+    /// `std/builtins.hew` trait declaration WITHOUT claiming `lang_item_spans`.
+    ///
+    /// Mirrors the `trait_defs` pre-registration in `register_builtins_hew_impls`
+    /// that deliberately skips `type_def_spans`: the user-redeclare path — which
+    /// includes type-checking `std/builtins.hew` itself, where the same `Display`
+    /// trait is processed a second time through the normal source-registration
+    /// pass — must register cleanly without a `duplicate_definition` error.
+    /// Genuine collisions between two source traits both tagging the same key
+    /// are still caught: that path runs through `register_trait_lang_items`,
+    /// which owns `lang_item_spans`.
+    pub(super) fn seed_trait_lang_items(&mut self, td: &TraitDecl) {
+        if let Some(key) = &td.lang_item {
+            if self.lang_items.get(key).is_none() {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        method_name: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    if self.lang_items.get(key).is_none() {
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                method_name: Some(m.name.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Harvest `#[lang_item("…")]` tags from a trait declaration into
+    /// [`Checker::lang_items`].
+    ///
+    /// Two kinds of entries are produced:
+    ///
+    /// * Trait-level (`#[lang_item("display")]` on the `trait` itself) →
+    ///   `LangItemBinding { trait_name: <td.name>, method_name: None }`.
+    /// * Method-level (`#[lang_item("display_fmt")]` on a `TraitItem::Method`)
+    ///   → `LangItemBinding { trait_name: <td.name>, method_name:
+    ///   Some(<m.name>) }`. The enclosing trait name is propagated so HIR
+    ///   lowering can derive `<SelfType>::<method_name>` impl symbols.
+    ///
+    /// Duplicate keys raise `TypeError::duplicate_definition` against the
+    /// trait's span so the registry remains one-binding-per-key.
+    pub(super) fn register_trait_lang_items(&mut self, td: &TraitDecl, span: Span) {
+        if let Some(key) = &td.lang_item {
+            if let Some(prev) = self.lang_item_spans.insert(key.clone(), span.clone()) {
+                self.errors
+                    .push(TypeError::duplicate_definition(span.clone(), key, prev));
+            } else {
+                self.lang_items.insert(
+                    key.clone(),
+                    crate::LangItemBinding {
+                        trait_name: td.name.clone(),
+                        method_name: None,
+                    },
+                );
+            }
+        }
+        for item in &td.items {
+            if let TraitItem::Method(m) = item {
+                if let Some(key) = &m.lang_item {
+                    let method_span = m.span.clone();
+                    if let Some(prev) = self
+                        .lang_item_spans
+                        .insert(key.clone(), method_span.clone())
+                    {
+                        self.errors
+                            .push(TypeError::duplicate_definition(method_span, key, prev));
+                    } else {
+                        self.lang_items.insert(
+                            key.clone(),
+                            crate::LangItemBinding {
+                                trait_name: td.name.clone(),
+                                method_name: Some(m.name.clone()),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build `TraitInfo` and surface trait-body diagnostics. Duplicate
+    /// `type Bar; type Bar;` declarations are reported here (the impl-side
+    /// duplicate-detection is handled separately in `build_impl_alias_entries`).
+    pub(super) fn trait_info_from_decl_with_diagnostics(
+        tr: &TraitDecl,
+        errors: &mut Vec<TypeError>,
+    ) -> TraitInfo {
         let mut methods = Vec::new();
-        let mut associated_types = Vec::new();
+        let mut associated_types: Vec<TraitAssociatedTypeInfo> = Vec::new();
+        let mut seen_assoc: HashMap<String, Span> = HashMap::new();
         for item in &tr.items {
             match item {
                 TraitItem::Method(m) => methods.push(m.clone()),
-                TraitItem::AssociatedType { name, default, .. } => {
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                    span,
+                } => {
+                    if let Some(prev_span) = seen_assoc.insert(name.clone(), span.clone()) {
+                        errors.push(TypeError::duplicate_definition(
+                            span.clone(),
+                            name,
+                            prev_span,
+                        ));
+                        continue;
+                    }
                     associated_types.push(TraitAssociatedTypeInfo {
                         name: name.clone(),
+                        bounds: bounds.clone(),
                         default: default.clone(),
+                        span: span.clone(),
                     });
                 }
             }
@@ -1792,29 +3495,98 @@ impl Checker {
         let Some(target_name) = type_name else {
             return false;
         };
+        // Validate before collect_type_param_scope_with_bounds erases positional type args.
+        self.validate_type_param_bound_shapes(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            span,
+        );
         let entries = self.build_impl_alias_entries(id);
-        if enforce {
-            if let Some(tb) = &id.trait_bound {
-                if let Some(info) = self.trait_defs.get(&tb.name) {
-                    let missing: Vec<String> = info
-                        .associated_types
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
+        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // `enforce`) so projection collapse can find bindings during
+        // call-site monomorphisation even when this scope was entered by
+        // a non-enforcing registration sweep. The first writer wins;
+        // subsequent calls with the same impl idempotently re-resolve.
+        if let Some(tb) = &id.trait_bound {
+            // Snapshot trait-side assoc-type list to avoid double-borrow
+            // of trait_defs while we call resolve_type_expr.
+            let assoc_names: Vec<String> = self
+                .trait_defs
+                .get(&tb.name)
+                .map(|info| {
+                    info.associated_types
                         .iter()
-                        .filter(|assoc| !entries.contains_key(&assoc.name))
-                        .map(|assoc| assoc.name.clone())
-                        .collect();
-                    let target_name = target_name.to_string();
-                    let tb_name = tb.name.clone();
-                    for name in missing {
-                        self.report_error(
-                            TypeErrorKind::UndefinedType,
-                            span,
-                            format!(
-                                "impl `{tb_name}` for `{target_name}` must define associated type `{name}`"
-                            ),
-                        );
+                        .map(|a| a.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tb_name = tb.name.clone();
+            let target_owned = target_name.to_string();
+            for assoc_name in assoc_names {
+                let key = (target_owned.clone(), tb_name.clone(), assoc_name.clone());
+                if self.impl_assoc_type_bindings.contains_key(&key) {
+                    continue;
+                }
+                if let Some(entry) = entries.get(&assoc_name) {
+                    let expr = entry.expr.clone();
+                    let resolved = self.resolve_type_expr(&expr);
+                    if !matches!(resolved, Ty::Error) {
+                        self.impl_assoc_type_bindings.insert(key, resolved);
                     }
                 }
             }
+        }
+        if enforce {
+            if let Some(tb) = &id.trait_bound {
+                // Snapshot trait-side data we need; cloned so we can release
+                // the borrow on `self.trait_defs` before calling into the
+                // resolver / bound-checker which need `&mut self`.
+                let trait_snapshot = self
+                    .trait_defs
+                    .get(&tb.name)
+                    .map(|info| info.associated_types.clone());
+                if let Some(associated_types) = trait_snapshot {
+                    let missing: Vec<TraitAssociatedTypeInfo> = associated_types
+                        .iter()
+                        .filter(|assoc| !entries.contains_key(&assoc.name))
+                        .cloned()
+                        .collect();
+                    let target_name_owned = target_name.to_string();
+                    let tb_name = tb.name.clone();
+                    for assoc in missing {
+                        self.report_error_with_note(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "impl `{tb_name}` for `{target_name_owned}` must define associated type `{}`",
+                                assoc.name
+                            ),
+                            &assoc.span,
+                            "required associated type declared here".to_string(),
+                        );
+                    }
+                    self.check_assoc_type_bounds(
+                        &associated_types,
+                        &entries,
+                        &tb_name,
+                        &target_name_owned,
+                        id,
+                    );
+                }
+            }
+        }
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
         }
         self.impl_alias_scopes.push(ImplAliasScope {
             span: span.clone(),
@@ -1827,6 +3599,88 @@ impl Checker {
 
     pub(super) fn exit_impl_scope(&mut self) {
         self.impl_alias_scopes.pop();
+    }
+
+    /// Enforce trait-side bounds on each impl-side associated-type binding.
+    ///
+    /// For `trait Foo { type Out: Display; }` and `impl Foo for X { type Out = Y; }`,
+    /// verifies `Y: Display`. Handles two distinct shapes for the chosen `Y`:
+    ///
+    /// - **Concrete type** (`Ty::Named { name, .. }` where `name` is a known
+    ///   type-def): consult `type_satisfies_trait_bound` directly.
+    /// - **Impl type-param** (`Ty::Named { name, .. }` where `name` is one of
+    ///   the impl's declared type params, e.g. `impl<T: Display> Foo for X { type Out = T; }`):
+    ///   consult the impl's own `collect_type_param_bounds` map, because at
+    ///   impl-registration time `current_function` is not set and
+    ///   `type_satisfies_trait_bound`'s `type_param_carries_bound` fallback
+    ///   would return false-negative.
+    fn check_assoc_type_bounds(
+        &mut self,
+        associated_types: &[TraitAssociatedTypeInfo],
+        entries: &HashMap<String, ImplAliasEntry>,
+        trait_name: &str,
+        target_name: &str,
+        id: &ImplDecl,
+    ) {
+        // Pre-collect impl-side type-param bounds. Keys are param names
+        // (e.g. `T`), values are bound trait names. Reused across all assoc
+        // types in this impl.
+        let impl_param_bounds: HashMap<String, Vec<String>> =
+            self.collect_type_param_bounds(id.type_params.as_ref(), id.where_clause.as_ref());
+        let impl_param_names: HashSet<String> = id
+            .type_params
+            .as_ref()
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+
+        for assoc in associated_types {
+            if assoc.bounds.is_empty() {
+                continue;
+            }
+            let Some(entry) = entries.get(&assoc.name) else {
+                continue;
+            };
+            let expr = entry.expr.clone();
+            let entry_span = expr.1.clone();
+            let resolved = self.resolve_type_expr(&expr);
+            // Skip bounds checking when the RHS itself failed to resolve.
+            // `resolve_type_expr` already emitted the primary diagnostic;
+            // running `type_satisfies_trait_bound(&Ty::Error, _)` here would
+            // produce a spurious cascading `BoundsNotSatisfied` on top of it.
+            if matches!(resolved, Ty::Error) {
+                continue;
+            }
+            for bound in &assoc.bounds {
+                let bound_name = &bound.name;
+                let satisfied = match &resolved {
+                    Ty::Named { name, .. } if impl_param_names.contains(name) => {
+                        // Impl type-param: check the impl's own bounds map.
+                        impl_param_bounds.get(name).is_some_and(|bs| {
+                            bs.iter()
+                                .any(|b| b == bound_name || self.trait_extends(b, bound_name))
+                        })
+                    }
+                    _ => self.type_satisfies_trait_bound(&resolved, bound_name),
+                };
+                if satisfied {
+                    continue;
+                }
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &entry_span,
+                    format!(
+                        "associated type `{}::{}` in impl for `{}` is bound by trait \
+                         `{}` but `{}` does not implement `{}`",
+                        trait_name,
+                        assoc.name,
+                        target_name,
+                        bound_name,
+                        resolved.user_facing(),
+                        bound_name,
+                    ),
+                );
+            }
+        }
     }
 
     pub(super) fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {
@@ -1897,9 +3751,21 @@ impl Checker {
                     // like Receiver, and locally_non_generic suppresses
                     // fresh-var injection for handle types like Sender.
                     let saved_local_type_defs = self.local_type_defs.clone();
+                    let saved_source_type_defs = self.source_type_defs.clone();
                     for (item, _) in &module.items {
-                        if let Item::TypeDecl(td) = item {
-                            self.local_type_defs.insert(td.name.clone());
+                        match item {
+                            Item::TypeDecl(td) => {
+                                self.local_type_defs.insert(td.name.clone());
+                                self.source_type_defs.insert(td.name.clone());
+                            }
+                            Item::Machine(md) => {
+                                self.local_type_defs.insert(md.name.clone());
+                                self.source_type_defs.insert(md.name.clone());
+                                let event_type_name = format!("{}Event", md.name);
+                                self.local_type_defs.insert(event_type_name.clone());
+                                self.source_type_defs.insert(event_type_name);
+                            }
+                            _ => {}
                         }
                     }
 
@@ -1927,6 +3793,7 @@ impl Checker {
                     }
 
                     self.local_type_defs = saved_local_type_defs;
+                    self.source_type_defs = saved_source_type_defs;
                 }
             }
         }
@@ -1962,11 +3829,22 @@ impl Checker {
                 self.register_fn_sig(fd);
             }
             Item::Actor(ad) => {
+                // Module actors are identified by the dotted
+                // `{module_short}.{name}` key throughout the checker; root
+                // actors stay bare. Registering the full declaration here
+                // (not only the signatures) covers PRIVATE module actors,
+                // which never pass through the pub-only import paths but
+                // still need a type def for in-module spawn checking.
+                let module_short = self.current_module_short().map(str::to_owned);
+                let identity = Self::actor_identity(module_short.as_deref(), &ad.name);
+                if module_short.is_some() {
+                    self.register_actor_decl_as(ad, &identity);
+                }
                 for rf in &ad.receive_fns {
-                    self.register_receive_fn(&ad.name, rf);
+                    self.register_receive_fn(&identity, rf);
                 }
                 for method in &ad.methods {
-                    let method_name = format!("{}::{}", ad.name, method.name);
+                    let method_name = format!("{identity}::{}", method.name);
                     self.register_fn_sig_with_name(&method_name, method);
                 }
             }
@@ -2006,6 +3884,19 @@ impl Checker {
                             id.type_params.as_ref(),
                             id.where_clause.as_ref(),
                         );
+                        // Q004: enforce impl-vs-trait signature equivalence at
+                        // the impl site so mismatches surface where the user
+                        // wrote them, not as a confusing "type does not satisfy
+                        // trait" downstream. See LESSONS row `diagnostic-trust`.
+                        if let Some(tb) = id.trait_bound.as_ref() {
+                            self.check_impl_method_against_trait(
+                                type_name,
+                                &self_type_args,
+                                tb,
+                                method,
+                                &sig,
+                            );
+                        }
                         // Stage A1: when the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
                         // sig has nowhere to live for later dispatch.  Mirror it onto the
@@ -2048,6 +3939,7 @@ impl Checker {
                                 self.register_trait_method_sig(&tb.name, &m, span);
                                 let trait_method_key = format!("{}::{}", tb.name, m.name);
                                 let concrete_self = Ty::Named {
+                                    builtin: None,
                                     name: type_name.clone(),
                                     args: self_type_args.clone(),
                                 };
@@ -2095,7 +3987,6 @@ impl Checker {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
-                                    is_pure: m.is_pure,
                                     ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
@@ -2106,7 +3997,6 @@ impl Checker {
                                             param_names,
                                             params,
                                             return_type,
-                                            is_pure: m.is_pure,
                                             ..FnSig::default()
                                         },
                                     );
@@ -2160,7 +4050,6 @@ impl Checker {
                                     params,
                                     return_type,
                                     is_async,
-                                    is_pure: method.is_pure,
                                     ..FnSig::default()
                                 },
                             );
@@ -2188,7 +4077,12 @@ impl Checker {
             | Item::TypeAlias(_)
             | Item::Wire(_)
             | Item::Supervisor(_)
-            | Item::Machine(_) => {}
+            | Item::Machine(_)
+            | Item::Record(_) => {
+                // Records have no method body items in v0.5; method registration
+                // is a no-op here.  TODO(A-4): if records gain methods, register
+                // them via a `register_record_methods` pass here.
+            }
         }
     }
 
@@ -2206,6 +4100,12 @@ impl Checker {
         if self.fn_sigs.contains_key(&method_key) {
             return;
         }
+        // Activate trait-body `Self::Bar` projection while resolving this
+        // method's signature, so `Self::Item` in the return type becomes a
+        // deferred `Ty::AssocType` carrier instead of an opaque named type.
+        let prev_trait_self = self
+            .current_trait_for_self_projection
+            .replace(trait_name.to_string());
         self.register_fn_sig_with_name(
             &method_key,
             &FnDecl {
@@ -2213,7 +4113,6 @@ impl Checker {
                 is_async: false,
                 is_generator: false,
                 visibility: hew_parser::ast::Visibility::Private,
-                is_pure: method.is_pure,
                 name: method.name.clone(),
                 type_params: method.type_params.clone(),
                 params: method.params.clone(),
@@ -2226,8 +4125,60 @@ impl Checker {
                 doc_comment: None,
                 decl_span: span.clone(),
                 fn_span: 0..0,
+                intrinsic: None,
             },
         );
+        self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    /// Collect the full resolver scope for declared type params: trait-bound
+    /// names plus any associated-type bindings attached to those bounds.
+    pub(super) fn collect_type_param_scope_with_assoc_bindings(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> TypeParamScope {
+        let bounds = self.collect_type_param_scope_with_bounds(type_params, where_clause);
+        let pushed_bounds_for_assoc = !bounds.is_empty();
+        if pushed_bounds_for_assoc {
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds.clone(), HashMap::new()));
+        }
+        let assoc_bindings =
+            self.collect_type_param_assoc_bindings(type_params, where_clause, hole_vars);
+        if pushed_bounds_for_assoc {
+            self.current_type_param_bounds.pop();
+        }
+        TypeParamScope::new(bounds, assoc_bindings)
+    }
+
+    /// Like `collect_type_param_bounds` but always includes a key for every
+    /// declared type param, with an empty `Vec` when no bounds are
+    /// declared. Used by the resolver to distinguish "type param in scope
+    /// with no bounds" (emit missing-bound diagnostic) from "name is not a
+    /// type param at all" (fall through to other resolution paths).
+    pub(super) fn collect_type_param_scope_with_bounds(
+        &self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        if let Some(params) = type_params {
+            for param in params {
+                map.entry(param.name.clone()).or_default();
+            }
+        }
+        let with_bounds = self.collect_type_param_bounds(type_params, where_clause);
+        for (k, v) in with_bounds {
+            let entry = map.entry(k).or_default();
+            for b in v {
+                if !entry.iter().any(|existing| existing == &b) {
+                    entry.push(b);
+                }
+            }
+        }
+        map
     }
 
     #[expect(
@@ -2278,6 +4229,69 @@ impl Checker {
         }
     }
 
+    pub(super) fn collect_type_param_assoc_bindings(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) -> HashMap<(String, String, String), Ty> {
+        let mut bindings = HashMap::new();
+        let mut declared = HashSet::new();
+        if let Some(params) = type_params {
+            for param in params {
+                declared.insert(param.name.clone());
+                for bound in &param.bounds {
+                    self.collect_type_param_bound_assoc_bindings(
+                        &param.name,
+                        bound,
+                        &mut bindings,
+                        hole_vars,
+                    );
+                }
+            }
+        }
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                    if !declared.contains(name) {
+                        continue;
+                    }
+                    if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                        continue;
+                    }
+                    for bound in &predicate.bounds {
+                        self.collect_type_param_bound_assoc_bindings(
+                            name,
+                            bound,
+                            &mut bindings,
+                            hole_vars,
+                        );
+                    }
+                }
+            }
+        }
+        bindings
+    }
+
+    fn collect_type_param_bound_assoc_bindings(
+        &mut self,
+        param_name: &str,
+        bound: &TraitBound,
+        bindings: &mut HashMap<(String, String, String), Ty>,
+        hole_vars: &mut Vec<TypeVar>,
+    ) {
+        for binding in &bound.assoc_type_bindings {
+            let key = (
+                param_name.to_string(),
+                bound.name.clone(),
+                binding.name.clone(),
+            );
+            bindings
+                .entry(key)
+                .or_insert_with(|| self.resolve_registered_annotation_ty(&binding.ty, hole_vars));
+        }
+    }
+
     /// Check whether a parameter is the receiver (i.e. the implicit first
     /// parameter of an impl/trait method).  A parameter is a receiver if its
     /// declared type matches `Self` or the current impl target type.
@@ -2315,6 +4329,87 @@ impl Checker {
         }
     }
 
+    /// Ingest a `#[extern_symbol("…")]` attribute (Stage 2 of W3.001).
+    ///
+    /// Stage 1 already validated the attribute's **attachment position**
+    /// (parser rejects it on free fns, actors, trait fns,
+    /// type-decl methods). This helper runs at FnSig-ingest time on
+    /// the surviving attachment sites (extern `"C"` block fns,
+    /// inherent impl methods, trait-impl methods) and:
+    ///
+    /// 1. Finds the (at most one) `extern_symbol` attribute.
+    /// 2. Parses its template via
+    ///    [`crate::extern_symbol::ExternSymbolTemplate::parse`].
+    /// 3. On success returns a populated
+    ///    [`crate::extern_symbol::ExternSymbolSpec`].
+    /// 4. On failure emits a span-anchored
+    ///    [`TypeErrorKind::InvalidExternSymbolTemplate`] diagnostic
+    ///    and returns `None` (fail-closed: the `FnSig` records no
+    ///    template, so Stage-3 monomorphic dispatch will surface the
+    ///    same call site as an unresolved-symbol diagnostic rather
+    ///    than silently routing through a malformed template).
+    ///
+    /// Returns `None` when no `extern_symbol` attribute is present —
+    /// the normal case for ordinary functions and methods.
+    pub(super) fn ingest_extern_symbol_attrs(
+        &mut self,
+        attrs: &[Attribute],
+    ) -> Option<crate::extern_symbol::ExternSymbolSpec> {
+        let attr = attrs.iter().find(|a| a.name == "extern_symbol")?;
+        // Stage 1 parser accepts only a single positional string argument
+        // for `#[extern_symbol("...")]` (see hew-parser tests at
+        // `extern_symbol_attribute_on_*_is_captured`). If a future
+        // parser regression lets a malformed shape through, fail closed
+        // with a precise diagnostic rather than panic.
+        let raw_payload = match attr.args.as_slice() {
+            [AttributeArg::Positional(s)] => s.as_str(),
+            [] => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "missing template string — expected `#[extern_symbol(\"...\")]`"
+                            .to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol]` requires a single string argument naming the C-ABI \
+                     runtime symbol (with optional `{T}` placeholders for per-monomorphization \
+                     dispatch)"
+                        .to_string(),
+                ));
+                return None;
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: "expected exactly one positional string argument".to_string(),
+                    },
+                    attr.span.clone(),
+                    "`#[extern_symbol(\"hew_symbol\")]` accepts exactly one positional string \
+                     argument; multi-argument and key-value forms are not part of the W3.001 \
+                     grammar"
+                        .to_string(),
+                ));
+                return None;
+            }
+        };
+        match crate::extern_symbol::ExternSymbolTemplate::parse(raw_payload) {
+            Ok(template) => Some(crate::extern_symbol::ExternSymbolSpec {
+                template,
+                span: attr.span.clone(),
+            }),
+            Err(err) => {
+                let reason = err.reason();
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidExternSymbolTemplate {
+                        reason: reason.clone(),
+                    },
+                    attr.span.clone(),
+                    format!("invalid `#[extern_symbol]` template: {reason}"),
+                ));
+                None
+            }
+        }
+    }
+
     pub(super) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
@@ -2324,7 +4419,24 @@ impl Checker {
         } else {
             0
         };
+        // Validate that no bound carries unsupported positional type arguments
+        // (e.g. `T: Eq<U>`) before `collect_type_param_bounds` erases them.
+        self.validate_fn_type_param_bound_shapes(fd);
+        // Push the type-param bounds map BEFORE resolving the signature so
+        // the resolver can validate `T::Bar` projections that appear in
+        // param/return types. Includes type params with no bounds so the
+        // resolver can distinguish "in scope with no bounds" (emit
+        // missing-bound diagnostic) from "not in scope" (fall through).
         let mut hole_vars = Vec::new();
+        let fn_scope = self.collect_type_param_scope_with_assoc_bindings(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_bounds = !fn_scope.bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(fn_scope.clone());
+        }
         let param_names = fd
             .params
             .iter()
@@ -2340,6 +4452,9 @@ impl Checker {
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
@@ -2349,6 +4464,7 @@ impl Checker {
             declared_return
         };
 
+        let fn_assoc_bindings = fn_scope.assoc_bindings;
         let sig = FnSig {
             type_params: fd.type_params.as_ref().map_or(vec![], |params| {
                 params.iter().map(|p| p.name.clone()).collect()
@@ -2359,15 +4475,147 @@ impl Checker {
             params,
             return_type,
             is_async: fd.is_async,
-            is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
+            extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
+            // Receiver mutability flag — see `FnSig::requires_mutable_receiver`.
+            // Only methods (Type::method) can carry a receiver; free functions
+            // whose first parameter happens to be named `self` are not methods
+            // in this sense (matches the `skip` logic above).
+            requires_mutable_receiver: is_method
+                && fd
+                    .params
+                    .first()
+                    .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
             ..FnSig::default()
         };
 
         let key = scoped_module_item_name(self.current_module.as_deref(), name)
             .unwrap_or_else(|| name.to_string());
         self.fn_sigs.insert(key.clone(), sig);
+        self.fn_type_param_assoc_bindings
+            .insert(key.clone(), fn_assoc_bindings);
         self.record_fn_sig_inference_holes(&key, hole_vars);
+        // If the declaration carries `#[intrinsic("name")]`, validate its
+        // placement and (if accepted) record the mapping so HIR lowering can
+        // skip the body and wire to the catalog.
+        if let Some(intrinsic_key) = &fd.intrinsic {
+            self.register_intrinsic_declaration(key, intrinsic_key, name, fd);
+        }
+    }
+
+    /// Validate a `#[intrinsic("…")]` declaration's placement and, if it lives
+    /// in a stdlib-floor module **and** is a top-level free function, record
+    /// the name→key mapping consumed by HIR lowering.
+    ///
+    /// P0 surface-immutability gate (A605, plan §7 risk 4): the `#[intrinsic]`
+    /// surface is compiler-internal-only. Any declaration outside the
+    /// designated stdlib-floor modules — including the root/user module — is a
+    /// hard `E_INTRINSIC_OUTSIDE_FLOOR` error so a user program (or any
+    /// non-floor module) cannot wire itself to a compiler intrinsic. Fail-closed:
+    /// every non-allowlisted module path is rejected, never silently allowed.
+    ///
+    /// **Two-axis gate** — this is the single complete enforcement point:
+    ///
+    /// * **(a) Module axis**: the current module must be on the floor allowlist.
+    ///   `#[intrinsic]` in the root/user module or any non-floor module is
+    ///   rejected with `E_INTRINSIC_OUTSIDE_FLOOR`.
+    ///
+    /// * **(b) Shape axis**: the `key` must be a top-level free-function name
+    ///   (no `::` separator). A method key of the form `"Type::method"` — which
+    ///   arises for impl methods, actor methods, and trait-impl methods that flow
+    ///   through `register_fn_sig_with_name` — is rejected with
+    ///   `E_INTRINSIC_ON_METHOD`, regardless of module. Compiler intrinsics are
+    ///   wired to standalone catalog entries; they are never method dispatch
+    ///   slots.
+    ///
+    /// A declaration that passes both axes is inserted into
+    /// `intrinsic_declarations`. A rejected declaration is never inserted, so
+    /// it cannot become a live intrinsic dispatch target.
+    fn register_intrinsic_declaration(
+        &mut self,
+        key: String,
+        intrinsic_key: &str,
+        name: &str,
+        fd: &FnDecl,
+    ) {
+        // Shape axis (b): a key containing `::` is a method (e.g. `"Type::method"`).
+        // Impl methods, actor methods, and trait-impl methods all reach here with
+        // such a key via `register_fn_sig_with_name`.  Methods are never valid
+        // intrinsic declarations, regardless of which module they live in.
+        // Reject early and do NOT insert into `intrinsic_declarations`.
+        if key.contains("::") {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::IntrinsicOnMethod {
+                    intrinsic_key: intrinsic_key.to_string(),
+                    method_key: key.clone(),
+                },
+                span: fd.decl_span.clone(),
+                message: format!(
+                    "E_INTRINSIC_ON_METHOD: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                     `{name}` (key `{key}`) is declared on an impl method — \
+                     the `#[intrinsic]` surface is valid only on top-level free \
+                     functions inside a stdlib-floor module; method dispatch \
+                     slots are never wired to compiler intrinsics (A605)"
+                ),
+                notes: vec![(
+                    fd.decl_span.clone(),
+                    "Compiler intrinsics are catalog entries keyed on bare function \
+                     names; they cannot be dispatched through a receiver. Expose the \
+                     intrinsic as a top-level free function in the floor module and \
+                     call it from the impl method body if needed."
+                        .to_string(),
+                )],
+                suggestions: vec![
+                    "remove the `#[intrinsic(\"…\")]` attribute from this method".to_string(),
+                    "if a new intrinsic is genuinely needed, declare it as a top-level \
+                     free function in the appropriate stdlib-floor module"
+                        .to_string(),
+                ],
+                source_module: self.current_module.clone(),
+            });
+            // Deliberately do NOT record the intrinsic mapping: a rejected
+            // declaration must not become a live intrinsic dispatch target.
+            return;
+        }
+        // Module axis (a): the declaration must live in a stdlib-floor module.
+        if is_intrinsic_floor_module(self.current_module.as_deref()) {
+            self.intrinsic_declarations
+                .insert(key, intrinsic_key.to_string());
+            return;
+        }
+        let module_label = self
+            .current_module
+            .clone()
+            .unwrap_or_else(|| "(root)".to_string());
+        self.errors.push(TypeError {
+            severity: crate::error::Severity::Error,
+            kind: TypeErrorKind::IntrinsicOutsideFloor {
+                intrinsic_key: intrinsic_key.to_string(),
+                module: module_label.clone(),
+            },
+            span: fd.decl_span.clone(),
+            message: format!(
+                "E_INTRINSIC_OUTSIDE_FLOOR: `#[intrinsic(\"{intrinsic_key}\")]` on \
+                 `{name}` is declared in `{module_label}`, which is not a \
+                 stdlib-floor module — the `#[intrinsic]` surface is \
+                 compiler-internal-only and cannot be declared by user code"
+            ),
+            notes: vec![(
+                fd.decl_span.clone(),
+                "Memory and math intrinsics are wired by the compiler; user \
+                 programs call the stdlib functions that the floor exposes, \
+                 they never declare `#[intrinsic]` themselves. There is no \
+                 user-visible `unsafe`/`@unsafe` surface (A605)."
+                    .to_string(),
+            )],
+            suggestions: vec!["remove the `#[intrinsic(\"…\")]` attribute and call the \
+                 corresponding stdlib function instead"
+                .to_string()],
+            source_module: self.current_module.clone(),
+        });
+        // Deliberately do NOT record the intrinsic mapping: a rejected
+        // declaration must not become a live intrinsic dispatch target.
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -2385,6 +4633,14 @@ impl Checker {
     ///
     /// Returns the built `FnSig` for callers that need to insert it
     /// on additional type names (e.g., qualified aliases).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for impl-method registration; \
+                  factoring sub-passes would obscure the ordering invariants \
+                  the surrounding code relies on (bounds push/pop, \
+                  receiver-skip, double-write of fn_sigs + td.methods, \
+                  W3.001 Stage-2 extern_symbol mirror)"
+    )]
     pub(super) fn register_impl_method(
         &mut self,
         type_name: &str,
@@ -2393,14 +4649,37 @@ impl Checker {
         impl_where_clause: Option<&WhereClause>,
     ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
+        // Push impl-level bounds onto the resolver's stack so the method
+        // signature can reference `T::Bar` where `T` is an impl type param
+        // (e.g. `impl<I: Iterator> Foo for X { fn next() -> I::Item }`).
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            impl_type_params,
+            impl_where_clause,
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         self.register_fn_sig_with_name(&method_key, method);
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
 
         // Patch the fn_sigs entry to include impl-level type params and their
         // bounds. `register_fn_sig_with_name` only records method-level params,
         // so `type_param_carries_bound` would otherwise miss impl-level bounds
         // such as `T: Display` in `impl<T: Display> Holder<T>`.
         if let Some(impl_tps) = impl_type_params {
-            let impl_bounds = self.collect_type_param_bounds(impl_type_params, impl_where_clause);
+            let mut impl_scope_holes = Vec::new();
+            let impl_scope = self.collect_type_param_scope_with_assoc_bindings(
+                impl_type_params,
+                impl_where_clause,
+                &mut impl_scope_holes,
+            );
+            let impl_bounds = impl_scope.bounds;
+            let impl_assoc_bindings = impl_scope.assoc_bindings;
             let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
                 .unwrap_or_else(|| method_key.clone());
             if let Some(sig) = self.fn_sigs.get_mut(&key) {
@@ -2416,8 +4695,22 @@ impl Checker {
                     }
                 }
             }
+            let bindings = self.fn_type_param_assoc_bindings.entry(key).or_default();
+            for (assoc_key, ty) in impl_assoc_bindings {
+                bindings.entry(assoc_key).or_insert(ty);
+            }
         }
 
+        let mut impl_scope_holes = Vec::new();
+        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
+            impl_type_params,
+            impl_where_clause,
+            &mut impl_scope_holes,
+        );
+        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.push(impl_bounds_map);
+        }
         let skip = usize::from(
             method
                 .params
@@ -2433,6 +4726,9 @@ impl Checker {
         let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty_no_holes(ret)
         });
+        if pushed_impl_bounds {
+            self.current_type_param_bounds.pop();
+        }
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -2472,6 +4768,18 @@ impl Checker {
                 Self::push_unique_bound(entry, &bound);
             }
         }
+        // Re-use the structured `extern_symbol` already parsed by
+        // `register_fn_sig_with_name` above. Re-parsing the attribute
+        // here would emit duplicate `InvalidExternSymbolTemplate`
+        // diagnostics for the same source span; cloning the resolved
+        // spec keeps the diagnostic surface single-shot while still
+        // propagating the field onto the `td.methods` entry consumed
+        // by Stage-3 method-call rewrites.
+        let extern_symbol = {
+            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+                .unwrap_or_else(|| method_key.clone());
+            self.fn_sigs.get(&key).and_then(|s| s.extern_symbol.clone())
+        };
 
         let sig = FnSig {
             type_params: all_type_params,
@@ -2480,13 +4788,457 @@ impl Checker {
             params,
             return_type,
             is_async: method.is_async,
-            is_pure: method.is_pure,
+            extern_symbol,
+            // Mirror `register_fn_sig_with_name`'s computation so that
+            // `lookup_named_method_sig` (which prefers `td.methods` before
+            // `fn_sigs`) returns a sig with the receiver-mutability flag
+            // set. Without this, the call-site mutable-binding gate at
+            // `methods.rs` (Q297 Stage 1) silently misses every trait impl
+            // method on a user type.
+            requires_mutable_receiver: method
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
             ..FnSig::default()
         };
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
         }
         sig
+    }
+
+    /// Substitute trait-side type references into impl-side concrete types.
+    ///
+    /// Walks `ty` recursively and replaces:
+    /// * `Ty::Named { name: "Self", args: [] }` → `impl_self`
+    /// * `Ty::Named { name: <trait type param>, args: [] }` → the impl-supplied
+    ///   type arg from `trait_param_map`
+    /// * `Ty::AssocType { base: Self, trait_name == trait_name, assoc_name }`
+    ///   → the impl's `type <assoc_name> = X` binding when present
+    ///
+    /// Used by [`Self::check_impl_method_against_trait`] to project the trait
+    /// method's declared signature into the concrete shape the impl method
+    /// must match. Returns the input unchanged for any subterm the
+    /// substitution cannot resolve (so comparison errs on the side of
+    /// accepting rather than firing on partial information).
+    fn substitute_trait_sig_for_impl(
+        &self,
+        ty: &Ty,
+        impl_self: &Ty,
+        impl_target_name: &str,
+        trait_name: &str,
+        trait_param_map: &HashMap<String, Ty>,
+    ) -> Ty {
+        match ty {
+            Ty::Named { name, args, .. } if args.is_empty() && name == "Self" => impl_self.clone(),
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if let Some(mapped) = trait_param_map.get(name) {
+                    return mapped.clone();
+                }
+                ty.clone()
+            }
+            Ty::AssocType {
+                base,
+                trait_name: tn,
+                assoc_name,
+            } => {
+                let base_is_self = matches!(&**base, Ty::Named { name, args, .. } if name == "Self" && args.is_empty());
+                if base_is_self && tn.as_ref() == trait_name {
+                    let key = (
+                        impl_target_name.to_string(),
+                        trait_name.to_string(),
+                        assoc_name.as_ref().to_string(),
+                    );
+                    if let Some(resolved) = self.impl_assoc_type_bindings.get(&key) {
+                        return resolved.clone();
+                    }
+                }
+                let new_base = self.substitute_trait_sig_for_impl(
+                    base,
+                    impl_self,
+                    impl_target_name,
+                    trait_name,
+                    trait_param_map,
+                );
+                Ty::AssocType {
+                    base: Box::new(new_base),
+                    trait_name: tn.clone(),
+                    assoc_name: assoc_name.clone(),
+                }
+            }
+            _ => ty.map_children_pub(&|child| {
+                self.substitute_trait_sig_for_impl(
+                    child,
+                    impl_self,
+                    impl_target_name,
+                    trait_name,
+                    trait_param_map,
+                )
+            }),
+        }
+    }
+
+    /// Rename method-level type parameter names in `ty` from the trait's
+    /// declared names to the impl's declared names, paired positionally.
+    ///
+    /// Accepts the legitimate case where an impl renames a trait's method
+    /// type param (`fn map<T>` in the trait, `fn map<U>` in the impl): after
+    /// renaming, `Ty::Named { name: "T" }` becomes `Ty::Named { name: "U" }`
+    /// in the expected sig so structural equality with the impl sig holds.
+    ///
+    /// Only renames when both sides declare the same number of method-level
+    /// type params. Skips otherwise so a separate arity-of-type-params
+    /// diagnostic (future) is not preempted.
+    fn rename_method_type_params(
+        ty: &Ty,
+        trait_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
+        impl_method_tps: Option<&Vec<hew_parser::ast::TypeParam>>,
+    ) -> Ty {
+        let trait_names: Vec<&str> = trait_method_tps
+            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .unwrap_or_default();
+        let impl_names: Vec<&str> = impl_method_tps
+            .map(|v| v.iter().map(|tp| tp.name.as_str()).collect())
+            .unwrap_or_default();
+        if trait_names.is_empty() || trait_names.len() != impl_names.len() {
+            return ty.clone();
+        }
+        // Build the full rename map and substitute in parallel.  Sequential
+        // substitution aliases entries when trait names and impl names
+        // permute: renaming T→U then U→T would map both back to T.
+        // Identity entries (t == u) are harmless to include.
+        let subst_map: HashMap<String, Ty> = trait_names
+            .iter()
+            .zip(impl_names.iter())
+            .map(|(t, u)| {
+                (
+                    (*t).to_string(),
+                    Ty::Named {
+                        builtin: None,
+                        name: (*u).to_string(),
+                        args: vec![],
+                    },
+                )
+            })
+            .collect();
+        ty.substitute_named_params_parallel(&subst_map)
+    }
+
+    /// Enforce that an impl method's signature matches the declared trait
+    /// method's signature, after substituting `Self`, trait type parameters,
+    /// and the impl's associated-type aliases. Q004 / LESSONS
+    /// `diagnostic-trust`: emits at the impl method's local span so the user
+    /// sees the actual divergence instead of a confusing
+    /// "type does not satisfy trait" cascaded from a later call site.
+    ///
+    /// Silent (no diagnostic) when:
+    /// * the trait method is not declared (a separate "extra method" check is
+    ///   future work; this lane only enforces equivalence of methods that are
+    ///   intended to satisfy a declared trait method);
+    /// * the trait signature was not registered (already produced a
+    ///   diagnostic, would double-fire);
+    /// * any side of the comparison contains `Ty::Error` (cascading
+    ///   suppression — see the `cascading-Ty::Error` invariant);
+    /// * the receiver-skip stripped a different number of params on either
+    ///   side because the impl elided the receiver (treat as receiver-kind
+    ///   mismatch and report).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for the impl-vs-trait sig comparison; \
+                  factoring would obscure the substitution / projection / \
+                  renaming order that the comparison depends on"
+    )]
+    pub(super) fn check_impl_method_against_trait(
+        &mut self,
+        type_name: &str,
+        self_type_args: &[Ty],
+        trait_bound: &TraitBound,
+        method: &FnDecl,
+        impl_sig: &FnSig,
+    ) {
+        // Two `Ty::Named` that share a name + args but disagree only on the
+        // `builtin` discriminator denote the same nominal type: the tag is a
+        // derived property of the name, stamped when a type resolves against a
+        // canonical builtin source and left `None` when the same name resolves
+        // against its in-scope user definition. The std dual-surface error
+        // enums (`CloseError`, `SendError`, …) hit this — a trait method
+        // declared in `std/io/closable.hew` carries the local-enum form
+        // (`builtin: None`) while an `impl Closable` in another module resolves
+        // the bare name to the builtin surface (`builtin: Some(CloseError)`).
+        // Re-derive the tag from the name on both sides so trait-conformance
+        // compares nominal identity rather than the incidental resolution path
+        // (the user-facing diagnostics still render the original, untouched
+        // types).
+        fn canonicalize_builtin_tags(ty: &Ty) -> Ty {
+            match ty {
+                Ty::Tuple(elems) => {
+                    Ty::Tuple(elems.iter().map(canonicalize_builtin_tags).collect())
+                }
+                Ty::Array(elem, n) => Ty::Array(Box::new(canonicalize_builtin_tags(elem)), *n),
+                Ty::Slice(elem) => Ty::Slice(Box::new(canonicalize_builtin_tags(elem))),
+                Ty::Named { name, args, .. } => Ty::normalize_named(
+                    name.clone(),
+                    args.iter().map(canonicalize_builtin_tags).collect(),
+                ),
+                Ty::Function { params, ret } => Ty::Function {
+                    params: params.iter().map(canonicalize_builtin_tags).collect(),
+                    ret: Box::new(canonicalize_builtin_tags(ret)),
+                },
+                Ty::Closure {
+                    params,
+                    ret,
+                    captures,
+                } => Ty::Closure {
+                    params: params.iter().map(canonicalize_builtin_tags).collect(),
+                    ret: Box::new(canonicalize_builtin_tags(ret)),
+                    captures: captures.iter().map(canonicalize_builtin_tags).collect(),
+                },
+                Ty::Pointer {
+                    is_mutable,
+                    pointee,
+                } => Ty::Pointer {
+                    is_mutable: *is_mutable,
+                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                },
+                Ty::Borrow { pointee } => Ty::Borrow {
+                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                },
+                Ty::Task(inner) => Ty::Task(Box::new(canonicalize_builtin_tags(inner))),
+                other => other.clone(),
+            }
+        }
+
+        let trait_name = trait_bound.name.clone();
+        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+            return;
+        };
+        let Some(trait_method) = trait_info
+            .methods
+            .iter()
+            .find(|m| m.name == method.name)
+            .cloned()
+        else {
+            return;
+        };
+        let trait_method_key = format!("{trait_name}::{}", method.name);
+        let scoped_trait_key =
+            scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
+                .unwrap_or_else(|| trait_method_key.clone());
+        let Some(trait_sig) = self
+            .fn_sigs
+            .get(&scoped_trait_key)
+            .or_else(|| self.fn_sigs.get(&trait_method_key))
+            .cloned()
+        else {
+            return;
+        };
+
+        // Build trait-type-param substitution map.
+        let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
+        if let Some(args) = trait_bound.type_args.as_ref() {
+            for (param_name, arg_expr) in trait_info.type_params.iter().zip(args.iter()) {
+                let resolved = self.resolve_type_expr(arg_expr);
+                trait_param_map.insert(param_name.clone(), resolved);
+            }
+        }
+
+        let impl_self = Ty::Named {
+            builtin: None,
+            name: type_name.to_string(),
+            args: self_type_args.to_vec(),
+        };
+
+        // Materialise the expected impl-side signature.
+        let expected_params: Vec<Ty> = trait_sig
+            .params
+            .iter()
+            .map(|p| {
+                let projected = self.substitute_trait_sig_for_impl(
+                    p,
+                    &impl_self,
+                    type_name,
+                    &trait_name,
+                    &trait_param_map,
+                );
+                Self::rename_method_type_params(
+                    &projected,
+                    trait_method.type_params.as_ref(),
+                    method.type_params.as_ref(),
+                )
+            })
+            .collect();
+        let expected_return = {
+            let projected = self.substitute_trait_sig_for_impl(
+                &trait_sig.return_type,
+                &impl_self,
+                type_name,
+                &trait_name,
+                &trait_param_map,
+            );
+            Self::rename_method_type_params(
+                &projected,
+                trait_method.type_params.as_ref(),
+                method.type_params.as_ref(),
+            )
+        };
+
+        // Cascading-Ty::Error suppression: if anything in expected or actual
+        // is Error, skip — earlier diagnostics already explain the failure.
+        let any_error = expected_params.iter().any(Ty::contains_error)
+            || expected_return.contains_error()
+            || impl_sig.params.iter().any(Ty::contains_error)
+            || impl_sig.return_type.contains_error();
+        if any_error {
+            return;
+        }
+
+        let report_span = if method.decl_span.start != method.decl_span.end {
+            method.decl_span.clone()
+        } else if method.fn_span.start != method.fn_span.end {
+            method.fn_span.clone()
+        } else {
+            // Defensive: if the parser left both blank, fall back to the trait
+            // method span so the message still anchors to a real source range.
+            trait_method.span.clone()
+        };
+
+        if expected_params.len() != impl_sig.params.len() {
+            // Arity mismatch — also fires when the impl wrote a different
+            // receiver shape (e.g. `(it: X)` vs `(self)`), because the impl's
+            // non-Self first param is not detected as a receiver and so is
+            // *not* skipped, producing a different post-skip arity.
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "arity",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` has {} parameter(s) but trait `{trait_name}` declares {} \
+                     (after substituting `Self` and projecting associated types)",
+                    method.name,
+                    impl_sig.params.len(),
+                    expected_params.len(),
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+            return;
+        }
+
+        // Receiver-mutability axis (Q297 Stage 1): when both sides declare a
+        // receiver, the `is_mutable` flag must match. A trait declaring
+        // `fn next(var self)` and an impl declaring `fn next(self)` (or vice
+        // versa) is a hard reject — the receiver-mutability axis is part of
+        // the contract, not a free parameter the impl may choose.
+        //
+        // Determine each side's receiver-mutability flag by checking the
+        // first parameter for receiver-shape. This mirrors how
+        // `register_impl_method` and `register_fn_sig_with_name` already
+        // detect-and-skip receivers when building the signature's params
+        // list; the receiver's `is_mutable` flag is otherwise dropped on
+        // the floor, which is precisely the contract gap this check closes.
+        let trait_receiver_mut = trait_method
+            .params
+            .first()
+            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+        let impl_receiver_mut = method
+            .params
+            .first()
+            .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+        if trait_receiver_mut != impl_receiver_mut {
+            let (trait_shape, impl_shape) = if trait_receiver_mut {
+                (
+                    "`var self` (mutable receiver)",
+                    "`self` (by-value receiver)",
+                )
+            } else {
+                (
+                    "`self` (by-value receiver)",
+                    "`var self` (mutable receiver)",
+                )
+            };
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "receiver mutability",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` declares {impl_shape} but trait `{trait_name}` requires {trait_shape}",
+                    method.name,
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+            return;
+        }
+
+        for (i, (expected, actual)) in expected_params
+            .iter()
+            .zip(impl_sig.params.iter())
+            .enumerate()
+        {
+            if canonicalize_builtin_tags(expected) != canonicalize_builtin_tags(actual) {
+                let param_label = impl_sig.param_names.get(i).map_or_else(
+                    || format!("parameter {}", i + 1),
+                    |n| format!("parameter `{n}`"),
+                );
+                self.report_error_with_note(
+                    TypeErrorKind::TraitImplSignatureMismatch {
+                        trait_name: trait_name.clone(),
+                        method_name: method.name.clone(),
+                        detail: "parameter",
+                    },
+                    &report_span,
+                    format!(
+                        "impl method `{type_name}::{}` {param_label} has type `{}` but trait `{trait_name}` \
+                         requires `{}`",
+                        method.name,
+                        actual.user_facing(),
+                        expected.user_facing(),
+                    ),
+                    &trait_method.span,
+                    format!(
+                        "trait method `{trait_name}::{}` declared here",
+                        method.name
+                    ),
+                );
+                return;
+            }
+        }
+
+        if canonicalize_builtin_tags(&expected_return)
+            != canonicalize_builtin_tags(&impl_sig.return_type)
+        {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "return type",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` returns `{}` but trait `{trait_name}` requires `{}`",
+                    method.name,
+                    impl_sig.return_type.user_facing(),
+                    expected_return.user_facing(),
+                ),
+                &trait_method.span,
+                format!(
+                    "trait method `{trait_name}::{}` declared here",
+                    method.name
+                ),
+            );
+        }
     }
 
     pub(super) fn record_trait_impl(&mut self, type_name: &str, trait_name: &str) {
@@ -2499,8 +5251,9 @@ impl Checker {
     /// trait impls cannot be hung off `type_defs`:
     ///
     /// * Primitives — keyed by `Ty::canonical_lowering_name()`.  This collapses
-    ///   the user-facing alias set (`int`/`Int`/`isize` → `i64`) so registration
-    ///   and dispatch agree on a single key.
+    ///   the user-facing alias set (`isize` → `i64`) so registration and
+    ///   dispatch agree on a single key.  `int` and `Int` are no longer
+    ///   accepted; the resolver hard-errors at the type-position lookup.
     /// * Compiler-builtin generics `Vec`, `HashMap`, `HashSet` — keyed by their
     ///   bare name; these already lack a `type_defs` entry that user impls can
     ///   attach methods to.
@@ -2512,9 +5265,13 @@ impl Checker {
         if let Some(canonical) = ty.canonical_lowering_name() {
             return Some(canonical.to_string());
         }
-        if let Ty::Named { name, .. } = ty {
-            if matches!(name.as_str(), "Vec" | "HashMap" | "HashSet") {
-                return Some(name.clone());
+        if let Ty::Named {
+            builtin: Some(builtin),
+            ..
+        } = ty
+        {
+            if builtin.is_collection() {
+                return Some(builtin.canonical_name().to_string());
             }
         }
         None
@@ -2522,14 +5279,14 @@ impl Checker {
 
     /// Same as [`Self::canonical_primitive_or_builtin_key`] but accepts the
     /// raw type-name string seen at impl-block registration (e.g. `"int"`,
-    /// `"String"`, `"Vec"`).  Returns `None` for names that aren't primitive
+    /// `"string"`, `"Vec"`).  Returns `None` for names that aren't primitive
     /// aliases or compiler-builtin generics.
     #[must_use]
     pub(super) fn canonical_primitive_or_builtin_key_from_name(name: &str) -> Option<String> {
         if let Some(prim) = Ty::from_name(name) {
             return Self::canonical_primitive_or_builtin_key(&prim);
         }
-        if matches!(name, "Vec" | "HashMap" | "HashSet") {
+        if crate::lookup_builtin_type(name).is_some_and(crate::BuiltinType::is_collection) {
             return Some(name.to_string());
         }
         None
@@ -2584,6 +5341,7 @@ impl Checker {
                 generic_bindings.insert(
                     tp.name.clone(),
                     Ty::Named {
+                        builtin: None,
                         name: tp.name.clone(),
                         args: vec![],
                     },
@@ -2595,6 +5353,16 @@ impl Checker {
         }
 
         let mut hole_vars = Vec::new();
+        let rf_scope = self.collect_type_param_scope_with_assoc_bindings(
+            rf.type_params.as_ref(),
+            rf.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_rf_bounds = !rf_scope.bounds.is_empty();
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.push(rf_scope.clone());
+        }
+
         let param_names = rf.params.iter().map(|p| p.name.clone()).collect();
         let params = rf
             .params
@@ -2610,6 +5378,9 @@ impl Checker {
             declared_return_type
         };
 
+        if pushed_rf_bounds {
+            self.current_type_param_bounds.pop();
+        }
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }
@@ -2624,7 +5395,6 @@ impl Checker {
             param_names,
             params,
             return_type,
-            is_pure: rf.is_pure,
             ..FnSig::default()
         };
 
@@ -2634,10 +5404,65 @@ impl Checker {
         }
         self.actor_receive_methods.insert(method_name.clone());
         self.record_fn_sig_inference_holes(&method_name, hole_vars);
+        self.fn_type_param_assoc_bindings
+            .insert(method_name.clone(), rf_scope.assoc_bindings);
         self.fn_sigs.insert(method_name, sig);
     }
 
     pub(super) fn register_extern_block(&mut self, eb: &ExternBlock) {
+        // `extern "rt"` is the Hew-side declaration surface for JIT-visible
+        // runtime functions. Validate each declared symbol against the `stable`
+        // section of scripts/jit-symbol-classification.toml. Fail-closed: an
+        // unclassified symbol is a hard error so the failure surfaces at check
+        // time rather than at link time or (worse) silently routing to a wrong
+        // runtime entry.
+        //
+        // `extern "C"` remains the raw user FFI surface (unsafe, no
+        // validation). Other ABI strings are not yet defined by the language
+        // and fall through to fn_sigs registration unchanged.
+        if eb.abi == "rt" {
+            let stable = jit_stable_symbols();
+            for f in &eb.functions {
+                if !stable.contains(f.name.as_str()) {
+                    self.errors.push(TypeError {
+                        severity: crate::error::Severity::Error,
+                        kind: TypeErrorKind::ExternRtSymbolUnclassified {
+                            symbol_name: f.name.clone(),
+                            hint: format!(
+                                "add `\"{}\"` to the `stable` list in \
+                                 scripts/jit-symbol-classification.toml, \
+                                 or use `extern \"C\"` for raw FFI symbols \
+                                 that are not part of the Hew JIT runtime ABI",
+                                f.name
+                            ),
+                        },
+                        span: f.span.clone(),
+                        message: format!(
+                            "`extern \"rt\" fn {}` names a symbol not in the JIT \
+                             runtime stable ABI — only symbols classified as `stable` \
+                             in scripts/jit-symbol-classification.toml may appear in \
+                             `extern \"rt\"` blocks",
+                            f.name
+                        ),
+                        notes: vec![(
+                            f.span.clone(),
+                            "The `internal` classification covers lifecycle/shutdown \
+                             symbols; `codegen-stable` covers compiler-emitted symbols \
+                             (e.g. cooperate safepoints, actor-state locks). Neither \
+                             may be named by user code in `extern \"rt\"` blocks."
+                                .to_string(),
+                        )],
+                        suggestions: vec![format!(
+                            "add `\"{}\"` to the `stable` list in \
+                             scripts/jit-symbol-classification.toml",
+                            f.name
+                        )],
+                        source_module: self.current_module.clone(),
+                    });
+                }
+            }
+        }
+
         for f in &eb.functions {
             let mut hole_vars = Vec::new();
             let param_names = f.params.iter().map(|p| p.name.clone()).collect();
@@ -2653,6 +5478,7 @@ impl Checker {
                 param_names,
                 params,
                 return_type,
+                extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
@@ -2669,50 +5495,85 @@ impl Checker {
         self.register_channel_recv_builtins();
     }
 
-    /// Registers synthetic `fn_sigs` entries for channel `recv`/`try_recv`
-    /// functions whose calling convention is handled entirely by codegen.
+    /// Registers synthetic `fn_sigs` entries for the channel layout-witness
+    /// `send`/`recv`/`try_recv` entries, whose calling convention is handled
+    /// entirely by codegen.
     ///
-    /// These functions use an out-parameter ABI for `Option<T>` and must
-    /// NOT be declared in `extern "C"` blocks — the codegen intercepts
-    /// them by name and emits custom MLIR.  We register them here so the
-    /// type checker can resolve calls inside `unsafe` blocks.
+    /// The real runtime ABI carries an out-parameter and an element-layout
+    /// witness pointer (`hew_channel_recv_layout(rx, out, witness)`), which
+    /// cannot be expressed in an `extern "C"` block — codegen intercepts the
+    /// call by name and emits the witness ABI. We register them here so the
+    /// type checker can resolve the stdlib impl-body calls inside `unsafe`
+    /// blocks (the declared `string` element types are placeholders; the
+    /// intercept derives the element type from the call site).
     ///
-    /// Only activates when we're actually in the channel module: the
-    /// local module must define `Receiver` AND the extern block must
-    /// have already registered `hew_channel_send`.
+    /// Only activates when we're actually in the channel module: the local
+    /// module must define `Receiver` AND the extern block must have already
+    /// registered the `hew_channel_new` constructor.
     pub(super) fn register_channel_recv_builtins(&mut self) {
-        let send_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send")
-            .unwrap_or_else(|| "hew_channel_send".to_string());
-        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&send_key) {
+        let marker_key = scoped_module_item_name(self.current_module.as_deref(), "hew_channel_new")
+            .unwrap_or_else(|| "hew_channel_new".to_string());
+        if !self.local_type_defs.contains("Receiver") || !self.fn_sigs.contains_key(&marker_key) {
             return;
         }
 
         let receiver_ty = Ty::Named {
+            builtin: None,
             name: "Receiver".to_string(),
             args: vec![],
         };
+        let sender_ty = Ty::Named {
+            builtin: None,
+            name: "Sender".to_string(),
+            args: vec![],
+        };
 
-        let builtins: &[(&str, Ty)] = &[
-            ("hew_channel_recv", Ty::option(Ty::String)),
-            ("hew_channel_recv_int", Ty::option(Ty::I64)),
-            ("hew_channel_try_recv", Ty::option(Ty::String)),
-            ("hew_channel_try_recv_int", Ty::option(Ty::I64)),
+        let builtins: &[(&str, &str, Ty, Ty)] = &[
+            (
+                "hew_channel_recv_layout",
+                "rx",
+                receiver_ty.clone(),
+                Ty::option(Ty::String),
+            ),
+            (
+                "hew_channel_try_recv_layout",
+                "rx",
+                receiver_ty.clone(),
+                Ty::option(Ty::String),
+            ),
         ];
 
-        for (name, ret_ty) in builtins {
+        for (name, param_name, param_ty, ret_ty) in builtins {
             let key = scoped_module_item_name(self.current_module.as_deref(), name)
                 .unwrap_or_else(|| (*name).to_string());
             if self.fn_sigs.contains_key(&key) {
                 continue;
             }
             let sig = FnSig {
-                param_names: vec!["rx".to_string()],
-                params: vec![receiver_ty.clone()],
+                param_names: vec![(*param_name).to_string()],
+                params: vec![param_ty.clone()],
                 return_type: ret_ty.clone(),
                 ..FnSig::default()
             };
             self.fn_sigs.insert(key.clone(), sig);
             self.unsafe_functions.insert(key);
+        }
+
+        // The typed-serialise send takes the value by reference plus the
+        // witness in the real ABI; the placeholder 2-arg shape carries arity
+        // for the stdlib impl body.
+        let send_key =
+            scoped_module_item_name(self.current_module.as_deref(), "hew_channel_send_layout")
+                .unwrap_or_else(|| "hew_channel_send_layout".to_string());
+        if !self.fn_sigs.contains_key(&send_key) {
+            let sig = FnSig {
+                param_names: vec!["tx".to_string(), "data".to_string()],
+                params: vec![sender_ty, Ty::String],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            };
+            self.fn_sigs.insert(send_key.clone(), sig);
+            self.unsafe_functions.insert(send_key);
         }
     }
 
@@ -2761,6 +5622,8 @@ impl Checker {
                         let accepts_kwargs = module_path == "std::misc::log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&wfn.name.as_str());
                         let sig = FnSig {
+                            type_params: wfn.type_params,
+                            type_param_bounds: wfn.type_param_bounds,
                             params: wfn.params,
                             return_type: wfn.return_type,
                             accepts_kwargs,
@@ -2845,12 +5708,34 @@ impl Checker {
                         }
                     }
 
+                    if module_path == "std::concurrency::lambda_actor"
+                        && decl.resolved_items.is_none()
+                    {
+                        let identity = format!("module:{module_path}");
+                        if !self
+                            .registered_stdlib_hew_sources
+                            .contains(identity.as_str())
+                        {
+                            self.registered_stdlib_hew_sources.insert(identity);
+                            let parsed = hew_parser::parse(LAMBDA_ACTOR_HEW);
+                            debug_assert!(
+                                parsed.errors.is_empty(),
+                                "std/concurrency/lambda_actor.hew failed to parse: {:?}",
+                                parsed.errors,
+                            );
+                            if parsed.errors.is_empty() {
+                                let items: Vec<_> = parsed.program.items.into_iter().collect();
+                                self.register_stdlib_hew_items(&short, &items);
+                            }
+                        }
+                    }
+
                     self.handle_bearing_dirty = true;
                     return;
                 }
                 Some(format!(
                     "module file contains unsupported slice annotations in signature(s): {}. \
-                     MLIR lowering cannot lower slice types yet",
+                     slice type composite lowering is not yet implemented",
                     info.unsupported_type_signatures.join(", ")
                 ))
             }
@@ -2888,7 +5773,17 @@ impl Checker {
                         (span.clone(), self.current_module.clone()),
                     );
                 }
-                self.register_user_module(&short, resolved_items, &decl.spec);
+                // Dedup pure-Hew modules (e.g. `std::fs`) that may be transitively
+                // imported by multiple stdlib sub-modules.  Without this guard,
+                // each referring module's `ImportDecl` carries its own
+                // `resolved_items` copy and `register_user_module` would register
+                // types like `IoError` once per importer, triggering duplicate-
+                // definition errors.  The `registered_stdlib_hew_sources` set tracks
+                // by canonical `module_path` so all `import std::fs` ImportDecls
+                // collapse to the same key.
+                if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                    self.register_user_module(&short, resolved_items, &decl.spec);
+                }
             }
         } else if let Some(error) =
             Self::unresolved_import_error(decl, import_span, &module_path, load_error_detail)
@@ -2898,10 +5793,21 @@ impl Checker {
     }
 
     fn stdlib_hew_source_identity(decl: &ImportDecl, module_path: &str) -> String {
-        decl.resolved_source_paths.first().map_or_else(
-            || format!("module:{module_path}"),
-            |path| format!("path:{}", path.display()),
-        )
+        // Always prefer the canonical module-path key when available so that
+        // multiple ImportDecl objects for the same stdlib module (e.g. `import
+        // std::fs` appearing in quic.hew, tls.hew, and the user file) all hash
+        // to the same identity string even when only some of them have a
+        // resolved_source_paths populated.  Using the file path as the primary
+        // key produces two different strings for the same logical module and
+        // defeats the registered_stdlib_hew_sources dedup guard.
+        if module_path.is_empty() {
+            decl.resolved_source_paths.first().map_or_else(
+                || String::from("module:"),
+                |p| format!("path:{}", p.display()),
+            )
+        } else {
+            format!("module:{module_path}")
+        }
     }
 
     fn unresolved_import_error(
@@ -2969,9 +5875,21 @@ impl Checker {
         // (module_graph traversal) use bare Sender — causing a type mismatch
         // when body-checking the non-root module.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -2982,17 +5900,32 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
                 }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(
+                        Some(module_short),
+                        &md.name,
+                        span,
+                    ) {
+                        continue;
+                    }
+                    self.register_machine_decl(md, span);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
+                }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&tr.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &tr.name, span) {
                         continue;
                     }
                     let info = Self::trait_info_from_decl(tr);
@@ -3016,16 +5949,33 @@ impl Checker {
                     }
                     let qualified = format!("{module_short}.{}", fd.name);
                     if !self.fn_sigs.contains_key(&qualified) {
-                        let sig = self.build_fn_sig_from_decl(fd);
+                        let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                         self.module_fn_exports.insert(qualified.clone());
+                        self.fn_type_param_assoc_bindings
+                            .insert(qualified.clone(), assoc_bindings);
                         self.fn_sigs.insert(qualified, sig);
                     }
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
-                    self.register_actor_base(ad);
+                    self.register_actor_base(ad, Some(module_short));
+                }
+                // Register pub consts from C-backed stdlib modules that also
+                // ship Hew source (e.g. `std::misc::log` with `pub const JSON`).
+                // `register_user_module` handles this for pure-Hew user modules;
+                // this arm mirrors it for the stdlib Hew-source path so that
+                // `module.CONST` field access resolves in the type checker via
+                // the same `env.lookup_ref("{module}.{field}")` guard in
+                // `check_field_access`.
+                Item::Const(cd) => {
+                    if !cd.visibility.is_pub() {
+                        continue;
+                    }
+                    let ty = self.resolve_registered_annotation_ty_no_holes(&cd.ty);
+                    let qualified = format!("{module_short}.{}", cd.name);
+                    self.env.define(qualified, ty, false);
                 }
                 _ => {}
             }
@@ -3098,14 +6048,26 @@ impl Checker {
                         continue;
                     }
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
                 }
                 Item::Actor(ad) => {
-                    self.register_qualified_type_alias(module_short, &ad.name);
+                    // The dotted `{module_short}.{name}` entry is authored
+                    // directly by `register_actor_base`; only the export
+                    // record is added here.
+                    self.record_module_type_export(module_short, &ad.name);
                 }
                 _ => {}
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -3130,7 +6092,9 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let sig = self.build_fn_sig_from_decl(fd);
+                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
+                    self.fn_type_param_assoc_bindings
+                        .insert(fd.name.clone(), assoc_bindings);
                     self.fn_sigs.insert(fd.name.clone(), sig);
                 }
                 Item::Const(cd) => {
@@ -3162,6 +6126,31 @@ impl Checker {
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
                 }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &md.name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(md.name.clone());
+                        continue;
+                    }
+                    let event_type_name = format!("{}Event", md.name);
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &event_type_name,
+                        span,
+                    ) {
+                        skipped_type_names.insert(event_type_name);
+                        continue;
+                    }
+                    self.register_machine_decl(md, span);
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
+                }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
                         continue;
@@ -3187,7 +6176,7 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    self.register_actor_base(ad);
+                    self.register_actor_base(ad, None);
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
@@ -3197,6 +6186,13 @@ impl Checker {
                         if skipped_type_names.contains(type_name) {
                             continue;
                         }
+                        // Validate before collect_type_param_bounds erases positional type args.
+                        // This path bypasses enter_impl_scope so validation must be explicit.
+                        self.validate_type_param_bound_shapes(
+                            id.type_params.as_ref(),
+                            id.where_clause.as_ref(),
+                            span,
+                        );
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             Self::canonical_primitive_or_builtin_key_from_name(type_name)
                         });
@@ -3271,8 +6267,10 @@ impl Checker {
         name: &str,
         span: &Span,
     ) -> bool {
+        // Flat file imports register top-level names without a module namespace,
+        // sharing the root/flat namespace (`None`).
         self.register_flat_file_import_pub_name(current_import_pub_spans, name, span)
-            && self.register_type_namespace_name(name, span)
+            && self.register_type_namespace_name(None, name, span)
     }
 
     fn flat_file_import_already_registered(&mut self, decl: &ImportDecl) -> bool {
@@ -3315,9 +6313,21 @@ impl Checker {
         // suppresses fresh-var injection for handle types defined in this
         // module, matching the resolution context used during collect_functions.
         let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
         for (item, _) in items {
-            if let Item::TypeDecl(td) = item {
-                self.local_type_defs.insert(td.name.clone());
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
 
@@ -3329,15 +6339,19 @@ impl Checker {
                         continue;
                     }
 
-                    let sig = self.build_fn_sig_from_decl(fd);
+                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     let qualified = format!("{module_short}.{}", fd.name);
                     self.module_fn_exports.insert(qualified.clone());
+                    self.fn_type_param_assoc_bindings
+                        .insert(qualified.clone(), assoc_bindings.clone());
                     self.fn_sigs.insert(qualified, sig.clone());
 
                     // If named import or glob, also register unqualified (using alias if present)
                     if Self::should_import_name(&fd.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
+                        self.fn_type_param_assoc_bindings
+                            .insert(binding_name.clone(), assoc_bindings);
                         self.fn_sigs.insert(binding_name.clone(), sig);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
@@ -3349,12 +6363,30 @@ impl Checker {
                     if !td.visibility.is_pub() {
                         continue;
                     }
-                    if !self.register_type_namespace_name(&td.name, span) {
+                    if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
                     self.register_type_decl(td);
                     self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
                     self.known_types.insert(td.name.clone());
+                }
+                Item::Machine(md) => {
+                    if !md.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_machine_type_namespace_names(
+                        Some(module_short),
+                        &md.name,
+                        span,
+                    ) {
+                        continue;
+                    }
+                    self.register_machine_decl(md, span);
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                    self.known_types.insert(md.name.clone());
+                    self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
@@ -3364,7 +6396,14 @@ impl Checker {
                     let import_binding = if Self::should_import_name(&tr.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &tr.name)
                             .unwrap_or_else(|| tr.name.clone());
-                        if self.register_type_namespace_name(&binding_name, span) {
+                        // The unqualified trait binding lands in the *importing*
+                        // module's namespace, not the source module's.
+                        let importer = self.current_module.clone();
+                        if self.register_type_namespace_name(
+                            importer.as_deref(),
+                            &binding_name,
+                            span,
+                        ) {
                             Some(binding_name)
                         } else {
                             None
@@ -3466,11 +6505,26 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
-                    if !self.register_type_namespace_name(&ad.name, span) {
+                    // Skip non-pub actors (enforce visibility), matching every
+                    // other item kind in this loop. A private actor must never
+                    // become a module type export, qualified alias, or registered
+                    // base in the importer's view: otherwise `spawn module.Account()`
+                    // would accept a private target and -- after the qualifier is
+                    // stripped to the bare name in HIR -- silently route to a
+                    // same-named root/pub actor. This `Item::Actor` arm was the
+                    // lone exporter that ignored `pub`, recording private actors in
+                    // `module_type_exports` (the authoritative export registry).
+                    if !ad.visibility.is_pub() {
                         continue;
                     }
-                    self.register_actor_base(ad);
-                    self.register_qualified_type_alias(module_short, &ad.name);
+                    if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
+                        continue;
+                    }
+                    // `register_actor_base` authors the dotted
+                    // `{module_short}.{name}` identity directly; no bare key
+                    // and no copy-based qualified alias.
+                    self.register_actor_base(ad, Some(module_short));
+                    self.record_module_type_export(module_short, &ad.name);
                     // If named import or glob, also register unqualified
                     if Self::should_import_name(&ad.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &ad.name)
@@ -3485,24 +6539,39 @@ impl Checker {
             }
         }
         self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
     }
 
     /// Build a `FnSig` from a function declaration (used for user module registration).
-    pub(super) fn build_fn_sig_from_decl(&mut self, fd: &FnDecl) -> FnSig {
+    pub(super) fn build_fn_sig_from_decl_with_assoc(
+        &mut self,
+        fd: &FnDecl,
+    ) -> (FnSig, HashMap<(String, String, String), Ty>) {
+        let mut hole_vars = Vec::new();
+        let scope = self.collect_type_param_scope_with_assoc_bindings(
+            fd.type_params.as_ref(),
+            fd.where_clause.as_ref(),
+            &mut hole_vars,
+        );
+        let pushed_bounds = !scope.bounds.is_empty();
+        if pushed_bounds {
+            self.current_type_param_bounds.push(scope.clone());
+        }
         let param_names = fd.params.iter().map(|p| p.name.clone()).collect();
         let params = fd
             .params
             .iter()
-            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
+            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
             .collect();
         let declared_return = fd.return_type.as_ref().map_or(Ty::Unit, |ret| {
-            self.resolve_registered_annotation_ty_no_holes(ret)
+            self.resolve_registered_annotation_ty(ret, &mut hole_vars)
         });
+        if pushed_bounds {
+            self.current_type_param_bounds.pop();
+        }
         let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
-        let type_param_bounds =
-            self.collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref());
         let return_type = if fd.is_generator && fd.is_async {
             Ty::async_generator(declared_return)
         } else if fd.is_generator {
@@ -3510,37 +6579,64 @@ impl Checker {
         } else {
             declared_return
         };
-        FnSig {
+        let assoc_bindings = scope.assoc_bindings;
+        let sig = FnSig {
             type_params,
-            type_param_bounds,
+            type_param_bounds: self
+                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
             param_names,
             params,
             return_type,
             is_async: fd.is_async,
-            is_pure: fd.is_pure,
             doc_comment: fd.doc_comment.clone(),
             ..FnSig::default()
+        };
+        (sig, assoc_bindings)
+    }
+
+    /// Compute the checker identity for an actor declared in `module_short`.
+    ///
+    /// Module actors are identified by the dotted `{module_short}.{name}` key
+    /// (the same authoritative form `resolve_module_type` reads); root and
+    /// flat-file actors keep the bare name. This is the single authority for
+    /// the actor-identity key shape — every registration and lookup site
+    /// derives the key through here so producer and consumer cannot drift.
+    pub(super) fn actor_identity(module_short: Option<&str>, name: &str) -> String {
+        match module_short {
+            Some(m) => format!("{m}.{name}"),
+            None => name.to_string(),
         }
     }
 
     /// Register an actor's core items: the type declaration, receive functions,
     /// and inline methods.  This block is identical across all three import
-    /// registration paths; only the qualified-alias and unqualified-binding
+    /// registration paths; only the export-record and unqualified-binding
     /// steps differ and are therefore kept in each caller.
-    pub(super) fn register_actor_base(&mut self, ad: &ActorDecl) {
-        self.register_actor_decl(ad);
-        self.known_types.insert(ad.name.clone());
+    ///
+    /// Actor identity is the dotted `{module_short}.{name}` key for module
+    /// actors (authored directly here — NOT copied from a bare entry, which
+    /// is last-write-wins across modules) and the bare name for root and
+    /// flat-file actors. The bare key is never written for module actors, so
+    /// a second same-named import cannot clobber another module's actor.
+    pub(super) fn register_actor_base(&mut self, ad: &ActorDecl, module_short: Option<&str>) {
+        let identity = Self::actor_identity(module_short, &ad.name);
+        self.register_actor_decl_as(ad, &identity);
+        self.known_types.insert(identity.clone());
         for rf in &ad.receive_fns {
-            self.register_receive_fn(&ad.name, rf);
+            self.register_receive_fn(&identity, rf);
         }
         for method in &ad.methods {
-            let method_name = format!("{}::{}", ad.name, method.name);
+            let method_name = format!("{identity}::{}", method.name);
             self.register_fn_sig_with_name(&method_name, method);
         }
     }
 
     /// Insert a qualified alias (`module_short.Name`) for a type that has
     /// already been registered under its bare name.
+    ///
+    /// Actors do NOT use this copy-based alias: their dotted key is authored
+    /// directly by [`Self::register_actor_base`], so the qualified entry is
+    /// always the module's own actor rather than whichever bare entry won.
     pub(super) fn register_qualified_type_alias(&mut self, module_short: &str, name: &str) {
         let qualified = format!("{module_short}.{name}");
         if let Some(def) = self.type_defs.get(name).cloned() {
@@ -3550,5 +6646,20 @@ impl Checker {
             }
             self.handle_bearing_dirty = true;
         }
+    }
+
+    /// Record that an imported module exports a type/actor name.
+    ///
+    /// Mirrors the `module_fn_exports` precedent (`register_builtin_sig` /
+    /// `register_user_module` `Item::Function` arm) for type names.  Drives the
+    /// module-qualified value-constructor pre-dispatch in `check_field_access`
+    /// and `check_struct_init` so we can emit a precise "module `m` has no
+    /// exported type `T`" diagnostic instead of leaking through to the
+    /// "undefined variable" / "undefined type" fallbacks.
+    pub(super) fn record_module_type_export(&mut self, module_short: &str, name: &str) {
+        self.module_type_exports
+            .entry(module_short.to_string())
+            .or_default()
+            .insert(name.to_string());
     }
 }

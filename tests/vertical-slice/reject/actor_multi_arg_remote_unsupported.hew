@@ -1,0 +1,31 @@
+// Reject fixture: remote ask resolving to a multi-parameter receive
+// handler (E_REMOTE_PAYLOAD_UNSUPPORTED).
+//
+// Multi-arg actor sends pack into an anonymous record whose bytes may
+// carry heap pointers — bytes the cross-node codec is not seeded to
+// serialize. A remote ask carries exactly ONE message value, so a
+// multi-arg handler whose first parameter matches the sent message must
+// not be selected: a single-value payload delivered to a body that
+// unpacks the full packed record reads out of bounds on the receiving
+// node. The boundary fails closed at compile time; the cross-node
+// payload serialization lane lands the positive path with structural
+// packed-args codecs.
+actor Echo {
+    receive fn pair(a: i64, b: string) -> i64 {
+        a + b.len()
+    }
+}
+
+impl ActorMsg for Echo {
+    type Msg = i64;
+    type Reply = i64;
+}
+
+fn main() {
+    let peer: RemotePid<Echo> = RemotePid::from_raw<Echo>(1, 0);
+    let reply: Result<i64, AskError> = peer.ask(7, 100);
+    match reply {
+        Ok(v) => println(f"answer={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

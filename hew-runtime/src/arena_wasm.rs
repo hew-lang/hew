@@ -5,22 +5,23 @@
 //!
 //! ```text
 //! hew_arena_new()
-//!   └─► hew_arena_set_current(arena)   ← install as current; alloc/free route here
+//!   └─► ctx.arena = arena              ← install in canonical context
 //!         │
 //!         │  [actor dispatch runs]
 //!         │    hew_arena_malloc(n)   → bump-allocates from the arena
 //!         │    hew_arena_free(ptr)   → **no-op** (bulk-free is cheaper)
 //!         │
-//!       hew_arena_set_current(null)   ← uninstall; alloc/free revert to libc
+//!       ctx.arena = null              ← uninstall; alloc/free fail closed
 //!         │
 //!         ├── hew_arena_reset(arena)  → cursor back to zero, chunks retained
-//!         │     └─► hew_arena_set_current(arena) … repeat for next dispatch
+//!         │     └─► ctx.arena = arena … repeat for next dispatch
 //!         │
 //!         └── hew_arena_free_all(arena) → free every chunk; pointer invalid
 //! ```
 //!
-//! **When no arena is active** (`CURRENT_ARENA` is null) `hew_arena_malloc`
-//! delegates to `libc::malloc` and `hew_arena_free` delegates to `libc::free`.
+//! When no execution context is installed, C ABI allocation/free readers set
+//! `hew_last_error` and return their sentinel instead of pretending direct
+//! `libc` ownership.
 //!
 //! # Backing allocator
 //!
@@ -41,8 +42,13 @@
 //! Every `alloc` call rounds the cursor up with the standard power-of-two mask:
 //! `(cursor + align - 1) & !(align - 1)`.  **`align` must be a power of two**
 //! — a `debug_assert!` guards this in debug builds.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use std::alloc::{alloc, dealloc, Layout};
+#[cfg(all(not(target_arch = "wasm32"), test))]
 use std::cell::Cell;
 use std::os::raw::c_void;
 use std::ptr;
@@ -93,6 +99,16 @@ pub struct ActorArena {
     cursor: usize,
     initial_chunk_size: usize,
     max_chunk_size: usize,
+    /// Byte cap for this arena. `0` means unbounded (legacy behaviour).
+    ///
+    /// When non-zero, `alloc` returns null once total allocated bytes would
+    /// exceed this value. `used` is reset to zero by `reset()` so per-dispatch
+    /// accounting restarts each cycle. Enforced at allocation time (Hew has no
+    /// GC — alloc-time is the natural enforcement point, per `boundary-fail-closed`).
+    pub cap: usize,
+    /// Bytes allocated since the last `reset()`. Incremented on each successful
+    /// alloc when `cap > 0`. Reset to zero by `reset()`. Ignored when `cap == 0`.
+    used: usize,
 }
 
 impl ActorArena {
@@ -112,7 +128,23 @@ impl ActorArena {
             cursor: 0,
             initial_chunk_size,
             max_chunk_size,
+            cap: 0,
+            used: 0,
         })
+    }
+
+    /// Create a new actor arena with a per-dispatch byte cap.
+    ///
+    /// `cap_bytes` is the maximum number of bytes the arena will serve in a
+    /// single dispatch cycle (i.e. between a `reset` call and the next
+    /// `reset`). Once the cap would be exceeded `alloc` returns null.
+    ///
+    /// Passing `cap_bytes = 0` is equivalent to calling `new()` (unbounded).
+    #[must_use]
+    pub fn new_with_cap(cap_bytes: usize) -> Option<Self> {
+        let mut arena = Self::new()?;
+        arena.cap = cap_bytes;
+        Some(arena)
     }
 
     /// Allocate `size` bytes with `align`-byte alignment.
@@ -138,6 +170,18 @@ impl ActorArena {
 
         if size == 0 {
             return ptr::null_mut();
+        }
+
+        // Cap enforcement (0 = unbounded).
+        if self.cap > 0 {
+            match self.used.checked_add(size) {
+                Some(new_used) if new_used <= self.cap => {
+                    self.used = new_used;
+                }
+                _ => {
+                    return ptr::null_mut();
+                }
+            }
         }
 
         // ── Try current chunk ───────────────────────────────────────────
@@ -227,9 +271,12 @@ impl ActorArena {
     /// chunk.  All previously mapped chunks are **retained** so subsequent
     /// activations can reuse already-allocated backing memory.  Any pointers
     /// into the arena that were live before this call are invalidated.
+    ///
+    /// `used` is reset to zero so that cap accounting restarts for the next cycle.
     pub fn reset(&mut self) {
         self.current_chunk = 0;
         self.cursor = 0;
+        self.used = 0;
     }
 
     /// Free all chunks and destroy the arena.
@@ -254,24 +301,50 @@ unsafe impl Send for ActorArena {}
 // SAFETY: WASM is single-threaded; no concurrent access possible.
 unsafe impl Sync for ActorArena {}
 
-// ── Thread-local current arena ────────────────────────────────────────────
-//
-// On wasm32 there is only one thread, so a thread-local is effectively a
-// global.  We still use thread_local! to keep the API identical to native
-// and to satisfy potential single-threaded wasm-bindgen / WASI thread models.
-
+#[cfg(all(not(target_arch = "wasm32"), test))]
 thread_local! {
-    static CURRENT_ARENA: Cell<*mut ActorArena> = const { Cell::new(ptr::null_mut()) };
+    static WASM_TEST_ARENA_SLOT: Cell<*mut ActorArena> = const { Cell::new(ptr::null_mut()) };
 }
 
-/// Set the current thread-local arena and return the previous one.
+/// Set the current context's arena lane and return the previous one.
+#[cfg(target_arch = "wasm32")]
 pub fn set_current_arena(arena: *mut ActorArena) -> *mut ActorArena {
-    CURRENT_ARENA.with(|current| current.replace(arena))
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe {
+        let previous = (*ctx).arena;
+        (*ctx).arena = arena;
+        previous
+    }
 }
 
-/// Get the current thread-local arena.
+/// Native unit-test build keeps this module separate from `crate::arena`, so
+/// its standalone arena tests use an isolated slot that is not part of the
+/// runtime ABI.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub fn set_current_arena(arena: *mut ActorArena) -> *mut ActorArena {
+    WASM_TEST_ARENA_SLOT.with(|current| current.replace(arena))
+}
+
+/// Get the current context's arena lane.
+#[cfg(target_arch = "wasm32")]
 fn get_current_arena() -> *mut ActorArena {
-    CURRENT_ARENA.with(std::cell::Cell::get)
+    let ctx = crate::execution_context::require_current_context();
+    if ctx.is_null() {
+        return ptr::null_mut();
+    }
+    // SAFETY: a non-null canonical context points to a live context slot owned
+    // by the current dispatch/scope boundary.
+    unsafe { (*ctx).arena }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+fn get_current_arena() -> *mut ActorArena {
+    WASM_TEST_ARENA_SLOT.with(std::cell::Cell::get)
 }
 
 // ── C ABI ─────────────────────────────────────────────────────────────────
@@ -281,41 +354,106 @@ fn get_current_arena() -> *mut ActorArena {
 // test builds (for CI coverage) without clashing with the identical symbols
 // exported by `arena.rs`.  On wasm32 the symbols are always exported.
 
-/// Allocate memory from the current arena, falling back to `libc::malloc`.
+/// Allocate memory from the current execution context's arena.
+///
+/// **Requires an installed execution context with an active arena.** Returns
+/// null if no context is installed or if the context's arena lane is null.
+/// There is no libc-fallback; callers that run outside dispatch must use
+/// `libc::malloc` directly.
+///
+/// When an arena with a non-zero cap is active and this allocation would
+/// exceed that cap, stamps `HEW_TRAP_HEAP_EXCEEDED` (code 200) onto the
+/// currently-dispatching actor's `error_code` and panics. The WASM scheduler's
+/// `catch_unwind` boundary at the activation frame catches the panic,
+/// observes the non-zero `error_code`, and transitions the actor to
+/// `Crashed` — mirroring the native longjmp/supervisor seam so that
+/// `ExitReason::from_error_code` surfaces `HeapExceeded` identically on
+/// both targets.
 ///
 /// # Safety
 ///
-/// The returned pointer must eventually be passed to `hew_arena_free` (while
-/// the same arena is active) or to `libc::free` (when no arena is active).
+/// The returned pointer must be freed via `hew_arena_reset` or
+/// `hew_arena_free_all` — never via `libc::free`. Mixing arena pointers
+/// with the system allocator is undefined behaviour.
 #[must_use]
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_arena_malloc(size: usize) -> *mut c_void {
     let arena_ptr = get_current_arena();
     if arena_ptr.is_null() {
-        // SAFETY: libc malloc is always safe to call.
-        unsafe { libc::malloc(size) }
+        // No arena active: fail closed. Callers outside dispatch must use
+        // libc::malloc directly; there is no silent fallback here.
+        ptr::null_mut()
     } else {
         // SAFETY: arena_ptr is a valid pointer set by hew_arena_set_current.
         let arena = unsafe { &mut *arena_ptr };
-        arena
+        let ptr = arena
             .alloc(size, std::mem::align_of::<*mut c_void>())
-            .cast::<c_void>()
+            .cast::<c_void>();
+
+        // Cap exhaustion: surface a named crash so the supervisor sees the
+        // canonical HeapExceeded reason instead of either a silent null
+        // (which would let dispatch keep running with a dangling pointer)
+        // or a generic abort.
+        //
+        // - Native: longjmp seam unwinds to the sigsetjmp frame in the
+        //   scheduler without returning here.
+        // - WASM: longjmp is unavailable; instead, stamp the trap code on
+        //   the current actor and panic. The WASM activation's
+        //   catch_unwind boundary observes the non-zero error_code and
+        //   transitions the actor to Crashed.
+        #[cfg(not(target_arch = "wasm32"))]
+        if ptr.is_null() && arena.cap > 0 {
+            // SAFETY: must be called from an actor dispatch context on a
+            // worker thread.
+            unsafe {
+                crate::signal::try_direct_longjmp_with_code(
+                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                );
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        if ptr.is_null() && arena.cap > 0 {
+            // SAFETY: WASM activate_actor_wasm installs the canonical ctx
+            // before dispatch; hew_trap_with_code stamps the current actor's
+            // error_code and panics so the catch_unwind activation boundary
+            // observes HeapExceeded instead of a generic null/abort.
+            unsafe {
+                crate::trap_code::hew_trap_with_code(
+                    crate::internal::types::HEW_TRAP_HEAP_EXCEEDED,
+                );
+            }
+            // If allocation happened outside actor dispatch, hew_trap_with_code
+            // returns so the caller's usual `llvm.trap` fallback can fire. The
+            // arena has no such caller, so fail closed here rather than returning
+            // null to generated code.
+            panic!("hew_arena: cap exceeded (HEW_TRAP_HEAP_EXCEEDED)");
+        }
+
+        ptr
     }
 }
 
-/// Free memory — no-op during arena dispatch, forwards to `libc::free` otherwise.
+/// Free memory — intentional no-op.
+///
+/// Arena memory is reclaimed in bulk via `hew_arena_reset` or
+/// `hew_arena_free_all`; per-pointer tracking is not supported. This
+/// function exists solely to satisfy C callers that pair every `malloc`
+/// with a `free`.
+///
+/// When no arena is active (null arena lane or no context installed), this
+/// function returns without touching the pointer. The pointer must **not**
+/// be passed to `libc::free` — it was allocated from an arena.
 ///
 /// # Safety
 ///
-/// `ptr` must be a valid pointer returned by `hew_arena_malloc` (or null).
+/// `ptr` must be a valid pointer returned by `hew_arena_malloc`, or null.
+/// Do **not** pass pointers allocated with `libc::malloc` to this function.
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
-pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
-    let arena_ptr = get_current_arena();
-    if arena_ptr.is_null() {
-        // SAFETY: caller guarantees ptr is valid.
-        unsafe { libc::free(ptr) };
-    }
-    // Arena active → no-op; memory reclaimed in bulk via reset / free_all.
+pub unsafe extern "C" fn hew_arena_free(_ptr: *mut c_void) {
+    // No-op in all cases. Arena memory is freed in bulk via reset / free_all.
+    // When no context is installed, there is no action to take: a null from
+    // hew_arena_malloc is a valid "no allocation" sentinel, not a heap ptr.
 }
 
 /// Create a new arena and return an owning raw pointer.
@@ -323,6 +461,19 @@ pub unsafe extern "C" fn hew_arena_free(ptr: *mut c_void) {
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub extern "C" fn hew_arena_new() -> *mut ActorArena {
     match ActorArena::new() {
+        Some(arena) => Box::into_raw(Box::new(arena)),
+        None => ptr::null_mut(),
+    }
+}
+
+/// Create a new arena with a per-dispatch byte cap.
+///
+/// `cap_bytes = 0` is unbounded (equivalent to `hew_arena_new`).
+/// Returns null if memory allocation for the initial chunk fails.
+#[must_use]
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub extern "C" fn hew_arena_new_with_cap(cap_bytes: usize) -> *mut ActorArena {
+    match ActorArena::new_with_cap(cap_bytes) {
         Some(arena) => Box::into_raw(Box::new(arena)),
         None => ptr::null_mut(),
     }
@@ -357,7 +508,7 @@ pub unsafe extern "C" fn hew_arena_free_all(arena: *mut ActorArena) {
     }
 }
 
-/// Install `arena` as the current thread-local arena.
+/// Install `arena` as the current context's arena lane.
 ///
 /// # Safety
 ///
@@ -569,15 +720,22 @@ mod tests {
     }
 
     #[test]
-    fn hew_arena_malloc_free_fallback() {
-        // No arena active — must delegate to libc malloc/free.
-        // SAFETY: testing with valid allocation size.
+    fn hew_arena_malloc_without_arena_returns_null() {
+        // No arena active — must return null. There is no libc-fallback;
+        // callers outside dispatch must use libc::malloc directly.
+        // SAFETY: calling with no arena installed to verify fail-closed behaviour.
         let ptr = unsafe { hew_arena_malloc(100) };
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is valid from hew_arena_malloc above.
-        unsafe { hew_arena_free(ptr) };
+        assert!(
+            ptr.is_null(),
+            "hew_arena_malloc must return null when no arena is active"
+        );
     }
 
+    // Native only: routes allocation through the current-arena slot, which on
+    // wasm32 is the context-based ABI impl needing a live dispatch context
+    // (covered by the execution-context / wasm-parity suites). The standalone
+    // C-API round-trip uses the native test-slot semantics.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn hew_arena_c_api() {
         let arena = hew_arena_new();
@@ -611,6 +769,11 @@ mod tests {
         assert!(ptr.is_null(), "zero-size alloc must return null");
     }
 
+    // Native only: the round-trip relies on the test-slot `set_current_arena`
+    // (itself `cfg(not(wasm32))`). On wasm32 the context-based ABI impl is
+    // active and needs a live dispatch context — exercised by the
+    // execution-context and wasm-parity suites, not this standalone test.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn arena_install_restore_round_trip() {
         // Verify set_current_arena returns the previously installed arena.
@@ -627,6 +790,98 @@ mod tests {
         );
 
         // SAFETY: arena is valid, not installed.
+        unsafe { hew_arena_free_all(arena) };
+    }
+
+    // ── Cap enforcement tests ──────────────────────────────────────────────
+
+    /// cap=0 means unbounded: allocations succeed as before.
+    #[test]
+    fn arena_cap_zero_is_unbounded() {
+        let mut arena = ActorArena::new_with_cap(0).expect("arena creation must succeed");
+        for _ in 0..100 {
+            let p = arena.alloc(1024, 1);
+            assert!(!p.is_null(), "unbounded arena must not return null");
+        }
+    }
+
+    /// Allocations below the cap succeed; the first one that would exceed it returns null.
+    #[test]
+    fn arena_cap_alloc_under_cap_succeeds() {
+        let cap = 512_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(256, 1);
+        assert!(!p1.is_null(), "first alloc under cap must succeed");
+
+        let p2 = arena.alloc(256, 1);
+        assert!(!p2.is_null(), "second alloc exactly at cap must succeed");
+    }
+
+    /// An allocation that would push total bytes over cap returns null (fail-closed).
+    #[test]
+    fn arena_cap_alloc_over_cap_returns_null() {
+        let cap = 512_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(512, 1);
+        assert!(!p1.is_null(), "alloc exactly at cap must succeed");
+
+        let p2 = arena.alloc(1, 1);
+        assert!(p2.is_null(), "alloc that exceeds cap must return null");
+    }
+
+    /// After `reset()`, used resets to zero and allocations up to cap succeed again.
+    #[test]
+    fn arena_cap_reset_clears_used() {
+        let cap = 256_usize;
+        let mut arena = ActorArena::new_with_cap(cap).expect("arena creation must succeed");
+
+        let p1 = arena.alloc(256, 1);
+        assert!(!p1.is_null());
+        let p2 = arena.alloc(1, 1);
+        assert!(p2.is_null());
+
+        arena.reset();
+        let p3 = arena.alloc(256, 1);
+        assert!(!p3.is_null(), "alloc after reset must succeed up to cap");
+        let p4 = arena.alloc(1, 1);
+        assert!(
+            p4.is_null(),
+            "alloc after reset must still fail when over cap"
+        );
+    }
+
+    /// `hew_arena_new_with_cap` is the C ABI constructor; verify it enforces the cap.
+    // Native only: same context-based current-arena reason as hew_arena_c_api.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn hew_arena_new_with_cap_c_api() {
+        let cap = 128_usize;
+        let arena = hew_arena_new_with_cap(cap);
+        assert!(!arena.is_null(), "hew_arena_new_with_cap must succeed");
+
+        // SAFETY: arena is a valid pointer from hew_arena_new_with_cap.
+        unsafe { hew_arena_set_current(arena) };
+
+        // Under cap.
+        // SAFETY: arena is installed; malloc routes through it.
+        let p1 = unsafe { hew_arena_malloc(64) };
+        assert!(!p1.is_null(), "malloc under cap must succeed");
+
+        // SAFETY: arena is installed; second malloc routes through it.
+        let p2 = unsafe { hew_arena_malloc(64) };
+        assert!(!p2.is_null(), "malloc exactly at cap must succeed");
+
+        // Over cap.
+        // SAFETY: arena is installed; malloc must return null when cap exhausted.
+        let p3 = unsafe { hew_arena_malloc(1) };
+        assert!(p3.is_null(), "malloc over cap must return null");
+
+        // SAFETY: null is always safe.
+        unsafe { hew_arena_set_current(ptr::null_mut()) };
+
+        // SAFETY: arena is valid and not installed.
         unsafe { hew_arena_free_all(arena) };
     }
 }

@@ -4,7 +4,7 @@
 # Triggers on tag push matching `v*` (e.g. v0.1.0).
 #
 # Artifacts per platform:
-#   bin/hew           — compiler driver (with embedded MLIR codegen)
+#   bin/hew           — compiler driver (Rust + LLVM via inkwell)
 #   bin/adze          — package manager
 #   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew.a      — combined runtime + stdlib static library
@@ -42,6 +42,7 @@ permissions:
 
 env:
   LLVM_VERSION: "22"
+  LLVM_FULL_VERSION: "22.1.5"
   # Resolve tag from push event or manual dispatch input
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -72,13 +73,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      # ── LLVM/MLIR installation ──────────────────────────────────────────
+      # ── LLVM toolchain installation ─────────────────────────────────────
 
-      - name: Install LLVM/MLIR (macOS)
+      - name: Install LLVM (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
           brew install llvm@${{ env.LLVM_VERSION }} ninja zstd
@@ -87,12 +88,25 @@ jobs:
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
-      - name: Configure embedded codegen toolchain (macOS)
+      - name: Configure LLVM toolchain (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
           echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+          # The brew llvm bottle links libz3.dylib into its static libraries'
+          # dependency set; hew never calls z3 (clang static-analyzer only).
+          # dead_strip_dylibs drops load commands with no referenced symbols,
+          # keeping the shipped binaries on system dylibs only (the
+          # verify-macos-binary.sh gate enforces this).
+          echo "RUSTFLAGS=-C link-arg=-Wl,-dead_strip_dylibs" >> "$GITHUB_ENV"
+
+      - name: Use prebuilt aws-lc assembly (Windows)
+        if: startsWith(matrix.target, 'windows')
+        # aws-lc-sys wants NASM on windows-msvc; the documented CI escape uses
+        # the crate's pregenerated assembly objects — no toolchain dependency.
+        shell: bash
+        run: echo "AWS_LC_SYS_PREBUILT_NASM=1" >> "$GITHUB_ENV"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -109,8 +123,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v1"
-          $asset        = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v3"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
 
           # Fail fast if the toolchain release is not published yet.
           # Run prebuild-llvm.yml to publish it before retrying the release.
@@ -147,7 +161,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
           gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
@@ -159,15 +173,14 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
           # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"
 
           $required = @(
             "C:\llvm-22\bin\clang.exe",
-            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake",
-            "C:\llvm-22\lib\cmake\mlir\MLIRConfig.cmake"
+            "C:\llvm-22\lib\cmake\llvm\LLVMConfig.cmake"
           )
           foreach ($path in $required) {
             if (!(Test-Path $path)) {
@@ -187,7 +200,7 @@ jobs:
           }
           Write-Host "LLVM toolchain ready at C:\llvm-22. Linker: $linker"
 
-      - name: Configure embedded codegen toolchain (Windows)
+      - name: Configure LLVM toolchain (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
           echo "LLVM_PREFIX=C:\llvm-22" >> $env:GITHUB_ENV
@@ -212,7 +225,6 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-cargo-${{ matrix.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-cargo-${{ matrix.os }}-
@@ -226,7 +238,6 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-cargo-
@@ -234,8 +245,6 @@ jobs:
       # ── Rust builds ─────────────────────────────────────────────────────
 
       - name: Build hew, adze, and hew-lsp
-        env:
-          HEW_EMBED_STATIC: "1"
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -288,7 +297,7 @@ jobs:
           # Licenses and docs
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          # macOS release binaries embed static LLVM/MLIR codegen and rely on
+          # macOS release binaries embed static LLVM support and rely on
           # Mach-O weak/coalesced definitions that `strip` can break. Keep the
           # packaged binaries unstripped so the published archive matches the
           # already-validated release build.
@@ -555,33 +564,28 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential ca-certificates cmake curl git gnupg lsb-release \
             ninja-build pkg-config wget xz-utils \
-            libssl-dev zlib1g-dev libzstd-dev
-
-          mkdir -p /etc/apt/keyrings
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | tee /etc/apt/keyrings/llvm.asc >/dev/null
-          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${{ env.LLVM_VERSION }} main" \
-            > /etc/apt/sources.list.d/llvm.list
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libmlir-${{ env.LLVM_VERSION }}-dev \
-            mlir-${{ env.LLVM_VERSION }}-tools \
-            clang-${{ env.LLVM_VERSION }} \
-            lld-${{ env.LLVM_VERSION }}
+            libssl-dev zlib1g-dev libzstd-dev libffi-dev libxml2-dev
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Configure embedded codegen toolchain
-        run: |
-          {
-            echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}"
-            echo "CC=clang-${{ env.LLVM_VERSION }}"
-            echo "CXX=clang++-${{ env.LLVM_VERSION }}"
-          } >> "$GITHUB_ENV"
+      - name: Trust the workspace checkout
+        # The container user differs from the checkout owner; without this
+        # the hew-cli build script cannot read git metadata and the shipped
+        # binary reports `unknown` for its commit hash.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install LLVM ${{ env.LLVM_FULL_VERSION }}
+        # Official upstream tarball via the pinned setup-llvm action — the
+        # same toolchain the release gate proved. The apt.llvm.org packages
+        # do not ship libPolly.a, which llvm-sys links statically. The
+        # official binaries run on the ubuntu:22.04 (glibc 2.35) build
+        # container, preserving the 22.04+ artifact baseline.
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_FULL_VERSION }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -596,14 +600,11 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: release-${{ matrix.target }}-jammy-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
       - name: Build hew, adze, and hew-lsp
-        env:
-          HEW_EMBED_STATIC: "1"
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -618,7 +619,7 @@ jobs:
           test -f "target/${{ matrix.rust_target }}/release/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
-            echo "::error::Linux release binary dynamically links LLVM/MLIR"
+            echo "::error::Linux release binary dynamically links LLVM-family libraries"
             exit 1
           fi
 
@@ -699,7 +700,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -710,12 +711,25 @@ jobs:
           echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore LLVM+MLIR cache (FreeBSD)
-        id: cache-llvm-freebsd
-        uses: actions/cache/restore@v4
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+      - name: Download FreeBSD LLVM toolchain
+        # Pre-built on FreeBSD 15.0 amd64 and published as a toolchain
+        # release asset (same pattern as the Windows toolchain): the
+        # in-VM source build took ~80 minutes and its job-end cache save
+        # never survived a failed run, so every attempt recompiled LLVM.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="toolchain/llvm-22.1.0-freebsd15-amd64-v1"
+          asset="hew-llvm-22.1.0-freebsd15-amd64-v1.tar.zst"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$asset" --pattern "$asset.sha256" --dir .
+          expected="$(awk '{print $1}' "$asset.sha256")"
+          actual="$(sha256sum "$asset" | awk '{print $1}')"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::SHA-256 mismatch for $asset: expected $expected, got $actual"
+            exit 1
+          fi
+          mv "$asset" llvm-freebsd-install.tar.zst
 
       - name: Build on FreeBSD
         uses: vmactions/freebsd-vm@v1
@@ -723,59 +737,31 @@ jobs:
           release: "15.0"
           mem: 8192
           prepare: |
-            pkg install -y rust cmake ninja git pkgconf libffi
+            pkg install -y rust cmake ninja git pkgconf libffi libxml2
 
           run: |
             set -eux
 
-            # ── LLVM/MLIR ──────────────────────────────────────────────────
+            # The VM user differs from the synced checkout owner; without
+            # this the build script cannot read git metadata and the shipped
+            # binaries report `unknown` for their commit hash.
+            git config --global --add safe.directory "$(pwd)"
+
+            # ── LLVM ───────────────────────────────────────────────────────
+            # Pre-built toolchain downloaded and checksum-verified on the
+            # host; fail closed if it did not sync into the VM.
             LLVM_PREFIX=/usr/local/llvm22-src
-            if [ -f llvm-freebsd-install.tar.zst ]; then
-              echo "==> Restoring LLVM from cache"
-              zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
-              tar xf llvm-freebsd-install.tar -C /
-              rm -f llvm-freebsd-install.tar
-            else
-              echo "==> Building LLVM 22 from source (this will take ~40 min)"
-              git clone --depth 1 --branch llvmorg-22.1.0 \
-                --filter=blob:none --sparse \
-                https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
-
-              cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_ENABLE_PROJECTS="mlir" \
-                -DLLVM_TARGETS_TO_BUILD="X86" \
-                -DLLVM_BUILD_TOOLS=ON \
-                -DLLVM_BUILD_UTILS=ON \
-                -DLLVM_INSTALL_UTILS=ON \
-                -DLLVM_INCLUDE_TESTS=OFF \
-                -DLLVM_INCLUDE_BENCHMARKS=OFF \
-                -DLLVM_INCLUDE_EXAMPLES=OFF \
-                -DLLVM_INCLUDE_DOCS=OFF \
-                -DLLVM_ENABLE_BINDINGS=OFF \
-                -DLLVM_ENABLE_ZLIB=ON \
-                -DLLVM_ENABLE_ZSTD=OFF \
-                -DLLVM_BUILD_LLVM_DYLIB=OFF \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
-                -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
-
-              cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
-              cmake --install /tmp/llvm-build
-
-              # Create archive for caching
-              tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
-              zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
-              rm -f llvm-freebsd-install.tar
-
-              # Clean up build dirs
-              rm -rf /tmp/llvm-src /tmp/llvm-build
-            fi
+            test -f llvm-freebsd-install.tar.zst
+            zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
+            tar xf llvm-freebsd-install.tar -C /
+            rm -f llvm-freebsd-install.tar
+            "${LLVM_PREFIX}/bin/llvm-config" --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+            # llvm-sys-221 discovers LLVM via this variable; the source-built
+            # prefix is not on PATH inside the VM.
+            export LLVM_SYS_221_PREFIX="${LLVM_PREFIX}"
+            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
             cargo build -p hew-lib --release
 
             # ── Package archive ────────────────────────────────────────────
@@ -834,13 +820,6 @@ jobs:
             echo "${output}"
             echo "${output}" | grep -q "pkg-smoke-ok"
 
-      - name: Save LLVM+MLIR cache (FreeBSD)
-        if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -852,7 +831,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
     needs: build-linux
-    if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
+    # rpm Version and Arch pkgver forbid hyphens, so a -rcN tag cannot build
+    # distro packages; release candidates validate via the tarballs instead
+    # and packages ship with the final tag.
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.ref_name, '-rc') }}
     strategy:
       fail-fast: false
       matrix:
@@ -868,7 +850,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -946,7 +928,7 @@ jobs:
     if: ${{ !cancelled() && needs.build-linux.result != 'failure' }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -984,7 +966,7 @@ jobs:
     # package, and clean-room validation jobs. FreeBSD remains a documented
     # tier-2 optional artifact, and Alpine/musl assets are deferred until the
     # llvm-alpine:22 toolchain is repaired.
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.linux-packages.result == 'success' && needs.docker-clean-room-test.result == 'success' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && (needs.linux-packages.result == 'success' || needs.linux-packages.result == 'skipped') && needs.docker-clean-room-test.result == 'success' }}
     permissions:
       contents: write   # create/update the GitHub Release and upload release assets
     steps:
@@ -1027,6 +1009,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           generate_release_notes: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           files: |
             artifacts/hew-v*-*.tar.gz
             artifacts/hew-v*-*.zip
@@ -1042,14 +1025,17 @@ jobs:
     needs: [build, build-linux]
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
-    timeout-minutes: 60
+    # 180: the arm64 leg compiles the workspace under QEMU emulation —
+    # three 60-minute attempts timed out at exactly the wall. Native local
+    # builds + a manifest push are the faster path when iterating.
+    timeout-minutes: 180
     permissions:
       packages: write   # push multi-arch image to ghcr.io
       contents: read    # checkout for Dockerfile
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -1089,7 +1075,8 @@ jobs:
   homebrew:
     needs: release
     runs-on: ubuntu-24.04
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    # Formula updates are for final releases; -rc tags must not touch the tap.
+    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.ref_name, '-rc') }}
     timeout-minutes: 5
 
     steps:

@@ -1,0 +1,26 @@
+// Reject fixture (NEW-7): `await stream.recv() | after d` in a non-suspendable
+// context. A default-call-convention free function has no parkable continuation
+// for the timer to resume, so this must fail CLOSED at compile time.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-suspendable context"
+import std::stream;
+
+fn helper(input: stream.Stream<string>) -> Result<Option<string>, TimeoutError> {
+    await input.recv() | after 50ms
+}
+
+fn main() -> i64 {
+    let (sink, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(8);
+    let frame = helper(input);
+    let _ = sink;
+    match frame {
+        Ok(inner) => {
+            match inner {
+                Some(_s) => 1,
+                None => -1,
+            }
+        },
+        Err(_) => -2,
+    }
+}

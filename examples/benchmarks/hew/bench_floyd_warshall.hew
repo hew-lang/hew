@@ -1,7 +1,7 @@
-fn floyd_warshall(n: int, edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int) -> int {
+fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, num_edges: i64) -> i64 {
     let INF = 999999;
     let total = n * n;
-    let dist: Vec<int> = Vec::new();
+    let dist: Vec<i64> = Vec::new();
     for idx in 0 .. total {
         dist.push(INF);
     }
@@ -38,13 +38,13 @@ fn floyd_warshall(n: int, edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<i
     return sum;
 }
 
-const ITERS: int = 5000;
+const ITERS: i64 = 5000;
 
 fn main() {
     let n = 30;
-    let edge_src: Vec<int> = Vec::new();
-    let edge_dst: Vec<int> = Vec::new();
-    let edge_wt: Vec<int> = Vec::new();
+    let edge_src: Vec<i64> = Vec::new();
+    let edge_dst: Vec<i64> = Vec::new();
+    let edge_wt: Vec<i64> = Vec::new();
     for src in 0 .. n {
         var dst = 1;
         while dst <= 3 {

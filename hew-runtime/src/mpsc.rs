@@ -90,7 +90,7 @@ impl Drop for MpscQueue {
     fn drop(&mut self) {
         // SAFETY: `self.stub` was allocated via `Box::into_raw` in `new()`.
         unsafe {
-            drop(Box::from_raw(self.stub));
+            drop(Box::from_raw(self.stub)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }
@@ -101,7 +101,7 @@ impl MpscQueue {
     /// The stub sentinel is heap-allocated so that pointers remain stable.
     #[must_use]
     pub fn new() -> Self {
-        let stub = Box::into_raw(Box::new(MpscNode::new()));
+        let stub = Box::into_raw(Box::new(MpscNode::new())); // ALLOCATOR-PAIRING: GlobalAlloc
         Self {
             head: AtomicPtr::new(stub),
             tail: stub,
@@ -287,6 +287,7 @@ mod tests {
     impl TestNode {
         fn new_boxed(value: i32) -> *mut Self {
             Box::into_raw(Box::new(Self {
+                // ALLOCATOR-PAIRING: GlobalAlloc
                 link: MpscNode::new(),
                 value,
             }))
@@ -340,7 +341,7 @@ mod tests {
 
         // SAFETY: we own the allocation.
         unsafe {
-            drop(Box::from_raw(node));
+            drop(Box::from_raw(node)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -372,7 +373,7 @@ mod tests {
         for node in nodes {
             // SAFETY: we own the allocations.
             unsafe {
-                drop(Box::from_raw(node));
+                drop(Box::from_raw(node)); // ALLOCATOR-PAIRING: GlobalAlloc
             }
         }
     }
@@ -422,9 +423,9 @@ mod tests {
 
         // SAFETY: we own these.
         unsafe {
-            drop(Box::from_raw(n1));
-            drop(Box::from_raw(n2));
-            drop(Box::from_raw(n3));
+            drop(Box::from_raw(n1)); // ALLOCATOR-PAIRING: GlobalAlloc
+            drop(Box::from_raw(n2)); // ALLOCATOR-PAIRING: GlobalAlloc
+            drop(Box::from_raw(n3)); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 
@@ -448,7 +449,7 @@ mod tests {
         for node in nodes {
             // SAFETY: each node was allocated by TestNode::new_boxed (Box::into_raw).
             unsafe {
-                drop(Box::from_raw(node));
+                drop(Box::from_raw(node)); // ALLOCATOR-PAIRING: GlobalAlloc
             }
         }
     }
@@ -472,10 +473,7 @@ mod tests {
 
     #[test]
     fn concurrent_producers() {
-        // Wrapper to send raw pointers across threads.
-        struct SendPtr(*mut MpscNode);
-        // SAFETY: Each pointer is exclusively owned by one producer thread.
-        unsafe impl Send for SendPtr {}
+        use crate::send_ptr::SendPtr;
 
         const NUM_PRODUCERS: usize = 8;
         const PER_PRODUCER: usize = 5_000;
@@ -493,13 +491,19 @@ mod tests {
         let mut handles = Vec::new();
         for chunk in all_nodes.chunks(PER_PRODUCER) {
             let q = Arc::clone(&q);
-            let ptrs: Vec<SendPtr> = chunk
+            let ptrs: Vec<SendPtr<MpscNode>> = chunk
                 .iter()
-                .map(|&p| SendPtr(p.cast::<MpscNode>()))
+                .map(|&p| {
+                    // SAFETY: Each pointer is exclusively owned by one
+                    // producer thread; no other thread has a reference to
+                    // the node until it is pushed onto the queue.
+                    unsafe { SendPtr::new(p.cast::<MpscNode>()) }
+                })
                 .collect();
 
             handles.push(thread::spawn(move || {
-                for SendPtr(node) in ptrs {
+                for sp in ptrs {
+                    let node = sp.as_ptr();
                     // SAFETY: push is safe for concurrent producers.
                     unsafe {
                         q.inner.push(node);
@@ -540,7 +544,7 @@ mod tests {
         for node in all_nodes {
             // SAFETY: each node was allocated by TestNode::new_boxed (Box::into_raw).
             unsafe {
-                drop(Box::from_raw(node));
+                drop(Box::from_raw(node)); // ALLOCATOR-PAIRING: GlobalAlloc
             }
         }
     }
@@ -570,7 +574,7 @@ mod tests {
         for node in nodes {
             // SAFETY: each node was allocated by TestNode::new_boxed (Box::into_raw).
             unsafe {
-                drop(Box::from_raw(node));
+                drop(Box::from_raw(node)); // ALLOCATOR-PAIRING: GlobalAlloc
             }
         }
     }

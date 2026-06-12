@@ -1,6 +1,0 @@
-idx=62 url_safe=true:  got 45 (expected 45)
-idx=62 url_safe=false: got 43 (expected 43)
-idx=63 url_safe=true:  got 95 (expected 95)
-idx=63 url_safe=false: got 47 (expected 47)
-idx=10 fallthrough:    got 0 (expected 0)
-PASS

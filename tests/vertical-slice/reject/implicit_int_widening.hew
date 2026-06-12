@@ -1,0 +1,8 @@
+// REJECT: implicit integer widening is not allowed.
+// Assigning an i32 value where i64 is expected must be a type error.
+// The user must write `x as i64` to make the cast explicit.
+fn main() -> i64 {
+    let x: i32 = 5;
+    let y: i64 = x;
+    y
+}

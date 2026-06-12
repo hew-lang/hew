@@ -1,0 +1,11 @@
+fn main() {
+    let words: Vec<string> = Vec::new();
+    words.push("red");
+    words.push("blue");
+    var count: i64 = 0;
+    for word in words {
+        println(word);
+        count = count + 1;
+    }
+    println(f"count={count}");
+}

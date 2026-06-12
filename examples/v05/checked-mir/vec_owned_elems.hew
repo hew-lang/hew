@@ -1,0 +1,40 @@
+// MIR-corpus fixture: Vec owned-element accessors and drops.
+//
+// Pins `hew_vec_get_str` (fresh owned string from indexing), the
+// layout-witness record getter (`hew_vec_get_layout`), string-element
+// slice (`hew_vec_slice_range_str`), and the owned-element scope-exit
+// drop (`hew_vec_free_owned`) plus per-string drops.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+type Tag {
+    name: string;
+    n: i64;
+}
+
+fn main() {
+    let names: Vec<string> = Vec::new();
+    names.push("ada");
+    names.push("alan");
+    names.push("grace");
+    let who = names[1];
+    println(who);
+    println(names.get(0));
+    let tail = names[1..3];
+    println(tail.len());
+    for i in 0 .. names.len() {
+        let n = names.get(i);
+        println(n);
+    }
+    let pts: Vec<Point> = Vec::new();
+    pts.push(Point { x: 1, y: 2 });
+    pts.push(Point { x: 3, y: 4 });
+    let p = pts.get(1);
+    println(p.x);
+    let tags: Vec<Tag> = Vec::new();
+    tags.push(Tag { name: "a", n: 1 });
+    let t = tags.get(0);
+    println(t.n);
+}

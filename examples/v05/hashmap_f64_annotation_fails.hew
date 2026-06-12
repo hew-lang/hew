@@ -1,0 +1,11 @@
+//! Status: stable
+//! Description: A bare type annotation `HashMap<f64, i64>` on a record field
+//! must be rejected at the type-annotation site with `BoundsNotSatisfied`.
+//! Regression guard that the admissibility predicate's bound-failing branch
+//! is reached from `validate_concrete_hashmap_type`, not silently accepted.
+
+type Config {
+    points: HashMap<f64, i64>;
+}
+
+fn main() {}

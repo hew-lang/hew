@@ -1,0 +1,5 @@
+import lib::math;
+
+fn main() -> i64 {
+    math.double(21)
+}

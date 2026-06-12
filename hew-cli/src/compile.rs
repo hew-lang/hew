@@ -1,27 +1,20 @@
-//! Build command: parse, type-check, serialize to `MessagePack`, invoke the
-//! embedded MLIR/LLVM backend, and link the final executable.
+//! Frontend helpers for check/eval paths that still need parser/typechecker
+//! diagnostics while execution subcommands are cut over to Rust codegen.
 
-use std::fmt;
+#[cfg(test)]
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(test)]
 use std::collections::{HashMap, HashSet};
-#[cfg(hew_embedded_codegen)]
-use std::ffi::{CStr, CString};
 
-use hew_compile::{
-    check_file as frontend_check_file, compile_file as frontend_compile_file,
-    compile_program_to_msgpack as frontend_compile_program_to_msgpack, FrontendDiagnostic,
-    FrontendDiagnosticKind, FrontendOptions,
-};
+use hew_compile::{FrontendDiagnostic, FrontendDiagnosticKind, FrontendOptions};
 
 #[cfg(test)]
 use hew_compile::{
     build_module_graph as frontend_build_module_graph,
-    collect_new_inferred_type_diagnostics as frontend_collect_new_inferred_type_diagnostics,
-    enrich_program_ast as frontend_enrich_program_ast,
     inject_implicit_imports as frontend_inject_implicit_imports,
     line_map_from_source as frontend_line_map_from_source, parse_source as frontend_parse_source,
     typecheck_program as frontend_typecheck_program,
@@ -32,82 +25,11 @@ use hew_parser::ast::{ImportDecl, Item, Spanned};
 
 use crate::target::TargetSpec;
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::enum_variant_names,
-    reason = "variants match C API enum naming"
-)]
-enum EmbeddedCodegenMode {
-    EmitMlir = 0,
-    EmitLlvm = 1,
-    EmitObject = 2,
-}
-
-#[cfg(hew_embedded_codegen)]
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct EmbeddedCodegenOptions {
-    mode: u32,
-    debug_info: u8,
-    output_path: *const std::ffi::c_char,
-    target_triple: *const std::ffi::c_char,
-}
-
-#[cfg(hew_embedded_codegen)]
-#[repr(C)]
-#[derive(Debug)]
-struct EmbeddedCodegenBuffer {
-    data: *mut std::ffi::c_char,
-    len: usize,
-}
-
-#[cfg(hew_embedded_codegen)]
-unsafe extern "C" {
-    fn hew_codegen_compile_msgpack(
-        data: *const u8,
-        size: usize,
-        options: *const EmbeddedCodegenOptions,
-        text_output: *mut EmbeddedCodegenBuffer,
-    ) -> std::ffi::c_int;
-    fn hew_codegen_buffer_free(buffer: EmbeddedCodegenBuffer);
-    fn hew_codegen_last_error() -> *const std::ffi::c_char;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CodegenMode {
-    #[default]
-    LinkExecutable,
-    EmitAst,
-    EmitJson,
-    EmitMsgpack,
-    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
-    EmitMlir,
-    #[allow(dead_code, reason = "dormant during v0.5 cutover")]
-    EmitLlvm,
-    EmitObj,
-}
-
-impl CodegenMode {
-    fn embedded_mode(self) -> Option<EmbeddedCodegenMode> {
-        match self {
-            Self::LinkExecutable | Self::EmitAst | Self::EmitJson | Self::EmitMsgpack => None,
-            Self::EmitMlir => Some(EmbeddedCodegenMode::EmitMlir),
-            Self::EmitLlvm => Some(EmbeddedCodegenMode::EmitLlvm),
-            Self::EmitObj => Some(EmbeddedCodegenMode::EmitObject),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
     pub werror: bool,
-    pub codegen_mode: CodegenMode,
     pub target: Option<String>,
-    pub extra_libs: Vec<String>,
-    /// Build with debug info (no optimizations, no stripping).
-    pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
     pub pkg_path: Option<PathBuf>,
     /// Anchor an in-memory compile to a specific project directory so that
@@ -115,7 +37,7 @@ pub struct CompileOptions {
     pub project_dir: Option<PathBuf>,
 }
 
-fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
+pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
     FrontendOptions {
         no_typecheck: options.no_typecheck,
         warnings_as_errors: options.werror,
@@ -141,22 +63,11 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CompileFromSourceError {
-    DiagnosticsRendered,
-    Message(String),
-}
-
-impl fmt::Display for CompileFromSourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DiagnosticsRendered => f.write_str("diagnostics already rendered"),
-            Self::Message(message) => message.fmt(f),
-        }
-    }
-}
-
 pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
+    if crate::diagnostic_json::json_output_active() {
+        push_frontend_diagnostics_json(diagnostics);
+        return;
+    }
     for diagnostic in diagnostics {
         match &diagnostic.kind {
             FrontendDiagnosticKind::Message(message) => {
@@ -233,407 +144,42 @@ pub(crate) fn render_frontend_diagnostics(diagnostics: &[FrontendDiagnostic]) {
                     ));
                 }
             }
-            FrontendDiagnosticKind::InferredType { error, fatal } => {
-                render_inferred_type_serialization_diagnostic(
+            FrontendDiagnosticKind::Hir(error) => {
+                crate::diagnostic::render_hir_diagnostic(
                     diagnostic.source.as_deref(),
                     diagnostic.filename.as_deref(),
                     error,
-                    *fatal,
                 );
             }
         }
     }
 }
 
-fn render_inferred_type_serialization_diagnostic(
-    source: Option<&str>,
-    filename: Option<&str>,
-    error: &hew_serialize::TypeExprConversionError,
-    fatal: bool,
-) {
-    let headline = if fatal {
-        "cannot serialize inferred type for code generation"
-    } else {
-        "cannot serialize inferred type for code generation; omitting inferred serializer data"
+/// Append every frontend diagnostic to the JSON sink, reusing the per-kind
+/// converters in [`crate::diagnostic_json`]. Diagnostics that carry no source
+/// context (free-form `Message`, or parse/type errors emitted before the source
+/// was attached) are emitted with a zero span and the best available code.
+fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
+    use crate::diagnostic_json::{
+        from_hir_diagnostic, from_parse_error, from_type_error, message_diagnostic,
+        push_json_diagnostic,
     };
-    if let Some(span) = error.span() {
-        let detail = error.to_string();
-        let notes = [crate::diagnostic::DiagnosticNote {
-            span,
-            message: detail.as_str(),
-        }];
-        let suggestions = [String::from(
-            "extend the Ty -> TypeExpr conversion in hew-serialize/src/enrich.rs or add an explicit type/coercion before codegen",
-        )];
-        if let (Some(source), Some(filename)) = (source, filename) {
-            if fatal {
-                crate::diagnostic::render_diagnostic(
-                    source,
-                    filename,
-                    span,
-                    headline,
-                    &notes,
-                    &suggestions,
-                );
-            } else {
-                crate::diagnostic::render_warning(
-                    source,
-                    filename,
-                    span,
-                    headline,
-                    &notes,
-                    &suggestions,
-                );
-            }
-        } else if let Some(filename) = filename {
-            crate::diagnostic::emit_plain_diagnostic_line(&format!(
-                "{}: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
-                if fatal { "error" } else { "warning" },
-                filename,
-                span.start,
-                span.end
-            ));
-        } else {
-            crate::diagnostic::emit_plain_diagnostic_line(&format!(
-                "{}: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
-                if fatal { "error" } else { "warning" },
-                span.start,
-                span.end
-            ));
-        }
-    } else {
-        crate::diagnostic::emit_plain_diagnostic_line(&format!(
-            "{}: cannot serialize inferred type for code generation: {error}",
-            if fatal { "error" } else { "warning" }
-        ));
-    }
-}
-
-fn compile_and_link(
-    ast_data: &[u8],
-    input: &str,
-    output: Option<&str>,
-    target: &TargetSpec,
-    options: &CompileOptions,
-) -> Result<String, String> {
-    let obj_temp = tempfile::Builder::new()
-        .prefix("hew_")
-        .suffix(target.object_suffix())
-        .tempfile()
-        .map_err(|e| format!("Error: cannot create temp file: {e}"))?
-        .into_temp_path();
-    let obj_path = obj_temp.display().to_string();
-
-    run_embedded_codegen(
-        ast_data,
-        EmbeddedCodegenMode::EmitObject,
-        target,
-        options,
-        Some(&obj_path),
-    )?;
-
-    let default_output = default_output_name(input, target.executable_suffix(), "a.out");
-    let output_path = output.unwrap_or(&default_output);
-    crate::link::link_executable(
-        &obj_path,
-        output_path,
-        target,
-        &options.extra_libs,
-        options.debug,
-    )?;
-
-    Ok(output_path.to_string())
-}
-
-fn default_output_name(input: &str, suffix: &str, fallback: &str) -> String {
-    let name = Path::new(input)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(fallback)
-        .to_string();
-    if !suffix.is_empty() && !name.ends_with(suffix) {
-        format!("{name}{suffix}")
-    } else {
-        name
-    }
-}
-
-/// Public wrapper for rendering frontend diagnostics; used by `cmd_check`
-/// when `--explain-cow` is set (which calls `check_file` directly instead of
-/// going through the normal `compile` path).
-pub(crate) fn render_frontend_diagnostics_pub(diagnostics: &[FrontendDiagnostic]) {
-    render_frontend_diagnostics(diagnostics);
-}
-
-/// Run `check_file` and return the full [`hew_compile::CheckOutput`] so the
-/// caller can consume `actor_send_aliasing` for `--explain-cow` rendering.
-///
-/// Renders diagnostics via [`render_frontend_diagnostics`] on failure.
-pub(crate) fn check_explain_cow(
-    input: &str,
-    options: &CompileOptions,
-) -> Result<hew_compile::CheckOutput, String> {
-    let target =
-        TargetSpec::from_requested(options.target.as_deref()).map_err(|e| format!("Error: {e}"))?;
-    let fopts = frontend_options(&target, options);
-    match hew_compile::check_file(input, &fopts) {
-        Ok(result) => Ok(result),
-        Err(failure) => {
-            render_frontend_diagnostics(&failure.diagnostics);
-            Err(failure.message)
-        }
-    }
-}
-
-fn write_output(output: Option<&str>, data: &[u8]) -> Result<String, String> {
-    if let Some(output_path) = output {
-        fs::write(output_path, data)
-            .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
-        Ok(output_path.to_string())
-    } else {
-        std::io::stdout()
-            .write_all(data)
-            .map_err(|e| format!("Error: cannot write output: {e}"))?;
-        Ok(String::new())
-    }
-}
-
-pub fn compile(
-    input: &str,
-    output: Option<&str>,
-    check_only: bool,
-    options: &CompileOptions,
-) -> Result<String, String> {
-    let target = TargetSpec::from_requested(options.target.as_deref())?;
-    let frontend_options = frontend_options(&target, options);
-
-    if check_only {
-        return match frontend_check_file(input, &frontend_options) {
-            Ok(result) => {
-                render_frontend_diagnostics(&result.diagnostics);
-                Ok(String::new())
-            }
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                Err(failure.message)
-            }
+    for diagnostic in diagnostics {
+        let source = diagnostic.source.as_deref();
+        let filename = diagnostic.filename.as_deref();
+        let json = match &diagnostic.kind {
+            FrontendDiagnosticKind::Message(message) => message_diagnostic(message),
+            FrontendDiagnosticKind::Parse(error) => match (source, filename) {
+                (Some(source), Some(filename)) => from_parse_error(source, filename, error),
+                _ => message_diagnostic(&error.message),
+            },
+            FrontendDiagnosticKind::Type(error) => match (source, filename) {
+                (Some(source), Some(filename)) => from_type_error(source, filename, error),
+                _ => message_diagnostic(&error.message),
+            },
+            FrontendDiagnosticKind::Hir(error) => from_hir_diagnostic(source, filename, error),
         };
-    }
-
-    let frontend = match frontend_compile_file(input, &frontend_options) {
-        Ok(frontend) => frontend,
-        Err(failure) => {
-            render_frontend_diagnostics(&failure.diagnostics);
-            return Err(failure.message);
-        }
-    };
-    render_frontend_diagnostics(&frontend.diagnostics);
-
-    if options.codegen_mode == CodegenMode::EmitAst {
-        let json = serde_json::to_string_pretty(&frontend.program)
-            .map_err(|e| format!("Error: cannot serialize AST: {e}"))?;
-        println!("{json}");
-        return Ok(String::new());
-    }
-
-    if options.codegen_mode == CodegenMode::EmitJson {
-        println!("{}", frontend.to_json());
-        return Ok(String::new());
-    }
-
-    let ast_data = frontend.to_msgpack();
-
-    if options.codegen_mode == CodegenMode::EmitMsgpack {
-        return write_output(output, &ast_data);
-    }
-
-    if let Some(mode) = options.codegen_mode.embedded_mode() {
-        if options.codegen_mode == CodegenMode::EmitObj {
-            let default_output = default_output_name(input, target.object_suffix(), "output");
-            let output_path = output.unwrap_or(&default_output);
-            let _ = run_embedded_codegen(&ast_data, mode, &target, options, Some(output_path))?;
-            return Ok(output_path.to_string());
-        }
-
-        let text_output = run_embedded_codegen(&ast_data, mode, &target, options, None)?;
-        return write_output(output, &text_output);
-    }
-
-    if !target.can_link_with_host_tools() {
-        return Err(target.unsupported_native_link_error());
-    }
-
-    compile_and_link(&ast_data, input, output, &target, options)
-}
-
-/// Compile a parsed program through the frontend pipeline only, yielding the
-/// MessagePack-encoded AST bytes ready for the JIT backend.
-///
-/// Renders frontend diagnostics as a side effect. Returns `Err` on compile
-/// failure with the same semantics as [`compile_from_source_checked`].
-pub(crate) fn frontend_to_msgpack(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    options: &CompileOptions,
-) -> Result<Vec<u8>, CompileFromSourceError> {
-    let target = TargetSpec::from_requested(options.target.as_deref())
-        .map_err(CompileFromSourceError::Message)?;
-    let frontend_options = frontend_options(&target, options);
-
-    let frontend =
-        match frontend_compile_program_to_msgpack(program, source, source_label, &frontend_options)
-        {
-            Ok(frontend) => frontend,
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                return Err(if failure.diagnostics.is_empty() {
-                    CompileFromSourceError::Message(failure.message)
-                } else {
-                    CompileFromSourceError::DiagnosticsRendered
-                });
-            }
-        };
-    render_frontend_diagnostics(&frontend.diagnostics);
-    Ok(frontend.data)
-}
-
-pub(crate) fn compile_from_source_checked(
-    program: hew_parser::ast::Program,
-    source: &str,
-    source_label: &str,
-    output_path: &str,
-    options: &CompileOptions,
-) -> Result<(), CompileFromSourceError> {
-    let target = TargetSpec::from_requested(options.target.as_deref())
-        .map_err(CompileFromSourceError::Message)?;
-    let frontend_options = frontend_options(&target, options);
-
-    let frontend =
-        match frontend_compile_program_to_msgpack(program, source, source_label, &frontend_options)
-        {
-            Ok(frontend) => frontend,
-            Err(failure) => {
-                render_frontend_diagnostics(&failure.diagnostics);
-                return Err(if failure.diagnostics.is_empty() {
-                    CompileFromSourceError::Message(failure.message)
-                } else {
-                    CompileFromSourceError::DiagnosticsRendered
-                });
-            }
-        };
-    render_frontend_diagnostics(&frontend.diagnostics);
-
-    if !target.can_link_with_host_tools() {
-        return Err(CompileFromSourceError::Message(
-            target.unsupported_native_link_error(),
-        ));
-    }
-
-    compile_and_link(
-        &frontend.data,
-        source_label,
-        Some(output_path),
-        &target,
-        options,
-    )
-    .map_err(CompileFromSourceError::Message)?;
-    Ok(())
-}
-
-#[cfg(not(hew_embedded_codegen))]
-fn run_embedded_codegen(
-    ast_data: &[u8],
-    mode: EmbeddedCodegenMode,
-    target: &TargetSpec,
-    options: &CompileOptions,
-    output_path: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let _ = (ast_data, mode, target, options, output_path);
-    Err(embedded_codegen_unavailable_error())
-}
-
-#[cfg(hew_embedded_codegen)]
-fn run_embedded_codegen(
-    ast_data: &[u8],
-    mode: EmbeddedCodegenMode,
-    target: &TargetSpec,
-    options: &CompileOptions,
-    output_path: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let output_path = output_path
-        .map(|path| {
-            CString::new(path).map_err(|_| format!("Error: output path contains NUL: {path}"))
-        })
-        .transpose()?;
-    let target_triple = target
-        .codegen_triple()
-        .map(|target| {
-            CString::new(target).map_err(|_| format!("Error: target triple contains NUL: {target}"))
-        })
-        .transpose()?;
-
-    let ffi_options = EmbeddedCodegenOptions {
-        mode: mode as u32,
-        debug_info: u8::from(options.debug),
-        output_path: output_path
-            .as_ref()
-            .map_or(std::ptr::null(), |path| path.as_ptr()),
-        target_triple: target_triple
-            .as_ref()
-            .map_or(std::ptr::null(), |target| target.as_ptr()),
-    };
-    let mut buffer = EmbeddedCodegenBuffer {
-        data: std::ptr::null_mut(),
-        len: 0,
-    };
-
-    // SAFETY: the msgpack buffer and option pointers remain valid for the
-    // duration of the FFI call, and `buffer` is an out-parameter.
-    let status = unsafe {
-        hew_codegen_compile_msgpack(
-            ast_data.as_ptr(),
-            ast_data.len(),
-            &raw const ffi_options,
-            &raw mut buffer,
-        )
-    };
-    if status != 0 {
-        return Err(last_embedded_codegen_error());
-    }
-
-    if buffer.data.is_null() || buffer.len == 0 {
-        return Ok(Vec::new());
-    }
-
-    // SAFETY: the codegen bridge populated `buffer` with a valid allocation
-    // that remains alive until freed with `hew_codegen_buffer_free`.
-    let bytes = unsafe {
-        let slice = std::slice::from_raw_parts(buffer.data.cast::<u8>(), buffer.len);
-        let owned = slice.to_vec();
-        hew_codegen_buffer_free(buffer);
-        owned
-    };
-    Ok(bytes)
-}
-
-#[cfg(not(hew_embedded_codegen))]
-fn embedded_codegen_unavailable_error() -> String {
-    "embedded MLIR/LLVM codegen is unavailable in this build of hew; rebuild with LLVM/MLIR configured (set LLVM_PREFIX or LLVM_DIR/MLIR_DIR, and use HEW_EMBED_STATIC=1 when only static LLVM/MLIR libraries are available)".into()
-}
-
-#[cfg(hew_embedded_codegen)]
-fn last_embedded_codegen_error() -> String {
-    // SAFETY: the codegen bridge returns either null or a valid C string until
-    // the next codegen call.
-    let error = unsafe { hew_codegen_last_error() };
-    if error.is_null() {
-        "embedded codegen failed".into()
-    } else {
-        // SAFETY: `error` is non-null and points to a NUL-terminated C string.
-        unsafe { CStr::from_ptr(error) }
-            .to_string_lossy()
-            .into_owned()
+        push_json_diagnostic(json);
     }
 }
 
@@ -683,50 +229,14 @@ fn typecheck_program(
 }
 
 #[cfg(test)]
-fn enrich_program_ast(
-    program: &mut hew_parser::ast::Program,
-    tco: Option<&hew_types::check::TypeCheckOutput>,
-    module_registry: &hew_types::module_registry::ModuleRegistry,
-    source: &str,
-    input: &str,
-) -> Result<
-    (
-        Vec<hew_serialize::ExprTypeEntry>,
-        Vec<hew_serialize::MethodCallReceiverKindEntry>,
-    ),
-    String,
-> {
-    frontend_enrich_program_ast(program, tco, module_registry, source, input)
-        .map_err(|failure| failure.message)
-}
-
-#[cfg(test)]
 fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
     frontend_inject_implicit_imports(items, source);
 }
 
 #[cfg(test)]
-fn collect_new_inferred_type_diagnostics<'a>(
-    diagnostics: &'a [hew_serialize::TypeExprConversionError],
-    root_filename: &str,
-    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
-    seen_spans: &mut HashSet<(String, usize, usize)>,
-) -> Vec<&'a hew_serialize::TypeExprConversionError> {
-    frontend_collect_new_inferred_type_diagnostics(
-        diagnostics,
-        root_filename,
-        imported_item_sources,
-        seen_spans,
-    )
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::{Block, Expr, FnDecl, Pattern, Program, Stmt, Visibility};
-    use hew_types::{
-        check::TypeCheckOutput, error::TypeErrorKind, module_registry::ModuleRegistry, Ty,
-    };
+    use hew_types::{error::TypeErrorKind, module_registry::ModuleRegistry};
 
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
@@ -809,28 +319,6 @@ mod tests {
                 }
             })
             .collect()
-    }
-
-    fn empty_tco() -> TypeCheckOutput {
-        TypeCheckOutput {
-            expr_types: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-        }
     }
 
     #[test]
@@ -955,287 +443,8 @@ fn main() {
     }
 
     #[test]
-    fn default_output_name_uses_target_specific_object_suffixes() {
-        let darwin = TargetSpec::from_requested(Some("arm64-apple-darwin")).expect("darwin target");
-        let linux =
-            TargetSpec::from_requested(Some("x86_64-unknown-linux-gnu")).expect("linux target");
-        let windows =
-            TargetSpec::from_requested(Some("x86_64-pc-windows-gnu")).expect("windows target");
-
-        assert_eq!(
-            default_output_name("examples/main.hew", darwin.object_suffix(), "output"),
-            "main.o"
-        );
-        assert_eq!(
-            default_output_name("examples/main.hew", linux.object_suffix(), "output"),
-            "main.o"
-        );
-        assert_eq!(
-            default_output_name("examples/main.hew", windows.object_suffix(), "output"),
-            "main.obj"
-        );
-    }
-
-    #[test]
-    fn inferred_type_diagnostics_deduplicate_same_span_across_passes() {
-        let expr_span = 10..18;
-        let mut program = Program {
-            items: vec![(
-                Item::Function(FnDecl {
-                    attributes: vec![],
-                    is_async: false,
-                    is_generator: false,
-                    visibility: Visibility::Private,
-                    is_pure: false,
-                    name: "foo".into(),
-                    type_params: None,
-                    params: vec![],
-                    return_type: None,
-                    where_clause: None,
-                    body: Block {
-                        stmts: vec![(
-                            Stmt::Let {
-                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
-                                ty: None,
-                                value: Some((
-                                    Expr::Identifier("count_up".into()),
-                                    expr_span.clone(),
-                                )),
-                            },
-                            expr_span.clone(),
-                        )],
-                        trailing_expr: None,
-                    },
-                    doc_comment: None,
-                    decl_span: 0..0,
-                    fn_span: 0..0,
-                }),
-                0..0,
-            )],
-            module_doc: None,
-            module_graph: None,
-        };
-        let mut tco = empty_tco();
-        tco.expr_types.insert(
-            hew_types::check::SpanKey {
-                start: expr_span.start,
-                end: expr_span.end,
-            },
-            Ty::option(Ty::Var(hew_types::ty::TypeVar(7))),
-        );
-
-        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
-        let enrich_diagnostics =
-            hew_serialize::enrich_program(&mut program, &tco, &registry).unwrap();
-        let expr_type_map_build = hew_serialize::build_expr_type_map(&tco);
-        let mut seen = HashSet::new();
-        let imported_item_sources = Vec::new();
-
-        let first = collect_new_inferred_type_diagnostics(
-            enrich_diagnostics.diagnostics(),
-            "main.hew",
-            &imported_item_sources,
-            &mut seen,
-        );
-        let second = collect_new_inferred_type_diagnostics(
-            expr_type_map_build.diagnostics(),
-            "main.hew",
-            &imported_item_sources,
-            &mut seen,
-        );
-
-        assert_eq!(first.len(), 1);
-        assert_eq!(second.len(), 0);
-    }
-
-    #[test]
-    fn unresolved_inferred_types_abort_serialization() {
-        let expr_span = 10..18;
-        let mut program = Program {
-            items: vec![(
-                Item::Function(FnDecl {
-                    attributes: vec![],
-                    is_async: false,
-                    is_generator: false,
-                    visibility: Visibility::Private,
-                    is_pure: false,
-                    name: "foo".into(),
-                    type_params: None,
-                    params: vec![],
-                    return_type: None,
-                    where_clause: None,
-                    body: Block {
-                        stmts: vec![(
-                            Stmt::Let {
-                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
-                                ty: None,
-                                value: Some((Expr::Identifier("input".into()), expr_span.clone())),
-                            },
-                            expr_span.clone(),
-                        )],
-                        trailing_expr: None,
-                    },
-                    doc_comment: None,
-                    decl_span: 0..0,
-                    fn_span: 0..0,
-                }),
-                0..0,
-            )],
-            module_doc: None,
-            module_graph: None,
-        };
-        let mut tco = empty_tco();
-        tco.expr_types.insert(
-            hew_types::check::SpanKey {
-                start: expr_span.start,
-                end: expr_span.end,
-            },
-            Ty::Var(hew_types::ty::TypeVar(7)),
-        );
-
-        let result = enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &hew_types::module_registry::ModuleRegistry::new(vec![]),
-            "fn foo() { let value = input; }",
-            "main.hew",
-        );
-
-        assert!(
-            matches!(result, Err(ref err) if err.contains("inferred type serialization failed")),
-            "unresolved inferred types must abort serialization, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn literal_kind_inferred_types_abort_serialization() {
-        let expr_span = 10..11;
-        let mut program = Program {
-            items: vec![(
-                Item::Function(FnDecl {
-                    attributes: vec![],
-                    is_async: false,
-                    is_generator: false,
-                    visibility: Visibility::Private,
-                    is_pure: false,
-                    name: "foo".into(),
-                    type_params: None,
-                    params: vec![],
-                    return_type: None,
-                    where_clause: None,
-                    body: Block {
-                        stmts: vec![(
-                            Stmt::Let {
-                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
-                                ty: None,
-                                value: Some((
-                                    Expr::Literal(hew_parser::ast::Literal::Integer {
-                                        value: 1,
-                                        radix: hew_parser::ast::IntRadix::Decimal,
-                                    }),
-                                    expr_span.clone(),
-                                )),
-                            },
-                            expr_span.clone(),
-                        )],
-                        trailing_expr: None,
-                    },
-                    doc_comment: None,
-                    decl_span: 0..0,
-                    fn_span: 0..0,
-                }),
-                0..0,
-            )],
-            module_doc: None,
-            module_graph: None,
-        };
-        let mut tco = empty_tco();
-        tco.expr_types.insert(
-            hew_types::check::SpanKey {
-                start: expr_span.start,
-                end: expr_span.end,
-            },
-            Ty::IntLiteral,
-        );
-
-        let result = enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &hew_types::module_registry::ModuleRegistry::new(vec![]),
-            "fn foo() { let value = 1; }",
-            "main.hew",
-        );
-
-        assert!(
-            matches!(result, Err(ref err) if err.contains("inferred type serialization failed")),
-            "literal-kind inferred types must abort serialization, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn option_constructor_expected_context_serializes_after_literal_coercion() {
-        let source = "fn make() -> Option<int> { Some(42) }\n";
-        let mut program = parse_source(source, "main.hew").expect("source should parse");
-
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
-        let tco = checker.check_program(&program);
-        assert!(
-            tco.errors.is_empty(),
-            "typecheck should succeed before enrichment: {:?}",
-            tco.errors
-        );
-
-        let module_registry = checker.into_module_registry();
-        let result = enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &module_registry,
-            source,
-            "main.hew",
-        );
-
-        assert!(
-            result.is_ok(),
-            "expected constructor literal coercion to survive enrichment, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn unannotated_immutable_literal_bindings_serialize_after_output_materialization() {
-        let source = "fn main() { let whole = 1; let frac = 2.0; }\n";
-        let mut program = parse_source(source, "main.hew").expect("source should parse");
-
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
-        let tco = checker.check_program(&program);
-        assert!(
-            tco.errors.is_empty(),
-            "typecheck should succeed before enrichment: {:?}",
-            tco.errors
-        );
-        assert!(
-            !tco.expr_types.values().any(Ty::is_numeric_literal),
-            "checked output should materialize literal kinds before enrichment: {:?}",
-            tco.expr_types
-        );
-
-        let module_registry = checker.into_module_registry();
-        let result = enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &module_registry,
-            source,
-            "main.hew",
-        );
-
-        assert!(
-            result.is_ok(),
-            "expected materialized literal bindings to survive enrichment, got: {result:?}"
-        );
-    }
-
-    #[test]
     fn typecheck_rejects_unresolved_inferred_binding_before_enrichment() {
-        let source = "fn main() {\n    let f = (x) => x;\n}\n";
+        let source = "fn main() {\n    let f = |x| x;\n}\n";
         let program = parse_source(source, "main.hew").expect("source should parse");
         let target = TargetSpec::from_requested(None).expect("host target");
 
@@ -1285,14 +494,14 @@ fn main() {
 }
 "#,
                 ),
-                ("diamond_base.hew", "pub fn base_value() -> int { 100 }\n"),
+                ("diamond_base.hew", "pub fn base_value() -> i64 { 100 }\n"),
                 (
                     "diamond_left.hew",
-                    "import \"diamond_base.hew\";\npub fn left_value() -> int { base_value() + 1 }\n",
+                    "import \"diamond_base.hew\";\npub fn left_value() -> i64 { base_value() + 1 }\n",
                 ),
                 (
                     "diamond_right.hew",
-                    "import \"diamond_base.hew\";\npub fn right_value() -> int { base_value() + 2 }\n",
+                    "import \"diamond_base.hew\";\npub fn right_value() -> i64 { base_value() + 2 }\n",
                 ),
             ],
         );
@@ -1378,9 +587,9 @@ fn main() {
                 ),
                 (
                     "trans_mid.hew",
-                    "import \"trans_base.hew\";\npub fn mid_fn() -> int { base_fn() + 1 }\n",
+                    "import \"trans_base.hew\";\npub fn mid_fn() -> i64 { base_fn() + 1 }\n",
                 ),
-                ("trans_base.hew", "pub fn base_fn() -> int { 42 }\n"),
+                ("trans_base.hew", "pub fn base_fn() -> i64 { 42 }\n"),
             ],
         );
         let root_path = fixture.join("module_transitive.hew");
@@ -1412,137 +621,6 @@ fn main() {
             output.errors.is_empty(),
             "transitive fixture should fully type-check: {:?}",
             output.errors
-        );
-    }
-
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "fixture-based regression exercises the full import-enrichment sync path"
-    )]
-    fn enrich_program_ast_keeps_flattened_imports_out_of_root_module_graph_node() {
-        let fixture = TestFixtureDir::new(
-            "root-module-sync-skips-flattened-imports",
-            &[
-                (
-                    "main.hew",
-                    r#"import "dep.hew";
-
-fn main() {
-    println(dep_value());
-}
-"#,
-                ),
-                (
-                    "dep.hew",
-                    r"pub fn dep_value() -> int { helper() }
-
-fn helper() -> int { 41 }
-",
-                ),
-            ],
-        );
-        let root_path = fixture.join("main.hew");
-        let root_label = root_path.display().to_string();
-        let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
-        let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
-        let mut ctx = ImportResolutionContext {
-            in_progress_imports: HashSet::new(),
-            resolved_imports: HashMap::new(),
-            manifest_deps: None,
-            extra_pkg_path: None,
-            locked_versions: None,
-            package_name: None,
-            project_dir: &fixture.path,
-        };
-
-        let module_graph = build_module_graph(
-            &root_path,
-            &mut program.items,
-            program.module_doc.clone(),
-            &mut ctx,
-        )
-        .expect("fixture should build a module graph");
-        let root_item_count = module_graph
-            .modules
-            .get(&module_graph.root)
-            .expect("root module should exist")
-            .items
-            .len();
-        program.module_graph = Some(module_graph);
-
-        let mut checker = hew_types::Checker::new(ModuleRegistry::new(vec![]));
-        let tco = checker.check_program(&program);
-        assert!(
-            tco.errors.is_empty(),
-            "fixture should type-check before enrichment: {:?}",
-            tco.errors
-        );
-        let module_registry = checker.into_module_registry();
-        enrich_program_ast(
-            &mut program,
-            Some(&tco),
-            &module_registry,
-            &root_source,
-            &root_label,
-        )
-        .expect("enrichment should succeed");
-
-        let module_graph = program
-            .module_graph
-            .as_ref()
-            .expect("program should keep module graph after enrichment");
-        let root_module = module_graph
-            .modules
-            .get(&module_graph.root)
-            .expect("root module should still exist");
-        assert_eq!(
-            root_module.items.len(),
-            root_item_count,
-            "root module graph node should keep only its original items"
-        );
-
-        let root_fn_names: Vec<_> = root_module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) => Some(function.name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            root_fn_names.contains(&"main"),
-            "root module should keep its own main function"
-        );
-        assert!(
-            !root_fn_names.contains(&"dep_value") && !root_fn_names.contains(&"helper"),
-            "flattened imported functions should not be synced back into the root module"
-        );
-
-        let dep_module = module_graph
-            .modules
-            .values()
-            .find(|module| {
-                module.items.iter().any(|(item, _)| {
-                    matches!(
-                        item,
-                        Item::Function(function)
-                            if function.name == "dep_value" || function.name == "helper"
-                    )
-                })
-            })
-            .expect("dependency module should keep its own functions");
-        let dep_fn_names: Vec<_> = dep_module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) => Some(function.name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            dep_fn_names.contains(&"dep_value") && dep_fn_names.contains(&"helper"),
-            "dependency module should still own its imported bodies"
         );
     }
 
@@ -1784,34 +862,6 @@ fn helper() -> int { 41 }
                 .iter()
                 .map(|e| &e.source_module)
                 .collect::<Vec<_>>()
-        );
-    }
-
-    /// Regression guard for issue #789: internal generator handle metadata must
-    /// be suppressed before the CLI serializer boundary instead of surfacing as
-    /// a fatal inferred-type diagnostic from `build_expr_type_map`.
-    #[test]
-    fn internal_generator_expr_type_entries_are_suppressed_before_boundary() {
-        use hew_types::check::SpanKey;
-
-        // Generator handles are internal metadata for native codegen surfaces.
-        // The serializer rescue must drop them before expr-type-map emission so
-        // the CLI boundary only reports truly user-visible unresolved/invalid
-        // inferred types.
-        let mut tco = empty_tco();
-        tco.expr_types.insert(
-            SpanKey { start: 0, end: 1 },
-            Ty::generator(Ty::I32, Ty::String),
-        );
-
-        let build = hew_serialize::build_expr_type_map(&tco);
-        assert!(
-            build.diagnostics().is_empty(),
-            "internal generator expr_types must be suppressed before the CLI boundary"
-        );
-        assert!(
-            build.entries.is_empty(),
-            "internal generator expr_types must not be serialized into expr_type_map entries"
         );
     }
 }

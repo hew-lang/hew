@@ -29,8 +29,8 @@ fn primitive_satisfies_ord_bound() {
     );
 }
 
-/// Regression: `String` satisfies `Ord`, so a generic function bounded by `Ord` must accept
-/// `String` arguments.  This exercises the non-primitive built-in path (`Ty::String`).
+/// Regression: `string` satisfies `Ord`, so a generic function bounded by `Ord` must accept
+/// `string` arguments.  This exercises the non-primitive built-in path (`Ty::String`).
 #[test]
 fn string_satisfies_ord_bound() {
     let source = r#"
@@ -49,7 +49,7 @@ fn string_satisfies_ord_bound() {
             .errors
             .iter()
             .any(|err| err.kind == TypeErrorKind::BoundsNotSatisfied),
-        "String should satisfy Ord bound; got errors: {:?}",
+        "string should satisfy Ord bound; got errors: {:?}",
         output.errors
     );
 }
@@ -92,10 +92,9 @@ fn trait_bound_violation_reports_error() {
     assert!(
         output.errors.iter().any(|err| {
             err.message
-                .contains("type `int` does not implement trait `Describable` required by `T`")
-                && !err.message.contains("type `i64`")
+                .contains("type `i64` does not implement trait `Describable` required by `T`")
         }),
-        "expected user-facing int in bound error, got {:?}",
+        "expected user-facing i64 in bound error, got {:?}",
         output.errors
     );
 }

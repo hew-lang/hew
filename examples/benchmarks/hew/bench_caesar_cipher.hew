@@ -1,4 +1,4 @@
-fn caesar_checksum(s: String, lower: String, table: Vec<int>) -> int {
+fn caesar_checksum(s: string, lower: string, table: Vec<i64>) -> i64 {
     let n = s.len();
     var checksum = 0;
     for i in 0 .. n {
@@ -20,12 +20,12 @@ fn caesar_checksum(s: String, lower: String, table: Vec<int>) -> int {
     checksum
 }
 
-const ITERS: int = 200000;
+const ITERS: i64 = 200000;
 
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     let lower = "abcdefghijklmnopqrstuvwxyz";
-    let table: Vec<int> = Vec::new();
+    let table: Vec<i64> = Vec::new();
     for k in 0 .. 26 {
         let shifted = (k + 13) % 26;
         table.push(shifted + 97);

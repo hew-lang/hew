@@ -1,0 +1,218 @@
+//! Family-coverage accounting for the golden MIR corpus
+//! (`examples/v05/checked-mir/`).
+//!
+//! The corpus is the byte-identical behavioural oracle for internal
+//! retyping work on the runtime-call seams. This test pins WHICH
+//! [`RuntimeCallFamily`] variants the corpus actually exercises: a
+//! family whose `c_symbol()` appears (quoted) in at least one golden
+//! dump is covered — the oracle will catch a mis-migration of that
+//! family. The remainder is pinned in `EXPECTED_UNCOVERED`, fail-closed
+//! in both directions:
+//!
+//! - a family LEAVING the uncovered set (a new fixture now exercises
+//!   it) must be removed from the list — the pin ratchets forward only;
+//! - a family ENTERING the uncovered set (a fixture or golden was
+//!   dropped) fails loudly — the oracle silently shrinking is exactly
+//!   the drift this test exists to refuse.
+//!
+//! [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use hew_types::runtime_call::all_runtime_call_families;
+
+/// Families with no corpus fixture today, keyed by `c_symbol()`.
+///
+/// Every entry carries a reason group. Probed against the live binary
+/// while building the corpus — each group names WHY the symbol cannot
+/// appear in a `--dump-mir` golden today and WHEN that changes.
+fn expected_uncovered() -> BTreeSet<&'static str> {
+    EXPECTED_UNCOVERED.iter().copied().collect()
+}
+
+const EXPECTED_UNCOVERED: &[&str] = &[
+    // -- Structured-terminator lowering: the MIR carries a typed
+    //    terminator (Spawn / Ask / Select / Suspend), not a callee
+    //    symbol; the C symbol materialises at the codegen edge only.
+    "hew_actor_ask",
+    "hew_actor_ask_with_channel",
+    "hew_actor_send_by_id",
+    "hew_actor_spawn",
+    "hew_reply_channel_cancel",
+    "hew_reply_channel_free",
+    "hew_reply_channel_new",
+    "hew_reply_payload_free",
+    "hew_reply_wait",
+    "hew_select_first",
+    "hew_sink_write_bytes",
+    "hew_sink_try_write_bytes",
+    "hew_sink_try_write_string",
+    "hew_hashmap_new_with_layout",
+    "hew_hashset_new_with_layout",
+    // -- Codegen-internal emission: injected by codegen passes (drop
+    //    elaboration backends, deadline timers, closure-env mutexes,
+    //    task spill machinery), never present in a MIR dump.
+    "hew_auto_mutex_alloc",
+    "hew_auto_mutex_free",
+    "hew_auto_mutex_lock",
+    "hew_auto_mutex_unlock",
+    "hew_cancel_token_is_requested",
+    "hew_cancel_token_release",
+    "hew_cancel_token_retain",
+    "hew_dyn_box_alloc",
+    "hew_dyn_box_free",
+    "hew_lambda_actor_release",
+    "hew_lambda_actor_clone",
+    "hew_lambda_actor_downgrade",
+    "hew_lambda_actor_weak_clone",
+    "hew_lambda_actor_weak_drop",
+    "hew_lambda_actor_weak_send",
+    "hew_lambda_body_alloc_reply_buf",
+    "hew_lambda_drain_all",
+    "hew_rc_new",
+    "hew_task_await_blocking",
+    "hew_task_complete_threaded",
+    "hew_task_completion_observe",
+    "hew_task_completion_unobserve",
+    "hew_task_free",
+    "hew_task_get_env",
+    "hew_task_get_error",
+    "hew_task_get_result",
+    "hew_task_scope_cancel_after_ns",
+    "hew_task_set_env",
+    "hew_task_spawn_thread",
+    "hew_vtable_dispatch_panic_on_oob",
+    // -- Compiler-internal name: explicit user spelling rejected
+    //    ("'cooperate' is compiler-internal").
+    "hew_actor_cooperate",
+    // -- Surface NYI (probed; fail-closed): duplex_pair cannot infer
+    //    its binding type; explicit `await handle.close()` refuses with
+    //    "MIR lowering for runtime call `hew_duplex_close` is not
+    //    implemented yet"; nested supervisor access names
+    //    `hew_supervisor_nested_get` as landing in v0.6.
+    "hew_duplex_clone",
+    "hew_duplex_close",
+    "hew_duplex_close_half",
+    "hew_duplex_pair",
+    "hew_duplex_payload_free",
+    "hew_duplex_recv",
+    "hew_duplex_recv_half",
+    "hew_duplex_send",
+    "hew_duplex_send_half",
+    "hew_duplex_try_recv",
+    "hew_duplex_try_send",
+    "hew_recv_half_recv",
+    "hew_recv_half_try_recv",
+    "hew_send_half_send",
+    "hew_send_half_try_send",
+    "hew_supervisor_nested_get",
+    // -- No user-facing surface lowers to the catalogued symbol today
+    //    (probed: `bytes.len()` routes through `hew_vec_len`; no
+    //    `char_count` string method; no Instant/Duration value surface;
+    //    `std::text::regex` rides module externs, the match-arm regex
+    //    path emits only `hew_regex_is_match`/`hew_regex_capture_width`).
+    "hew_bytes_len",
+    "hew_duration_abs",
+    "hew_duration_hours",
+    "hew_duration_is_zero",
+    "hew_duration_micros",
+    "hew_duration_millis",
+    "hew_duration_mins",
+    "hew_duration_nanos",
+    "hew_duration_secs",
+    "hew_instant_duration_since",
+    "hew_instant_elapsed",
+    "hew_instant_now",
+    "hew_observe_read_u64",
+    "hew_observe_scrape",
+    "hew_observe_series",
+    "hew_regex_capture",
+    "hew_regex_compile",
+    "hew_regex_free_capture",
+    "hew_string_char_count",
+    // -- Layout-witness entry with no probed source producer: bytes
+    //    sends ride hew_sink_write_bytes and string pipe sends ride
+    //    hew_sink_write_string, so no surface emits the stream send
+    //    layout entry today.
+    "hew_stream_send_layout",
+    // -- Pre-staged codegen intercept with no in-corpus producer
+    //    (network actor attach requires a live net surface fixture).
+    "hew_tcp_attach_local",
+    // -- Element-type variants with no source-reachable producer
+    //    (no user surface yields a ptr-element Vec).
+    "hew_vec_get_ptr",
+    "hew_vec_slice_range_ptr",
+];
+
+fn golden_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../examples/v05/checked-mir/golden")
+}
+
+#[test]
+fn corpus_covers_every_family_or_pins_the_gap() {
+    let dir = golden_dir();
+    assert!(
+        dir.is_dir(),
+        "golden corpus missing at {} — run `make checked-mir-golden`",
+        dir.display()
+    );
+
+    let mut haystack = String::new();
+    let mut dump_count = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("read golden dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().is_some_and(|e| e == "mir") {
+            haystack.push_str(&std::fs::read_to_string(&path).expect("read golden dump"));
+            dump_count += 1;
+        }
+    }
+    assert!(
+        dump_count > 0,
+        "no .mir dumps under {} — run `make checked-mir-golden`",
+        dir.display()
+    );
+
+    // The `RuntimeCall` payload renders its TYPED family
+    // (`family: VecSliceRange(\n    I64,\n),`) rather than a symbol
+    // string; normalize the pretty Debug output (strip whitespace, fold
+    // the trailing comma inside parens) so a single-line family needle
+    // matches it.
+    let normalized: String = haystack
+        .split_whitespace()
+        .collect::<String>()
+        .replace(",)", ")");
+
+    let mut uncovered = BTreeSet::new();
+    for family in all_runtime_call_families() {
+        let sym = family.c_symbol();
+        // Two renderings count as coverage:
+        //  - the quoted symbol (`callee: "hew_vec_len"`, `drop_fn: "..."`)
+        //    on the `Terminator::Call` / drop routes — quoting avoids
+        //    substring false-positives for short names like `abs` / `min`;
+        //  - the typed family on the `Instr::CallRuntimeAbi` route
+        //    (`family: VecLen,` — matched against the normalized text so
+        //    the multi-line pretty rendering of parameterized variants is
+        //    recognised; the trailing comma avoids prefix collisions).
+        let quoted = format!("\"{sym}\"");
+        let family_needle = format!("family:{family:?},")
+            .split_whitespace()
+            .collect::<String>();
+        if !haystack.contains(&quoted) && !normalized.contains(&family_needle) {
+            uncovered.insert(sym);
+        }
+    }
+
+    let expected = expected_uncovered();
+    let newly_covered: Vec<_> = expected.difference(&uncovered).collect();
+    let newly_uncovered: Vec<_> = uncovered.difference(&expected).collect();
+    assert!(
+        newly_covered.is_empty() && newly_uncovered.is_empty(),
+        "corpus family coverage drifted.\n\
+         Now covered (remove from EXPECTED_UNCOVERED): {newly_covered:?}\n\
+         No longer covered (add a fixture or justify the pin): {newly_uncovered:?}\n\
+         Covered {covered}/{total} families.",
+        covered = all_runtime_call_families().len() - uncovered.len(),
+        total = all_runtime_call_families().len(),
+    );
+}

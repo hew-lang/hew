@@ -31,7 +31,7 @@ pub fn complete(
         return items;
     }
 
-    if let Some(items) = try_spawn_completions(source, parse_result, offset) {
+    if let Some(items) = try_spawn_completions(source, parse_result, type_output, offset) {
         return items;
     }
 
@@ -43,12 +43,17 @@ pub fn complete(
         return items;
     }
 
+    if let Some(items) = try_is_type_pattern_completions(source, type_output, offset) {
+        return items;
+    }
+
     let mut items: Vec<CompletionItem> = KEYWORDS
         .iter()
         .map(|kw| CompletionItem {
             label: (*kw).to_string(),
             kind: CompletionKind::Keyword,
             detail: None,
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -65,6 +70,7 @@ pub fn complete(
                 label: name,
                 kind,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -79,6 +85,7 @@ pub fn complete(
                 label: name.clone(),
                 kind: CompletionKind::Type,
                 detail: None,
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -92,11 +99,69 @@ pub fn complete(
     // Collect local variables visible at cursor offset.
     items.extend(collect_locals_at(parse_result, offset));
 
-    // Deduplicate by label, preferring items with detail (richer completions).
+    // Deduplicate by label, preferring items with detail and/or documentation
+    // (richer completions). Sort so that items with detail come first so that
+    // `retain`'s first-seen rule retains the richest entry.
+    items.sort_by(|a, b| {
+        let a_rich = a.detail.is_some() || a.documentation.is_some();
+        let b_rich = b.detail.is_some() || b.documentation.is_some();
+        b_rich.cmp(&a_rich)
+    });
     let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
 
     items
+}
+
+fn try_is_type_pattern_completions(
+    source: &str,
+    type_output: Option<&TypeCheckOutput>,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let before = &source[..offset];
+    let trimmed = before.trim_end();
+    if !trimmed.ends_with(" is") {
+        return None;
+    }
+    let tc = type_output?;
+    let mut items: Vec<_> = tc
+        .type_defs
+        .keys()
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            kind: CompletionKind::Type,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        })
+        .collect();
+    // Also surface builtin primitive type names (`i8`/`i16`/.../`bool`/`char`/
+    // `string`/`bytes`/`duration`). The checker's `is` type pattern resolver
+    // (`resolve_is_type_pattern`) accepts these via `Ty::from_name`; surfacing
+    // them as completions keeps the completion candidates aligned with the
+    // names the type-pattern resolver actually admits. Note the checker still
+    // rejects primitives with `E_IS_VALUE_TYPE` at type-check time — the
+    // completion is intentionally surface-faithful to the resolver, not to the
+    // identity-allowance set.
+    for (canonical, _aliases) in hew_types::ty::PRIMITIVE_ALIASES {
+        // Skip the un-spellable / non-named primitive entries.
+        if *canonical == "()" || *canonical == "!" {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: (*canonical).to_string(),
+            kind: CompletionKind::Type,
+            detail: Some("builtin primitive type".to_string()),
+            documentation: None,
+            insert_text: None,
+            insert_text_is_snippet: false,
+            sort_text: None,
+        });
+    }
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    (!items.is_empty()).then_some(items)
 }
 
 /// If the cursor is right after a `.`, find the receiver type and offer its methods/fields.
@@ -126,6 +191,7 @@ fn try_dot_completions(
                 label: field_name.clone(),
                 kind: CompletionKind::Field,
                 detail: Some(field_ty.user_facing().to_string()),
+                documentation: None,
                 insert_text: None,
                 insert_text_is_snippet: false,
                 sort_text: None,
@@ -176,6 +242,7 @@ fn try_struct_init_completions(
             label: field_name.clone(),
             kind: CompletionKind::Field,
             detail: Some(field_ty.user_facing().to_string()),
+            documentation: None,
             insert_text: Some(format!("{field_name}: ")),
             insert_text_is_snippet: false,
             sort_text: None,
@@ -214,6 +281,7 @@ fn try_enum_variant_completions(
             label: variant_name.clone(),
             kind: CompletionKind::Constant,
             detail: variant_completion_detail(variant_def),
+            documentation: None,
             insert_text: None,
             insert_text_is_snippet: false,
             sort_text: None,
@@ -273,9 +341,16 @@ fn variant_completion_detail(variant_def: &VariantDef) -> Option<String> {
 
 /// If the cursor is right after `spawn `, offer only actor and supervisor names.
 /// Returns `None` if no actors/supervisors are found, falling through to general completions.
+///
+/// File-local actors keep their bare labels. Imported module actors surface
+/// under their qualified `module.Actor` label — the dotted key IS the actor's
+/// identity and the spawn spelling (`spawn bank.Account(...)`), so two
+/// same-named actors from different modules appear as two distinct,
+/// unambiguous entries instead of one bare name.
 fn try_spawn_completions(
     source: &str,
     parse_result: &hew_parser::ParseResult,
+    type_output: Option<&TypeCheckOutput>,
     offset: usize,
 ) -> Option<Vec<CompletionItem>> {
     let before = &source[..offset];
@@ -292,6 +367,7 @@ fn try_spawn_completions(
                     label: a.name.clone(),
                     kind: CompletionKind::Actor,
                     detail: Some("actor".to_string()),
+                    documentation: None,
                     insert_text: None,
                     insert_text_is_snippet: false,
                     sort_text: None,
@@ -302,12 +378,38 @@ fn try_spawn_completions(
                     label: s.name.clone(),
                     kind: CompletionKind::Actor,
                     detail: Some("supervisor".to_string()),
+                    documentation: None,
                     insert_text: None,
                     insert_text_is_snippet: false,
                     sort_text: None,
                 });
             }
             _ => {}
+        }
+    }
+
+    // Imported module actors live in the checker's `type_defs` under their
+    // dotted identity keys (`bank.Account`); the file's AST does not carry
+    // them. Surfacing the dotted label keeps two same-named module actors
+    // distinguishable and inserts the exact qualified spawn spelling.
+    if let Some(output) = type_output {
+        let mut imported: Vec<&String> = output
+            .type_defs
+            .iter()
+            .filter(|(name, def)| def.kind == TypeDefKind::Actor && name.contains('.'))
+            .map(|(name, _)| name)
+            .collect();
+        imported.sort_unstable();
+        for name in imported {
+            items.push(CompletionItem {
+                label: name.clone(),
+                kind: CompletionKind::Actor,
+                detail: Some("actor".to_string()),
+                documentation: None,
+                insert_text: None,
+                insert_text_is_snippet: false,
+                sort_text: None,
+            });
         }
     }
 
@@ -319,6 +421,10 @@ fn try_spawn_completions(
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per Item variant; not meaningfully splittable"
+)]
 fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> Vec<CompletionItem> {
     let mut locals = Vec::new();
 
@@ -404,7 +510,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
             }
             Item::Supervisor(s) => {
                 for child in &s.children {
-                    for arg in &child.args {
+                    for (_field_name, arg) in &child.args {
                         collect_locals_from_spanned_expr(arg, offset, &mut locals);
                     }
                 }
@@ -417,7 +523,12 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
                 }
             }
-            Item::Import(_) | Item::ExternBlock(_) | Item::Wire(_) | Item::TypeAlias(_) => {}
+            // Record fields carry no expressions; no locals to collect.
+            Item::Record(_)
+            | Item::Import(_)
+            | Item::ExternBlock(_)
+            | Item::Wire(_)
+            | Item::TypeAlias(_) => {}
         }
     }
 
@@ -434,6 +545,11 @@ fn collect_locals_from_block(block: &Block, offset: usize, locals: &mut Vec<Comp
             break;
         }
         collect_locals_from_stmt(stmt, span, offset, locals);
+    }
+    // Also walk the trailing expression — an `if`/`match` in tail position is
+    // value-bearing and may introduce local bindings visible at `offset`.
+    if let Some(trailing) = &block.trailing_expr {
+        collect_locals_from_spanned_expr(trailing, offset, locals);
     }
 }
 
@@ -519,18 +635,11 @@ fn collect_locals_from_stmt(
 )]
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block)
-        | Expr::Fork { body: block } => {
+        Expr::Block(block) | Expr::Scope { body: block } => {
             collect_locals_from_block(block, offset, locals);
         }
-        Expr::Scope { binding, body } => {
-            if let Some(name) = binding {
-                locals.push(local_completion(name));
-            }
-            collect_locals_from_block(body, offset, locals);
+        Expr::UnsafeBlock(block) => {
+            collect_locals_from_block(block, offset, locals);
         }
         Expr::ForkChild { expr, .. } => collect_locals_from_expr(&expr.0, offset, locals),
         Expr::If {
@@ -605,11 +714,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(value, offset, locals);
             }
         }
-        Expr::Send { target, message } => {
-            collect_locals_from_spanned_expr(target, offset, locals);
-            collect_locals_from_spanned_expr(message, offset, locals);
-        }
-        Expr::Spawn { target, args } => {
+        Expr::Spawn { target, args, .. } => {
             collect_locals_from_spanned_expr(target, offset, locals);
             for (_, arg) in args {
                 collect_locals_from_spanned_expr(arg, offset, locals);
@@ -695,6 +800,11 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
             collect_pattern_names(&left.0, locals);
             collect_pattern_names(&right.0, locals);
         }
+        Pattern::Regex { captures, .. } => {
+            for name in captures {
+                locals.push(local_completion(name));
+            }
+        }
         Pattern::Literal(_) | Pattern::Wildcard => {}
     }
 }
@@ -704,6 +814,7 @@ fn local_completion(name: &str) -> CompletionItem {
         label: name.to_string(),
         kind: CompletionKind::Variable,
         detail: None,
+        documentation: None,
         insert_text: None,
         insert_text_is_snippet: false,
         sort_text: None,
@@ -717,6 +828,7 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
         label: name.to_string(),
         kind: CompletionKind::Function,
         detail: Some(detail),
+        documentation: sig.doc_comment.clone(),
         insert_text: None,
         insert_text_is_snippet: false,
         sort_text: None,
@@ -727,7 +839,7 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 #[must_use]
 #[expect(
     clippy::too_many_lines,
-    reason = "each snippet entry is a simple data tuple; splitting would fragment the table"
+    reason = "data-table of snippet tuples; no logic to extract"
 )]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
@@ -783,14 +895,14 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         ("trait", "trait ${1:Name} {\n\t$0\n}", "trait Name { ... }"),
         (
-            "spawn lambda",
-            "let ${1:handle} = spawn (${2:param}: ${3:Type}) => {\n\t$0\n};",
-            "let handle = spawn (param: Type) => { ... };",
+            "actor lambda",
+            "let ${1:handle} = actor |${2:param}: ${3:Type}| {\n\t$0\n};",
+            "let handle = actor |param: Type| { ... };",
         ),
         (
             "select",
-            "select {\n\t${1:binding} <- ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
-            "select { pattern <- source => expr, after duration => expr }",
+            "select {\n\t${1:binding} from ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
+            "select { pattern from source => expr, after duration => expr }",
         ),
         (
             "select from",
@@ -817,20 +929,17 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "if let ${1:Some(value)} = ${2:expr} {\n\t$0\n}",
             "if let pattern = expr { ... }",
         ),
-        (
-            "scope",
-            "scope |${1:cancel}| {\n\t$0\n}",
-            "scope |cancel| { ... }",
-        ),
+        ("scope", "scope {\n\t$0\n}", "scope { ... }"),
     ];
     snippets
         .into_iter()
         .map(|(label, snippet, detail)| CompletionItem {
             label: format!("{label}..."),
             kind: CompletionKind::Snippet,
+            detail: Some(detail.to_string()),
+            documentation: None,
             insert_text: Some(snippet.to_string()),
             insert_text_is_snippet: true,
-            detail: Some(detail.to_string()),
             sort_text: Some(format!("0_{label}")),
         })
         .collect()
@@ -852,6 +961,7 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
         Item::Wire(w) => Some((w.name.clone(), CompletionKind::Type)),
         Item::TypeAlias(ta) => Some((ta.name.clone(), CompletionKind::Type)),
         Item::Machine(m) => Some((m.name.clone(), CompletionKind::Type)),
+        Item::Record(r) => Some((r.name.clone(), CompletionKind::Type)),
         Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
     }
 }
@@ -897,6 +1007,143 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut checker = hew_types::Checker::new(registry);
         checker.check_program(&parse_result.program)
+    }
+
+    /// Type-check `root_source` together with pre-resolved module imports
+    /// (`(path, module_source)` pairs), mirroring the resolved-import shape
+    /// `hew-compile` hands the checker for package imports.
+    fn type_check_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> TypeCheckOutput {
+        use hew_parser::ast::{ImportDecl, Program};
+        let mut items: Vec<Spanned<Item>> = modules
+            .iter()
+            .map(|(path, module_source)| {
+                let parsed = hew_parser::parse(module_source);
+                assert!(
+                    parsed.errors.is_empty(),
+                    "module parse errors: {:?}",
+                    parsed.errors
+                );
+                (
+                    Item::Import(ImportDecl {
+                        path: path.iter().map(ToString::to_string).collect(),
+                        spec: None,
+                        file_path: None,
+                        resolved_items: Some(parsed.program.items),
+                        resolved_item_source_paths: Vec::new(),
+                        resolved_source_paths: Vec::new(),
+                    }),
+                    0..0,
+                )
+            })
+            .collect();
+        let root = hew_parser::parse(root_source);
+        assert!(
+            root.errors.is_empty(),
+            "root parse errors: {:?}",
+            root.errors
+        );
+        items.extend(root.program.items);
+        let program = Program {
+            items,
+            module_doc: None,
+            module_graph: None,
+        };
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        checker.check_program(&program)
+    }
+
+    /// Two same-named imported actors surface as two distinct
+    /// module-qualified spawn completions (`bank.Account`, `store.Account`);
+    /// the file-local actor keeps its bare label.
+    #[test]
+    fn spawn_completions_disambiguate_same_named_module_actors() {
+        let actor_src = "pub actor Account {\n\
+                         \x20   var n: i64 = 0;\n\
+                         \x20   receive fn who() -> i64 { 1 }\n\
+                         }\n";
+        // Checked program (parsable shape) supplies the imported actors.
+        let output = type_check_with_modules(
+            "actor Local {}\nfn main() { }\n",
+            &[
+                (&["hew", "bank"], actor_src),
+                (&["hew", "store"], actor_src),
+            ],
+        );
+        // Editor buffer mid-keystroke (parse errors tolerated, as in the
+        // LSP's own spawn completion test).
+        let cursor_src = "actor Local {}\nfn main() { let h = spawn  }\n";
+        let offset = cursor_src.find("spawn ").unwrap() + 6;
+        let parse_result = hew_parser::parse(cursor_src);
+        let labels: Vec<String> = complete(cursor_src, &parse_result, Some(&output), offset)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+        assert!(
+            labels.contains(&"bank.Account".to_string())
+                && labels.contains(&"store.Account".to_string()),
+            "both module-qualified actors must surface: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Local".to_string()),
+            "the file-local actor keeps its bare label: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Account".to_string()),
+            "no ambiguous bare entry for module actors: {labels:?}"
+        );
+    }
+
+    /// Dot-completion must surface `impl`-block methods on a named type with
+    /// their return-type detail. This is the analysis-layer coverage that the
+    /// LSP relies on once imported stdlib modules (e.g. `std/text/regex`) are
+    /// inlined into the checked program: the regex `Pattern.captures(input) ->
+    /// CaptureMatches` surface has exactly this trait + impl shape.
+    #[test]
+    fn completions_surface_impl_block_methods_with_return_type() {
+        let source = "\
+type Caps { count: i64; }
+type Matcher { id: i64; }
+trait MatcherMethods {
+    fn captures(self, input: string) -> Caps;
+    fn find_all(self, input: string) -> Vec<string>;
+}
+impl MatcherMethods for Matcher {
+    fn captures(m: Matcher, input: string) -> Caps { Caps { count: 0 } }
+    fn find_all(m: Matcher, input: string) -> Vec<string> { Vec::new() }
+}
+fn probe(mat: Matcher, s: string) {
+    let c = mat.captures(s);
+}
+";
+        let tc = type_check(source);
+        assert!(
+            !tc.errors
+                .iter()
+                .any(|e| e.severity == hew_types::error::Severity::Error),
+            "fixture must type-check cleanly: {:?}",
+            tc.errors
+        );
+        let dot = source.find("mat.captures").expect("receiver present") + "mat.".len();
+        let parse_result = hew_parser::parse(source);
+        let items = complete(source, &parse_result, Some(&tc), dot);
+        let captures = items
+            .iter()
+            .find(|i| i.label == "captures")
+            .expect("captures method should appear in completions");
+        assert!(
+            captures
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("Caps")),
+            "captures completion should carry its `-> Caps` return type, got: {:?}",
+            captures.detail,
+        );
+        assert!(
+            items.iter().any(|i| i.label == "find_all"),
+            "sibling impl method find_all should also be surfaced, got: {:?}",
+            items.iter().map(|i| &i.label).collect::<Vec<_>>(),
+        );
     }
 
     #[test]
@@ -1231,6 +1478,156 @@ impl Box {
             items.len() > 5,
             "should fall through to keyword/snippet completions when no actors exist, got {} items",
             items.len()
+        );
+    }
+
+    // ── Span-parity: tail-promoted if/if-let branch blocks ───────────────────
+    //
+    // When `Stmt::If` or `Stmt::IfLet` are promoted to `trailing_expr`, their
+    // branch blocks are wrapped in `Expr::Block` nodes with empty (zero-length)
+    // spans.  `span_contains_offset` returns `true` for any empty span
+    // (conservative approximation), so completions walk both branches
+    // regardless of cursor position — matching the pre-promotion behaviour where
+    // `collect_locals_from_stmt` for `Stmt::If` also walks both branches
+    // unconditionally.
+    //
+    // WHY empty spans: `Stmt::If` does not store individual block spans; they
+    // are consumed inside `parse_block`.  Recovering them would require adding
+    // span fields to the `Stmt::If` AST node, which propagates through HIR/MIR
+    // and serialisers — out of scope for this fix.
+    // WHEN obsolete: once `Stmt::If { then_block_span, else_block_span }` are
+    // added to the AST and `promote_stmt_to_trailing_expr` can thread the real
+    // spans through.
+    // WHAT the real solution looks like: capture `peek_span()` before calling
+    // `parse_block()` at each branch site and store the `start..end` range on
+    // `Stmt::If`.
+
+    #[test]
+    fn completions_inside_tail_promoted_if_then_branch_include_outer_locals() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    let outer = 1;
+    if cond {
+        let inner = 2;
+        /*cursor*/
+        inner
+    } else {
+        0
+    }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "outer"),
+            "outer local must be visible inside tail-promoted if then-branch; got: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn completions_inside_tail_promoted_if_else_branch_include_outer_locals() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    let outer = 1;
+    if cond {
+        0
+    } else {
+        let inner = 2;
+        /*cursor*/
+        inner
+    }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "outer"),
+            "outer local must be visible inside tail-promoted if else-branch; got: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn actor_handle_dot_completions_include_receive_handler_and_exclude_internal_fields() {
+        // Dot-completing on a `LocalPid<Counter>` handle must offer the actor's
+        // declared receive handler (`increment`) and must NOT leak the actor's
+        // internal struct fields (`count`).
+        //
+        // This test uses an empty module registry (no stdlib), so `tell` /
+        // `to_remote_via` won't appear here — those are covered by the stdlib-
+        // loaded hew-lsp integration test.
+        let source = r"actor Counter {
+    count: i64;
+    receive fn increment(n: i64) { count = count + n; }
+}
+fn main() {
+    let c = spawn Counter(count: 0);
+    c./*cursor*/increment(1);
+}";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"increment"),
+            "expected receive handler `increment` in actor-handle completions; got: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"count"),
+            "internal actor field `count` must not appear in handle completions; got: {labels:?}"
+        );
+    }
+
+    /// A local declared INSIDE the tail-promoted then-branch must be visible at
+    /// the cursor.  This exercises the empty-span universal-containment rule:
+    /// `span_contains_offset` returns true for the empty wrapper span, causing
+    /// `collect_locals_from_expr` to descend and find `inner`.  Without descent
+    /// (or without universal containment), `inner` would not appear.
+    #[test]
+    fn completions_inside_tail_promoted_if_branch_see_locals_declared_in_branch() {
+        let labels = labels_at_cursor(
+            r"fn example(cond: bool) {
+    if cond {
+        let inner = 2;
+        /*cursor*/
+        inner
+    } else { 0 }
+}",
+        );
+        assert!(
+            labels.iter().any(|l| l == "inner"),
+            "local declared inside tail-promoted then-branch must be visible at cursor; got: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn fn_completion_carries_doc_comment() {
+        // A function with a doc comment must surface that comment on the
+        // completion item's `documentation` field so editors can display it.
+        let source = "/// Computes the sum of two integers.\nfn add(x: i64, y: i64) -> i64 { x + y }\nfn main() { /*cursor*/ }";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let add = items
+            .iter()
+            .find(|item| item.label == "add")
+            .expect("completion for `add` not found");
+        assert_eq!(
+            add.documentation.as_deref(),
+            Some("Computes the sum of two integers."),
+            "completion item should carry the doc comment; got: {:?}",
+            add.documentation
+        );
+    }
+
+    #[test]
+    fn fn_completion_without_doc_comment_has_none_documentation() {
+        // A function with no doc comment must yield `None` for `documentation`
+        // rather than an empty string.
+        let source = r"fn bare(x: i64) -> i64 { x }
+fn main() { /*cursor*/ }";
+        let tc = type_check(&source.replace(CURSOR, ""));
+        let items = items_at_cursor(source, Some(&tc));
+        let bare = items
+            .iter()
+            .find(|item| item.label == "bare")
+            .expect("completion for `bare` not found");
+        assert_eq!(
+            bare.documentation, None,
+            "function without doc comment must have None documentation"
         );
     }
 }

@@ -64,7 +64,7 @@ impl Checker {
         arity: usize,
     ) -> Option<Vec<Ty>> {
         match expected {
-            Ty::Named { name, args }
+            Ty::Named { name, args, .. }
                 if Ty::names_match_qualified(name, type_name) && args.len() == arity =>
             {
                 Some(args.clone())
@@ -73,21 +73,139 @@ impl Checker {
         }
     }
 
+    fn lower_turbofish_elem(
+        &mut self,
+        constructor_name: &str,
+        expected_arity: usize,
+        supplied_args: &[Spanned<TypeExpr>],
+        span: &Span,
+    ) -> Option<Vec<Ty>> {
+        if supplied_args.len() != expected_arity {
+            self.report_error(
+                TypeErrorKind::ArityMismatch,
+                span,
+                format!(
+                    "`{constructor_name}` takes {expected_arity} type argument{} but {} {} supplied",
+                    if expected_arity == 1 { "" } else { "s" },
+                    supplied_args.len(),
+                    if supplied_args.len() == 1 { "was" } else { "were" }
+                ),
+            );
+            return None;
+        }
+
+        Some(
+            supplied_args
+                .iter()
+                .map(|type_arg| self.resolve_type_expr(type_arg))
+                .collect(),
+        )
+    }
+
+    fn lower_turbofish_collection_constructor(
+        &mut self,
+        constructor_name: &str,
+        builtin: crate::BuiltinType,
+        expected_arity: usize,
+        supplied_args: &[Spanned<TypeExpr>],
+        span: &Span,
+    ) -> Option<Ty> {
+        let lowered =
+            self.lower_turbofish_elem(constructor_name, expected_arity, supplied_args, span)?;
+        let resolved_args: Vec<Ty> = lowered.iter().map(|ty| self.subst.resolve(ty)).collect();
+        let result_ty = Ty::Named {
+            builtin: Some(builtin),
+            name: constructor_name.to_string(),
+            args: resolved_args,
+        };
+        match builtin {
+            crate::BuiltinType::HashMap => {
+                self.validate_concrete_hashmap_type(&result_ty, span);
+            }
+            crate::BuiltinType::HashSet => {
+                self.validate_concrete_hashset_type(&result_ty, span);
+            }
+            crate::BuiltinType::Vec => {
+                self.validate_concrete_vec_type(&result_ty, span);
+            }
+            _ => {}
+        }
+        self.record_type(span, &result_ty);
+        Some(result_ty)
+    }
+
     pub(super) fn record_concrete_call_type_args(&mut self, span: &Span, type_args: &[Ty]) {
         let concrete: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
         if concrete.iter().all(|ty| !ty.has_inference_var()) {
-            self.call_type_args.insert(SpanKey::from(span), concrete);
+            self.call_type_args
+                .insert(SpanKey::in_module(span, self.current_module_idx), concrete);
         }
     }
 
+    /// Record the resolved type arguments for a record (or enum-struct-variant)
+    /// initialiser site on a user-defined generic type.
+    ///
+    /// Mirrors [`record_concrete_call_type_args`] for the record-init
+    /// monomorphisation surface, with one structural difference: a
+    /// record-init's type args may only become fully concrete *after*
+    /// `check_struct_init` returns — via an outer annotation
+    /// (`let x: Box<int> = Box { value: 1 }`) or an enclosing return-type
+    /// unification.  Eagerly rejecting at emission time when an arg still
+    /// carries a `Ty::Var` would drop entries the post-inference boundary
+    /// resolve in `check_program` would have made fully concrete.
+    ///
+    /// Discipline: snapshot through `subst.resolve` here so later updates to
+    /// the substitution propagate at the boundary; rely on
+    /// [`Self::validate_record_init_type_args_output_contract`] to prune
+    /// entries that are still partial after `materialize_literal_defaults`
+    /// settles.  The fail-closed invariant (no `Ty::Var` crosses into HIR)
+    /// is preserved — it is just enforced at the output boundary rather
+    /// than at emission, parallel to how `expr_types` works.
+    pub(super) fn record_concrete_record_init_type_args(&mut self, span: &Span, type_args: &[Ty]) {
+        if type_args.is_empty() {
+            return;
+        }
+        let snapshot: Vec<Ty> = type_args.iter().map(|ty| self.subst.resolve(ty)).collect();
+        self.record_init_type_args
+            .insert(SpanKey::in_module(span, self.current_module_idx), snapshot);
+    }
+
     fn record_builtin_result_output_type_args(&mut self, span: &Span, ok_ty: &Ty, err_ty: &Ty) {
-        self.builtin_result_output_type_args
-            .insert(SpanKey::from(span), (ok_ty.clone(), err_ty.clone()));
+        self.builtin_result_output_type_args.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            (ok_ty.clone(), err_ty.clone()),
+        );
     }
 
     pub(super) fn apply_instantiated_call_signature(
         &mut self,
         sig: &FnSig,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        args: &[CallArg],
+        span: &Span,
+        arg_application: SignatureArgApplication<'_>,
+        record_call_type_args: bool,
+    ) -> AppliedCallSignature {
+        let empty_assoc_bindings = HashMap::new();
+        self.apply_instantiated_call_signature_with_assoc(
+            sig,
+            &empty_assoc_bindings,
+            type_args,
+            args,
+            span,
+            arg_application,
+            record_call_type_args,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "call application needs the signature, its associated-type side table, source args, span, and arity mode"
+    )]
+    pub(super) fn apply_instantiated_call_signature_with_assoc(
+        &mut self,
+        sig: &FnSig,
+        type_param_assoc_bindings: &HashMap<(String, String, String), Ty>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
@@ -178,7 +296,12 @@ impl Checker {
             }
         }
 
-        self.enforce_type_param_bounds(sig, &resolved_type_args, span);
+        self.enforce_type_param_bounds_with_assoc(
+            sig,
+            type_param_assoc_bindings,
+            &resolved_type_args,
+            span,
+        );
 
         if record_call_type_args && !sig.type_params.is_empty() {
             self.record_concrete_call_type_args(span, &resolved_type_args);
@@ -190,6 +313,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expected-type constructor checking shares variant, Option/Result, and Vec::new context"
+    )]
     pub(super) fn check_call_against_expected_constructor(
         &mut self,
         func: &Spanned<Expr>,
@@ -198,10 +325,8 @@ impl Checker {
         expected: &Ty,
         span: &Span,
     ) -> Option<Ty> {
-        if type_args.is_some() {
-            return None;
-        }
-
+        // Resolve the function name first so we can route turbofish for
+        // `Vec::new` before the blanket early-return for other constructors.
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
             Expr::FieldAccess { object, field } => {
@@ -213,7 +338,138 @@ impl Checker {
             _ => return None,
         };
 
+        // Constructors with explicit type args that are not covered here fall
+        // through to the generic call resolver.
+        if type_args.is_some()
+            && !matches!(
+                func_name.as_str(),
+                "Vec::new" | "HashMap::new" | "HashSet::new"
+            )
+        {
+            return None;
+        }
+
         let resolved_expected = self.subst.resolve(expected);
+
+        if let Some(targs) = type_args {
+            match func_name.as_str() {
+                "HashMap::new" => {
+                    self.check_arity(args, 0, "`HashMap::new`", span);
+                    let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                        "HashMap",
+                        crate::BuiltinType::HashMap,
+                        2,
+                        targs,
+                        span,
+                    ) else {
+                        self.record_type(span, &Ty::Error);
+                        return Some(Ty::Error);
+                    };
+                    return Some(result_ty);
+                }
+                "HashSet::new" => {
+                    self.check_arity(args, 0, "`HashSet::new`", span);
+                    let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                        "HashSet",
+                        crate::BuiltinType::HashSet,
+                        1,
+                        targs,
+                        span,
+                    ) else {
+                        self.record_type(span, &Ty::Error);
+                        return Some(Ty::Error);
+                    };
+                    return Some(result_ty);
+                }
+                _ => {}
+            }
+        }
+
+        if func_name == "Vec::new" {
+            self.check_arity(args, 0, "`Vec::new`", span);
+
+            // Determine element type. Turbofish (`Vec::<T>::new()` or
+            // `Vec::new::<T>()`) takes priority over the expected-type
+            // annotation path (`let v: Vec<T> = Vec::new()`).
+            let elem_ty: Ty = if let Some(targs) = type_args {
+                let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
+                    self.record_type(span, &Ty::Error);
+                    return Some(Ty::Error);
+                };
+                lowered.remove(0)
+            } else {
+                // Expected-type path: infer element type from the surrounding
+                // `Vec<T>` annotation.
+                let Ty::Named {
+                    name,
+                    args: vec_args,
+                    ..
+                } = &resolved_expected
+                else {
+                    return None;
+                };
+                if name != "Vec" || vec_args.len() != 1 {
+                    return None;
+                }
+                self.subst.resolve(&vec_args[0])
+            };
+
+            if matches!(elem_ty, Ty::Var(_)) {
+                // Element type still unresolved — return a Vec<Var> or the
+                // expected type as-is (both are valid deferred placeholders).
+                let result_ty = if type_args.is_some() {
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::Vec),
+                        name: "Vec".to_string(),
+                        args: vec![elem_ty],
+                    }
+                } else {
+                    resolved_expected.clone()
+                };
+                self.record_type(span, &result_ty);
+                return Some(result_ty);
+            }
+            if matches!(elem_ty, Ty::Error) {
+                self.record_type(span, &Ty::Error);
+                return Some(Ty::Error);
+            }
+            if crate::stdlib::vec_element_runtime_suffix(&elem_ty, &self.type_defs)
+                == Some("layout")
+                && matches!(elem_ty, Ty::Named { .. })
+            {
+                let is_copy = self.registry.implements_marker(&elem_ty, MarkerTrait::Copy);
+                // W5.016: admit a non-Copy record/enum element with a
+                // synthesizable owned thunk path (constructed through the owned
+                // ABI). Stays fail-closed for elements with no thunk path.
+                if !is_copy && !self.vec_owned_element_admissible(&elem_ty) {
+                    let reason = self.vec_element_rejection_reason(&elem_ty);
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`{}` cannot be a `Vec` element: {reason}",
+                            elem_ty.user_facing()
+                        ),
+                    );
+                    self.record_type(span, &Ty::Error);
+                    return Some(Ty::Error);
+                }
+            }
+            // Construct and record the result type. Turbofish builds Vec<elem_ty>
+            // directly; the expected-type path returns resolved_expected (which
+            // already has the correct Vec<T> shape).
+            let result_ty = if type_args.is_some() {
+                Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    name: "Vec".to_string(),
+                    args: vec![self.subst.resolve(&elem_ty)],
+                }
+            } else {
+                resolved_expected.clone()
+            };
+            self.record_type(span, &result_ty);
+            return Some(result_ty);
+        }
 
         if let Some((type_name, expected_params, type_params)) =
             self.lookup_variant_constructor(&func_name)
@@ -224,14 +480,18 @@ impl Checker {
                 type_params.len(),
             )?;
             self.check_arity(args, expected_params.len(), "this function", span);
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(param_ty) = expected_params.get(i) {
-                    let (expr, arg_span) = arg.expr();
-                    let mut expected_ty = param_ty.clone();
-                    for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                        expected_ty = expected_ty.substitute_named_param(param, replacement);
+            {
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(inferred_args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = expected_params.get(i) {
+                        let (expr, arg_span) = arg.expr();
+                        let expected_ty = param_ty.substitute_named_params_parallel(&subst_map);
+                        self.check_against(expr, arg_span, &expected_ty);
                     }
-                    self.check_against(expr, arg_span, &expected_ty);
                 }
             }
             let result_ty = Ty::normalize_named(
@@ -317,6 +577,7 @@ impl Checker {
 
     /// Emit a `BlockingCallInReceiveFn` warning when a known blocking operation
     /// is called from inside an actor receive function.
+    /// Await-suspending forms must be filtered before calling this helper.
     ///
     /// Actor receive functions run synchronously on scheduler worker threads.
     /// A blocking call (e.g. `recv`, `read`, `accept`) will stall that thread
@@ -445,16 +706,22 @@ impl Checker {
                 }
             }
             self.check_arity(args, expected_params.len(), "this function", span);
-            for (i, arg) in args.iter().enumerate() {
-                if let Some(param_ty) = expected_params.get(i) {
-                    let (expr, span) = arg.expr();
-                    let mut expected_ty = param_ty.clone();
-                    if !type_params.is_empty() {
-                        for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
-                            expected_ty = expected_ty.substitute_named_param(param, replacement);
-                        }
+            {
+                let subst_map: HashMap<String, Ty> = type_params
+                    .iter()
+                    .zip(inferred_args.iter())
+                    .map(|(p, a)| (p.clone(), a.clone()))
+                    .collect();
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = expected_params.get(i) {
+                        let (expr, span) = arg.expr();
+                        let expected_ty = if subst_map.is_empty() {
+                            param_ty.clone()
+                        } else {
+                            param_ty.substitute_named_params_parallel(&subst_map)
+                        };
+                        self.check_against(expr, span, &expected_ty);
                     }
-                    self.check_against(expr, span, &expected_ty);
                 }
             }
             let resolved_args: Vec<Ty> = inferred_args
@@ -466,6 +733,80 @@ impl Checker {
 
         // Handle polymorphic constructors with fresh linked type vars
         match func_name.as_str() {
+            // Turbofish constructor `Vec::<T>::new()` or `Vec::new::<T>()`.
+            // Guard: only intercept when type_args are supplied; the no-turbofish
+            // path falls through to the `fn_sigs` lookup which returns Vec<TypeVar>
+            // and lets the call site unify the element type normally.
+            "Vec::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`Vec::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                let Some(mut lowered) = self.lower_turbofish_elem("Vec", 1, targs, span) else {
+                    return Ty::Error;
+                };
+                let elem_ty = lowered.remove(0);
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                // Inherit the layout+Copy guard from check_call_against_expected_constructor.
+                if crate::stdlib::vec_element_runtime_suffix(&resolved_elem, &self.type_defs)
+                    == Some("layout")
+                    && matches!(resolved_elem, Ty::Named { .. })
+                {
+                    let is_copy = self
+                        .registry
+                        .implements_marker(&resolved_elem, MarkerTrait::Copy);
+                    // W5.016: a non-Copy record/enum element with a synthesizable
+                    // owned clone/drop thunk path constructs through
+                    // `hew_vec_new_with_elem_layout` (the owned ABI), so do not
+                    // reject it here. Stays fail-closed for elements with no
+                    // thunk path (e.g. a record carrying a `Vec` field).
+                    if !is_copy && !self.vec_owned_element_admissible(&resolved_elem) {
+                        let reason = self.vec_element_rejection_reason(&resolved_elem);
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "`{}` cannot be a `Vec` element: {reason}",
+                                resolved_elem.user_facing()
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
+                let result_ty = Ty::Named {
+                    builtin: Some(crate::BuiltinType::Vec),
+                    name: "Vec".to_string(),
+                    args: vec![resolved_elem],
+                };
+                self.record_type(span, &result_ty);
+                return result_ty;
+            }
+            "HashMap::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`HashMap::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                    "HashMap",
+                    crate::BuiltinType::HashMap,
+                    2,
+                    targs,
+                    span,
+                ) else {
+                    return Ty::Error;
+                };
+                return result_ty;
+            }
+            "HashSet::new" if type_args.is_some() => {
+                self.check_arity(args, 0, "`HashSet::new`", span);
+                let targs = type_args.expect("guarded by `is_some()` above");
+                let Some(result_ty) = self.lower_turbofish_collection_constructor(
+                    "HashSet",
+                    crate::BuiltinType::HashSet,
+                    1,
+                    targs,
+                    span,
+                ) else {
+                    return Ty::Error;
+                };
+                return result_ty;
+            }
             "Some" => {
                 self.check_arity(args, 1, "`Some`", span);
                 let t = Ty::Var(TypeVar::fresh());
@@ -539,15 +880,18 @@ impl Checker {
                 return self.make_vec_type(elem, span);
             }
             "supervisor_child" if args.len() == 2 => {
-                // supervisor_child(sup, index) → typed ActorRef based on supervisor decl
+                // supervisor_child(sup, index) → typed LocalPid based on supervisor decl
                 let (sup_expr, sup_sp) = args[0].expr();
                 let sup_ty = self.synthesize(sup_expr, sup_sp);
                 let sup_ty_resolved = self.subst.resolve(&sup_ty);
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
-                    if let Some(children) = self.supervisor_children.get(sup_name) {
+                // Accept local actor handles as supervisor handles.
+                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_handle() {
+                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
+                        // `supervisor_child` builtin indexes into the static slot space.
+                        let statics = &sup_children.statics;
                         if let Expr::Literal(hew_parser::ast::Literal::Integer {
                             value: idx, ..
                         }) = idx_expr
@@ -558,19 +902,20 @@ impl Checker {
                                 reason = "supervisor child index is always non-negative and small"
                             )]
                             let i = *idx as usize;
-                            if i < children.len() {
-                                let child_type = &children[i].1;
-                                return Ty::actor_ref(Ty::Named {
+                            if i < statics.len() {
+                                let child_type = &statics[i].1;
+                                return Ty::local_pid(Ty::Named {
+                                    builtin: None,
                                     name: child_type.clone(),
                                     args: vec![],
                                 });
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                        return Ty::local_pid(Ty::Var(TypeVar::fresh()));
                     }
                 }
-                return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                return Ty::local_pid(Ty::Var(TypeVar::fresh()));
             }
             _ => {}
         }
@@ -604,14 +949,6 @@ impl Checker {
             .filter(|qualified| self.fn_sigs.contains_key(qualified))
             .unwrap_or_else(|| func_name.clone());
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
-            // Purity check: pure functions can only call other pure functions
-            if self.in_pure_function && !sig.is_pure {
-                self.report_error(
-                    TypeErrorKind::PurityViolation,
-                    span,
-                    format!("cannot call impure function `{func_name}` from a pure function"),
-                );
-            }
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())
@@ -628,8 +965,14 @@ impl Checker {
                     .borrow_mut()
                     .insert(ImportKey::new(self.current_module.clone(), module));
             }
-            let applied_sig = self.apply_instantiated_call_signature(
+            let assoc_bindings = self
+                .fn_type_param_assoc_bindings
+                .get(&resolved_fn_name)
+                .cloned()
+                .unwrap_or_default();
+            let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                 &sig,
+                &assoc_bindings,
                 type_args,
                 args,
                 span,
@@ -650,7 +993,7 @@ impl Checker {
             }
 
             if resolved_fn_name == "len" {
-                if let Some(Ty::Named { name, args }) =
+                if let Some(Ty::Named { name, args, .. }) =
                     applied_sig.params.first().map(|ty| self.subst.resolve(ty))
                 {
                     if Ty::names_match_qualified(&name, "HashSet") {
@@ -671,7 +1014,10 @@ impl Checker {
             if let Some(sig) = binding
                 .def_span
                 .as_ref()
-                .and_then(|def_span| self.lambda_poly_sig_map.get(&SpanKey::from(def_span)))
+                .and_then(|def_span| {
+                    self.lambda_poly_sig_map
+                        .get(&SpanKey::in_module(def_span, self.current_module_idx))
+                })
                 .cloned()
             {
                 return self
@@ -722,6 +1068,28 @@ impl Checker {
             }
         }
 
+        // Detect recursive closure self-reference in call position: if we are
+        // inside a lambda body and the callee name matches the pending let-binding,
+        // emit ClosureRecursive rather than UndefinedFunction.
+        if self.lambda_capture_depth.is_some()
+            && self
+                .pending_let_closure_name
+                .as_deref()
+                .is_some_and(|pending| pending == func_name.as_str())
+        {
+            self.report_error(
+                TypeErrorKind::ClosureRecursive {
+                    name: func_name.clone(),
+                },
+                span,
+                format!(
+                    "E_CLOSURE_RECURSIVE: closure cannot call itself via binding \
+                     `{func_name}` — recursive closures require a fixed-point surface \
+                     that is not available in this version; use a named function instead"
+                ),
+            );
+            return Ty::Error;
+        }
         let similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs
@@ -760,6 +1128,82 @@ impl Checker {
                 self.check_arity(args, 0, "this function", span);
                 Ty::Unit
             }
+            // Duplex<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
+            //
+            // tell-shaped: `Duplex<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
+            // ask-shaped:  `Duplex<Msg, R>`  — `handle(msg)` returns `Result<R, AskError>`
+            //
+            // Exactly one argument required (the message). The message type must match
+            // the Duplex send-side type (S). The message must be Send (crosses actor boundary).
+            Ty::Named {
+                args: ref type_args,
+                builtin: Some(crate::BuiltinType::Duplex),
+                ..
+            } if type_args.len() == 2 => {
+                let msg_ty = type_args[0].clone();
+                let reply_ty = type_args[1].clone();
+                // A multi-param lambda actor carries a Tuple message type
+                // (`actor |a: i64, b: string| { .. }` → `Duplex<(i64, string), R>`).
+                // Its call surface is the N-arg form `handle(a, b)`: each call
+                // argument checks against its tuple component and each crosses
+                // the actor boundary independently (per-arg Send enforcement).
+                // Every other shape — including a single literal-tuple argument
+                // for a single-tuple-param lambda — stays on the one-message
+                // path below.
+                let multi_component_tys: Option<Vec<Ty>> = match &msg_ty {
+                    Ty::Tuple(parts) if parts.len() > 1 && parts.len() == args.len() => {
+                        Some(parts.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(parts) = multi_component_tys {
+                    for (arg, part) in args.iter().zip(parts.iter()) {
+                        let (expr, sp) = arg.expr();
+                        let actual = self.check_against(expr, sp, part);
+                        // Enforce Send per argument (E_DUPLEX_NON_SEND).
+                        if !matches!(actual, Ty::Error | Ty::Var(_))
+                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                sp,
+                                format!(
+                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
+                                    actual.user_facing()
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    // Arity: exactly one call argument (the message).
+                    self.check_arity(args, 1, "lambda actor handle", span);
+                    if let Some(arg) = args.first() {
+                        let (expr, sp) = arg.expr();
+                        let actual = self.check_against(expr, sp, &msg_ty);
+                        // Enforce Send on the call-site argument (E_DUPLEX_NON_SEND).
+                        if !matches!(actual, Ty::Error | Ty::Var(_))
+                            && !self.registry.implements_marker(&actual, MarkerTrait::Send)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidSend,
+                                sp,
+                                format!(
+                                    "message type `{}` is not Send; lambda actor calls cross an actor boundary (E_DUPLEX_NON_SEND)",
+                                    actual.user_facing()
+                                ),
+                            );
+                        }
+                    }
+                }
+                // Return type depends on reply direction:
+                //   tell-shaped (Reply = ()) → Result<(), SendError>
+                //   ask-shaped  (Reply = R)  → Result<R, AskError>
+                if matches!(reply_ty, Ty::Unit) {
+                    Ty::result(Ty::Unit, Ty::send_error())
+                } else {
+                    Ty::result(reply_ty, Ty::ask_error())
+                }
+            }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that
                 // independent argument diagnostics are not cascade-suppressed.  This mirrors
@@ -790,6 +1234,34 @@ impl Checker {
         span: &Span,
         construct: &str,
     ) -> Ty {
+        // NEW-4: a `pat from rx.recv()` select/join arm over a std/channel
+        // `Receiver<T>`. Recognised before the actor-ask shape: the receiver is
+        // a channel handle (not an actor), and `recv` resolves to `Option<T>`
+        // with a recorded runtime rewrite (hew_channel_recv_layout), exactly as an
+        // awaited `rx.recv()`. The select substrate polls the channel core for
+        // readiness and binds `Option<T>` on the winning edge.
+        if let Expr::MethodCall {
+            receiver, method, ..
+        } = expr
+        {
+            if method == "recv" {
+                let recv_ty = {
+                    let ty = self.synthesize(&receiver.0, &receiver.1);
+                    self.subst.resolve(&ty)
+                };
+                if matches!(
+                    &recv_ty,
+                    Ty::Named { name, .. } if name == "Receiver" || name == "channel.Receiver"
+                ) {
+                    let prev = self.inside_await_expr;
+                    self.inside_await_expr = true;
+                    let synthesized = self.synthesize(expr, span);
+                    self.inside_await_expr = prev;
+                    return self.subst.resolve(&synthesized);
+                }
+            }
+        }
+
         let (method_expr, method_span, receiver_expr, receiver_span) = match expr {
             Expr::MethodCall { receiver, .. } => (expr, span, &receiver.0, &receiver.1),
             Expr::Await(inner) => {
@@ -828,7 +1300,14 @@ impl Checker {
         }
 
         let ty = {
+            // Treat the method call inside a select arm or join as if it is
+            // under `await` so the ask-without-await guard does not fire here.
+            // Select / join sources are the select-flavoured equivalent of
+            // awaited asks — the caller is the concurrency construct itself.
+            let prev = self.inside_await_expr;
+            self.inside_await_expr = true;
             let synthesized = self.synthesize(method_expr, method_span);
+            self.inside_await_expr = prev;
             self.subst.resolve(&synthesized)
         };
         if ty == Ty::Unit {
@@ -855,14 +1334,12 @@ impl Checker {
             );
             return;
         }
-        if !matches!(resolved, Ty::String) && !resolved.is_integer() {
+        if !self.queue_elem_admissible(&resolved) {
+            let reason = self.queue_elem_rejection_reason(&resolved);
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                format!(
-                    "Channel<{resolved}> is not supported in `for await`; \
-                     only Channel<String> and Channel<int> are currently supported"
-                ),
+                format!("Channel<{resolved}> is not supported in `for await`: {reason}"),
             );
             return;
         }

@@ -1,5 +1,0 @@
-fn main() -> String {
-  let s = "hello";
-  let t = s;
-  return s;
-}

@@ -1,0 +1,11 @@
+fn main() {
+    let x: i64 = 9007199254740993;
+    let y = x.checked_add(1);
+    match y == 9007199254740994 {
+        true => {
+            println(y);
+            println("matched");
+        }
+        false => trap("invalid bigint match")
+    }
+}

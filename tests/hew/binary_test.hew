@@ -1,0 +1,344 @@
+//! Behavioural tests for std::encoding::binary.
+//!
+//! Covers:
+//!   - Known byte-pattern assertions (LE and BE, each width).
+//!   - Roundtrip (put then get) for every put/get pair.
+//!   - Signed-integer sign extension (negative values, min/max).
+//!   - Edge cases: zero, max unsigned value for each width.
+//!
+//! Note: `bytes` is a by-value type on this branch — `put_*` returns
+//! a fresh buffer rather than mutating a caller-owned buffer.
+
+import std::encoding::binary;
+
+import std::testing;
+
+// ── u16 little-endian — known pattern ────────────────────────────────
+#[test]
+fn test_put_u16_le_known_pattern() {
+    // 0x0102 in LE → [0x02, 0x01]
+    let buf = binary.put_u16_le(0x102);
+    testing.assert_eq(buf.len(), 2);
+    testing.assert_eq(buf.get(0) as i64, 0x2);
+    testing.assert_eq(buf.get(1) as i64, 0x1);
+}
+
+#[test]
+fn test_get_u16_le_known_pattern() {
+    let buf = binary.put_u16_le(0x102);
+    testing.assert_eq(binary.get_u16_le(buf), 0x102);
+}
+
+#[test]
+fn test_roundtrip_u16_le() {
+    let buf = binary.put_u16_le(0xABCD);
+    testing.assert_eq(binary.get_u16_le(buf), 0xABCD);
+}
+
+// ── u16 big-endian — known pattern ───────────────────────────────────
+#[test]
+fn test_put_u16_be_known_pattern() {
+    // 0x0102 in BE → [0x01, 0x02]
+    let buf = binary.put_u16_be(0x102);
+    testing.assert_eq(buf.len(), 2);
+    testing.assert_eq(buf.get(0) as i64, 0x1);
+    testing.assert_eq(buf.get(1) as i64, 0x2);
+}
+
+#[test]
+fn test_get_u16_be_known_pattern() {
+    let buf = binary.put_u16_be(0x102);
+    testing.assert_eq(binary.get_u16_be(buf), 0x102);
+}
+
+#[test]
+fn test_roundtrip_u16_be() {
+    let buf = binary.put_u16_be(0xABCD);
+    testing.assert_eq(binary.get_u16_be(buf), 0xABCD);
+}
+
+// ── u32 little-endian — known pattern ────────────────────────────────
+#[test]
+fn test_put_u32_le_known_pattern() {
+    // 0x01020304 in LE → [0x04, 0x03, 0x02, 0x01]
+    let buf = binary.put_u32_le(0x1020304);
+    testing.assert_eq(buf.len(), 4);
+    testing.assert_eq(buf.get(0) as i64, 0x4);
+    testing.assert_eq(buf.get(1) as i64, 0x3);
+    testing.assert_eq(buf.get(2) as i64, 0x2);
+    testing.assert_eq(buf.get(3) as i64, 0x1);
+}
+
+#[test]
+fn test_get_u32_le_known_pattern() {
+    let buf = binary.put_u32_le(0x1020304);
+    testing.assert_eq(binary.get_u32_le(buf), 0x1020304);
+}
+
+#[test]
+fn test_roundtrip_u32_le() {
+    let buf = binary.put_u32_le(0xDEADBEEF);
+    testing.assert_eq(binary.get_u32_le(buf), 0xDEADBEEF);
+}
+
+// ── u32 big-endian — known pattern ───────────────────────────────────
+#[test]
+fn test_put_u32_be_known_pattern() {
+    // 0x01020304 in BE → [0x01, 0x02, 0x03, 0x04]
+    let buf = binary.put_u32_be(0x1020304);
+    testing.assert_eq(buf.len(), 4);
+    testing.assert_eq(buf.get(0) as i64, 0x1);
+    testing.assert_eq(buf.get(1) as i64, 0x2);
+    testing.assert_eq(buf.get(2) as i64, 0x3);
+    testing.assert_eq(buf.get(3) as i64, 0x4);
+}
+
+#[test]
+fn test_get_u32_be_known_pattern() {
+    let buf = binary.put_u32_be(0x1020304);
+    testing.assert_eq(binary.get_u32_be(buf), 0x1020304);
+}
+
+#[test]
+fn test_roundtrip_u32_be() {
+    let buf = binary.put_u32_be(0xDEADBEEF);
+    testing.assert_eq(binary.get_u32_be(buf), 0xDEADBEEF);
+}
+
+// ── u64 little-endian — known pattern ────────────────────────────────
+#[test]
+fn test_put_u64_le_known_pattern() {
+    // 0x0102030405060708 in LE → [0x08, ..., 0x01]
+    let buf = binary.put_u64_le(0x102030405060708);
+    testing.assert_eq(buf.len(), 8);
+    testing.assert_eq(buf.get(0) as i64, 0x8);
+    testing.assert_eq(buf.get(1) as i64, 0x7);
+    testing.assert_eq(buf.get(6) as i64, 0x2);
+    testing.assert_eq(buf.get(7) as i64, 0x1);
+}
+
+#[test]
+fn test_get_u64_le_known_pattern() {
+    let buf = binary.put_u64_le(0x102030405060708);
+    testing.assert_eq(binary.get_u64_le(buf), 0x102030405060708);
+}
+
+#[test]
+fn test_roundtrip_u64_le() {
+    let buf = binary.put_u64_le(0x102030405060708);
+    testing.assert_eq(binary.get_u64_le(buf), 0x102030405060708);
+}
+
+// ── u64 big-endian — known pattern ───────────────────────────────────
+#[test]
+fn test_put_u64_be_known_pattern() {
+    // 0x0102030405060708 in BE → [0x01, ..., 0x08]
+    let buf = binary.put_u64_be(0x102030405060708);
+    testing.assert_eq(buf.len(), 8);
+    testing.assert_eq(buf.get(0) as i64, 0x1);
+    testing.assert_eq(buf.get(1) as i64, 0x2);
+    testing.assert_eq(buf.get(6) as i64, 0x7);
+    testing.assert_eq(buf.get(7) as i64, 0x8);
+}
+
+#[test]
+fn test_get_u64_be_known_pattern() {
+    let buf = binary.put_u64_be(0x102030405060708);
+    testing.assert_eq(binary.get_u64_be(buf), 0x102030405060708);
+}
+
+#[test]
+fn test_roundtrip_u64_be() {
+    let buf = binary.put_u64_be(0x102030405060708);
+    testing.assert_eq(binary.get_u64_be(buf), 0x102030405060708);
+}
+
+// ── Edge case: zero ───────────────────────────────────────────────────
+#[test]
+fn test_put_u16_le_zero() {
+    let buf = binary.put_u16_le(0);
+    testing.assert_eq(buf.len(), 2);
+    testing.assert_eq(buf.get(0) as i64, 0);
+    testing.assert_eq(buf.get(1) as i64, 0);
+    testing.assert_eq(binary.get_u16_le(buf), 0);
+}
+
+#[test]
+fn test_put_u32_le_zero() {
+    let buf = binary.put_u32_le(0);
+    testing.assert_eq(buf.len(), 4);
+    testing.assert_eq(buf.get(0) as i64, 0);
+    testing.assert_eq(buf.get(3) as i64, 0);
+    testing.assert_eq(binary.get_u32_le(buf), 0);
+}
+
+#[test]
+fn test_put_u64_le_zero() {
+    let buf = binary.put_u64_le(0);
+    testing.assert_eq(buf.len(), 8);
+    testing.assert_eq(buf.get(0) as i64, 0);
+    testing.assert_eq(buf.get(7) as i64, 0);
+    testing.assert_eq(binary.get_u64_le(buf), 0);
+}
+
+// ── Edge case: max unsigned values ───────────────────────────────────
+#[test]
+fn test_put_u16_le_max() {
+    // 0xFFFF → [0xFF, 0xFF]
+    let buf = binary.put_u16_le(0xFFFF);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(1) as i64, 0xFF);
+    testing.assert_eq(binary.get_u16_le(buf), 0xFFFF);
+}
+
+#[test]
+fn test_put_u32_le_max() {
+    // 0xFFFFFFFF → [0xFF, 0xFF, 0xFF, 0xFF]
+    let buf = binary.put_u32_le(0xFFFFFFFF);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(3) as i64, 0xFF);
+    testing.assert_eq(binary.get_u32_le(buf), 0xFFFFFFFF);
+}
+
+#[test]
+fn test_put_u64_le_max_i64() {
+    // i64::MAX = 0x7FFFFFFFFFFFFFFF
+    let v: i64 = 9223372036854775807;
+    let buf = binary.put_u64_le(v);
+    testing.assert_eq(binary.get_u64_le(buf), v);
+}
+
+// ── Signed integers: negative values ─────────────────────────────────
+#[test]
+fn test_put_i16_le_minus_one() {
+    // -1 in i16 → all bits set → [0xFF, 0xFF]
+    let buf = binary.put_i16_le(-1);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(1) as i64, 0xFF);
+    testing.assert_eq(binary.get_i16_le(buf), -1);
+}
+
+#[test]
+fn test_put_i32_le_minus_one() {
+    // -1 in i32 → [0xFF, 0xFF, 0xFF, 0xFF]
+    let buf = binary.put_i32_le(-1);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(3) as i64, 0xFF);
+    testing.assert_eq(binary.get_i32_le(buf), -1);
+}
+
+#[test]
+fn test_put_i64_le_minus_one() {
+    // -1 in i64 → 8 bytes of 0xFF
+    let buf = binary.put_i64_le(-1);
+    testing.assert_eq(buf.len(), 8);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(7) as i64, 0xFF);
+    testing.assert_eq(binary.get_i64_le(buf), -1);
+}
+
+#[test]
+fn test_roundtrip_i16_le_negative() {
+    let buf = binary.put_i16_le(-1000);
+    testing.assert_eq(binary.get_i16_le(buf), -1000);
+}
+
+#[test]
+fn test_roundtrip_i32_le_negative() {
+    let buf = binary.put_i32_le(-1000000);
+    testing.assert_eq(binary.get_i32_le(buf), -1000000);
+}
+
+#[test]
+fn test_roundtrip_i64_le_negative() {
+    let buf = binary.put_i64_le(-1000000000000);
+    testing.assert_eq(binary.get_i64_le(buf), -1000000000000);
+}
+
+#[test]
+fn test_put_i16_be_minus_one() {
+    // -1 in i16 BE → [0xFF, 0xFF]
+    let buf = binary.put_i16_be(-1);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(1) as i64, 0xFF);
+    testing.assert_eq(binary.get_i16_be(buf), -1);
+}
+
+#[test]
+fn test_put_i32_be_minus_one() {
+    let buf = binary.put_i32_be(-1);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(3) as i64, 0xFF);
+    testing.assert_eq(binary.get_i32_be(buf), -1);
+}
+
+#[test]
+fn test_put_i64_be_minus_one() {
+    let buf = binary.put_i64_be(-1);
+    testing.assert_eq(buf.len(), 8);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(7) as i64, 0xFF);
+    testing.assert_eq(binary.get_i64_be(buf), -1);
+}
+
+// ── i16 boundary: min and max ─────────────────────────────────────────
+#[test]
+fn test_i16_le_min_value() {
+    // i16 min = -32768 → [0x00, 0x80] in LE
+    let buf = binary.put_i16_le(-32768);
+    testing.assert_eq(buf.get(0) as i64, 0x0);
+    testing.assert_eq(buf.get(1) as i64, 0x80);
+    testing.assert_eq(binary.get_i16_le(buf), -32768);
+}
+
+#[test]
+fn test_i16_le_max_value() {
+    // i16 max = 32767 → [0xFF, 0x7F] in LE
+    let buf = binary.put_i16_le(32767);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(1) as i64, 0x7F);
+    testing.assert_eq(binary.get_i16_le(buf), 32767);
+}
+
+#[test]
+fn test_i16_be_min_value() {
+    // i16 min = -32768 → [0x80, 0x00] in BE
+    let buf = binary.put_i16_be(-32768);
+    testing.assert_eq(buf.get(0) as i64, 0x80);
+    testing.assert_eq(buf.get(1) as i64, 0x0);
+    testing.assert_eq(binary.get_i16_be(buf), -32768);
+}
+
+// ── i32 boundary: min and max ─────────────────────────────────────────
+#[test]
+fn test_i32_le_min_value() {
+    // i32 min = -2147483648 → [0x00, 0x00, 0x00, 0x80] in LE
+    let buf = binary.put_i32_le(-2147483648);
+    testing.assert_eq(buf.get(0) as i64, 0x0);
+    testing.assert_eq(buf.get(1) as i64, 0x0);
+    testing.assert_eq(buf.get(2) as i64, 0x0);
+    testing.assert_eq(buf.get(3) as i64, 0x80);
+    testing.assert_eq(binary.get_i32_le(buf), -2147483648);
+}
+
+#[test]
+fn test_i32_le_max_value() {
+    // i32 max = 2147483647 → [0xFF, 0xFF, 0xFF, 0x7F] in LE
+    let buf = binary.put_i32_le(2147483647);
+    testing.assert_eq(buf.get(0) as i64, 0xFF);
+    testing.assert_eq(buf.get(1) as i64, 0xFF);
+    testing.assert_eq(buf.get(2) as i64, 0xFF);
+    testing.assert_eq(buf.get(3) as i64, 0x7F);
+    testing.assert_eq(binary.get_i32_le(buf), 2147483647);
+}
+
+// ── BE vs LE byte order contrast ─────────────────────────────────────
+#[test]
+fn test_le_and_be_produce_distinct_byte_patterns() {
+
+    // Same value, different byte orders — index 0 must differ.
+    let buf_le = binary.put_u32_le(0x1020304);
+    let buf_be = binary.put_u32_be(0x1020304);
+    // LE[0] = 0x04, BE[0] = 0x01
+    testing.assert_ne(buf_le.get(0) as i64, buf_be.get(0) as i64);
+}

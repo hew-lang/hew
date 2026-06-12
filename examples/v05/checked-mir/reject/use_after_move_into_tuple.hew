@@ -1,0 +1,34 @@
+// Reject fixture for `MirCheck::UseAfterConsume` — use-after-move INTO A TUPLE.
+//
+// `h` is an `@resource` (an owned, single-owner value class with an
+// implicit `close` drop). Building the tuple `(h, g)` MOVES `h` into the
+// aggregate; the subsequent read of `h.fd` is a use after the move, which
+// the Checked MIR move-checker rejects with `MirDiagnostic::UseAfterConsume`
+// carrying both the consume site (the tuple constructor) and the offending
+// use site.
+//
+// Before this gate the aggregate-construct move did not mark `h` consumed,
+// so `hew check` passed and the built binary double-freed at runtime (the
+// later use plus the moved-into tuple's scope-exit drop both released the
+// one handle). The checker now fails closed at CHECK time instead.
+#[resource]
+type File {
+    fd: i64;
+}
+
+impl File {
+    fn close(self) {}
+}
+
+fn use_after_move_into_tuple() -> i64 {
+    let h = File { fd: 1 };
+    let g = File { fd: 2 };
+    let pair = (h, g);
+    let leaked = h.fd; // ERROR: `h` was moved into `pair`
+    let _ = pair;
+    leaked
+}
+
+fn main() {
+    let _ = use_after_move_into_tuple();
+}

@@ -3,9 +3,16 @@
 //! Provides process execution (with shell or explicit arguments), spawning,
 //! waiting, and killing for compiled Hew programs. Stdout/stderr strings in
 //! [`HewProcessResult`] are allocated with `libc::malloc` and NUL-terminated.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 use crate::vec::{ElemKind, HewVec};
-use crate::{cabi::str_to_malloc, util::cstr_to_str};
+use crate::{
+    cabi::{free_cstring, str_to_malloc},
+    util::cstr_to_str,
+};
 use std::os::raw::c_char;
 use std::process::Command;
 
@@ -39,12 +46,16 @@ fn bytes_to_malloc(bytes: &[u8]) -> *mut c_char {
     str_to_malloc(&s)
 }
 
-/// Free a C string allocated by `strdup`/`malloc` if present.
+/// Release a retained `String` owner returned by [`crate::vec::hew_vec_get_str`].
+///
+/// As of W5.011 P2b-vec, `hew_vec_get_str` returns a header-aware **retained**
+/// owner (refcount share / static passthrough), not a headerless `strdup`, so it
+/// must be released through the universal `String` consumer — never bare
+/// `libc::free`, which would free `data` instead of the allocation base.
 unsafe fn free_c_string(ptr: *const c_char) {
-    if !ptr.is_null() {
-        // SAFETY: ptr was allocated by strdup/malloc and is owned by the caller.
-        unsafe { libc::free(ptr.cast_mut().cast()) };
-    }
+    // SAFETY: ptr is null or a retained String owner from hew_vec_get_str;
+    // hew_string_drop performs the static-literal skip before any header access.
+    unsafe { crate::string::hew_string_drop(ptr.cast_mut()) }; // CSTRING-FREE: str-open (release hew_vec_get_str retained owner, P2b-vec)
 }
 
 /// Build a [`HewProcessResult`] from an [`std::process::Output`].
@@ -147,18 +158,18 @@ unsafe fn hewvec_string_args(arg_vec: *mut HewVec, context: &str) -> Option<Vec<
             crate::set_last_error(format!("{context}: args length exceeds Hew index range"));
             return None;
         };
-        // SAFETY: index_i64 was derived from an in-bounds usize index and get_str
-        // returns an owned strdup of the string element.
+        // SAFETY: index_i64 was derived from an in-bounds usize index; get_str
+        // returns a retained header-aware String owner for this slot.
         let raw_arg = unsafe { crate::vec::hew_vec_get_str(arg_vec, index_i64) };
         let arg_context = format!("{context}: args[{index}]");
-        // SAFETY: raw_arg is the strdup returned by hew_vec_get_str for this slot.
+        // SAFETY: raw_arg is the retained owner returned by hew_vec_get_str.
         let Some(arg_text) = (unsafe { cstr_to_str(&raw_arg, &arg_context) }) else {
-            // SAFETY: raw_arg came from hew_vec_get_str and must be released here.
+            // SAFETY: raw_arg is a retained owner and must be released here.
             unsafe { free_c_string(raw_arg) };
             return None;
         };
         owned_args.push(arg_text.to_owned());
-        // SAFETY: raw_arg came from hew_vec_get_str and must be released here.
+        // SAFETY: raw_arg is a retained owner and must be released here.
         unsafe { free_c_string(raw_arg) };
     }
 
@@ -179,7 +190,26 @@ unsafe fn clone_result_string(ptr: *const c_char, context: &str) -> *mut c_char 
 // C ABI exports
 // ---------------------------------------------------------------------------
 
-/// Run a command via the system shell (`sh -c "cmd"`) and wait for completion.
+/// Build a [`Command`] that runs `cmd_str` through the platform's system shell:
+/// `sh -c "cmd"` on Unix, `cmd /C "cmd"` on Windows. Centralised so the
+/// shell-based run/spawn entry points stay portable.
+fn shell_command(cmd_str: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.arg("/C").arg(cmd_str);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(cmd_str);
+        command
+    }
+}
+
+/// Run a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"` on
+/// Windows) and wait for completion.
 ///
 /// Returns a heap-allocated [`HewProcessResult`], or null on error.
 /// The caller must free the result with [`hew_process_result_free`].
@@ -193,8 +223,7 @@ pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessR
     let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_run") }) else {
         return std::ptr::null_mut();
     };
-    let mut command = Command::new("sh");
-    command.arg("-c").arg(cmd_str);
+    let mut command = shell_command(cmd_str);
     command_output_to_result(&mut command, "hew_process_run", cmd_str)
 }
 
@@ -280,7 +309,8 @@ pub unsafe extern "C" fn hew_process_run_argv(
     command_output_to_result(&mut command, "hew_process_run_argv", cmd_str)
 }
 
-/// Spawn a command via the system shell (`sh -c "cmd"`) without waiting.
+/// Spawn a command via the system shell (`sh -c "cmd"` on Unix, `cmd /C "cmd"`
+/// on Windows) without waiting.
 ///
 /// Returns a heap-allocated [`HewProcess`] handle, or null on error.
 /// The caller must free the handle with [`hew_process_free`].
@@ -294,7 +324,7 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProces
     let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn") }) else {
         return std::ptr::null_mut();
     };
-    match Command::new("sh").arg("-c").arg(cmd_str).spawn() {
+    match shell_command(cmd_str).spawn() {
         Ok(child) => {
             crate::hew_clear_error();
             Box::into_raw(Box::new(HewProcess {
@@ -450,12 +480,12 @@ pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
     if !result.stdout.is_null() {
-        // SAFETY: stdout was allocated with libc::malloc.
-        unsafe { libc::free(result.stdout.cast()) };
+        // SAFETY: stdout was allocated header-aware by str_to_malloc.
+        unsafe { free_cstring(result.stdout) }; // CSTRING-FREE: str-open (HewProcessResult.stdout = str_to_malloc; header-aware in S1)
     }
     if !result.stderr.is_null() {
-        // SAFETY: stderr was allocated with libc::malloc.
-        unsafe { libc::free(result.stderr.cast()) };
+        // SAFETY: stderr was allocated header-aware by str_to_malloc.
+        unsafe { free_cstring(result.stderr) }; // CSTRING-FREE: str-open (HewProcessResult.stderr = str_to_malloc; header-aware in S1)
     }
 }
 
@@ -537,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_args_echo() {
         let cmd = CString::new("echo").unwrap();
         let first_arg = CString::new("hello").unwrap();
@@ -558,6 +589,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_argv_preserves_spaced_and_empty_arguments() {
         let cmd = CString::new("printf").unwrap();
         let fmt = CString::new("<%s>|<%s>|<%s>").unwrap();
@@ -656,6 +688,11 @@ mod tests {
 
     #[test]
     fn spawn_and_kill() {
+        // A long-running command via the system shell: `sleep` on Unix has no
+        // Windows builtin, so use `ping` as a portable ~minute-long sleep there.
+        #[cfg(windows)]
+        let cmd = CString::new("ping -n 61 127.0.0.1 >NUL").unwrap();
+        #[cfg(not(windows))]
         let cmd = CString::new("sleep 60").unwrap();
         // SAFETY: cmd is a valid NUL-terminated C string.
         let proc = unsafe { hew_process_spawn(cmd.as_ptr()) };

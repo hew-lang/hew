@@ -1,0 +1,23 @@
+// Accept fixture: lambda actor binding literally named `log` proves the
+// call-syntax dispatch routes through `hew_lambda_actor_send` /
+// `hew_lambda_actor_ask` rather than the math `log` builtin. Pre-fix,
+// `log("hi")` resolved to the floating-point logarithm at the callee-
+// lookup site because the lambda-actor binding was not checked before
+// `module_fn_names`. The fixture pins that route by using the name
+// `log` for BOTH a tell-shaped and an ask-shaped lambda actor binding,
+// observing the body's side effect (println from tell) and the reply
+// value (i64 round-trip from ask) so any regression silently routing
+// to the math builtin would fail at run time (incorrect output AND
+// type mismatch — `log` math expects `f64`, not `string`/`i64`).
+fn main() {
+    let log = actor |s: string| {
+        println(f"LOG: {s}");
+    };
+    log("hello");
+    let log2 = actor |n: i64| -> i64 { n + 1 };
+    let r = log2(41);
+    match r {
+        Ok(v) => println(f"ask {v}"),
+        Err(_) => println("ask err"),
+    }
+}

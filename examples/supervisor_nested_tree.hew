@@ -1,3 +1,6 @@
+//! Status: aspirational (Hew roadmap: actor/supervisor codegen-rs runtime parity)
+//! Description: ─────────────────────────────────────────────────────────────────
+
 // ─────────────────────────────────────────────────────────────────
 // Hew: Nested Supervisor Trees
 // ─────────────────────────────────────────────────────────────────
@@ -15,7 +18,7 @@
 //          Worker(1)  Worker(2)  Cache(42)
 actor Worker {
     let id: i32;
-    let count: i32;
+    var count: i32;
     receive fn process(item: i32) {
         count = count + 1;
         print("[worker ");
@@ -36,7 +39,7 @@ actor Worker {
 
 actor Cache {
     let capacity: i32;
-    let entries: i32;
+    var entries: i32;
     receive fn store(key: i32) {
         entries = entries + 1;
         print("[cache] stored key=");
@@ -52,29 +55,26 @@ actor Cache {
 // Inner supervisor: manages a pool of workers
 supervisor WorkerPool {
     strategy: one_for_one;
-    max_restarts: 3;
-    window: 60;
+    intensity: 3 within 60s;
 
-    child w1: Worker(1, 0);
-    child w2: Worker(2, 0);
+    child w1: Worker(id: 1, count: 0);
+    child w2: Worker(id: 2, count: 0);
 }
 
 // Inner supervisor: manages cache actors
 supervisor CacheManager {
     strategy: one_for_one;
-    max_restarts: 2;
-    window: 60;
+    intensity: 2 within 60s;
 
-    child cache: Cache(1000, 0);
+    child cache: Cache(capacity: 1000, entries: 0);
 }
 
 // Root supervisor: manages the inner supervisors
 supervisor AppSupervisor {
     strategy: one_for_one;
-    max_restarts: 5;
-    window: 60;
+    intensity: 5 within 60s;
 
-    child pool: WorkerPool;
+    child workers: WorkerPool;
     child cache_mgr: CacheManager;
 }
 
@@ -85,14 +85,14 @@ fn main() {
     sleep_ms(100);
 
     // Get inner supervisors
-    let pool = supervisor_child(app, 0);
-    let cache_mgr = supervisor_child(app, 1);
+    let workers_sup = app.workers;
+    let cache_mgr = app.cache_mgr;
     sleep_ms(50);
 
     // Get individual workers and cache
-    let w1 = supervisor_child(pool, 0);
-    let w2 = supervisor_child(pool, 1);
-    let cache = supervisor_child(cache_mgr, 0);
+    let w1 = workers_sup.w1;
+    let w2 = workers_sup.w2;
+    let cache = cache_mgr.cache;
     // Normal operation
     println("--- Normal Operation ---");
     w1.process(100);
@@ -109,7 +109,7 @@ fn main() {
     sleep_ms(500);
 
     // Fresh worker is operational
-    let w1b = supervisor_child(pool, 0);
+    let w1b = workers_sup.w1;
     w1b.process(101);
     sleep_ms(20);
 

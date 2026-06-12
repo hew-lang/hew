@@ -1,0 +1,55 @@
+trait Resource {
+    fn close(value: Self);
+}
+
+type FileHandle {
+    fd: i64;
+}
+
+impl Resource for FileHandle {
+    fn close(handle: FileHandle) {
+        println(handle.fd);
+    }
+}
+
+machine Lifecycle<T: Resource> {
+    events {
+        Start { handle: T; }
+        Stop;
+        Started;
+    }
+
+    state Idle;
+    state Active { handle: T; }
+
+    on Start: Idle => Active {
+        emit Started {};
+        Active { handle: event.handle }
+    }
+    on Stop: Active => Idle {
+        Idle
+    }
+    on Stop: Idle => Idle reenter {
+        Idle
+    }
+    on Start: Active => Active reenter {
+        Active { handle: event.handle }
+    }
+    on Started: Idle => Idle reenter {
+        Idle
+    }
+    on Started: Active => Active reenter {
+        Active { handle: state.handle }
+    }
+}
+
+fn machine_substrate_probe() -> string {
+    let handle = FileHandle { fd: 7 };
+    var lifecycle: Lifecycle<FileHandle> = Lifecycle::Idle;
+    lifecycle.step(LifecycleEvent::Start { handle: handle });
+    lifecycle.state_name()
+}
+
+fn machine_substrate_use() -> string {
+    machine_substrate_probe()
+}

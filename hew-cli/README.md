@@ -5,7 +5,8 @@ The Hew programming language compiler driver.
 ## Usage
 
 ```sh
-hew build file.hew [-o output]    # Compile to executable
+hew compile file.hew [--emit-dir DIR] [--target wasm32-unknown-unknown]
+                                   # Compile through the v0.5 IR ladder
 hew run file.hew [-- args...]     # Compile and run
 hew run file.hew --profile        # Compile, run, and enable the built-in profiler
 hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
@@ -22,10 +23,17 @@ hew wire check file.hew --against baseline.hew
 hew machine list file.hew         # List machines with states/events/transition counts
 hew machine diagram file.hew      # Emit Mermaid state diagram to stdout
 hew machine diagram file.hew --dot
-                                  # Emit Graphviz DOT to stdout
+                                  # Emit Graphviz DOT to stdout (alias for --format graphviz)
+hew machine diagram file.hew --format graphviz
+                                  # Emit Graphviz DOT to stdout (same as --dot)
 hew fmt file.hew                  # Format source file in-place
 hew fmt --stdin < file.hew       # Format source from stdin to stdout
 hew fmt --check file.hew         # Check formatting (CI mode)
+hew check file.hew --format json  # Structured JSON diagnostics (for tooling/CI)
+hew compile file.hew --format json
+                                  # Structured JSON diagnostics on compile
+hew observe                       # Launch hew-observe TUI (forwards args to hew-observe binary)
+hew lsp                           # Launch hew-lsp language server (forwards args to hew-lsp binary)
 hew init [name]                   # Scaffold main.hew + README.md in new dir (no hew.toml)
 hew init                          # Scaffold main.hew + README.md in current dir
 hew init [name] --force           # Overwrite existing scaffold files
@@ -33,7 +41,7 @@ hew completions <shell>           # Generate shell completions
 hew version                       # Print version info
 ```
 
-`hew file.hew` is shorthand for `hew build file.hew`.
+`hew file.hew` is shorthand for `hew compile file.hew`.
 
 ### WASI runner prototype
 
@@ -296,7 +304,7 @@ directory to layer `hew.toml` on top of the existing source files.
 
 ## Multi-file projects
 
-For `hew check`, `hew build`, `hew run`, and `hew debug`, pass a **single
+For `hew check`, `hew compile`, `hew run`, and `hew debug`, pass a **single
 entry-point file**. The compiler resolves imports recursively from that file,
 so you never need to list every source file on the command line.
 
@@ -314,14 +322,14 @@ All three commands below operate on the whole project through `main.hew`:
 
 ```sh
 hew check myapp/main.hew
+hew compile myapp/main.hew --emit-dir .tmp/myapp
 hew run   myapp/main.hew
-hew build myapp/main.hew -o myapp
 ```
 
 The `greeting/` directory is a **directory-form module**: `greeting/greeting.hew`
 is the entry file (its stem matches the directory name) and
 `greeting/greeting_helpers.hew` is merged in automatically as a peer file.
-See [§ 3.5.1 of HEW-SPEC.md](../docs/specs/HEW-SPEC.md) for the full rules.
+See [§ 3.5.1 of HEW-SPEC-2026.md](../docs/specs/HEW-SPEC-2026.md) for the full rules.
 
 For the current wildcard-import warning caveat, see the
 [troubleshooting guide](../docs/troubleshooting.md).
@@ -330,7 +338,7 @@ For the current wildcard-import warning caveat, see the
 
 `hew test` discovers and runs test functions declared with `#[test]` in one or
 more `.hew` files or directories. Each test is compiled to a native binary via
-the standard `hew build` pipeline and executed in a child process for
+the standard `hew compile` pipeline and executed in a child process for
 isolation. A per-test timeout prevents hung tests from blocking the suite.
 
 ```sh
@@ -411,3 +419,50 @@ To write a profile file on exit, set `HEW_PROF_OUTPUT` to `pprof`, `flat`, or
 HEW_PPROF=auto HEW_PROF_OUTPUT=pprof ./myapp
 # writes hew-profile.pb.gz
 ```
+
+## Observability (`hew observe`)
+
+`hew observe` is a thin launcher: it forwards all arguments to the standalone
+`hew-observe` binary. The `hew-observe` binary must be on your PATH (it is
+installed alongside `hew`).
+
+```sh
+hew observe                    # auto-discover unix socket (Unix)
+hew observe --addr localhost:6060  # connect to TCP address
+hew observe --demo             # run with synthetic demo data
+hew observe --list             # list running Hew processes
+```
+
+For full flag documentation see [`../hew-observe/README.md`](../hew-observe/README.md).
+
+## Language Server (`hew lsp`)
+
+`hew lsp` is a thin launcher: it forwards all arguments to the standalone
+`hew-lsp` binary. The `hew-lsp` binary must be on your PATH.
+
+```sh
+hew lsp           # start the language server on stdio (for editor integrations)
+hew lsp --version # print the language server version
+```
+
+Editor integrations should point their LSP client at the `hew-lsp` binary
+directly, not at `hew lsp`, for process management predictability. For full
+documentation see [`../hew-lsp/README.md`](../hew-lsp/README.md).
+
+## Structured JSON diagnostics (`--format json`)
+
+`hew check`, `hew compile`, and `hew run` accept `--format json` to emit
+diagnostics as a machine-readable JSON array on stdout instead of the default
+human-readable text.
+
+```sh
+hew check   myapp.hew --format json
+hew compile myapp.hew --format json
+hew run     myapp.hew --format json
+```
+
+Each element of the JSON array is a diagnostic object with the following stable
+fields: `code`, `severity`, `file`, `span`, `message`, `notes`, and
+`fixes`. The shape mirrors the LSP diagnostic substrate, making it suitable for
+editor extensions, CI scripts, and agentic tooling that needs to apply fixes
+without re-parsing prose output.

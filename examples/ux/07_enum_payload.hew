@@ -1,16 +1,22 @@
-// Enum payload values with Option<int>
-import std::option;
+// Enum payload values with Option<i64>
+// Option<T> is a built-in enum — no import needed.
+fn unwrap_or(opt: Option<i64>, fallback: i64) -> i64 {
+    match opt {
+        Some(v) => v,
+        None => fallback,
+    }
+}
 
 fn main() {
-    // Option<int> is the built-in "value or nothing" enum.
-    let val1: Option<int> = Some(42);
-    let val2: Option<int> = None;
+    // Option<i64> is the built-in "value or nothing" enum.
+    let val1: Option<i64> = Some(42);
+    let val2: Option<i64> = None;
     // match gives you full control over each case.
     match val1 {
         Some(x) => println(x),
         None => println("no value"),
     }
-    // unwrap_or_int is the stdlib shortcut for a fallback value.
-    println(option.unwrap_or_int(val1, 0));
-    println(option.unwrap_or_int(val2, 99));
+    // unwrap_or is the common pattern for a fallback value.
+    println(unwrap_or(val1, 0));
+    println(unwrap_or(val2, 99));
 }

@@ -1,0 +1,282 @@
+{
+  "capabilities": [],
+  "compiler_version": "handcrafted-pending-actor-state-parser-emitter",
+  "functions": [
+    {
+      "blocks": [
+        {
+          "id": "block:pair.bad.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:pair.one",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:PairState"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:pair.one"
+                }
+              ],
+              "dst": "local:pair.state",
+              "op": "record.new",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:pair.state"
+              }
+            ],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:pair.bad",
+      "locals": [
+        {
+          "id": "local:pair.reply",
+          "mutable": false,
+          "name": "reply",
+          "span": null,
+          "type": "type:reply"
+        },
+        {
+          "id": "local:pair.left",
+          "mutable": false,
+          "name": "left",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:pair.right",
+          "mutable": false,
+          "name": "right",
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:pair.one",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:pair.state",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:PairState"
+        }
+      ],
+      "module": "mod:main",
+      "name": "Pair.bad",
+      "params": [
+        "local:pair.reply",
+        "local:pair.left",
+        "local:pair.right"
+      ],
+      "result": "type:PairState",
+      "span": null
+    },
+    {
+      "blocks": [
+        {
+          "id": "block:main.entry",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.zero",
+              "op": "const.i64",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "type",
+                  "value": "type:Pair"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.zero"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.zero"
+                }
+              ],
+              "dst": "local:main.pair",
+              "op": "actor.spawn",
+              "span": null
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.pair"
+                },
+                {
+                  "kind": "symbol",
+                  "value": "bad"
+                }
+              ],
+              "dst": null,
+              "op": "actor.send",
+              "span": null
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "return",
+            "span": null
+          }
+        }
+      ],
+      "id": "fn:main",
+      "locals": [
+        {
+          "id": "local:main.zero",
+          "mutable": false,
+          "name": null,
+          "span": null,
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.pair",
+          "mutable": false,
+          "name": "pair",
+          "span": null,
+          "type": "type:Pair"
+        }
+      ],
+      "module": "mod:main",
+      "name": "main",
+      "params": [],
+      "result": "type:unit",
+      "span": null
+    }
+  ],
+  "hew_version": "0.5.0-pre",
+  "layouts": {
+    "actors": [
+      {
+        "handlers": [
+          {
+            "function": "fn:pair.bad",
+            "name": "bad"
+          }
+        ],
+        "id": "type:Pair",
+        "max_mailbox": 4,
+        "name": "Pair",
+        "state_fields": [
+          {
+            "index": 0,
+            "name": "left",
+            "type": "type:i64"
+          },
+          {
+            "index": 1,
+            "name": "right",
+            "type": "type:i64"
+          }
+        ]
+      }
+    ],
+    "enums": [],
+    "machines": [],
+    "records": [
+      {
+        "fields": [
+          {
+            "index": 0,
+            "name": "left",
+            "type": "type:i64"
+          },
+          {
+            "index": 1,
+            "name": "right",
+            "type": "type:i64"
+          }
+        ],
+        "id": "type:PairState",
+        "name": "PairState"
+      }
+    ],
+    "supervisors": [],
+    "types": [
+      {
+        "id": "type:unit",
+        "kind": "unit",
+        "name": "()"
+      },
+      {
+        "id": "type:i64",
+        "kind": "integer",
+        "name": "i64"
+      },
+      {
+        "id": "type:reply",
+        "kind": "opaque",
+        "name": "ReplyToken"
+      },
+      {
+        "id": "type:Pair",
+        "kind": "actor",
+        "name": "Pair"
+      },
+      {
+        "id": "type:PairState",
+        "kind": "record",
+        "name": "PairState"
+      }
+    ]
+  },
+  "module_graph": {
+    "entry": "mod:main",
+    "modules": [
+      {
+        "functions": [
+          "fn:pair.bad",
+          "fn:main"
+        ],
+        "id": "mod:main",
+        "imports": [],
+        "path": "main.hew",
+        "source_id": "src:main"
+      }
+    ]
+  },
+  "package_id": "pkg:actor-state-arity-trap",
+  "profile": "sandbox.educational.v0",
+  "schema_version": "hew.sandbox.bytecode.v0",
+  "source_map": {
+    "sources": [],
+    "spans": []
+  },
+  "stdlib_symbols": []
+}

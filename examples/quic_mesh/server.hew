@@ -8,12 +8,12 @@
 // Run:  hew run examples/quic_mesh/server.hew
 // Then: hew run examples/quic_mesh/client.hew
 actor Counter {
-    let count: int;
-    receive fn increment(n: int) {
+    var count: i64;
+    receive fn increment(n: i64) {
         count = count + n;
         println(f"[server] counter incremented by {n} → {count}");
     }
-    receive fn get_count() -> int {
+    receive fn get_count() -> i64 {
         count
     }
 }
@@ -23,15 +23,17 @@ fn main() {
     Node::set_transport("quic");
     Node::start("127.0.0.1:9000");
     println("[server] listening on 127.0.0.1:9000 (QUIC/TLS 1.3)");
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     Node::register("counter", counter);
     println("[server] registered 'counter' actor, waiting for clients...");
 
     // Keep alive to serve remote messages.
     sleep_ms(5000);
     let final_count = await counter.get_count();
-    println(f"[server] final count: {final_count}");
-    await close(counter);
+    match final_count {
+        Ok(n) => println(f"[server] final count: {n}"),
+        Err(_) => println("[server] failed to get count"),
+    }
     Node::shutdown();
     println("[server] shut down");
 }

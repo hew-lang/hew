@@ -1,0 +1,27 @@
+machine Turnstile {
+    events {
+        Coin;
+        Push;
+    }
+
+    state Locked;
+    state Unlocked;
+
+    on Coin: Locked => Unlocked {
+        Unlocked
+    }
+    on Push: Unlocked => Locked {
+        Locked
+    }
+}
+
+fn machine_methods_probe() -> i32 {
+    7
+}
+
+fn machine_methods_use() -> i32 {
+    var gate = Locked;
+    gate.step(Coin);
+    let name = gate.state_name();
+    machine_methods_probe()
+}

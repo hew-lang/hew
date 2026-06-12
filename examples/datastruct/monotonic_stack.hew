@@ -1,38 +1,38 @@
 // Monotonic Decreasing Stack
 // Maintains elements in decreasing order from bottom to top.
 // Used to find next-greater-element for each position in an array.
-fn stack_new() -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn stack_new() -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     v
 }
 
-fn stack_push(s: Vec<int>, val: int) -> int {
+fn stack_push(s: Vec<i64>, val: i64) -> i64 {
     s.push(val);
     0
 }
 
-fn stack_pop(s: Vec<int>) -> int {
+fn stack_pop(s: Vec<i64>) -> i64 {
     s.pop()
 }
 
-fn stack_peek(s: Vec<int>) -> int {
+fn stack_peek(s: Vec<i64>) -> i64 {
     s.get(s.len() - 1)
 }
 
-fn stack_is_empty(s: Vec<int>) -> bool {
+fn stack_is_empty(s: Vec<i64>) -> bool {
     s.len() == 0
 }
 
-fn stack_size(s: Vec<int>) -> int {
+fn stack_size(s: Vec<i64>) -> i64 {
     s.len()
 }
 
 // Find next greater element for each position in arr.
-// Returns Vec<int> where result[i] = next greater element for arr[i], or -1 if none.
+// Returns Vec<i64> where result[i] = next greater element for arr[i], or -1 if none.
 // Uses monotonic decreasing stack of indices.
-fn next_greater_element(arr: Vec<int>) -> Vec<int> {
+fn next_greater_element(arr: Vec<i64>) -> Vec<i64> {
     let n = arr.len();
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     for i in 0 .. n {
         result.push(0 - 1);
     }
@@ -55,7 +55,7 @@ fn next_greater_element(arr: Vec<int>) -> Vec<int> {
 }
 
 // Push onto monotonic decreasing stack, return number of elements popped
-fn mono_push(stk: Vec<int>, val: int) -> int {
+fn mono_push(stk: Vec<i64>, val: i64) -> i64 {
     var popped = 0;
     while !stack_is_empty(stk) {
         if stack_peek(stk) < val {
@@ -123,7 +123,7 @@ fn main() {
     // Test 4: Next greater element - basic case
     // arr = [4, 5, 2, 10, 8]
     // NGE = [5, 10, 10, -1, -1]
-    let arr: Vec<int> = Vec::new();
+    let arr: Vec<i64> = Vec::new();
     arr.push(4);
     arr.push(5);
     arr.push(2);
@@ -156,7 +156,7 @@ fn main() {
     // Test 5: NGE - all increasing
     // arr = [1, 2, 3, 4, 5]
     // NGE = [2, 3, 4, 5, -1]
-    let arr2: Vec<int> = Vec::new();
+    let arr2: Vec<i64> = Vec::new();
     arr2.push(1);
     arr2.push(2);
     arr2.push(3);
@@ -189,7 +189,7 @@ fn main() {
     // Test 6: NGE - all decreasing
     // arr = [5, 4, 3, 2, 1]
     // NGE = [-1, -1, -1, -1, -1]
-    let arr3: Vec<int> = Vec::new();
+    let arr3: Vec<i64> = Vec::new();
     arr3.push(5);
     arr3.push(4);
     arr3.push(3);
@@ -210,7 +210,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: NGE - single element
-    let arr4: Vec<int> = Vec::new();
+    let arr4: Vec<i64> = Vec::new();
     arr4.push(42);
     let nge4 = next_greater_element(arr4);
     if nge4.get(0) == 0 - 1 {
@@ -223,7 +223,7 @@ fn main() {
     // Test 8: NGE - duplicates
     // arr = [3, 3, 3]
     // NGE = [-1, -1, -1] (no strictly greater)
-    let arr5: Vec<int> = Vec::new();
+    let arr5: Vec<i64> = Vec::new();
     arr5.push(3);
     arr5.push(3);
     arr5.push(3);

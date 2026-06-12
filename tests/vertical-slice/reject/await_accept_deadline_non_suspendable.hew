@@ -1,0 +1,17 @@
+// Reject fixture (NEW-6d): `await ln.accept() | after d` in a
+// default-call-convention function has no parkable continuation for the timer
+// to resume. The compiler fails closed at MIR lowering time with a precise
+// diagnostic — never a hang, never a fabricated value.
+//
+// Harness verb: hew compile (must fail)
+// Expected diagnostic substring: "non-suspendable context"
+import std::net;
+
+fn helper(ln: Listener) {
+    let _ = await ln.accept() | after 50ms;
+}
+
+fn main() {
+    let ln = net.listen("127.0.0.1:0");
+    helper(ln);
+}

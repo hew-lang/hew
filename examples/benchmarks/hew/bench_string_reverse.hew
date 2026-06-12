@@ -1,6 +1,6 @@
-fn reverse_string(s: String) -> int {
+fn reverse_string(s: string) -> i64 {
     let n = s.len();
-    let result: Vec<int> = Vec::new();
+    let result: Vec<i64> = Vec::new();
     for i in 0 .. n {
         let j = n - 1 - i;
         result.push(j);
@@ -16,7 +16,7 @@ fn reverse_string(s: String) -> int {
     checksum
 }
 
-const ITERS: int = 200000;
+const ITERS: i64 = 200000;
 
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";

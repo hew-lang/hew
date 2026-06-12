@@ -11,13 +11,6 @@
 //! state (prior items and bindings) plus the new input, runs the in-process
 //! compile pipeline to produce a native binary, and captures its stdout output.
 
-#![allow(
-    dead_code,
-    reason = "the dispatcher short-circuits `hew eval` with a cutover error before \
-              reaching this module; its internals are dormant until the C++ codegen \
-              subtree is removed in a later stage of the v0.5 cutover"
-)]
-
 pub mod classify;
 pub mod repl;
 pub mod session;
@@ -88,11 +81,20 @@ fn resolve_eval_target(
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
     if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
-        if matches!(jit, Some(crate::args::JitMode::Inprocess)) {
+        if matches!(
+            jit,
+            Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
+        ) {
             return Err(format!(
-                "`--jit=inprocess` is native-only and cannot be used with `--target {}`. \
+                "`--jit={}` is native-only and cannot be used with `--target {}`. \
                  Omit `--jit` for AOT WASM eval, use `--jit=worker` to keep the AOT+spawn path, \
                  or omit `--target` for native JIT.",
+                match jit {
+                    Some(crate::args::JitMode::Auto) => "auto",
+                    Some(crate::args::JitMode::Inprocess) => "inprocess",
+                    Some(crate::args::JitMode::Worker) | None =>
+                        unreachable!("guard above matches only auto/inprocess"),
+                },
                 target.normalized_triple()
             ));
         }
@@ -390,6 +392,20 @@ mod target_validation_tests {
             "expected 'native-only' in error: {err}"
         );
         assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
+    }
+
+    #[test]
+    fn wasm32_wasip1_with_jit_auto_is_rejected() {
+        let err = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Auto))
+            .expect_err("--jit=auto with wasm32-wasip1 should be rejected");
+        assert!(
+            err.contains("native-only"),
+            "expected 'native-only' in error: {err}"
+        );
+        assert!(
+            err.contains("--jit=auto"),
+            "expected rejected mode in error: {err}"
+        );
     }
 
     #[test]

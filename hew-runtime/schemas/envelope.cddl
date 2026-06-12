@@ -1,0 +1,75 @@
+; Hew wire envelope CDDL schema — doc-of-truth for the CBOR wire layer.
+;
+; Every on-wire CBOR frame produced by the Hew runtime MUST conform to one
+; of the two top-level rules below. Decoders MUST reject frames that do not
+; match (unknown-version, wrong major type, missing required fields).
+;
+; Encoding note: this schema describes the *payload* shape. The transport
+; layer (QUIC stream or TCP) is responsible for framing (e.g. length-prefix
+; or chunked reads). The payload length MUST NOT be re-encoded inside the
+; CBOR envelope — doing so would create a redundant source of truth.
+;
+; Version note: the `version` field guards the whole schema. Decoders that
+; do not recognise a version value MUST return an UnknownVersion error rather
+; than attempting to parse further.
+;
+; CP-1 coordination: A2 (QUIC stream framing) owns the transport container.
+; The CDDL below describes what lives inside that container.
+;
+; W2 will add handshake.cddl once the handshake codec lands.
+
+; ── Top-level rule ───────────────────────────────────────────────────────────
+;
+; A wire frame is either a control frame or a data envelope frame.
+; Both share the same outer map structure; `frame_type` selects the branch.
+
+wire-frame = control-frame / envelope-frame
+
+; ── Control frame ────────────────────────────────────────────────────────────
+;
+; Used for node-level signalling: keep-alive, capability negotiation, etc.
+; Payload is a byte string whose interpretation is protocol-defined.
+;
+; ctrl_kind = 1 carries registry-gossip-payload.
+
+control-frame = {
+    version:    1 => wire-version,
+    frame_type: 2 => 0,            ; 0 = control
+    ctrl_kind:  3 => uint,         ; protocol-defined control kind tag
+    payload:    4 => bstr,         ; 0..* bytes; empty bstr for bare signals
+}
+
+registry-gossip-payload = {
+    op:       1 => registry-gossip-op,
+    name:     2 => text,           ; bounded by runtime to 1024 UTF-8 bytes
+    actor_id: 3 => actor-id,       ; non-zero for add; ignored for remove
+}
+
+registry-gossip-op = 5 / 6         ; add / remove
+
+; ── Envelope frame ───────────────────────────────────────────────────────────
+;
+; Carries a single actor-to-actor message across a node boundary.
+; Field numbers mirror the legacy HBF field ordering (fields 1-6) so that
+; tooling and documentation can cross-reference both representations.
+;
+; source_node_id is 0 on reply envelopes; non-zero on outbound ask requests.
+; request_id is 0 for fire-and-forget; > 0 means a reply is expected (or this
+; is a reply to a prior ask).
+
+envelope-frame = {
+    version:          1 => wire-version,
+    frame_type:       2 => 1,            ; 1 = envelope
+    target_actor_id:  3 => actor-id,
+    source_actor_id:  4 => actor-id,
+    msg_type:         5 => int,          ; signed; valid range 0..=2^30-1 (zigzag legacy)
+    payload:          6 => bstr,         ; serialised message body; 0..* bytes
+    request_id:       7 => uint,         ; 0 = fire-and-forget
+    source_node_id:   8 => node-id,      ; 0 on reply envelopes
+}
+
+; ── Primitive aliases ────────────────────────────────────────────────────────
+
+wire-version  = 1       ; current schema version; decoders reject unknown values
+actor-id      = uint    ; 64-bit actor identity; 0 is not a valid actor id
+node-id       = uint    ; 16-bit node identity; 0 = local / not set

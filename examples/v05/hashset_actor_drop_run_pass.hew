@@ -1,0 +1,79 @@
+// HashSet<i64> / HashSet<string> actor-state drop run-pass exercise.
+//
+// Regression guard for W4.045 (P0 use-after-free / heap corruption).
+//
+// `HashSet::new()` always lowers to `hew_hashset_new_with_layout`, returning
+// a layout-keyed `HewLayoutHashSet*`. Before W4.045 the state drop synthesis
+// (`drop_helper_for_kind`) only emitted the matching `hew_hashset_free_layout`
+// when the element type was a user record; scalar/string element sets
+// (`HashSet<i64>`, `HashSet<string>`) fell through to the *legacy*
+// `hew_hashset_free`, which reinterprets the 16-byte-stride layout entries as
+// 48-byte `HewMapEntry` records and `libc::free`s integer keys as pointers —
+// heap corruption on actor shutdown. The corruption is reproduced
+// deterministically at the runtime level (calling the legacy free over a
+// layout-constructed non-empty set aborts under the allocator); see
+// `hew-runtime/tests/ffi_boundary_layout_hashset.rs` for the corrected
+// layout clone/free coverage. This fixture pins the corrected end-to-end
+// layout drop wiring (verifiable in the emitted IR: only
+// `hew_hashset_free_layout` / `hew_hashset_clone_layout` appear).
+//
+// The sets are built and populated in `main` and moved into the actor's
+// initial state, so the only context that touches them is the synthesised
+// `state_drop_fn` on actor teardown — the corrected layout free path. (We
+// deliberately do not insert from inside a `receive`: in-receive collection
+// field access is a separate, pre-existing gap that faults for both HashMap
+// and HashSet, independent of this drop fix.)
+//
+// WASM is intentionally not registered here: the codegen gate maps every
+// `hew_hashset_*_layout` callee to a structured `WasmUnsupportedSubstrate`
+// diagnostic before lowering, which is the v0.5 fail-closed behaviour for this
+// native-only runtime substrate.
+//
+// `hew run examples/v05/hashset_actor_drop_run_pass.hew` must complete with
+// exit 0 and print `ok`.
+actor SetHolder {
+    let ints: HashSet<i64>;
+    let names: HashSet<string>;
+
+    // Touch nothing on the moved-in sets — the load-bearing exercise is the
+    // teardown free of the NON-EMPTY layout sets, not in-receive access.
+    receive fn ping() -> i64 {
+        1
+    }
+}
+
+fn main() {
+    // Populate both sets so the state-drop path frees NON-EMPTY storage on
+    // shutdown — an empty set never iterates occupied slots and so would not
+    // exercise the corrupting free.
+    let ints = HashSet::new<i64>();
+    ints.insert(1);
+    ints.insert(2);
+    ints.insert(3);
+    ints.insert(4);
+    ints.insert(5);
+    ints.insert(6);
+    ints.insert(7);
+    ints.insert(8);
+    let names = HashSet::new<string>();
+    names.insert("alpha");
+    names.insert("beta");
+    names.insert("gamma");
+    names.insert("delta");
+    names.insert("epsilon");
+    names.insert("zeta");
+    names.insert("eta");
+    names.insert("theta");
+    let holder = spawn SetHolder(ints: ints, names: names);
+    // Synchronous ask so the actor is alive and reachable; teardown (and the
+    // state_drop_fn free of both non-empty sets) runs as the program winds down.
+    let r = await holder.ping();
+    match r {
+        Ok(acked) => {
+            if acked == 1 {
+                println("ok");
+            }
+        },
+        Err(_) => {},
+    }
+}

@@ -1,0 +1,14 @@
+// Reject fixture: lambda-actor capture of an owned aggregate (Vec).
+//
+// The capture env carries BitCopy scalars, `string` (cloned at spawn),
+// and the weak self-handle. An owned aggregate capture has no
+// cross-boundary ownership protocol yet: a shallow byte copy of the Vec
+// handle into the env would alias its heap and double-free at actor
+// shutdown. MIR fails closed with `CannotMaterializeClosureCapture`.
+fn main() {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1);
+    let bad = actor |n: i64| { println(f"{xs.len() + n}"); };
+    bad(1);
+    sleep_ms(100);
+}

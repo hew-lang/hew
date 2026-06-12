@@ -1,8 +1,0 @@
-// Tests to_string for 64-bit integer primitives (signed and unsigned).
-fn main() {
-    let big: i64 = 9000000000;
-    println(to_string(big));
-
-    let ubig: u64 = 18000000000;
-    println(to_string(ubig));
-}

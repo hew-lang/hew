@@ -5,15 +5,15 @@
 // contributes directly to the `shapes` module: callers never write
 // `shapes.circle.Circle`, they just use `Circle` after `import shapes;`.
 pub type Circle {
-    radius: int;
+    radius: i64;
 }
 
-pub fn make_circle(radius: int) -> Circle {
+pub fn make_circle(radius: i64) -> Circle {
     Circle { radius: radius }
 }
 
 impl Drawable for Circle {
-    fn draw(c: Circle) -> String {
+    fn draw(c: Circle) -> string {
         f"Circle(r={c.radius})"
     }
 }

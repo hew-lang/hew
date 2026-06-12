@@ -138,6 +138,77 @@ fn test_matches_lte_satisfied() {
     testing.assert_false(v.matches("<=0.9.9"));
 }
 
+// ── prerelease precedence (SemVer 2.0 §11) ────────────────────────────
+// Exercises the alphanumeric strcmp path in compare_pre_id, which was
+// previously misread due to an i32/i64 FFI ABI mismatch on
+// hew_string_compare (a negative strcmp result was zero-extended to a
+// large positive i64, so the `< 0` arm never fired).
+
+#[test]
+fn test_compare_prerelease_alpha_less_than_beta() {
+    let a = semver.parse("1.0.0-alpha");
+    let b = semver.parse("1.0.0-beta");
+    testing.assert_eq(a.compare(b), -1);
+    testing.assert_eq(b.compare(a), 1);
+}
+
+#[test]
+fn test_compare_prerelease_equal_labels() {
+    let a = semver.parse("1.0.0-alpha");
+    let b = semver.parse("1.0.0-alpha");
+    testing.assert_eq(a.compare(b), 0);
+}
+
+#[test]
+fn test_compare_prerelease_shorter_has_lower_precedence() {
+    // 1.0.0-alpha < 1.0.0-alpha.1 (a larger set of fields, all preceding equal)
+    let a = semver.parse("1.0.0-alpha");
+    let b = semver.parse("1.0.0-alpha.1");
+    testing.assert_eq(a.compare(b), -1);
+    testing.assert_eq(b.compare(a), 1);
+}
+
+#[test]
+fn test_compare_prerelease_numeric_ids_compared_numerically() {
+    // rc.2 < rc.11 numerically (not lexically)
+    let a = semver.parse("1.0.0-rc.2");
+    let b = semver.parse("1.0.0-rc.11");
+    testing.assert_eq(a.compare(b), -1);
+    testing.assert_eq(b.compare(a), 1);
+}
+
+#[test]
+fn test_compare_prerelease_numeric_lower_than_alphanumeric() {
+    // beta.2 < beta.fix — numeric identifier has lower precedence than alphanumeric
+    let a = semver.parse("1.0.0-beta.2");
+    let b = semver.parse("1.0.0-beta.fix");
+    testing.assert_eq(a.compare(b), -1);
+    testing.assert_eq(b.compare(a), 1);
+}
+
+#[test]
+fn test_compare_prerelease_lower_than_release() {
+    // A version with a prerelease has lower precedence than the release.
+    let a = semver.parse("1.0.0-rc.1");
+    let b = semver.parse("1.0.0");
+    testing.assert_eq(a.compare(b), -1);
+    testing.assert_eq(b.compare(a), 1);
+}
+
+#[test]
+fn test_compare_prerelease_full_chain() {
+    // SemVer 2.0 §11 example chain: alpha < alpha.1 < beta < rc.1 < release.
+    let alpha = semver.parse("1.0.0-alpha");
+    let alpha1 = semver.parse("1.0.0-alpha.1");
+    let beta = semver.parse("1.0.0-beta");
+    let rc1 = semver.parse("1.0.0-rc.1");
+    let rel = semver.parse("1.0.0");
+    testing.assert_eq(alpha.compare(alpha1), -1);
+    testing.assert_eq(alpha1.compare(beta), -1);
+    testing.assert_eq(beta.compare(rc1), -1);
+    testing.assert_eq(rc1.compare(rel), -1);
+}
+
 // ── parse error boundaries ─────────────────────────────────────────────
 // The parse() doc explicitly states it panics on malformed input.
 // These tests exercise the two explicit panic branches in the

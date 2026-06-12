@@ -10,15 +10,19 @@ use crate::builtin_names::{builtin_named_type, builtin_type_def as builtin_named
 #[cfg(test)]
 use crate::check::TypeDefKind;
 use crate::check::{FnSig, TypeDef};
+use crate::BuiltinType;
 use crate::Ty;
 
 fn instantiate_named_method_sig(mut sig: FnSig, type_params: &[String], type_args: &[Ty]) -> FnSig {
-    for (type_param, type_arg) in type_params.iter().zip(type_args.iter()) {
-        for param_ty in &mut sig.params {
-            *param_ty = param_ty.substitute_named_param(type_param, type_arg);
-        }
-        sig.return_type = sig.return_type.substitute_named_param(type_param, type_arg);
+    let subst_map: HashMap<String, Ty> = type_params
+        .iter()
+        .zip(type_args.iter())
+        .map(|(p, a)| (p.clone(), a.clone()))
+        .collect();
+    for param_ty in &mut sig.params {
+        *param_ty = param_ty.substitute_named_params_parallel(&subst_map);
     }
+    sig.return_type = sig.return_type.substitute_named_params_parallel(&subst_map);
 
     let substituted_params: HashSet<_> = type_params.iter().cloned().collect();
     sig.type_params
@@ -40,11 +44,19 @@ fn lookup_user_type_def<'a>(
 }
 
 fn lookup_user_fn_sig<'a>(fn_sigs: &'a HashMap<String, FnSig>, key: &str) -> Option<&'a FnSig> {
-    fn_sigs.get(key).or_else(|| {
-        let (type_name, method_name) = key.split_once("::")?;
-        let (_, short) = type_name.rsplit_once('.')?;
-        fn_sigs.get(&format!("{short}::{method_name}"))
-    })
+    fn_sigs
+        .get(key)
+        .or_else(|| {
+            let (type_name, method_name) = key.split_once("::")?;
+            let (_, short) = type_name.rsplit_once('.')?;
+            fn_sigs.get(&format!("{short}::{method_name}"))
+        })
+        .or_else(|| {
+            let (type_name, method_name) = key.split_once("::")?;
+            fn_sigs.iter().find_map(|(sig_name, sig)| {
+                (scoped_method_name(sig_name, type_name) == Some(method_name)).then_some(sig)
+            })
+        })
 }
 
 fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
@@ -59,12 +71,49 @@ fn merge_builtin_type_def(mut type_def: TypeDef, builtin: TypeDef) -> TypeDef {
 
 fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
     match ty {
-        Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => {
-            named_receiver_parts(&args[0])
-        }
-        Ty::Named { name, args } => Some((name.as_str(), args.as_slice())),
+        Ty::I8 => Some(("i8", &[])),
+        Ty::I16 => Some(("i16", &[])),
+        Ty::I32 => Some(("i32", &[])),
+        Ty::I64 => Some(("i64", &[])),
+        Ty::U8 => Some(("u8", &[])),
+        Ty::U16 => Some(("u16", &[])),
+        Ty::U32 => Some(("u32", &[])),
+        Ty::U64 => Some(("u64", &[])),
+        Ty::Isize => Some(("isize", &[])),
+        Ty::Usize => Some(("usize", &[])),
+        Ty::F32 => Some(("f32", &[])),
+        Ty::F64 => Some(("f64", &[])),
+        Ty::Bool => Some(("bool", &[])),
+        Ty::Char => Some(("char", &[])),
+        Ty::String => Some(("string", &[])),
+        Ty::Bytes => Some(("bytes", &[])),
+        Ty::CancellationToken => Some(("CancellationToken", &[])),
+        Ty::Duration => Some(("duration", &[])),
+        // ActorRef<T>/LocalPid<T> wrap an actor type T.
+        // RemotePid<T> is intentionally NOT unwrapped here: its methods are
+        // resolved against RemotePid itself, not T.
+        //
+        // NOTE: `collect_method_sigs_for_receiver` handles LocalPid/ActorRef
+        // specially (collecting own handle methods + actor receive handlers)
+        // and does NOT call this helper for those types. This arm covers the
+        // single-method `lookup_method_sig` path used by the checker's fallback
+        // for actor receive-fn dispatch — it unwraps to T so e.g.
+        // `pid.increment(arg)` resolves against `Counter::increment` in fn_sigs.
+        Ty::Named {
+            builtin: Some(BuiltinType::ActorRef | BuiltinType::LocalPid),
+            args,
+            ..
+        } if args.len() == 1 => named_receiver_parts(&args[0]),
+        Ty::Named { name, args, .. } => Some((name.as_str(), args.as_slice())),
         _ => None,
     }
+}
+
+fn scoped_method_name<'a>(sig_name: &'a str, type_name: &str) -> Option<&'a str> {
+    let scoped_prefix = format!("{type_name}::");
+    sig_name
+        .rsplit_once('.')
+        .and_then(|(_, unqualified)| unqualified.strip_prefix(&scoped_prefix))
 }
 
 fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {
@@ -72,15 +121,27 @@ fn lookup_collection_clone_method_sig(receiver_ty: &Ty, method: &str) -> Option<
         return None;
     }
     match receiver_ty {
-        Ty::Named { name, args } if name == "Vec" && args.len() == 1 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            args,
+            ..
+        } if args.len() == 1 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
-        Ty::Named { name, args } if name == "HashMap" && args.len() == 2 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            args,
+            ..
+        } if args.len() == 2 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
-        Ty::Named { name, args } if name == "HashSet" && args.len() == 1 => Some(FnSig {
+        Ty::Named {
+            builtin: Some(BuiltinType::HashSet),
+            args,
+            ..
+        } if args.len() == 1 => Some(FnSig {
             return_type: receiver_ty.clone(),
             ..FnSig::default()
         }),
@@ -107,13 +168,14 @@ pub fn lookup_named_method_sig(
         }
     }
 
-    let type_params = lookup_user_type_def(type_defs, type_name)
-        .map(|td| td.type_params.clone())
-        .unwrap_or_default();
+    let type_params = lookup_user_type_def(type_defs, type_name).map(|td| td.type_params.clone());
 
     lookup_user_fn_sig(fn_sigs, &format!("{type_name}::{method}"))
         .cloned()
-        .map(|sig| instantiate_named_method_sig(sig, &type_params, type_args))
+        .map(|sig| {
+            let type_params = type_params.unwrap_or_else(|| sig.type_params.clone());
+            instantiate_named_method_sig(sig, &type_params, type_args)
+        })
 }
 
 /// Look up a builtin method signature for `Sender`, `Receiver`, `Stream`, or `Sink`.
@@ -162,12 +224,24 @@ pub fn lookup_type_def(type_defs: &HashMap<String, TypeDef>, type_name: &str) ->
     }
 }
 
-/// Look up the type definition for a named receiver, unwrapping `ActorRef<T>`.
+/// Look up the type definition for a named receiver.
+///
+/// Returns `None` for `LocalPid<T>` and `ActorRef<T>`: actor-handle types do
+/// not expose the actor's internal fields to callers. Method completions on
+/// handles come from `collect_method_sigs_for_receiver` instead.
 #[must_use]
 pub fn lookup_type_def_for_receiver(
     type_defs: &HashMap<String, TypeDef>,
     receiver_ty: &Ty,
 ) -> Option<TypeDef> {
+    // Actor handles have no public fields accessible via the handle.
+    if let Ty::Named {
+        builtin: Some(BuiltinType::LocalPid | BuiltinType::ActorRef),
+        ..
+    } = receiver_ty
+    {
+        return None;
+    }
     let (type_name, _) = named_receiver_parts(receiver_ty)?;
     lookup_type_def(type_defs, type_name)
 }
@@ -183,11 +257,12 @@ pub fn collect_method_sigs_for_named_type(
     let mut methods = Vec::new();
     let mut seen = HashSet::new();
     let receiver_ty = Ty::Named {
+        builtin: crate::lookup_builtin_type(type_name),
         name: type_name.to_string(),
         args: type_args.to_vec(),
     };
-    let receiver_type_params = lookup_user_type_def(type_defs, type_name)
-        .map(|type_def| type_def.type_params.clone())
+    let receiver_type_params = lookup_type_def(type_defs, type_name)
+        .map(|type_def| type_def.type_params)
         .unwrap_or_default();
 
     if let Some(sig) = lookup_collection_clone_method_sig(&receiver_ty, "clone") {
@@ -211,11 +286,14 @@ pub fn collect_method_sigs_for_named_type(
         .rsplit_once('.')
         .map(|(_, short)| format!("{short}::"));
     for (sig_name, sig) in fn_sigs {
-        let method_name = sig_name.strip_prefix(&exact_prefix).or_else(|| {
-            short_prefix
-                .as_ref()
-                .and_then(|prefix| sig_name.strip_prefix(prefix))
-        });
+        let method_name = sig_name
+            .strip_prefix(&exact_prefix)
+            .or_else(|| {
+                short_prefix
+                    .as_ref()
+                    .and_then(|prefix| sig_name.strip_prefix(prefix))
+            })
+            .or_else(|| scoped_method_name(sig_name, type_name));
         if let Some(method_name) = method_name {
             let method_name = method_name.to_string();
             if seen.insert(method_name.clone()) {
@@ -231,12 +309,63 @@ pub fn collect_method_sigs_for_named_type(
 }
 
 /// Collect all method signatures visible on a receiver type.
+///
+/// For `LocalPid<T>` and `ActorRef<T>`, this produces two groups:
+/// 1. The handle's own impl methods (`tell`, `to_remote_via`, etc.) registered
+///    in `fn_sigs` as `"LocalPid::{method}"` / `"ActorRef::{method}"`.
+/// 2. The actor's receive handlers (the methods callers can dispatch to via the
+///    handle), resolved against the inner actor type T.
+///
+/// This two-group collection is why the handle types are NOT unwrapped through
+/// `named_receiver_parts` for this call path — the checker's own `LocalPid` arm
+/// in `methods.rs` handles the dispatch logic; this path drives LSP completions.
 #[must_use]
 pub fn collect_method_sigs_for_receiver(
     type_defs: &HashMap<String, TypeDef>,
     fn_sigs: &HashMap<String, FnSig>,
     receiver_ty: &Ty,
 ) -> Vec<(String, FnSig)> {
+    // Actor-handle types: collect from the handle type itself AND from the
+    // inner actor type T (receive handlers).
+    let handle_name = match receiver_ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::LocalPid),
+            args,
+            ..
+        } if args.len() == 1 => Some(("LocalPid", &args[0])),
+        Ty::Named {
+            builtin: Some(BuiltinType::ActorRef),
+            args,
+            ..
+        } if args.len() == 1 => Some(("ActorRef", &args[0])),
+        _ => None,
+    };
+
+    if let Some((handle_type_name, inner_ty)) = handle_name {
+        // Own handle methods (e.g. `tell`, `to_remote_via`).
+        let handle_methods =
+            collect_method_sigs_for_named_type(type_defs, fn_sigs, handle_type_name, &[]);
+        // Actor receive handlers resolved against the inner actor type.
+        let actor_methods = if let Some((actor_type_name, actor_type_args)) =
+            named_receiver_parts(inner_ty)
+        {
+            collect_method_sigs_for_named_type(type_defs, fn_sigs, actor_type_name, actor_type_args)
+        } else {
+            Vec::new()
+        };
+
+        // Merge: handle's own methods first, then actor methods, deduplicating
+        // by name so handle methods win over same-named actor methods.
+        let mut seen = HashSet::new();
+        let mut methods = Vec::with_capacity(handle_methods.len() + actor_methods.len());
+        for (name, sig) in handle_methods.into_iter().chain(actor_methods) {
+            if seen.insert(name.clone()) {
+                methods.push((name, sig));
+            }
+        }
+        return methods;
+    }
+
     let Some((type_name, type_args)) = named_receiver_parts(receiver_ty) else {
         return Vec::new();
     };
@@ -267,13 +396,18 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
 
         let type_def = lookup_type_def(&type_defs, "stream.Stream")
             .expect("builtin stream type def should resolve");
-        assert!(type_def.methods.contains_key("next"));
+        // Channel-family naming: .recv() replaced .next() in the fundamental surface.
+        assert!(type_def.methods.contains_key("recv"));
+        // Iterator-style aliases are removed from the fundamental method table.
+        assert!(!type_def.methods.contains_key("next"));
+        // `.collect` is now wired into the fundamental surface (Stream<string>).
         assert!(type_def.methods.contains_key("collect"));
         assert!(!type_def.methods.contains_key("decode"));
     }
@@ -303,6 +437,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -313,10 +448,12 @@ mod tests {
             FnSig {
                 param_names: vec!["next".to_string()],
                 params: vec![Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 }],
                 return_type: Ty::Named {
+                    builtin: None,
                     name: "T".to_string(),
                     args: vec![],
                 },
@@ -359,6 +496,7 @@ mod tests {
                     methods
                 },
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -402,6 +540,7 @@ mod tests {
                     methods
                 },
                 doc_comment: None,
+                field_order: vec![],
                 is_indirect: false,
             },
         );
@@ -412,6 +551,7 @@ mod tests {
         assert_eq!(
             type_def.methods["recv"].return_type,
             Ty::option(Ty::Named {
+                builtin: None,
                 name: "T".to_string(),
                 args: vec![],
             })
@@ -424,14 +564,17 @@ mod tests {
         let fn_sigs = HashMap::new();
         for receiver_ty in [
             Ty::Named {
+                builtin: Some(BuiltinType::Vec),
                 name: "Vec".to_string(),
                 args: vec![Ty::String],
             },
             Ty::Named {
+                builtin: Some(BuiltinType::HashMap),
                 name: "HashMap".to_string(),
                 args: vec![Ty::String, Ty::I64],
             },
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::String],
             },
@@ -458,6 +601,7 @@ mod tests {
         assert_eq!(
             sig.return_type,
             Ty::Named {
+                builtin: Some(BuiltinType::HashSet),
                 name: "HashSet".to_string(),
                 args: vec![Ty::String],
             }

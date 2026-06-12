@@ -10,11 +10,16 @@ pub mod credentials;
 pub mod happy_eyeballs;
 pub mod index;
 pub mod manifest;
+pub mod native;
 pub mod registry;
 pub mod resolver;
 pub mod signing;
 pub mod tarball;
 
+pub mod cli;
+
 mod atomic_fs;
+mod checksum;
+mod lockfile;
 mod package_fs;
 mod paths;

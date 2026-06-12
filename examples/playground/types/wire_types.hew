@@ -1,16 +1,14 @@
 //! @name Wire Types
-//! @description Wire structs and enums for serialization
+//! @description Schema-checked serialization contracts with tagged fields
 
+// Wire types are schema-checked serialization contracts. Each field carries
+// an explicit tag (@1, @2, ...) so the binary encoding stays compatible as
+// the schema evolves. Optional fields may be added or omitted across versions.
 #[wire]
 struct UserMessage {
-    name: String @1,
-    age: int @2,
-}
-
-wire enum Command {
-    Start;
-    Stop;
-    Pause;
+    name: string @1,
+    age: i32 @2,
+    nickname: string @3 optional,
 }
 
 fn main() {

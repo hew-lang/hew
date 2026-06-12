@@ -15,7 +15,7 @@
 //   - report records mode: transfer at both send sites
 
 actor Consumer {
-    receive fn accept_string(s: String) {
+    receive fn accept_string(s: string) {
     }
 }
 
@@ -27,7 +27,7 @@ actor Processor {
 
 @resource
 struct FileHandle {
-    fd: int,
+    fd: i64,
 }
 
 fn main() {

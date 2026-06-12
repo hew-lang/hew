@@ -1,0 +1,34 @@
+actor Counter {
+    var count: i64;
+
+    init(initial: i64) {
+        count = initial;
+    }
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+
+    #[on(start)]
+    fn boot() {
+        count += 1;
+    }
+
+    #[on(stop)]
+    fn shutdown() {
+        count = 0;
+    }
+}
+
+fn main() -> i64 {
+    let counter = spawn Counter(initial: 9);
+    counter.increment(32);
+    match await counter.total() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

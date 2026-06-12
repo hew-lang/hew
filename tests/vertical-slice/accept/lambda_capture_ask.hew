@@ -1,0 +1,18 @@
+// Lambda actor capturing a BitCopy outer binding (ask shape): the reply
+// is computed from the captured value plus the message, proving the env
+// field survives across dispatches and the ask reply channel coexists
+// with the boxed state pointer.
+fn main() {
+    let factor = 7;
+    let scale = actor |n: i64| -> i64 { n * factor };
+    let a = scale(3);
+    match a {
+        Ok(v) => println(f"scale3={v}"),
+        Err(_) => println("ask failed"),
+    }
+    let b = scale(6);
+    match b {
+        Ok(v) => println(f"scale6={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

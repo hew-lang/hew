@@ -1,0 +1,25 @@
+// W3 collections-sugar S2: `s[i]` returns a `char` at codepoint offset.
+//
+// Exercises:
+//   checker   synthesize_index single-element arm  →  Ty::String + i64 → Ty::Char
+//   HIR       HirExprKind::Index { ty: Char }
+//   MIR       lower_string_index → hew_string_index(s, 1)
+//   runtime   walks UTF-8 to the 2nd codepoint of "hello" → 'e' (0x65)
+//   codegen   hew_string_index returns i32 (char encoding); cast to i64 for exit.
+//
+// "hello"[1] = 'e' (0x65 = 101).
+// W3 collections-sugar S2: `s[a..b]` returns a fresh `string` codepoint slice.
+//
+// Exercises:
+//   checker  synthesize_index range arm → Ty::String + i64 endpoints → Ty::String
+//   HIR      HirExprKind::Slice { ty: String }
+//   MIR      lower_string_slice → hew_string_slice_codepoints(s, 1, 4)
+//   runtime  walks "hello" codepoints → fresh malloc'd "ell"
+//   codegen  string-typed dest alloca receives the *mut c_char return
+//
+// "hello"[1..4] = "ell"  →  byte_length = 3  →  exit 3
+fn main() -> i64 {
+    let s: string = "hello";
+    let slice: string = s[1..4];
+    slice.len()
+}

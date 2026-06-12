@@ -26,11 +26,19 @@
 //! - `full` (default) — encryption + profiler
 //! - `encryption` — Noise protocol encryption via `snow`
 //! - `profiler` — built-in profiler dashboard and pprof export
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::{c_char, CString};
+// live on not(wasm32) — hew_wasm_register_actor_meta stub; dead here; caller lib.rs:84
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::c_void;
+use std::io::Write;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -62,6 +70,42 @@ pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
+/// Native no-op for the target-neutral actor metadata registration call.
+///
+/// The v0.5 LLVM emitter builds one textual module before object emission, so
+/// actor spawn IR can contain the WASM host metadata registration call even
+/// when the same module is compiled to a native object. Native hosts do not
+/// query WASM actor metadata; they only need this symbol to link cleanly.
+/// NATIVE-TODO(#1259): replace this stub with real native metadata
+/// registration when native metadata consumers exist.
+///
+/// # Safety
+///
+/// The pointer is intentionally ignored on native targets.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_wasm_register_actor_meta(_meta: *const c_void) {}
+
+/// Terminate the current process with a Hew integer exit code.
+#[no_mangle]
+pub extern "C" fn hew_exit(code: i64) {
+    let Ok(code) = i32::try_from(code) else {
+        eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
+        std::process::abort();
+    };
+
+    if let Err(error) = std::io::stdout().flush() {
+        eprintln!("hew_exit: failed to flush stdout before exit: {error}");
+        std::process::abort();
+    }
+    if let Err(error) = std::io::stderr().flush() {
+        eprintln!("hew_exit: failed to flush stderr before exit: {error}");
+        std::process::abort();
+    }
+
+    std::process::exit(code);
+}
+
 macro_rules! cabi_guard {
     ($cond:expr) => {
         if $cond {
@@ -79,6 +123,16 @@ macro_rules! cabi_guard {
 
 pub(crate) mod lifetime;
 pub(crate) mod util;
+
+/// CBOR wire envelope types — the Rust-native representation of the Hew wire
+/// protocol plus the fail-closed encode/decode helpers used by runtime
+/// transport paths.
+pub mod envelope;
+
+/// Cross-node actor-message payload serialization codec: the runtime half of
+/// the codegen-driven value↔wire encoder that lets `Serializable` payloads
+/// survive a process hop without shipping in-memory heap pointers.
+pub mod xnode_serial;
 
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {
@@ -140,7 +194,57 @@ pub mod profiler;
 #[cfg(any(not(feature = "profiler"), target_arch = "wasm32"))]
 pub mod profiler {
     //! Profiler stubs when the `profiler` feature is disabled.
+    pub mod actor_registry {
+        /// Stub actor snapshots when profiler registry is unavailable.
+        #[must_use]
+        pub fn snapshot_all() -> Vec<()> {
+            Vec::new()
+        }
+
+        /// Stub live-state count when profiler registry is unavailable.
+        #[must_use]
+        pub fn state_count(_state: i32) -> u64 {
+            0
+        }
+
+        /// Stub runnable-coroutine count when profiler registry is unavailable.
+        #[must_use]
+        pub fn runnable_coroutine_count() -> u64 {
+            0
+        }
+    }
+
     pub mod allocator {
+        /// Zeroed allocator statistics when profiler counters are unavailable.
+        #[derive(Debug, Clone, Copy)]
+        pub struct AllocStats {
+            /// Total allocation calls.
+            pub alloc_count: u64,
+            /// Total deallocation calls.
+            pub dealloc_count: u64,
+            /// Cumulative bytes allocated.
+            pub bytes_allocated: u64,
+            /// Cumulative bytes freed.
+            pub bytes_freed: u64,
+            /// Approximate bytes currently live.
+            pub bytes_live: u64,
+            /// Peak bytes live.
+            pub peak_bytes_live: u64,
+        }
+
+        /// Capture zeroed allocator stats when profiler is disabled.
+        #[must_use]
+        pub fn snapshot() -> AllocStats {
+            AllocStats {
+                alloc_count: 0,
+                dealloc_count: 0,
+                bytes_allocated: 0,
+                bytes_freed: 0,
+                bytes_live: 0,
+                peak_bytes_live: 0,
+            }
+        }
+
         /// No-op allocator pass-through when profiler is disabled.
         #[derive(Debug)]
         pub struct ProfilingAllocator;
@@ -199,25 +303,51 @@ static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::Pr
 
 pub mod arc;
 pub mod assert;
+pub mod auto_mutex;
+pub use auto_mutex::{
+    hew_auto_mutex_alloc, hew_auto_mutex_free, hew_auto_mutex_lock, hew_auto_mutex_unlock,
+    HewAutoMutex,
+};
 pub mod cabi;
+/// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
+/// The runtime side of the unified suspension representation — the coro frame
+/// allocator and the resume/done/poll/destroy verbs the poll/resume executor
+/// drives. Target-agnostic (routes through `mem`); no wasm cfg gate.
+pub mod cont;
+/// Slice-4 poll/resume executor guards: the per-continuation lifecycle tag
+/// transitions (FG1/FG2/FG4) and the two-phase park (FG3) that serialize
+/// resume vs destroy on a parked `HewCont`. Target-agnostic; drives the
+/// `cont` ABI, holds no scheduler queue state.
+pub mod coro_exec;
 pub mod hashmap;
 pub mod hashset;
+pub mod layout_intrinsics;
+pub mod mem;
 pub mod option;
 pub mod print;
 pub mod random;
 pub mod rc;
 pub mod result;
 pub mod string;
+pub mod trait_object;
 pub mod vec;
 pub mod vecdeque;
 
 pub mod bytes;
 mod channel_common;
+pub mod duration;
+pub mod machine_emit;
+pub use machine_emit::{
+    hew_machine_emit_push, hew_machine_emit_step_enter, hew_machine_emit_step_exit,
+    DrainError as MachineEmitDrainError, EmitEvent, EmitQueue, EmitQueueAppend,
+    MachineEmitReentrancyExceeded,
+};
 pub mod parse_error_slot;
 
 pub mod internal;
+mod send_ptr;
 mod tagged_union;
-
+mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not
 // applicable to WASM (no threads, no native timer support).
 // Arena functions (hew_arena_malloc / hew_arena_free / etc.) are now
@@ -242,12 +372,12 @@ pub mod wasm_stubs {
     //!   `wasm32-wasip1`.
     //!
     //! - **Channels**: the bounded non-blocking slice is implemented in
-    //!   [`crate::channel_wasm`] (`channel.new`, `send`, `send_int`,
-    //!   `try_recv`, `try_recv_int`, clone/close helpers). Blocking
-    //!   `hew_channel_recv*` remains an explicit trap until cooperative
-    //!   scheduler yield/resume parity exists.
+    //!   [`crate::channel_wasm`] (`channel.new`, the layout-witness
+    //!   `hew_channel_send_layout` / `hew_channel_try_recv_layout` entries,
+    //!   clone/close helpers). Blocking `hew_channel_recv_layout` remains an
+    //!   explicit trap until cooperative scheduler yield/resume parity exists.
 
-    use std::ffi::{c_char, c_int, c_void};
+    use std::ffi::{c_char, c_void};
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 
@@ -268,7 +398,7 @@ pub mod wasm_stubs {
     ///
     /// No preconditions — may be called from any context.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
+    pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
         if ms <= 0 {
             return;
         }
@@ -319,21 +449,12 @@ pub mod wasm_stubs {
     ///
     /// Never returns — traps unconditionally.
     #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_recv(_receiver: *mut c_void) -> *mut c_char {
-        unreachable!("hew_channel_recv: not supported on wasm32")
-    }
-
-    /// WASM stub: blocking integer channel recv is not supported.
-    ///
-    /// # Safety
-    ///
-    /// Never returns — traps unconditionally.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_channel_recv_int(
+    pub unsafe extern "C" fn hew_channel_recv_layout(
         _receiver: *mut c_void,
-        _out_valid: *mut i32,
-    ) -> i64 {
-        unreachable!("hew_channel_recv_int: not supported on wasm32")
+        _out: *mut c_void,
+        _layout: *const c_void,
+    ) -> i32 {
+        unreachable!("hew_channel_recv_layout: not supported on wasm32")
     }
 }
 
@@ -348,18 +469,20 @@ pub mod io_time;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod iter;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod path;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod stdio;
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod bridge;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod coro;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mailbox;
+/// Mailbox envelope payload classification and cross-node send guards.
+pub mod mailbox_envelope;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod mailbox_wasm;
 #[cfg(not(target_arch = "wasm32"))]
@@ -384,6 +507,7 @@ pub mod arena;
 // Expose arena_wasm as a distinct module in native test builds so its unit
 // tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
+pub(crate) mod alloc_tracker;
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
@@ -391,14 +515,21 @@ pub mod channel;
 #[cfg(any(target_arch = "wasm32", test))]
 mod channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod duplex;
+pub mod execution_context;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lambda_actor;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod read_slot;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod scope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
 #[cfg(not(target_arch = "wasm32"))]
@@ -427,8 +558,9 @@ pub mod transport;
 // gate enforces this and excludes wasm32 per HEW-DIST-SPEC §15.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "sim-transport")))]
 pub mod sim_transport;
-pub mod wire;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod channel_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;
 #[cfg(not(target_arch = "wasm32"))]
@@ -443,15 +575,25 @@ pub mod generator;
 pub mod link;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
+pub mod observe;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod phi_accrual;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;
-pub mod registry;
+/// Active-mode network I/O reactor ("I/O completion as a mailbox message").
+/// Native (non-WASM) on all targets: epoll on Linux, kqueue on macOS/FreeBSD,
+/// and an IOCP/AFD_POLL readiness backend on Windows
+/// ([`crate::io_time::HewIoPoller`]). The shared engine is platform-independent
+/// Rust over the poller's `c_int` token; only the per-platform readiness source
+/// differs. WASM fails closed via the type checker's
+/// `WasmUnsupportedFeature::TcpNetworking` gate (the reactor is not compiled).
 #[cfg(not(target_arch = "wasm32"))]
-pub mod remote_sup;
+pub mod reactor;
+pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
 /// Session-scoped reset-hook registry.  Unconditionally compiled — both the
@@ -460,6 +602,12 @@ pub mod routing;
 pub mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
+/// Single-owner stream/sink error channel. Ungated: it owns the `hew_stream_*`
+/// C ABI for the whole linked image (see the module docs for why this must be
+/// the only definition), so it is compiled on every target that links libhew.
+pub mod stream_error;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod swim_driver;
 pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────
@@ -469,6 +617,9 @@ pub mod encryption;
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 pub mod quic_transport;
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub mod quic_mesh;
 
 // OTel exporter: background thread + OTLP/HTTP, activated by HEW_OTEL_ENDPOINT.
 // Not available on WASM (no OS threads for the background exporter).
@@ -486,9 +637,19 @@ pub mod otel {
 
 pub mod log_core;
 
+pub use execution_context::{
+    current_context, set_current_context, HewExecutionContext, HEW_CTX_FLAG_REPLY_CHANNEL_CONSUMED,
+    HEW_CTX_OFFSET_ACTOR, HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_ARENA,
+    HEW_CTX_OFFSET_CANCEL_TOKEN, HEW_CTX_OFFSET_FLAGS, HEW_CTX_OFFSET_LOCK_SEAT,
+    HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_PARTITION_POLICY, HEW_CTX_OFFSET_PREV_CONTEXT,
+    HEW_CTX_OFFSET_REPLY_CHANNEL, HEW_CTX_OFFSET_SUPERVISOR_CHILD_INDEX, HEW_CTX_OFFSET_TASK_SCOPE,
+    HEW_CTX_OFFSET_TRACE, HEW_CTX_OFFSET_TRACE_SPAN,
+};
+
 // ── WASM entry point ─────────────────────────────────────────────────────────
-// Provides `_start` for WASI command modules. The compiler renames the user's
-// `main()` to `__original_main` when targeting WASM.
+// Provides `_start` for WASI command modules. The compiler keeps the
+// freestanding export as `main` and also defines `__original_main` for the
+// WASI runtime entry point.
 
 #[cfg(all(target_arch = "wasm32", not(test)))]
 extern "C" {
@@ -499,7 +660,7 @@ extern "C" {
 #[cfg(all(target_arch = "wasm32", not(test)))]
 #[no_mangle]
 pub extern "C" fn _start() {
-    // SAFETY: `__original_main` is always emitted by hew-codegen for every
+    // SAFETY: `__original_main` is emitted by hew-codegen for every WASI-linked
     // Hew program and has the signature `() -> i32`.
     let code = unsafe { __original_main() };
     if code != 0 {

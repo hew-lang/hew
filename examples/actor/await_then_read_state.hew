@@ -1,0 +1,37 @@
+// W6.010 — reading actor state AFTER an await reads the LIVE resume context.
+//
+// `Coordinator.run` awaits `Worker.compute`, then reads its own `bias` field
+// AFTER the await resolves. The suspend unwinds the dispatch frame; the resume
+// installs a fresh thread-local execution context. A post-resume context read
+// must come from that live context, not the unwound spilled `ctx` param — so the
+// awaited value plus a state field read after the await binds the correct value.
+actor Worker {
+    let factor: i64;
+    receive fn compute(n: i64) -> i64 {
+        n * factor
+    }
+}
+
+actor Coordinator {
+    let worker: LocalPid<Worker>;
+    let bias: i64;
+    receive fn run(n: i64) -> i64 {
+        let r = await worker.compute(n);
+        match r {
+            // `bias` is an actor-state field read AFTER the await resolves.
+            Ok(v) => v + bias,
+            Err(_) => -1,
+        }
+    }
+}
+
+fn main() {
+    let w = spawn Worker(factor: 6);
+    let c = spawn Coordinator(worker: w, bias: 100);
+    let r = await c.run(7);
+    match r {
+        // compute(7) = 42; + bias(100) = 142
+        Ok(v) => println(f"result={v}"),
+        Err(_) => println("ask failed"),
+    }
+}

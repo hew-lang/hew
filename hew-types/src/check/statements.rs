@@ -4,8 +4,70 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
+use crate::BuiltinType;
 
 impl Checker {
+    fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
+        let resolved = self.subst.resolve(iter_ty);
+        if let Ty::TraitObject { traits } = &resolved {
+            for bound in traits {
+                if bound.trait_name != "Iterator"
+                    && !self.trait_extends(&bound.trait_name, "Iterator")
+                {
+                    continue;
+                }
+                if let Some((_, item_ty)) =
+                    bound.assoc_bindings.iter().find(|(name, _)| name == "Item")
+                {
+                    return Some(item_ty.clone());
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`for` over `dyn Iterator` requires an `Item` associated-type binding"
+                        .to_string(),
+                );
+                return Some(Ty::Error);
+            }
+        }
+
+        if let Ty::Named {
+            name,
+            args,
+            builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+        } = &resolved
+        {
+            return args.first().cloned().or_else(|| {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("`for` over a {name} requires a resolved yield type"),
+                );
+                Some(Ty::Error)
+            });
+        }
+
+        if self.type_satisfies_trait_bound(&resolved, "IntoIterator") {
+            let item_projection = Ty::AssocType {
+                base: Box::new(resolved),
+                trait_name: "IntoIterator".into(),
+                assoc_name: "Item".into(),
+            };
+            return Some(self.project_assoc_types(&item_projection));
+        }
+
+        if !self.type_satisfies_trait_bound(&resolved, "Iterator") {
+            return None;
+        }
+
+        let item_projection = Ty::AssocType {
+            base: Box::new(resolved),
+            trait_name: "Iterator".into(),
+            assoc_name: "Item".into(),
+        };
+        Some(self.project_assoc_types(&item_projection))
+    }
+
     fn assignment_root_binding_name(expr: &Expr) -> Option<&str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
@@ -196,6 +258,10 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `WhileLet` and `Match` lowering.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 let then_ty = self.check_block(body, expected);
                 self.env.pop_scope();
                 if let Some(block) = else_body {
@@ -212,22 +278,36 @@ impl Checker {
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — it would silently
                     // suppress mismatch diagnostics in the returned expression.
                     // Synthesize the value instead so its own errors are still caught.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }
@@ -248,6 +328,24 @@ impl Checker {
         }
     }
 
+    fn infer_integer_literal_binding_type(
+        &mut self,
+        value: Option<&Spanned<Expr>>,
+        val_ty: Ty,
+    ) -> Ty {
+        let Some((expr, span)) = value else {
+            return val_ty;
+        };
+        if is_integer_literal(expr) && val_ty.is_integer_literal() {
+            let inferred = Ty::Var(TypeVar::fresh());
+            self.expect_type(&inferred, &val_ty, span);
+            self.record_integer_literal_type(expr, span, &inferred);
+            inferred
+        } else {
+            val_ty
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
@@ -261,6 +359,63 @@ impl Checker {
                 };
                 let deferred_hole_mark = self.deferred_inference_holes.len();
                 let deferred_cast_mark = self.deferred_cast_checks.len();
+                // Forward-bind for actor-lambda RHS: when `let name = actor |params| { body }`,
+                // the body may reference `name` for recursive self-dispatch (architecture §5.9
+                // ratification 2). Pre-bind the name with the Duplex type computed from
+                // param/return annotations BEFORE synthesising the body so that the recursive
+                // call resolves during body synthesis. The real `define_with_span` call below
+                // overwrites this synthetic binding with the user-visible one.
+                //
+                // WHY: statement order synthesises the RHS before inserting the let-binding
+                //   into scope; the actor body would see `fib` as undefined.
+                // WHEN-OBSOLETE: if a general "let-rec" deferred-binding pass is added.
+                // WHAT (real solution): a proper letrec/fix-point binder in the type checker.
+                if ty.is_none() {
+                    if let (
+                        Pattern::Identifier(bind_name),
+                        Some((
+                            Expr::SpawnLambdaActor {
+                                params,
+                                return_type,
+                                ..
+                            },
+                            _,
+                        )),
+                    ) = (&pattern.0, value)
+                    {
+                        let param_types: Vec<Ty> = params
+                            .iter()
+                            .map(|p| {
+                                p.ty.as_ref().map_or_else(
+                                    || Ty::Var(TypeVar::fresh()),
+                                    |ann| self.resolve_type_expr(ann),
+                                )
+                            })
+                            .collect();
+                        let msg_ty = match param_types.len() {
+                            0 => Ty::Unit,
+                            1 => param_types.into_iter().next().unwrap(),
+                            _ => Ty::Tuple(param_types),
+                        };
+                        let reply_ty = return_type
+                            .as_ref()
+                            .map_or(Ty::Unit, |ret| self.resolve_type_expr(ret));
+                        let duplex_ty = Ty::duplex(msg_ty, reply_ty);
+                        // Synthetic binding (no source span) — pre-populated for body lookup.
+                        // Marked as already-used (read_count=1 in `define`) to avoid a
+                        // spurious unused-variable warning at this site.
+                        self.env.define(bind_name.clone(), duplex_ty, false);
+                    }
+                }
+                // Set pending_let_closure_name so synthesize_identifier can
+                // detect recursive self-reference inside a closure body and emit
+                // ClosureRecursive instead of UndefinedVariable.
+                let prev_pending = self.pending_let_closure_name.take();
+                if let (Pattern::Identifier(name), Some((Expr::Lambda { .. }, _))) =
+                    (&pattern.0, &value)
+                {
+                    self.pending_let_closure_name = Some(name.clone());
+                }
                 let val_ty = if let Some((val, vs)) = value {
                     if let Some(annotation) = ty {
                         let expected =
@@ -274,6 +429,12 @@ impl Checker {
                 } else {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
+                };
+                self.pending_let_closure_name = prev_pending;
+                let val_ty = if ty.is_none() {
+                    self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
+                } else {
+                    val_ty
                 };
                 // Consume the scratch field unconditionally so stale state
                 // never accumulates across statements.  Only register the
@@ -337,8 +498,10 @@ impl Checker {
                     // lambda expression.
                     if value_is_direct_generic_lambda {
                         if let Some(sig) = generic_sig {
-                            self.lambda_poly_sig_map
-                                .insert(SpanKey::from(&pattern.1), sig);
+                            self.lambda_poly_sig_map.insert(
+                                SpanKey::in_module(&pattern.1, self.current_module_idx),
+                                sig,
+                            );
                         }
                     }
                     // Track let-bound numeric literals for later coercion at use
@@ -347,7 +510,7 @@ impl Checker {
                     // materialize immediately.
                     if ty.is_none() {
                         if let Some((val, _)) = value {
-                            if val_ty.is_integer_literal() {
+                            if is_integer_literal(val) {
                                 if let Some(v) = extract_integer_literal_value(val) {
                                     self.const_values
                                         .insert(name.clone(), ConstValue::Integer(v));
@@ -383,7 +546,8 @@ impl Checker {
                 };
                 let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
-                    val_ty.materialize_literal_defaults()
+                    self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
+                        .materialize_literal_defaults()
                 } else {
                     val_ty
                 };
@@ -424,30 +588,18 @@ impl Checker {
                     .define_with_span(name.clone(), val_ty, true, span.clone());
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
-                        self.lambda_poly_sig_map.insert(SpanKey::from(span), sig);
+                        self.lambda_poly_sig_map
+                            .insert(SpanKey::in_module(span, self.current_module_idx), sig);
                     }
                 }
             }
             Stmt::Assign { target, op, value } => {
-                // Purity check: pure functions cannot assign to actor fields
-                if self.in_pure_function {
-                    // Check bare field name assignment (actor fields in scope)
-                    if let Expr::Identifier(name) = &target.0 {
-                        if self.current_actor_fields.contains(name) {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                format!("cannot assign to actor field `{name}` in a pure function"),
-                            );
-                        }
-                    }
-                }
                 // Classify the assignment target for the side-table before synthesising
                 // so that the entry is always emitted whenever the target is syntactically
                 // valid, regardless of whether subsequent type-checking finds errors.
                 let assign_target_kind: Option<AssignTargetKind> = match &target.0 {
                     Expr::Identifier(name) => {
-                        if self.current_actor_fields.contains(name) {
+                        if self.current_actor_fields.iter().any(|f| &f.name == name) {
                             Some(AssignTargetKind::ActorField)
                         } else if self.env.lookup_ref(name).is_some() {
                             Some(AssignTargetKind::LocalVar)
@@ -470,22 +622,83 @@ impl Checker {
                 };
                 if let Some(kind) = assign_target_kind {
                     self.assign_target_kinds
-                        .insert(SpanKey::from(&target.1), kind);
+                        .insert(SpanKey::in_module(&target.1, self.current_module_idx), kind);
                 }
-                let target_ty = self.synthesize(&target.0, &target.1);
+
+                // Record fields follow the same write rule as other aggregate
+                // fields: immutable roots (`let r`, parameters) reject at the
+                // root mutability check below; mutable roots (`var r`) may be
+                // updated in place.  Keep the record-specific diagnostic for
+                // roots that are known immutable so users see the value-type
+                // rule, not just a generic binding error.
+                if let Expr::FieldAccess { object, field } = &target.0 {
+                    let obj_ty = self.synthesize(&object.0, &object.1);
+                    let resolved = self.subst.resolve(&obj_ty);
+                    if let Ty::Named { name, .. } = &resolved {
+                        let root_is_mutable = Self::assignment_root_binding_name(&target.0)
+                            .is_some_and(|root| {
+                                self.current_actor_fields.iter().any(|f| f.name == root)
+                                    || self
+                                        .env
+                                        .lookup_ref(root)
+                                        .is_some_and(|binding| binding.is_mutable)
+                            });
+                        if !root_is_mutable
+                            && self
+                                .lookup_type_def(name)
+                                .is_some_and(|td| td.kind == TypeDefKind::Record)
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "cannot assign to field `{field}` of record `{name}` through \
+                                    an immutable binding; declare the binding mutable or use \
+                                    functional update syntax `{name} {{ {field}: <value>, ..old }}` \
+                                    instead"
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                // Index targets (`obj[k] = rhs`) synthesise in assignment
+                // context so the target type is the element/value type the RHS
+                // must match — for `HashMap<K, V>` this is the bare `V` (a read
+                // would instead yield `Option<V>`), and the checker records the
+                // `hew_hashmap_insert_layout` runtime call at the index span.
+                let target_ty = match &target.0 {
+                    Expr::Index { object, index } => {
+                        let ty = self.synthesize_index(
+                            object,
+                            index,
+                            &target.1,
+                            IndexContext::AssignTarget,
+                        );
+                        // `synthesize_index` is called directly here (not via the
+                        // `synthesize` dispatch tail), so stamp `expr_types` for
+                        // the target span ourselves — downstream HIR/MIR read the
+                        // checker-authoritative type at this site.
+                        self.record_type(&target.1, &ty);
+                        ty
+                    }
+                    _ => self.synthesize(&target.0, &target.1),
+                };
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the MLIR
                 // compound-assignment paths can read signedness without
                 // falling back to the unreliable `resolvedTypeOf` path.
                 if self
                     .assign_target_kinds
-                    .contains_key(&SpanKey::from(&target.1))
+                    .contains_key(&SpanKey::in_module(&target.1, self.current_module_idx))
                 {
                     let shape = AssignTargetShape {
                         is_unsigned: target_ty.is_unsigned(),
                     };
-                    self.assign_target_shapes
-                        .insert(SpanKey::from(&target.1), shape);
+                    self.assign_target_shapes.insert(
+                        SpanKey::in_module(&target.1, self.current_module_idx),
+                        shape,
+                    );
                 }
                 let root_binding_name = match &target.0 {
                     Expr::Identifier(_) | Expr::FieldAccess { .. } | Expr::Index { .. } => {
@@ -496,8 +709,24 @@ impl Checker {
                 if let Some(name) = root_binding_name {
                     if let Some(binding) = self.env.lookup_ref(name) {
                         if !binding.is_mutable {
-                            self.errors
-                                .push(TypeError::mutability_error(span.clone(), name));
+                            // Actor state fields get a field-specific
+                            // diagnostic pointing at the declaration site;
+                            // plain locals keep the variable-shaped error.
+                            // In `init { }` fields are bound writable, so
+                            // this arm only fires in handler/method/hook
+                            // bodies.
+                            if let Some(field) =
+                                self.current_actor_fields.iter().find(|f| f.name == *name)
+                            {
+                                self.errors.push(TypeError::immutable_field_assignment(
+                                    span.clone(),
+                                    name,
+                                    field.decl_span.clone(),
+                                ));
+                            } else {
+                                self.errors
+                                    .push(TypeError::mutability_error(span.clone(), name));
+                            }
                         }
                     }
                     // Plain assignment (=) is a write-only, not a read.
@@ -540,6 +769,12 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `WhileLet` and `Match` lowering — without this entry HIR
+                // cannot resolve the constructor's `(type_name, variant_name)`
+                // identity or payload-binding field indices for `if-let`.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 self.check_block(body, None);
                 self.env.pop_scope();
                 if let Some(block) = else_body {
@@ -548,21 +783,35 @@ impl Checker {
             }
             Stmt::Return(value) => {
                 if let Some(expected) = self.current_return_type.clone() {
+                    // Inside a gen{} body, `current_return_type` is shaped as
+                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
+                    // component R, not the full Generator type.  Extract R when
+                    // in a generator context so that `return 1` inside gen{}
+                    // unifies against i64 rather than Generator<Y, i64>.
+                    let effective_expected = if self.in_generator {
+                        let resolved = self.subst.resolve(&expected);
+                        match resolved.as_generator() {
+                            Some((_, ret)) => ret.clone(),
+                            None => expected,
+                        }
+                    } else {
+                        expected
+                    };
                     // Guard: do not check against Ty::Error — same as in
                     // check_stmt_as_expr; synthesize instead to preserve body errors.
-                    if matches!(self.subst.resolve(&expected), Ty::Error) {
+                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
                         if let Some((val, vs)) = value {
                             self.synthesize(val, vs);
                         }
                     } else {
                         match value {
                             Some((val, vs)) => {
-                                self.check_against(val, vs, &expected);
+                                self.check_against(val, vs, &effective_expected);
                             }
-                            None if expected != Ty::Unit => {
+                            None if effective_expected != Ty::Unit => {
                                 self.errors.push(TypeError::return_type_mismatch(
                                     span.clone(),
-                                    &expected,
+                                    &effective_expected,
                                     &Ty::Unit,
                                 ));
                             }
@@ -604,7 +853,11 @@ impl Checker {
                         }
                         (**inner).clone()
                     }
-                    Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Range),
+                        args,
+                        ..
+                    } if args.len() == 1 => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -616,9 +869,11 @@ impl Checker {
                         }
                         args[0].clone()
                     }
-                    Ty::Named { name, args }
-                        if builtin_named_type(name) == Some(BuiltinNamedType::Stream) =>
-                    {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Stream),
+                        args,
+                        ..
+                    } => {
                         let inner_opt = args.first().cloned();
                         if *is_await {
                             if args.is_empty() {
@@ -664,7 +919,35 @@ impl Checker {
                                     "next",
                                     &iterable.1,
                                 ) {
-                                    Some(validated_inner) => validated_inner,
+                                    Some(validated_inner) => {
+                                        // Stream runtime is native-only in v0.5. Method-call
+                                        // `.recv()` already rejects on wasm; `for await` must
+                                        // mirror that checker gate before HIR desugars it.
+                                        // WASM-TODO(#1451): port stream suspend substrate.
+                                        self.reject_wasm_feature(
+                                            &iterable.1,
+                                            WasmUnsupportedFeature::Streams,
+                                        );
+                                        let resolved = self.subst.resolve(&validated_inner);
+                                        if !matches!(resolved, Ty::Var(_))
+                                            && !self.queue_elem_admissible(&resolved)
+                                        {
+                                            let reason =
+                                                self.queue_elem_rejection_reason(&resolved);
+                                            self.report_error(
+                                                TypeErrorKind::InvalidOperation,
+                                                &iterable.1,
+                                                format!(
+                                                    "`Stream<{}>` is not supported in \
+                                                     `for await`: {reason}",
+                                                    validated_inner.user_facing()
+                                                ),
+                                            );
+                                            Ty::Error
+                                        } else {
+                                            validated_inner
+                                        }
+                                    }
                                     None => Ty::Error,
                                 }
                             }
@@ -679,7 +962,11 @@ impl Checker {
                             Ty::Error
                         }
                     }
-                    Ty::Named { name, args } if name == "Vec" => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        args,
+                        ..
+                    } => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -700,7 +987,11 @@ impl Checker {
                             Ty::Error
                         }
                     }
-                    Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::HashMap),
+                        args,
+                        ..
+                    } if args.len() >= 2 => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
@@ -712,16 +1003,16 @@ impl Checker {
                         }
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
-                    Ty::Named { name, args }
-                        if (name == "Generator" && !args.is_empty())
-                            || (name == "AsyncGenerator" && args.len() == 1) =>
-                    {
-                        args[0].clone()
-                    }
-                    Ty::Named { name, args }
-                        if builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
-                            && !args.is_empty() =>
-                    {
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                        args,
+                        ..
+                    } if !args.is_empty() => args[0].clone(),
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Receiver),
+                        args,
+                        ..
+                    } if !args.is_empty() => {
                         let inner = args[0].clone();
                         if *is_await {
                             self.check_receiver_element_type_for_await(&inner, &iterable.1);
@@ -733,12 +1024,16 @@ impl Checker {
                     Ty::Error => Ty::Error,
                     Ty::Never => Ty::Never,
                     _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            &iterable.1,
-                            "type is not iterable".to_string(),
-                        );
-                        Ty::Error
+                        if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
+                            item_ty
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "type is not iterable".to_string(),
+                            );
+                            Ty::Error
+                        }
                     }
                 };
                 self.env.push_scope();
@@ -798,6 +1093,12 @@ impl Checker {
                 }
                 self.env.push_scope();
                 self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                // Record the pattern resolution so HIR lowering can consume
+                // the same `pattern_resolutions` side-table that powers
+                // `Match` lowering — without this entry HIR cannot resolve
+                // the constructor's `(type_name, variant_name)` identity or
+                // payload-binding field indices for `while-let`.
+                self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
                 if let Some(lbl) = label {
                     self.loop_labels.push(lbl.clone());
                 }
@@ -860,6 +1161,7 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             if let Some((guard, gs)) = &arm.guard {
                 self.check_against(guard, gs, &Ty::Bool);

@@ -1,0 +1,34 @@
+// W3 Stage 3 vertical slice (typecheck-only).
+//
+// Anchors that the stdlib `impl<T> IntoIterator for Vec<T>` shipped in
+// `std/builtins.hew` is reachable end-to-end through the CLI type-checker:
+// `v.into_iter()` resolves to `VecIter<T>` for both `Vec<i32>` and `Vec<i64>`
+// — the two concrete instantiations the v0.5 stdlib catalog speaks.
+//
+// Runtime execution of the Iterator/IntoIterator dispatch (i.e. a `for x in v
+// { ... }` end-to-end .hew that allocates, walks, and drops a VecIter) is
+// owned by Stage 4 of the iteration-foundation lane, which wires the
+// for-loop desugar and the corresponding HIR method-rewrite entries for
+// user trait dispatch. This slice deliberately stops at the type-checker
+// resolution boundary; the run.sh harness validates that the checker accepts
+// it (no diagnostic mentioning `into_iter` or `VecIter`).
+//
+// Q004 caveat: the checker does not currently enforce that the impl method
+// signature matches the trait — that lane is independent. Stage 3 ships a
+// correct impl regardless.
+
+fn main() {
+    // `v.into_iter()` resolves through `impl<T> IntoIterator for Vec<T>` in
+    // std/builtins.hew. Both Vec<i32> and Vec<i64> are pinned (the two
+    // concrete element types in the v0.5 stdlib catalog).
+    let a: Vec<i32> = Vec::new();
+    let _ia: VecIter<i32> = a.into_iter();
+
+    let b: Vec<i64> = Vec::new();
+    let _ib: VecIter<i64> = b.into_iter();
+
+    // VecIter<T> constructed directly through its record literal: confirms
+    // the new builtin type is resolvable at user sites.
+    let _c: Vec<i64> = Vec::new();
+    let _vi: VecIter<i64> = VecIter { vec: _c, idx: 0 };
+}

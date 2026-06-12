@@ -1,0 +1,28 @@
+// vec-generic-index S0: scalar `xs[i]` on `Vec<string>`.
+//
+// Exercises the full generic-Vec-index path for a heap-owning element type:
+//   checker  synthesize_index Vec arm           → element type `string`
+//   HIR      element-type gate accepts `String` (mirrors the runtime ABI)
+//   MIR      lower_vec_index → hew_vec_get_str (retained/header-aware owner)
+//   runtime  refcount-bumps the stored element (retain_string_element); the
+//            Vec keeps its own reference, so indexing is a CLONE, not a
+//            move-out — the Vec stays usable afterwards.
+//   drop     each bound owner (`a`, `c`) releases via a function-scope
+//            hew_string_drop; the Vec releases its own references on drop.
+//            No leak, no double-free.
+//
+// xs = ["alpha"(5), "be"(2), "gamma"(5)]
+// a = xs[0] = "alpha", c = xs[2] = "gamma", and the Vec is re-read after
+// indexing (xs.len() = 3) to prove it was not consumed.
+//   a.len() + c.len() + xs.len() = 5 + 5 + 3 = 13  →  exit 13
+fn main() -> i64 {
+    let xs: Vec<string> = Vec::new();
+    xs.push("alpha");
+    xs.push("be");
+    xs.push("gamma");
+    let a = xs[0];
+    let c = xs[2];
+    // The Vec must still be usable after indexing (indexing clones, not moves).
+    let n = xs.len();
+    a.len() + c.len() + n
+}

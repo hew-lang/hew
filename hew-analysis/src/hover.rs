@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, FnDecl, Item, Param, Pattern, Span, Stmt, TraitBound, TraitItem, TypeBodyItem, TypeExpr,
+    Block, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound, TraitItem,
+    TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
-use hew_types::builtin_names::{builtin_named_type, BuiltinNamedType};
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
-use hew_types::{ResolvedTy, Ty, TypeCheckOutput, VariantDef};
+use hew_types::{BuiltinType, ResolvedTy, Ty, TypeCheckOutput, VariantDef};
 
 use crate::db::SourceDatabase;
 use crate::{HoverResult, OffsetSpan};
@@ -221,38 +221,66 @@ fn hover_field_declaration_at_offset(
     offset: usize,
 ) -> Option<HoverResult> {
     for (item, item_span) in &parse_result.program.items {
-        let Item::TypeDecl(type_decl) = item else {
-            continue;
-        };
-        let mut search_from = item_span.start;
-        for body_item in &type_decl.body {
-            match body_item {
-                TypeBodyItem::Field { name, ty, .. } => {
-                    let span = crate::util::find_name_span(source, search_from, name);
-                    if span.start <= offset && offset < span.end {
-                        let ty_text = method_resolution::lookup_type_def(
-                            &type_output.type_defs,
-                            &type_decl.name,
-                        )
-                        .and_then(|type_def| {
-                            type_def
-                                .fields
-                                .get(name)
-                                .map(|ty| ty.user_facing().to_string())
-                        })
-                        .unwrap_or_else(|| format_type_expr_hover(&ty.0));
-                        return Some(field_hover_result(name, &ty_text, span));
+        match item {
+            Item::TypeDecl(type_decl) => {
+                let mut search_from = item_span.start;
+                for body_item in &type_decl.body {
+                    match body_item {
+                        TypeBodyItem::Field { name, ty, .. } => {
+                            let span = crate::util::find_name_span(source, search_from, name);
+                            if span.start <= offset && offset < span.end {
+                                let ty_text = method_resolution::lookup_type_def(
+                                    &type_output.type_defs,
+                                    &type_decl.name,
+                                )
+                                .and_then(|type_def| {
+                                    type_def
+                                        .fields
+                                        .get(name)
+                                        .map(|ty| ty.user_facing().to_string())
+                                })
+                                .unwrap_or_else(|| format_type_expr_hover(&ty.0));
+                                return Some(field_hover_result(name, &ty_text, span));
+                            }
+                            search_from = ty.1.end.max(span.end);
+                        }
+                        TypeBodyItem::Variant(variant) => {
+                            search_from =
+                                crate::util::find_name_span(source, search_from, &variant.name).end;
+                        }
+                        TypeBodyItem::Method(method) => {
+                            search_from = search_from.max(method.decl_span.end);
+                        }
                     }
-                    search_from = ty.1.end.max(span.end);
-                }
-                TypeBodyItem::Variant(variant) => {
-                    search_from =
-                        crate::util::find_name_span(source, search_from, &variant.name).end;
-                }
-                TypeBodyItem::Method(method) => {
-                    search_from = search_from.max(method.decl_span.end);
                 }
             }
+            Item::Record(record_decl) => {
+                // `record Foo { … }` produces Item::Record, not Item::TypeDecl.
+                // Named-form record fields are in RecordKind::Named; tuple-form
+                // records have no named fields and are intentionally skipped.
+                if let RecordKind::Named(fields) = &record_decl.kind {
+                    let mut search_from = item_span.start;
+                    for field in fields {
+                        let span = crate::util::find_name_span(source, search_from, &field.name);
+                        if span.start <= offset && offset < span.end {
+                            let ty_text = method_resolution::lookup_type_def(
+                                &type_output.type_defs,
+                                &record_decl.name,
+                            )
+                            .and_then(|type_def| {
+                                type_def
+                                    .fields
+                                    .get(&field.name)
+                                    .map(|ty| ty.user_facing().to_string())
+                            })
+                            .unwrap_or_else(|| format_type_expr_hover(&field.ty.0));
+                            return Some(field_hover_result(&field.name, &ty_text, span));
+                        }
+                        search_from = field.ty.1.end.max(span.end);
+                    }
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -285,6 +313,10 @@ fn field_hover_result(name: &str, ty_text: &str, span: OffsetSpan) -> HoverResul
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "explicit item traversal keeps hover binding scope checks readable"
+)]
 fn hover_binding_in_item(
     item: &Item,
     type_output: &TypeCheckOutput,
@@ -356,6 +388,46 @@ fn hover_binding_in_item(
             }
             None
         }
+        Item::Machine(machine) => {
+            // Walk state entry/exit blocks, then each transition body.
+            for state in &machine.states {
+                if let Some(entry) = &state.entry {
+                    if let Some(result) =
+                        hover_binding_in_block(entry, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+                if let Some(exit) = &state.exit {
+                    if let Some(result) =
+                        hover_binding_in_block(exit, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            for transition in &machine.transitions {
+                if let Some(result) =
+                    hover_binding_in_expr(&transition.body.0, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+                // Also cover guard expressions, which may reference bound names.
+                if let Some((Expr::Block(block), _)) = &transition.guard {
+                    if let Some(result) =
+                        hover_binding_in_block(block, type_output, word, word_span, offset)
+                    {
+                        return Some(result);
+                    }
+                }
+            }
+            None
+        }
+        Item::Supervisor(_) => {
+            // Supervisors hold only declarative child specs; no executable
+            // bodies contain pattern bindings to hover.
+            None
+        }
         _ => None,
     }
 }
@@ -374,7 +446,112 @@ fn hover_binding_in_block(
             return Some(result);
         }
     }
+    // Also walk the trailing expression — an `if`/`match` in tail position is
+    // value-bearing and may contain pattern bindings (if let, match arms).
+    if let Some(trailing) = &block.trailing_expr {
+        if let Some(result) =
+            hover_binding_in_expr(&trailing.0, type_output, word, word_span, offset)
+        {
+            return Some(result);
+        }
+    }
     None
+}
+
+/// Walk pattern-binding-introducing expression forms that may appear as
+/// `block.trailing_expr` after the parser fix that classifies tail-position
+/// `if` / `match` as expressions rather than statements.
+///
+/// Only `Expr::If`, `Expr::IfLet`, and `Expr::Match` introduce pattern
+/// bindings; all other expression forms are handled by the caller's
+/// expression-type fallback and do not need recursive descent here.
+fn hover_binding_in_expr(
+    expr: &Expr,
+    type_output: &TypeCheckOutput,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    match expr {
+        Expr::If {
+            then_block,
+            else_block,
+            ..
+        } => {
+            // then_block / else_block are `Box<Spanned<Expr>>` whose inner
+            // expression is `Expr::Block(Block)` when the parser emits a
+            // braced body.
+            if let Expr::Block(block) = &then_block.0 {
+                if let Some(result) =
+                    hover_binding_in_block(block, type_output, word, word_span, offset)
+                {
+                    return Some(result);
+                }
+            }
+            if let Some(else_expr) = else_block {
+                match &else_expr.0 {
+                    Expr::Block(block) => {
+                        return hover_binding_in_block(block, type_output, word, word_span, offset);
+                    }
+                    // `else if` — recurse into the nested if expression.
+                    nested_if @ Expr::If { .. } => {
+                        return hover_binding_in_expr(
+                            nested_if,
+                            type_output,
+                            word,
+                            word_span,
+                            offset,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        Expr::IfLet {
+            pattern,
+            expr: scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&scrutinee.1)) {
+                if let Some(result) = hover_pattern_binding(
+                    pattern,
+                    source_ty,
+                    &type_output.type_defs,
+                    word,
+                    word_span,
+                    offset,
+                ) {
+                    return Some(result);
+                }
+            }
+            if let Some(result) = hover_binding_in_block(body, type_output, word, word_span, offset)
+            {
+                return Some(result);
+            }
+            else_body.as_ref().and_then(|block| {
+                hover_binding_in_block(block, type_output, word, word_span, offset)
+            })
+        }
+        Expr::Match { scrutinee, arms } => type_output
+            .expr_types
+            .get(&SpanKey::from(&scrutinee.1))
+            .and_then(|scrutinee_ty| {
+                arms.iter().find_map(|arm| {
+                    hover_pattern_binding(
+                        &arm.pattern,
+                        scrutinee_ty,
+                        &type_output.type_defs,
+                        word,
+                        word_span,
+                        offset,
+                    )
+                })
+            }),
+        _ => None,
+    }
 }
 
 #[allow(
@@ -399,6 +576,7 @@ fn hover_binding_in_stmt(
                 let span_key = SpanKey {
                     start: value_span.start,
                     end: value_span.end,
+                    module_idx: 0,
                 };
                 type_output
                     .expr_types
@@ -430,6 +608,7 @@ fn hover_binding_in_stmt(
                 let span_key = SpanKey {
                     start: value_span.start,
                     end: value_span.end,
+                    module_idx: 0,
                 };
                 type_output
                     .expr_types
@@ -623,6 +802,17 @@ fn find_pattern_binding_type(
             find_pattern_binding_type(left, source_ty, type_defs, word, offset)
                 .or_else(|| find_pattern_binding_type(right, source_ty, type_defs, word, offset))
         }
+        Pattern::Regex { captures, .. } => {
+            // Named captures are bound as `string` in the arm body.
+            captures
+                .iter()
+                .find(|c| c.as_str() == word)
+                .map(|_| Ty::Named {
+                    builtin: None,
+                    name: "string".to_string(),
+                    args: vec![],
+                })
+        }
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -645,6 +835,7 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Or(left, right) => {
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }
+        Pattern::Regex { captures, .. } => captures.iter().find(|c| c.as_str() == word).map(|_| ()),
         Pattern::Wildcard | Pattern::Literal(_) => None,
     }
 }
@@ -654,7 +845,7 @@ fn constructor_payload_tys(
     pattern_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Vec<Ty>> {
-    let Ty::Named { name, args } = source_ty else {
+    let Ty::Named { name, args, .. } = source_ty else {
         return None;
     };
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
@@ -671,7 +862,7 @@ fn struct_pattern_field_ty(
     field_name: &str,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<Ty> {
-    let Ty::Named { name, args } = source_ty else {
+    let Ty::Named { name, args, .. } = source_ty else {
         return None;
     };
     let type_def = method_resolution::lookup_type_def(type_defs, name)?;
@@ -709,19 +900,28 @@ fn apply_type_args_to_ty(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> T
 fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
     match iterable_ty {
         Ty::Array(inner, _) | Ty::Slice(inner) => Some((**inner).clone()),
-        Ty::Named { name, args } if name == "Range" && args.len() == 1 => args.first().cloned(),
-        Ty::Named { name, args }
-            if builtin_named_type(name) == Some(BuiltinNamedType::Stream)
-                || builtin_named_type(name) == Some(BuiltinNamedType::Receiver)
-                || (name == "Generator" && !args.is_empty())
-                || (name == "AsyncGenerator" && args.len() == 1)
-                || name == "Vec" =>
-        {
-            args.first().cloned()
-        }
-        Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
-            Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()]))
-        }
+        Ty::Named {
+            builtin: Some(BuiltinType::Range),
+            args,
+            ..
+        } if args.len() == 1 => args.first().cloned(),
+        Ty::Named {
+            builtin:
+                Some(
+                    BuiltinType::Stream
+                    | BuiltinType::Receiver
+                    | BuiltinType::Generator
+                    | BuiltinType::AsyncGenerator
+                    | BuiltinType::Vec,
+                ),
+            args,
+            ..
+        } => args.first().cloned(),
+        Ty::Named {
+            builtin: Some(BuiltinType::HashMap),
+            args,
+            ..
+        } if args.len() >= 2 => Some(Ty::Tuple(vec![args[0].clone(), args[1].clone()])),
         _ => None,
     }
 }
@@ -796,9 +996,10 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             is_mutable,
             pointee,
         } => {
-            let mutability = if *is_mutable { "mut " } else { "" };
-            format!("*{mutability}{}", format_type_expr_hover(&pointee.0))
+            let mutability = if *is_mutable { "mut" } else { "const" };
+            format!("*{mutability} {}", format_type_expr_hover(&pointee.0))
         }
+        TypeExpr::Borrow(inner) => format!("&{}", format_type_expr_hover(&inner.0)),
         TypeExpr::TraitObject(bounds) => bounds
             .iter()
             .map(format_trait_bound_hover)
@@ -921,6 +1122,12 @@ fn hover_param_in_item(
             }
             None
         }
+        Item::Machine(_) | Item::Supervisor(_) => {
+            // Machine transitions bind event fields as plain names (not Param
+            // objects with type annotations), and supervisors carry no callable
+            // bodies. Neither has a Param list for hover_param_in_decl.
+            None
+        }
         _ => None,
     }
 }
@@ -982,20 +1189,16 @@ fn span_contains_offset(span: &Span, offset: usize) -> bool {
     span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
-/// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
+/// Format a bare function signature line: `[async] fn name(params)[-> ret]`.
 #[must_use]
 pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
-    let pure_prefix = if sig.is_pure { "pure " } else { "" };
     let async_prefix = if sig.is_async { "async " } else { "" };
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
         format!(" -> {}", sig.return_type.user_facing())
     };
-    format!(
-        "{pure_prefix}{async_prefix}fn {name}({}){ret}",
-        params.join(", ")
-    )
+    format!("{async_prefix}fn {name}({}){ret}", params.join(", "))
 }
 
 /// Format a function signature in a markdown code block for hover display.
@@ -1037,6 +1240,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
         TypeDefKind::Enum => "enum",
         TypeDefKind::Actor => "actor",
         TypeDefKind::Machine => "machine",
+        TypeDefKind::Record => "record",
     };
     let type_params = if type_def.type_params.is_empty() {
         String::new()
@@ -1110,22 +1314,46 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs,
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         }
     }
 
@@ -1140,7 +1368,7 @@ mod tests {
         let sig = make_fn_sig(vec!["x", "y"], vec![Ty::I32, Ty::Bool], Ty::String);
         let line = format_fn_sig_line("greet", &["x: i32".into(), "y: bool".into()], &sig);
         assert!(line.starts_with("fn greet("));
-        assert!(line.contains("-> String"));
+        assert!(line.contains("-> string"));
     }
 
     #[test]
@@ -1157,14 +1385,6 @@ mod tests {
         sig.is_async = true;
         let line = format_fn_sig_line("fetch", &[], &sig);
         assert!(line.starts_with("async fn fetch"));
-    }
-
-    #[test]
-    fn format_sig_line_pure() {
-        let mut sig = make_fn_sig(vec![], vec![], Ty::I32);
-        sig.is_pure = true;
-        let line = format_fn_sig_line("compute", &[], &sig);
-        assert!(line.starts_with("pure fn compute"));
     }
 
     #[test]
@@ -1194,6 +1414,7 @@ mod tests {
             name: "Point".to_string(),
             type_params: vec![],
             fields,
+            field_order: vec![],
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1201,7 +1422,7 @@ mod tests {
         };
         let text = format_type_def_hover(&td);
         assert!(text.contains("type Point"));
-        assert!(text.contains("float"), "should contain field types");
+        assert!(text.contains("f64"), "should contain field types");
     }
 
     #[test]
@@ -1217,6 +1438,7 @@ mod tests {
             name: "Colour".to_string(),
             type_params: vec![],
             fields: HashMap::new(),
+            field_order: vec![],
             variants,
             methods: HashMap::new(),
             doc_comment: None,
@@ -1234,6 +1456,7 @@ mod tests {
             name: "Pair".to_string(),
             type_params: vec!["A".to_string(), "B".to_string()],
             fields: HashMap::new(),
+            field_order: vec![],
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: None,
@@ -1271,7 +1494,7 @@ mod tests {
     fn format_fn_signature_inline_includes_param_names() {
         let sig = make_fn_sig(vec!["value"], vec![Ty::String], Ty::Bool);
         let text = format_fn_signature_inline("validate", &sig);
-        assert_eq!(text, "fn validate(value: String) -> bool");
+        assert_eq!(text, "fn validate(value: string) -> bool");
     }
 
     #[test]
@@ -1300,7 +1523,7 @@ mod tests {
         let offset = source.find("msg: string").unwrap();
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
 
-        assert_eq!(result.contents, "```hew\nmsg: String\n```");
+        assert_eq!(result.contents, "```hew\nmsg: string\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1358,6 +1581,7 @@ mod tests {
                     f.insert("y".to_string(), Ty::F64);
                     f
                 },
+                field_order: vec![],
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
@@ -1366,22 +1590,46 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs,
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1439,27 +1687,52 @@ mod tests {
             SpanKey {
                 start: x_offset,
                 end: x_offset + 1,
+                module_idx: 0,
             },
             Ty::I32,
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1468,7 +1741,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_uses_int_alias_for_user_facing_types() {
+    fn hover_shows_explicit_width_for_integer_types() {
         let source = "fn main() {\n    let count = 42;\n}";
         let pr = hew_parser::parse(source);
         let count_offset = source.find("count").unwrap();
@@ -1477,43 +1750,67 @@ mod tests {
             SpanKey {
                 start: count_offset,
                 end: count_offset + "count".len(),
+                module_idx: 0,
             },
             Ty::I64,
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
-        assert!(result.contents.contains("count: int"));
-        assert!(!result.contents.contains("i64"));
+        assert!(result.contents.contains("count: i64"));
     }
 
     #[test]
     fn hover_shows_unannotated_let_binding_type() {
-        let source = "fn compute() -> int { 42 }\nfn main() {\n    let count = compute();\n}";
+        let source = "fn compute() -> i64 { 42 }\nfn main() {\n    let count = compute();\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("count").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\ncount: int\n```");
+        assert_eq!(result.contents, "```hew\ncount: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1525,13 +1822,13 @@ mod tests {
 
     #[test]
     fn hover_shows_annotated_var_binding_type() {
-        let source = "fn main() {\n    var total: int = 0;\n}";
+        let source = "fn main() {\n    var total: i64 = 0;\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("total").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\ntotal: int\n```");
+        assert_eq!(result.contents, "```hew\ntotal: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1570,27 +1867,52 @@ mod tests {
             SpanKey {
                 start: use_offset,
                 end: use_offset + "count".len(),
+                module_idx: 0,
             },
             Ty::I32,
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -1613,7 +1935,7 @@ mod tests {
         let offset = source.find("item in").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
-        assert_eq!(result.contents, "```hew\nitem: int\n```");
+        assert_eq!(result.contents, "```hew\nitem: i64\n```");
         assert_eq!(
             result.span,
             Some(OffsetSpan {
@@ -1626,7 +1948,7 @@ mod tests {
     #[test]
     fn hover_shows_while_let_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    while let (flag, _) = pair() {\n        flag\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    while let (flag, _) = pair() {\n        flag\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1645,7 +1967,7 @@ mod tests {
     #[test]
     fn hover_shows_if_let_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    if let (flag, _) = pair() {\n        flag\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    if let (flag, _) = pair() {\n        flag\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1663,14 +1985,14 @@ mod tests {
 
     #[test]
     fn hover_prefers_local_over_global_name() {
-        let source = "fn value() -> int { 1 }\nfn main() {\n    let value = 2;\n    value\n}";
+        let source = "fn value() -> i64 { 1 }\nfn main() {\n    let value = 2;\n    value\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.rfind("value").unwrap();
 
         let result = hover(source, &pr, Some(&tc), offset).unwrap();
         assert!(
-            result.contents.contains(": int"),
+            result.contents.contains(": i64"),
             "local hover should render the local binding type: {result:?}"
         );
         assert_eq!(result.span.map(|span| span.start), Some(offset));
@@ -1679,7 +2001,7 @@ mod tests {
     #[test]
     fn hover_shows_match_arm_pattern_binding_type() {
         let source =
-            "fn pair() -> (bool, int) { (true, 1) }\nfn main() {\n    match pair() {\n        (flag, _) => flag,\n    }\n}";
+            "fn pair() -> (bool, i64) { (true, 1) }\nfn main() {\n    match pair() {\n        (flag, _) => flag,\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("flag, _").unwrap();
@@ -1697,7 +2019,7 @@ mod tests {
 
     /// Regression: the expr-types fallback hover path crosses the
     /// checker boundary through `ResolvedTy::from_ty`. Int-literal kinds
-    /// must be defaulted on the way through — rendering `<int literal>`
+    /// must be defaulted on the way through — rendering `<i64 literal>`
     /// (the internal-form spelling) would prove the boundary was
     /// bypassed.
     #[test]
@@ -1712,35 +2034,60 @@ mod tests {
             SpanKey {
                 start: x_offset,
                 end: x_offset + 1,
+                module_idx: 0,
             },
             Ty::IntLiteral,
         );
         let tc = TypeCheckOutput {
             expr_types,
+            resolved_expr_types: HashMap::new(),
+            is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: vec![],
             warnings: vec![],
             type_defs: HashMap::new(),
+            internal_builtin_enum_names: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
+            record_init_type_args: HashMap::new(),
+            intrinsic_declarations: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),
+            actor_handler_state_guards: HashMap::new(),
+            actor_max_heap: HashMap::new(),
+            supervisor_child_slots: HashMap::new(),
+            dyn_trait_coercions: HashMap::new(),
+            dyn_trait_method_calls: HashMap::new(),
+            closure_capture_facts: std::collections::HashMap::new(),
+            closure_escape_facts: std::collections::HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            numeric_method_lowerings: HashMap::new(),
+            actor_method_dispatch: HashMap::new(),
+            actor_protocol_descriptors: HashMap::new(),
+            machine_method_dispatch: HashMap::new(),
+            conn_await_reads: HashMap::new(),
+            listener_await_accepts: std::collections::HashSet::new(),
+            pattern_resolutions: HashMap::new(),
+            lang_items: hew_types::LangItemRegistry::new(),
+            hashmap_layout_facts: HashMap::new(),
+            hashset_layout_facts: HashMap::new(),
+            actor_spawn_type_args: HashMap::new(),
+            resolved_calls: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)
         // which produces ResolvedTy::I64, whose user-facing form is
-        // "int" — the same as a concrete i64 at the boundary. If the
-        // boundary were bypassed we would render "<int literal>".
+        // "i64" — the same as a concrete i64 at the boundary. If the
+        // boundary were bypassed we would render "<i64 literal>".
         assert!(
-            result.contents.contains("int"),
+            result.contents.contains("i64"),
             "expected boundary-defaulted rendering, got {}",
             result.contents
         );
@@ -1818,5 +2165,103 @@ mod tests {
             "expected function signature to mention the function name; got {}",
             via_db.contents
         );
+    }
+
+    // ── machine / supervisor hover tests ────────────────────────────────
+
+    #[test]
+    fn hover_machine_declaration_name_shows_type_def() {
+        // Hovering over the machine name at its declaration site should surface
+        // the machine's type-def hover (via the lookup_type_def fallback path).
+        // This was already reachable before this lane; the test pins the contract.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events {\n",
+            "        Start;\n",
+            "    }\n",
+            "    state Idle;\n",
+            "    state Running;\n",
+            "    on Start: Idle => Running { Idle }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("Counter").unwrap();
+
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(
+            result.is_some(),
+            "hover over machine name must produce a result; parse errors: {:?}",
+            pr.errors
+        );
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("machine Counter"),
+            "hover should include machine keyword and name; got: {}",
+            hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_shows_let_binding_inside_machine_transition_body() {
+        // The Item::Machine arm in hover_binding_in_item must descend into
+        // transition bodies so that let-binding hover works inside them.
+        let source = concat!(
+            "fn compute() -> i64 { 42 }\n",
+            "machine Counter {\n",
+            "    events {\n",
+            "        Tick;\n",
+            "    }\n",
+            "    state Idle;\n",
+            "    on Tick: Idle => Idle {\n",
+            "        let result = compute();\n",
+            "        result\n",
+            "    }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        // Hover over `result` at its let-binding site inside the transition.
+        let offset = source.find("let result").unwrap() + 4; // offset of 'r' in 'result'
+
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(
+            result.is_some(),
+            "hover inside machine transition body must find the let binding; \
+             parse errors: {:?}",
+            pr.errors
+        );
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("result"),
+            "hover must name the binding; got: {}",
+            hr.contents
+        );
+        assert!(
+            hr.contents.contains("i64"),
+            "hover must show the binding type i64; got: {}",
+            hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_supervisor_name_does_not_panic() {
+        // Hovering over a supervisor name must not panic and must return either
+        // a valid hover result or None gracefully.  Supervisors hold no type_def
+        // in the checker (no TypeDefKind::Supervisor), so None is acceptable.
+        let source = concat!(
+            "actor Worker {\n",
+            "    receive fn start() {}\n",
+            "}\n",
+            "supervisor Pool {\n",
+            "    child w: Worker();\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+        let offset = source.find("Pool").unwrap();
+
+        // The call must complete without panicking; no assertion on the content.
+        let _ = hover(source, &pr, Some(&tc), offset);
     }
 }

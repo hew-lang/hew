@@ -1,3 +1,6 @@
+//! Status: runnable
+//! Description: Test Simple example.
+
 fn main() {
     println("Hello");
 }

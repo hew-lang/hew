@@ -23,6 +23,26 @@ id_newtype!(ItemId, "i");
 pub enum ResolvedRef {
     Binding(BindingId),
     Item(ItemId),
+    /// Reference to a module-level `const`. The `ItemId` matches the
+    /// `HirConst::id` of the declaration; MIR/codegen resolve it back to the
+    /// folded constant descriptor.
+    Const(ItemId),
+    /// Reference to a compiler-known runtime builtin with no AST `fn`
+    /// item, carrying the checker-resolved typed identity. MIR consumes
+    /// the family directly (`family.c_symbol()` at the runtime-call
+    /// producer) instead of reverse-mapping the user-visible name
+    /// through a string bridge.
+    ///
+    /// Carries [`RuntimeCallFamily`] rather than a full
+    /// `RuntimeCallDescriptor` so `ResolvedRef` stays `Copy`: every
+    /// catalogued family forbids a separate `elem` payload today
+    /// (`RuntimeCallDescriptor::new` fail-closes on `Some(elem)`), so
+    /// the family IS the full descriptor content. When the first
+    /// element-type-generic family lands, this variant graduates to an
+    /// interned descriptor id.
+    ///
+    /// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
+    Builtin(hew_types::runtime_call::RuntimeCallFamily),
     Unresolved,
 }
 

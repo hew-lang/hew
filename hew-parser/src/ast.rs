@@ -80,6 +80,7 @@ pub enum Item {
     Actor(ActorDecl),
     Supervisor(SupervisorDecl),
     Machine(MachineDecl),
+    Record(RecordDecl),
 }
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -141,6 +142,22 @@ pub enum Expr {
         op: UnaryOp,
         operand: Box<Spanned<Expr>>,
     },
+    /// Explicit duplication prefix: `clone <operand>`.
+    ///
+    /// The canonical surface for producing an independent owned copy of a
+    /// value. `clone` is a contextual prefix, not a reserved word — it is
+    /// still usable as a method name (`x.clone()`) and a free/impl function
+    /// name (`fn clone(s: string) -> string`). The parser only reads it as
+    /// this prefix when it sits in operator position immediately followed by
+    /// an operand token (see `token_begins_clone_operand`).
+    ///
+    /// The operand is read non-consumingly; the result is an owned value that
+    /// drops normally. The checker resolves cloneability via the same method
+    /// resolution that backs `<operand>.clone()`, and HIR lowering reuses the
+    /// `.clone()` lowering path, so `clone x` and `x.clone()` share one
+    /// substrate. Types without a clone path fail closed with the existing
+    /// clone diagnostic rather than silently aliasing.
+    Clone(Box<Spanned<Expr>>),
     Literal(Literal),
     Identifier(String),
     Tuple(Vec<Spanned<Expr>>),
@@ -177,6 +194,13 @@ pub enum Expr {
     },
     Spawn {
         target: Box<Spanned<Expr>>,
+        /// Explicit turbofish type arguments: `spawn Foo<T>(...)`.
+        ///
+        /// Empty when the user writes `spawn Foo(...)` without a type-argument
+        /// list. Generic actors require a non-empty list; the checker emits
+        /// `MissingActorTypeArgs` when a generic actor is spawned without them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_args: Vec<Spanned<TypeExpr>>,
         args: Vec<(String, Spanned<Expr>)>,
     },
     SpawnLambdaActor {
@@ -185,16 +209,31 @@ pub enum Expr {
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
     },
+    /// Structured-concurrency block: `scope { ... }`.
+    ///
+    /// Establishes a lexical-lifetime boundary for any tasks spawned inside.
+    /// Statement-position call expressions become spawned tasks (TI-1);
+    /// `fork name = call(...)` statements introduce `Task<T>` bindings (TI-2).
+    /// All tasks are awaited at the closing brace.
     Scope {
-        binding: Option<String>,
         body: Block,
     },
-    Fork {
-        body: Block,
-    },
+    /// Child-task binding inside a `scope { ... }` block: `fork name = call(...)`
+    /// or bare `fork call(...)`.
+    ///
+    /// Outside a scope this is malformed and rejected during HIR lowering.
     ForkChild {
         binding: Option<String>,
         expr: Box<Spanned<Expr>>,
+    },
+    /// Anonymous child-task block inside a `scope { ... }` block: `fork { ... }`.
+    ForkBlock {
+        body: Block,
+    },
+    /// Scope deadline clause inside a `scope { ... }` block: `after(duration) { ... }`.
+    ScopeDeadline {
+        duration: Box<Spanned<Expr>>,
+        body: Block,
     },
     InterpolatedString(Vec<StringPart>),
     Call {
@@ -216,10 +255,11 @@ pub enum Expr {
         /// Absent when the user omits them and inference fills the gap.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_args: Option<Vec<Spanned<TypeExpr>>>,
-    },
-    Send {
-        target: Box<Spanned<Expr>>,
-        message: Box<Spanned<Expr>>,
+        /// Functional-update base expression: `R { x: 5, ..base }`.
+        /// When `Some`, the base is required to have the same record type as
+        /// the literal; unspecified fields are filled from the base value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<Box<Spanned<Expr>>>,
     },
     Select {
         arms: Vec<SelectArm>,
@@ -230,9 +270,8 @@ pub enum Expr {
         expr: Box<Spanned<Expr>>,
         duration: Box<Spanned<Expr>>,
     },
-    Unsafe(Block),
+    UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
-    Cooperate,
     This,
     FieldAccess {
         object: Box<Spanned<Expr>>,
@@ -253,9 +292,6 @@ pub enum Expr {
         inclusive: bool,
     },
     Await(Box<Spanned<Expr>>),
-    ScopeLaunch(Block),
-    ScopeSpawn(Block),
-    ScopeCancel,
 
     /// Regex literal, e.g. `re"pattern"`.
     RegexLiteral(String),
@@ -264,6 +300,42 @@ pub enum Expr {
     ByteStringLiteral(Vec<u8>),
     /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
     ByteArrayLiteral(Vec<u8>),
+
+    /// Identity comparison: `lhs is rhs`.
+    ///
+    /// Parsed at equality precedence (same as `==`/`!=`). The checker (slice D-2)
+    /// enforces that both operands carry identity (machines, actors, heap-backed
+    /// collections, user named types) and rejects scalars, `String`, and records.
+    /// Parser admits any expression on either side.
+    Is {
+        lhs: Box<Spanned<Expr>>,
+        rhs: Box<Spanned<Expr>>,
+    },
+
+    /// `emit EventName { field: expr, ... }` — fire a machine event from a
+    /// transition body, `entry`, or `exit` block. Legality (must appear inside
+    /// a machine context) is checked at HIR lowering, not parsing.
+    MachineEmit {
+        event_name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
+
+    /// Generator block expression: `gen { yield ...; }`.
+    ///
+    /// The block body is lazy — it does not run until `Iterator::next` is
+    /// called on the produced generator value.  Each `yield expr;` statement
+    /// emits one `Some(expr)` from `next`.  When the body falls off the end
+    /// the generator transitions to `Ended`; a subsequent `next` call traps.
+    ///
+    /// HIR/MIR/codegen lowering is not yet implemented.  The type checker
+    /// infers `Generator<Yield, Return>` from yield-expression sites and the
+    /// body's tail expression; an actor-receive boundary emits
+    /// `E_GENBLOCK_IN_ACTOR_RECEIVE` early.  HIR lowering remains fail-closed
+    /// on `GenBlock` (no coroutine state-machine variant yet), surfacing a real
+    /// diagnostic instead of silently fabricating a value.
+    GenBlock {
+        body: Block,
+    },
 }
 
 // ── Statements ───────────────────────────────────────────────────────
@@ -361,6 +433,12 @@ pub enum TypeExpr {
         is_mutable: bool,
         pointee: Box<Spanned<TypeExpr>>,
     },
+    /// Immutable non-owning borrow marker: `&T`.
+    ///
+    /// Lowers to `ResolvedTy::Pointer { is_mutable: false }` today
+    /// (→ `ValueClass::View`).  No retain is emitted on borrow; borrow
+    /// cannot outlive its owner (enforcement added in P4).
+    Borrow(Box<Spanned<TypeExpr>>),
     TraitObject(Vec<TraitBound>),
     Infer,
 }
@@ -382,6 +460,16 @@ pub enum Pattern {
     },
     Tuple(Vec<Spanned<Pattern>>),
     Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
+    /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.
+    ///
+    /// `pattern` is the normalised regex string (delimiter escapes decoded,
+    /// regex backslashes preserved verbatim — see `normalize_regex_literal`).
+    /// `captures` is populated by the checker from `regex::Regex::capture_names()`
+    /// and is empty when produced by the parser.
+    Regex {
+        pattern: String,
+        captures: Vec<String>,
+    },
 }
 
 // ── Supporting types ─────────────────────────────────────────────────
@@ -414,7 +502,16 @@ pub enum BinaryOp {
     Shr,
     Range,
     RangeInclusive,
-    Send,
+    /// Two's-complement wrapping add. Parser sugar for `&+`. Lowers to
+    /// `Instr::IntAdd` (plain add, no overflow trap). Integer operands only;
+    /// string concat and duration arithmetic are not allowed.
+    WrappingAdd,
+    /// Two's-complement wrapping subtract. Parser sugar for `&-`. Lowers to
+    /// `Instr::IntSub` (plain sub, no overflow trap).
+    WrappingSub,
+    /// Two's-complement wrapping multiply. Parser sugar for `&*`. Lowers to
+    /// `Instr::IntMul` (plain mul, no overflow trap).
+    WrappingMul,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -440,7 +537,9 @@ impl std::fmt::Display for BinaryOp {
             Self::Shr => write!(f, ">>"),
             Self::Range => write!(f, ".."),
             Self::RangeInclusive => write!(f, "..="),
-            Self::Send => write!(f, "<-"),
+            Self::WrappingAdd => write!(f, "&+"),
+            Self::WrappingSub => write!(f, "&-"),
+            Self::WrappingMul => write!(f, "&*"),
         }
     }
 }
@@ -450,6 +549,14 @@ pub enum UnaryOp {
     Not,
     Negate,
     BitNot,
+    /// Raw pointer dereference (`*expr`).
+    ///
+    /// v0.5 endpoint: the parser recognizes this only far enough to
+    /// reject it deterministically in the type checker.  Outside
+    /// `unsafe { ... }` the diagnostic is `UnsafeOperationRequiresBlock`;
+    /// inside `unsafe { ... }` the operation is rejected as "not lowered
+    /// in v0.5" before HIR.  No HIR/MIR/codegen path is reached.
+    RawDeref,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -593,10 +700,44 @@ pub struct TypeParam {
     pub bounds: Vec<TraitBound>,
 }
 
+/// Const-parameter element type. Phase 0 (R269=A) admits `usize` only;
+/// other widths are deferred to a follow-on widening change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConstParamTy {
+    /// `const N: usize` — the only width supported in Phase 0.
+    Usize,
+}
+
+/// Const-generic parameter on a machine declaration:
+/// `machine M<const N: usize>` or `machine M<const N: usize = 16>`.
+///
+/// Default values are evaluated by the constexpr sub-engine
+/// (`hew-types/src/check/const_eval.rs`) at parse-time and stored
+/// here as a resolved `u64`. R270=A permits defaults.
+///
+/// Const parameters live alongside `TypeParam`s on `MachineDecl`; this
+/// is purely additive — existing `type_params` consumers see no change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConstParam {
+    pub name: String,
+    pub ty: ConstParamTy,
+    /// Optional `= 16` default. `None` when the parameter has no default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssocTypeBinding {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitBound {
     pub name: String,
     pub type_args: Option<Vec<Spanned<TypeExpr>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assoc_type_bindings: Vec<AssocTypeBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -628,6 +769,14 @@ pub enum Visibility {
 
 impl Visibility {
     /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).
+    ///
+    /// **v0.5 note:** `pub(package)` and `pub(super)` are parsed but treated as
+    /// fully public — they resolve to the same visibility as bare `pub` at this
+    /// call site and everywhere the compiler inspects item visibility.  Stricter
+    /// enforcement of the restricted forms is forward-compatible: code that
+    /// compiles today will keep compiling when the restriction is applied, because
+    /// callers that are already within the allowed scope won't be affected.
+    /// Planned for v0.6.
     #[must_use]
     pub fn is_pub(self) -> bool {
         self != Self::Private
@@ -643,7 +792,6 @@ pub struct FnDecl {
     pub is_generator: bool,
     #[serde(default)]
     pub visibility: Visibility,
-    pub is_pure: bool,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
@@ -659,6 +807,22 @@ pub struct FnDecl {
     /// Byte span from the `fn` keyword through the byte after the closing `}`.
     #[serde(default)]
     pub fn_span: Span,
+    /// Intrinsic key from `#[intrinsic("name")]`, if present.
+    ///
+    /// When `Some`, this function is a compiler-intrinsic declaration: the body
+    /// is a stub (empty block or semicolon) and the named intrinsic key is the
+    /// dispatch authority used by HIR/MIR/codegen. The checker validates the key
+    /// against the known intrinsic catalog at registration time.
+    ///
+    /// WHY: the catalog previously conjured `CompilerIntrinsic` entries with no
+    /// Hew-side declaration. This field enables typed declarations that the checker
+    /// can validate, making the intrinsic surface opt-in and fail-closed.
+    /// WHEN-OBSOLETE: when all catalog `CompilerIntrinsic` rows have been migrated
+    /// to `#[intrinsic]` declarations (slices 4–7).
+    /// WHAT: add `#[intrinsic("key")]` declarations to stdlib `.hew` files and
+    /// remove the corresponding catalog rows in the migration slices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intrinsic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -736,6 +900,12 @@ pub struct TypeDecl {
     /// Ownership discipline marker from `#[resource]` or `#[linear]`.
     #[serde(default, skip_serializing_if = "ResourceMarker::is_none")]
     pub resource_marker: ResourceMarker,
+    /// When true, this type is an opaque pointer-width runtime handle
+    /// (`#[opaque]`): empty body, surface-inaccessible (no field access, no
+    /// direct construction), lowers to LLVM `ptr`, ABI-round-trips runtime
+    /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_opaque: bool,
     /// Names of methods declared with a `consuming self` receiver in this type body.
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -757,6 +927,47 @@ pub struct TypeAliasDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
     pub doc_comment: Option<String>,
+}
+
+/// A `record` named-field declaration.
+///
+/// Records are pure data carriers: they hold named, typed fields and support
+/// generic type parameters and where-clauses.  Methods, variants, and tuple
+/// forms are not permitted (those belong to `TypeDecl`).
+///
+/// Checker support (resolving `RecordDecl` into `Ty::Record`) is deferred to
+/// slice A-3; until then the checker emits an "unsupported" diagnostic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordDecl {
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: String,
+    pub type_params: Option<Vec<TypeParam>>,
+    pub where_clause: Option<WhereClause>,
+    pub kind: RecordKind,
+    pub doc_comment: Option<String>,
+    pub span: Span,
+}
+
+/// The body of a `record` declaration.
+///
+/// - `Named` form: `record Point { x: int, y: int }` — at least one field required.
+/// - `Tuple` form: `record Pair(int, int);` — at least one positional field required;
+///   terminates with `;` like a type alias.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum RecordKind {
+    Named(Vec<RecordField>),
+    Tuple(Vec<Spanned<TypeExpr>>),
+}
+
+/// A single field in a named-form `record` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordField {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
+    pub doc_comment: Option<String>,
+    #[serde(skip)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -844,6 +1055,16 @@ pub struct TraitDecl {
     pub super_traits: Option<Vec<TraitBound>>,
     pub items: Vec<TraitItem>,
     pub doc_comment: Option<String>,
+    /// Lang-item key from `#[lang_item("key")]`, if present.
+    ///
+    /// Tags this trait as a compiler-recognised "lang item" — e.g.
+    /// `#[lang_item("display")]` marks the trait the f-string lowering
+    /// pass dispatches through. The checker populates a side registry
+    /// (`(key → trait name)`) from these tags; HIR lowering looks up
+    /// the trait/method names through the registry instead of hardcoding
+    /// the literal `"Display"` / `"fmt"` symbols.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang_item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -853,13 +1074,14 @@ pub enum TraitItem {
         name: String,
         bounds: Vec<TraitBound>,
         default: Option<Spanned<TypeExpr>>,
+        #[serde(default)]
+        span: Span,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitMethod {
     pub name: String,
-    pub is_pure: bool,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -870,6 +1092,13 @@ pub struct TraitMethod {
     pub span: Span,
     #[serde(default)]
     pub doc_comment: Option<String>,
+    /// Lang-item key from `#[lang_item("key")]`, if present.
+    ///
+    /// Tags this method as a compiler-recognised "lang item" — e.g.
+    /// `#[lang_item("display_fmt")]` marks the method the f-string
+    /// lowering pass dispatches through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang_item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -968,6 +1197,7 @@ impl WireDecl {
             }),
             is_indirect: false,
             resource_marker: ResourceMarker::None,
+            is_opaque: false,
             consuming_methods: Vec::new(),
         }
     }
@@ -1046,6 +1276,12 @@ pub struct ExternBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternFnDecl {
+    /// Outer attributes attached to this extern fn declaration, e.g.
+    /// `#[extern_symbol("hew_vec_push_{T}")]`. The parser captures the raw
+    /// attribute payload; semantic validation of the template grammar and
+    /// downstream `FnSig` / MIR ingest live in later compiler stages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
@@ -1064,6 +1300,15 @@ pub struct ActorDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    /// Optional generic type parameters declared as `actor Name<T, U> { ... }`
+    /// or `actor Name<T: Trait> { ... }`.
+    ///
+    /// Matches the `MachineDecl` shape; bound enforcement is handled by the
+    /// type-checker via `enforce_actor_instantiation_bounds`. Where-clause
+    /// syntax on actors is deferred (actors have no matching `where_clause`
+    /// field today); inline bounds suffice for v0.5.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
     pub super_traits: Option<Vec<TraitBound>>,
     pub init: Option<ActorInit>,
     pub fields: Vec<FieldDecl>,
@@ -1073,6 +1318,16 @@ pub struct ActorDecl {
     pub overflow_policy: Option<OverflowPolicy>,
     pub is_isolated: bool,
     pub doc_comment: Option<String>,
+    /// Maximum heap bytes this actor may allocate from its arena.
+    ///
+    /// `None` = no `#[max_heap]` annotation (unbounded, legacy default).
+    /// `Some(0)` = explicit zero, treated as unbounded by the runtime (same as
+    /// arena cap=0 in `hew_arena_new_with_cap`). `Some(N)` for N > 0 = hard cap.
+    ///
+    /// Parse-time byte conversion: bare integer = bytes; `N kb` = N × 1024;
+    /// `N mb` = N × 1024²; `N b` = N. `gb` and larger are rejected in v0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_heap_bytes: Option<u64>,
 }
 
 /// Mailbox overflow policy.
@@ -1107,6 +1362,11 @@ pub struct ActorInit {
 pub struct FieldDecl {
     pub name: String,
     pub ty: Spanned<TypeExpr>,
+    /// `true` when declared with `var` (mutable actor field); `false` for `let`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_mutable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Spanned<Expr>>,
     #[serde(default)]
     pub doc_comment: Option<String>,
 }
@@ -1114,7 +1374,6 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReceiveFnDecl {
     pub is_generator: bool,
-    pub is_pure: bool,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
@@ -1135,9 +1394,24 @@ pub struct SupervisorDecl {
     pub visibility: Visibility,
     pub name: String,
     pub strategy: Option<SupervisorStrategy>,
-    pub max_restarts: Option<i64>,
-    pub window: Option<String>,
+    /// Restart-budget contract, written `intensity: N within <duration>`.
+    /// Fuses the legacy `max_restarts:` + `window:` fields into one typed
+    /// field so a budget can never be half-specified. `None` when the
+    /// declaration omits the clause — runtime defaults apply at codegen.
+    pub intensity: Option<Intensity>,
     pub children: Vec<ChildSpec>,
+}
+
+/// A supervisor restart-budget contract: at most `restarts` restarts are
+/// permitted inside the rolling `window`.  Written `intensity: N within <D>`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Intensity {
+    /// Maximum number of restarts permitted inside the window.
+    pub restarts: i64,
+    /// Window duration, retained as the raw `Token::Duration` source string
+    /// (e.g. `"60s"`, `"5m"`).  Duration unit interpretation stays in codegen
+    /// so the lexer remains the single source of truth for duration units.
+    pub window: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1145,14 +1419,35 @@ pub enum SupervisorStrategy {
     OneForOne,
     OneForAll,
     RestForOne,
+    /// Dynamic pool strategy: children spawned and terminated at runtime.
+    /// Use with `pool name: Type` declarations.
+    SimpleOneForOne,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChildSpec {
     pub name: String,
     pub actor_type: String,
-    pub args: Vec<Spanned<Expr>>,
+    /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
+    /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
+    /// Positional args (no `name:` prefix) are rejected by the parser with a
+    /// migration diagnostic.
+    pub args: Vec<(String, Spanned<Expr>)>,
+    #[serde(default)]
     pub restart: Option<RestartPolicy>,
+    /// Declarative sibling wiring: maps init-param name → sibling child name.
+    /// Populated by `wired_to: { key: sibling, ... }` clauses. S-B validates
+    /// that each key matches a sibling name and the ref type is compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wired_to: Option<std::collections::HashMap<String, String>>,
+    /// True when declared with `pool name: Type` instead of `child name: Type`.
+    /// Indicates a dynamic pool (`simple_one_for_one` strategy child).
+    #[serde(default)]
+    pub is_pool: bool,
+    /// Per-child graceful-stop deadline, written `shutdown: <duration> |
+    /// brutal_kill | infinity`.  `None` means the supervisor default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<ShutdownDirective>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1160,6 +1455,22 @@ pub enum RestartPolicy {
     Permanent,
     Transient,
     Temporary,
+}
+
+/// Per-child shutdown directive: how long the supervisor waits for a child to
+/// stop gracefully before killing it.  Written `shutdown: <duration> |
+/// brutal_kill | infinity`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownDirective {
+    /// Graceful-stop deadline as a raw `Token::Duration` source string
+    /// (e.g. `"30s"`).  Unit interpretation stays in codegen.
+    Timeout(String),
+    /// Skip the graceful-stop deadline; kill the child immediately.
+    BrutalKill,
+    /// Wait indefinitely.  ACCEPTED-ONLY in v0.5: there is no per-child
+    /// deadline wheel in the runtime yet, so this parses but is not enforced.
+    /// See `format_child_spec` and the codegen note for the accepted-only seam.
+    Infinity,
 }
 
 #[cfg(test)]
@@ -1187,7 +1498,7 @@ mod tests {
                 },
                 WireFieldDecl {
                     name: "added".to_string(),
-                    ty: "String".to_string(),
+                    ty: "string".to_string(),
                     field_number: 2,
                     is_optional: true,
                     is_repeated: false,
@@ -1212,22 +1523,114 @@ mod tests {
 
 // ── Machine declarations ─────────────────────────────────────────────
 
+/// serde `skip_serializing_if` helper: true when the count is zero, keeping
+/// the additive `composite_prelude_len` field out of the wire form for the
+/// common (flat / non-boundary) case.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde `skip_serializing_if` requires a `fn(&T) -> bool` signature"
+)]
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    /// Optional generic type parameters declared as `machine Name<T, U> { ... }`
+    /// or `machine Name<T: Trait> { ... }`.
+    ///
+    /// Trait bounds are parsed and stored verbatim. Bound enforcement is
+    /// handled by downstream passes (type-checker / HIR); the parser only
+    /// accepts the syntax. Variance markers, defaults, and
+    /// machine-over-machine generics are not yet supported (see
+    /// `docs/specs/HEW-SPEC-2026.md` §3.11.8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_params: Vec<TypeParam>,
+    /// Const-generic parameters declared on the machine, e.g.
+    /// `machine M<const N: usize>` or `machine M<T, const N: usize = 16>`.
+    ///
+    /// Stored in a separate vector from `type_params` (purely additive —
+    /// no existing `type_params` consumer needs to change) and admits
+    /// `usize` only in Phase 0 (R269=A). Per the source-position
+    /// convention enforced by `parse_machine_generic_params`, all type
+    /// parameters appear before any const parameters in `<...>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub const_params: Vec<ConstParam>,
+    /// Optional `where T: Trait, U: Trait + Trait, …` clause appearing
+    /// between the `<…>` type-parameter list and the opening `{` of the
+    /// machine body. Inline bounds on `type_params` and where-clause
+    /// predicates are stored separately so downstream lowering can
+    /// preserve per-entry provenance (inline vs where-clause source
+    /// span); the type checker folds both forms into a single
+    /// per-machine bound table consulted at instantiation sites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<WhereClause>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
+    /// Optional `emits { … }` Mealy-output manifest. Each entry is the name of
+    /// an event the machine may produce via `emit Name { … }` in a transition
+    /// body. Names reference declared `events`; the manifest is an auditable
+    /// allowlist, not a second declaration site. When non-empty, the HIR
+    /// cross-checks that every `emit` in a body names an event in this list.
+    /// Empty when the machine declares no `emits {}` header (no cross-check).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub emits: Vec<String>,
     pub transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub has_default: bool, // `default { self }` — unhandled events stay in current state
+    /// Composite-state grouping side-table populated by the parser when a
+    /// `state Name { … }` body contains substate declarations. Consumed only
+    /// by the formatter (to re-emit composite blocks) and the diagram renderer
+    /// (to draw nested boxes). Hierarchy desugars to the flat `transitions` /
+    /// `states` lists at parse time — HIR/MIR/codegen never see a composite.
+    /// Empty for flat machines, keeping the JSON/msgpack schema additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composite_groups: Vec<CompositeGroup>,
+}
+
+/// Parser-level grouping record for a depth-1 composite state. Carries the
+/// information the flat `MachineDecl` lists drop during desugaring so the
+/// formatter and diagram renderer can reconstruct the nested view. Not seen by
+/// HIR/MIR/codegen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompositeGroup {
+    /// Composite (grouping) name. Not a live state — only its members are.
+    pub name: String,
+    /// Leaf substate names, in declaration order.
+    pub members: Vec<String>,
+    /// The substate marked `initial` — the state entered when the composite is
+    /// targeted by name.
+    pub initial: String,
+    /// Composite-level `entry` block, spliced parent-then-child on entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Composite-level `exit` block, spliced child-then-parent on exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
+    /// Composite-owned shared fields (sugar: stamped onto every member). Kept
+    /// here so the formatter re-emits them on the composite, not each member.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Parent-level transitions authored inside the composite block, retained
+    /// verbatim (source `_` = any member) so the formatter re-emits them on the
+    /// composite rather than as the N expanded flat copies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_transitions: Vec<MachineTransition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineState {
     pub name: String,
     pub fields: Vec<(String, Spanned<TypeExpr>)>,
+    /// Optional `entry { ... }` lifecycle block executed when entering this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<Block>,
+    /// Optional `exit { ... }` lifecycle block executed when leaving this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<Block>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1241,7 +1644,31 @@ pub struct MachineTransition {
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
+    /// Event-payload field names bound in the transition head
+    /// (`on E(a, b): …`). These alias the event's fields so the body can use
+    /// the bare names instead of `event.field`. The parser splices a
+    /// `let a = event.a;` prelude into `body` for lowering (no new HIR kind);
+    /// this list is retained purely so the formatter can re-emit the head form
+    /// and strip that prelude. Empty when the rule used no head binding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_bindings: Vec<String>,
+    /// Number of leading `body` statements that are composite entry/exit hook
+    /// splices (D2/D3), prepended by the parser's composite post-pass. The
+    /// formatter strips exactly this many leading statements so the authored
+    /// transition (without the spliced hooks) is re-emitted; HIR/MIR see the
+    /// spliced body unchanged. Zero for flat machines and non-boundary
+    /// transitions, so the schema stays additive.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub composite_prelude_len: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
+    /// When true, a self-transition (`source == target`) explicitly opts in to
+    /// Mealy re-entry semantics: the source `exit` block and target `entry` block
+    /// both run even though the state does not change.  Written as the `reenter`
+    /// contextual keyword after the target state name (`=> Tgt reenter`). Without
+    /// it, a non-empty self-transition body is a compile error (HIR enforces the
+    /// Moore-style rule that self-loops must be annotated or empty).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reenter: bool,
 }

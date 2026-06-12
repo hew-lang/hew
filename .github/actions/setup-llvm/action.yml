@@ -3,7 +3,7 @@ description: >
   Download and cache a pinned LLVM upstream binary release (from
   github.com/llvm/llvm-project releases), verify its SHA256, extract it
   to the runner's tool cache, and export LLVM_SYS_221_PREFIX plus the
-  bin/ directory on PATH. Supports Linux x86_64, macOS arm64, and
+  bin/ directory on PATH. Supports Linux x86_64, Linux arm64, macOS arm64, and
   Windows x86_64 on hosted GitHub Actions runners.
 
 inputs:
@@ -14,7 +14,7 @@ inputs:
 
 outputs:
   prefix:
-    description: Absolute path to the extracted LLVM install root (suitable for LLVM_SYS_*_PREFIX, LLVM_DIR, MLIR_DIR roots).
+    description: Absolute path to the extracted LLVM install root (suitable for LLVM_SYS_*_PREFIX or LLVM_DIR roots).
     value: ${{ steps.layout.outputs.prefix }}
 
 runs:
@@ -36,13 +36,22 @@ runs:
             asset="LLVM-${version}-Linux-X64.tar.xz"
             subdir="LLVM-${version}-Linux-X64"
             ;;
+          Linux-ARM64)
+            asset="LLVM-${version}-Linux-ARM64.tar.xz"
+            subdir="LLVM-${version}-Linux-ARM64"
+            ;;
           macOS-ARM64)
             asset="LLVM-${version}-macOS-ARM64.tar.xz"
             subdir="LLVM-${version}-macOS-ARM64"
             ;;
           Windows-X64)
-            asset="clang+llvm-${version}-x86_64-pc-windows-msvc.tar.xz"
-            subdir="clang+llvm-${version}-x86_64-pc-windows-msvc"
+            # The official upstream Windows tarball statically embeds rpmalloc
+            # (defines malloc/free/calloc -> duplicate symbols against ucrt at
+            # lld-link time) and omits xml2s.lib. Use the repo's own LLVM build
+            # published under the toolchain/llvm-22.1.0-windows-msvc-v3 release.
+            asset="hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+            # The prebuild workflow tars from C:\ with root llvm-22/ .
+            subdir="llvm-22"
             ;;
           *)
             echo "::error::No upstream LLVM binary asset known for ${{ runner.os }}-${{ runner.arch }}"
@@ -56,11 +65,16 @@ runs:
           "LLVM-22.1.5-Linux-X64.tar.xz")
             sha256="04dfa3ab6f1c332dd73a057daeb8f48cdaacdef24178f8eccddf2cbfa8944aa4"
             ;;
+          "LLVM-22.1.5-Linux-ARM64.tar.xz")
+            sha256="05e303cf01a97ca2a11e42e75ade839e85af274f84573554c5e5c05f714be989"
+            ;;
           "LLVM-22.1.5-macOS-ARM64.tar.xz")
             sha256="c4e5aa26d5bb9938237fa1626fe3b0506887b50026bac785b85dd3314be8d5e6"
             ;;
-          "clang+llvm-22.1.5-x86_64-pc-windows-msvc.tar.xz")
-            sha256="52c15696665ec3010e100261cb2919d40712dbf871c9a2886a2e60b665bcd2c6"
+          "hew-llvm-22.1.0-windows-msvc-v3.tar.gz")
+            # Verified against the companion .sha256 asset on the toolchain
+            # release at download time (sha256="companion" sentinel).
+            sha256="companion"
             ;;
           *)
             echo "::error::No pinned SHA256 for asset ${asset}. Update .github/actions/setup-llvm/action.yml when bumping the version."
@@ -102,7 +116,12 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${{ steps.layout.outputs.asset }}"
+        asset="${{ steps.layout.outputs.asset }}"
+        if [[ "${asset}" == hew-llvm-* ]]; then
+          url="https://github.com/hew-lang/hew/releases/download/toolchain/llvm-22.1.0-windows-msvc-v3/${asset}"
+        else
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${asset}"
+        fi
         tarball="${RUNNER_TEMP}/${{ steps.layout.outputs.asset }}"
         install_root="${{ steps.layout.outputs.install_root }}"
         if command -v cygpath >/dev/null 2>&1; then
@@ -110,7 +129,12 @@ runs:
         fi
         echo "Downloading ${url}"
         curl -fL --retry 3 --retry-delay 5 -o "${tarball}" "${url}"
-        echo "${{ steps.layout.outputs.sha256 }}  ${tarball}" > "${tarball}.sha256"
+        expected="${{ steps.layout.outputs.sha256 }}"
+        if [ "${expected}" = "companion" ]; then
+          curl -fL --retry 3 -o "${tarball}.companion" "${url}.sha256"
+          expected="$(awk '{print $1}' "${tarball}.companion")"
+        fi
+        echo "${expected}  ${tarball}" > "${tarball}.sha256"
         if command -v sha256sum >/dev/null 2>&1; then
           sha256sum -c "${tarball}.sha256"
         else
@@ -118,8 +142,33 @@ runs:
           shasum -a 256 -c "${tarball}.sha256"
         fi
         echo "Extracting to ${install_root}"
-        tar -xJf "${tarball}" -C "${install_root}"
+        case "${tarball}" in
+          *.tar.gz) tar -xzf "${tarball}" -C "${install_root}" ;;
+          *) tar -xJf "${tarball}" -C "${install_root}" ;;
+        esac
         rm -f "${tarball}" "${tarball}.sha256"
+
+    - name: Stub xml2s.lib for the upstream Windows tarball
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The upstream LLVM Windows tarball is built with LLVM_ENABLE_LIBXML2=ON
+        # but ships no xml2s.lib, so lld-link fails to open it when linking
+        # anything against llvm-sys. The xml2 symbols are never exercised by
+        # the Hew codegen path; an empty import library satisfies the linker.
+        # Verified workaround tracked in #1788; obsolete when the toolchain
+        # moves to a tarball built with LLVM_ENABLE_LIBXML2=OFF.
+        prefix="${{ steps.layout.outputs.prefix }}"
+        if [ ! -f "${prefix}/lib/xml2s.lib" ]; then
+          # An import library is an ar archive; an empty archive (global
+          # header only) satisfies lld-link's open AND resolves nothing,
+          # which is exactly right — no tool dependency (llvm-lib does not
+          # implement /DEF).
+          printf '!<arch>\n' > "${prefix}/lib/xml2s.lib"
+          test -s "${prefix}/lib/xml2s.lib" || { echo "::error::xml2s.lib stub was not created"; exit 1; }
+          echo "Stubbed ${prefix}/lib/xml2s.lib"
+        fi
 
     - name: Export LLVM environment
       shell: bash
@@ -127,10 +176,8 @@ runs:
         set -euo pipefail
         prefix="${{ steps.layout.outputs.prefix }}"
         # llvm-sys-221 honours LLVM_SYS_221_PREFIX; inkwell follows.
-        # Intentionally do NOT set LLVM_PREFIX or LLVM_DIR / MLIR_DIR — the
-        # hew-cli build.rs treats any of those as a request to build the
-        # embedded C++ codegen via cmake, which is skipped during the
-        # v0.5 spine pass.
+        # Export only the llvm-sys prefix and PATH here; the Rust backend no
+        # longer needs extra backend-specific environment setup.
         # On Windows the prefix arrives in POSIX form (under cygpath -u)
         # but llvm-sys's build script invokes Windows-native APIs against
         # it, so it needs to be a backslash path. Convert back here.

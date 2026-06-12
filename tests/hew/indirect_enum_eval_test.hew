@@ -1,0 +1,94 @@
+//! Regression tests for recursive `indirect enum` evaluation (spec §3.7.4).
+//!
+//! Verifies that a recursive indirect enum (heap-allocated tagged-union) is
+//! constructed and pattern-matched correctly at all nesting depths, and that
+//! non-indirect enums are unaffected by the change.
+
+import std::testing;
+
+// ── Recursive indirect enum ───────────────────────────────────────────────
+indirect enum Expr {
+    Lit(i64);
+    Neg(Expr);
+    Add(Expr, Expr);
+}
+
+fn eval(e: Expr) -> i64 {
+    match e {
+        Lit(n) => n,
+        Neg(inner) => 0 - eval(inner),
+        Add(l, r) => eval(l) + eval(r),
+    }
+}
+
+#[test]
+fn literal_evaluates_to_itself() {
+    testing.assert_eq(eval(Lit(42)), 42);
+}
+
+#[test]
+fn neg_of_literal_negates() {
+    // Neg(Lit(5)) → -5
+    testing.assert_eq(eval(Neg(Lit(5))), -5);
+}
+
+#[test]
+fn neg_of_neg_cancels() {
+    // Neg(Neg(Lit(3))) → 3  (≥2 levels of nesting)
+    testing.assert_eq(eval(Neg(Neg(Lit(3)))), 3);
+}
+
+#[test]
+fn add_two_literals() {
+    // Add(Lit(2), Lit(3)) → 5
+    testing.assert_eq(eval(Add(Lit(2), Lit(3))), 5);
+}
+
+#[test]
+fn nested_add_and_neg() {
+    // Add(Neg(Lit(1)), Lit(4)) → 3
+    testing.assert_eq(eval(Add(Neg(Lit(1)), Lit(4))), 3);
+}
+
+// ── Non-indirect enum — must not regress ─────────────────────────────────
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn colour_id(c: Colour) -> i64 {
+    match c {
+        Red => 0,
+        Green => 1,
+        Blue => 2,
+    }
+}
+
+#[test]
+fn plain_unit_enum_unaffected() {
+    testing.assert_eq(colour_id(Red), 0);
+    testing.assert_eq(colour_id(Green), 1);
+    testing.assert_eq(colour_id(Blue), 2);
+}
+
+enum Shape {
+    Circle(i64);
+    Rect(i64, i64);
+    Empty;
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        Circle(r) => r * r,
+        Rect(w, h) => w * h,
+        Empty => 0,
+    }
+}
+
+#[test]
+fn plain_payload_enum_unaffected() {
+    testing.assert_eq(area(Circle(3)), 9);
+    testing.assert_eq(area(Rect(4, 5)), 20);
+    testing.assert_eq(area(Empty), 0);
+}

@@ -1,6 +1,6 @@
-// Bloom Filter using Vec<int> as bit array
+// Bloom Filter using Vec<i64> as bit array
 // 3 hash functions for probabilistic membership testing
-fn h1(key: int, m: int) -> int {
+fn h1(key: i64, m: i64) -> i64 {
     let h = key % m;
     if h < 0 {
         h + m
@@ -9,7 +9,7 @@ fn h1(key: int, m: int) -> int {
     }
 }
 
-fn h2(key: int, m: int) -> int {
+fn h2(key: i64, m: i64) -> i64 {
     let h = (key * 7 + 13) % m;
     if h < 0 {
         h + m
@@ -18,7 +18,7 @@ fn h2(key: int, m: int) -> int {
     }
 }
 
-fn h3(key: int, m: int) -> int {
+fn h3(key: i64, m: i64) -> i64 {
     let h = (key * 31 + 17) % m;
     if h < 0 {
         h + m
@@ -27,22 +27,22 @@ fn h3(key: int, m: int) -> int {
     }
 }
 
-fn make_bloom(size: int) -> Vec<int> {
-    let v: Vec<int> = Vec::new();
+fn make_bloom(size: i64) -> Vec<i64> {
+    let v: Vec<i64> = Vec::new();
     for i in 0 .. size {
         v.push(0);
     }
     v
 }
 
-fn bloom_add(filter: Vec<int>, key: int) {
+fn bloom_add(filter: Vec<i64>, key: i64) {
     let m = filter.len();
     filter.set(h1(key, m), 1);
     filter.set(h2(key, m), 1);
     filter.set(h3(key, m), 1);
 }
 
-fn bloom_might_contain(filter: Vec<int>, key: int) -> bool {
+fn bloom_might_contain(filter: Vec<i64>, key: i64) -> bool {
     let m = filter.len();
     if filter.get(h1(key, m)) == 0 {
         return false;

@@ -15,7 +15,12 @@
 //!
 //! Finite-timeout select (`timeout_ms >= 0`) uses the same monotonic
 //! deadline-loop pattern as single-arm timed ask on `wasm32-wasip1`.
+#![allow(
+    unsafe_op_in_unsafe_fn,
+    reason = "FFI entry-point module; SAFETY documented at fn signature."
+)]
 
+use crate::actor::HewActor;
 use std::ffi::c_void;
 use std::ptr;
 #[cfg(test)]
@@ -50,6 +55,14 @@ pub struct WasmReplyChannel {
     /// Set by [`retire_reply_channel`] (in `mailbox_wasm`) so the ask caller
     /// can distinguish mailbox-teardown null from a legitimate null reply.
     pub(crate) orphaned: bool,
+    /// Waiter-kind discriminator (W6.010), the wasm parity counterpart of the
+    /// native `HewReplyChannel::caller_actor`. When non-null, the waiter is a
+    /// PARKED CONTINUATION belonging to this actor and a reply wakes it via the
+    /// wasm `scheduler_wasm::enqueue_resume`; when null (the default), the
+    /// waiter is the cooperative ask loop that drives the scheduler tick and
+    /// reads the deposited reply directly. Single-threaded: a plain pointer (no
+    /// atomic) suffices. Parity-only — no wasm actor-await e2e (E10).
+    caller_actor: *mut HewActor,
 }
 
 /// Create a new WASM reply channel.
@@ -70,7 +83,33 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
         replied: false,
         cancelled: false,
         orphaned: false,
+        caller_actor: ptr::null_mut(),
     }))
+}
+
+/// Record that the waiter on this reply channel is a PARKED CONTINUATION
+/// belonging to `actor` (W6.010 wasm parity). A reply then wakes it via
+/// `scheduler_wasm::enqueue_resume` instead of leaving it for the cooperative
+/// ask loop. Parity counterpart of the native
+/// `hew_reply_channel_set_parked_waiter`.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`]. `actor`,
+/// if non-null, must reference the live `HewActor` whose continuation is parked.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
+    ch: *mut WasmReplyChannel,
+    actor: *mut HewActor,
+) {
+    if ch.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference;
+    // single-threaded so a plain store is sufficient.
+    unsafe {
+        (*ch).caller_actor = actor;
+    }
 }
 
 unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
@@ -150,8 +189,60 @@ pub unsafe extern "C" fn hew_reply(
             }
         }
         (*ch).replied = true;
+        // Waiter-kind branch (W6.010 wasm parity, E5/E6). A parked-continuation
+        // waiter (`caller_actor` non-null) is re-enqueued so the cooperative
+        // scheduler resumes it; the resumed continuation reads the now-ready
+        // reply from `ch` on its resume edge. A null `caller_actor` (the
+        // default) leaves the channel for the cooperative ask loop, which polls
+        // `reply_ready` directly — no wake needed (single-threaded). The wasm
+        // actor-decl gate (E10) means no wasm program reaches this parked branch
+        // today; it stays SYMMETRIC with native for parity (native-wasm-parity).
+        let caller_actor = (*ch).caller_actor;
+        if !caller_actor.is_null() {
+            // The wasm scheduler owns a layout-identical `scheduler_wasm::HewActor`
+            // view (verified by the module's `offset_of!` parity assertions); the
+            // cooperative `enqueue_resume` takes that type, so cast the
+            // `actor::HewActor` handle the setter stored. Parity-only (E10).
+            crate::scheduler_wasm::enqueue_resume(caller_actor.cast(), ptr::null_mut());
+        }
         hew_reply_channel_free(ch);
         delivered
+    }
+}
+
+/// Mark a retained WASM reply-channel reference ready without depositing a payload.
+///
+/// WASM parity: this is the single-threaded counterpart of the native
+/// readiness-proxy ABI. It is callback-compatible with `void (*)(void*)`,
+/// consumes one retained producer/observer reference, and publishes no reply
+/// payload. If cancellation already won, it fail-closes by releasing the
+/// retained reference without marking the channel ready.
+///
+/// # Safety
+///
+/// `ch` must be either null or a retained `WasmReplyChannel*` reference. When
+/// non-null, this function consumes exactly one reference. It must be called
+/// at most once for that retained reference.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
+    let ch = ch.cast::<WasmReplyChannel>();
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: caller provides a retained producer/observer reference; the
+    // function consumes it on both the cancellation and ready paths.
+    unsafe {
+        if (*ch).cancelled {
+            hew_reply_channel_free(ch);
+            return;
+        }
+        debug_assert!(
+            !(*ch).replied,
+            "WASM reply channels must not be signalled ready more than once"
+        );
+        (*ch).replied = true;
+        hew_reply_channel_free(ch);
     }
 }
 
@@ -530,6 +621,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn signal_ready_marks_channel_ready_without_payload() {
+        let _guard = crate::runtime_test_guard();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the test retains an observer-side reference that
+        // `hew_reply_channel_signal_ready` consumes, leaving the original
+        // waiter reference live for select/wait/free.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_signal_ready(ch.cast());
+
+            assert!(reply_ready(ch));
+            assert!(test_replied(ch));
+            let mut channels = [ch];
+            assert_eq!(hew_select_first(channels.as_mut_ptr(), 1, 0), 0);
+            assert!(
+                reply_take(ch).is_null(),
+                "readiness proxy must not fabricate a reply payload"
+            );
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn signal_ready_after_cancel_consumes_observer_reference() {
+        let _guard = crate::runtime_test_guard();
+        let pre_new = active_channel_count();
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: the retained observer reference keeps `ch` live after the
+        // waiter cancels and releases its own reference.
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+            assert_eq!(active_channel_count(), pre_new + 1);
+
+            hew_reply_channel_signal_ready(ch.cast());
+        }
+
+        assert_eq!(
+            active_channel_count(),
+            pre_new,
+            "late readiness callback must release its retained channel reference"
+        );
+    }
+
     // ── hew_reply_wait tests ────────────────────────────────────────────
 
     #[test]
@@ -748,9 +887,13 @@ mod tests {
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 1, -1) };
         assert_eq!(winner, 0);
         // Clean up value + channel.
-        // SAFETY: ch is still live; reply_take + free are balanced.
+        // SAFETY: ch is still live; reply_take transfers ownership of the
+        // malloc'd reply buffer — free it before releasing the channel.
         unsafe {
-            let _ = reply_take(ch);
+            let val = reply_take(ch);
+            if !val.is_null() {
+                libc::free(val);
+            }
             hew_reply_channel_free(ch);
         }
     }
@@ -785,19 +928,31 @@ mod tests {
         let winner = unsafe { hew_select_first(ch_arr.as_mut_ptr(), 3, -1) };
         assert_eq!(winner, 0, "should pick lowest-index ready channel");
         // Clean up.
-        // SAFETY: channels are live; cancel + free are balanced.
+        // SAFETY: channels are live; reply_take transfers ownership of the
+        // malloc'd reply buffer — free each before releasing its channel.
         unsafe {
-            let _ = reply_take(ch0);
+            let val0 = reply_take(ch0);
+            if !val0.is_null() {
+                libc::free(val0);
+            }
             hew_reply_channel_free(ch0);
             hew_reply_channel_cancel(ch1);
             hew_reply_channel_free(ch1);
-            let _ = reply_take(ch2);
+            let val2 = reply_take(ch2);
+            if !val2.is_null() {
+                libc::free(val2);
+            }
             hew_reply_channel_free(ch2);
         }
     }
 
     #[test]
     fn select_first_no_ready_channels_empty_queue_returns_minus_one() {
+        // Acquire the runtime test lock: hew_select_first calls hew_wasm_sched_tick
+        // which mutates COOPERATIVE_TICK_DEPTH (non-atomic static mut).  Running
+        // concurrently with scheduler_wasm tests that also touch that global
+        // causes a subtract-with-overflow abort.
+        let _guard = crate::runtime_test_guard();
         // Neither channel gets a reply; scheduler queue is empty so we
         // should return -1 rather than spin forever.
         let ch0 = hew_reply_channel_new();

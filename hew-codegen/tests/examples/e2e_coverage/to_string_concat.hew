@@ -1,9 +1,0 @@
-// Tests to_string used in string concatenation context.
-fn main() {
-    let s = "n=" + to_string(5);
-    println(s);
-
-    let prefix = "val:";
-    let msg = prefix + to_string(42);
-    println(msg);
-}

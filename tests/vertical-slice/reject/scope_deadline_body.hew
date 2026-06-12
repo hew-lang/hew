@@ -1,0 +1,22 @@
+// Reject fixture: scope_deadline_body — non-empty `after(duration) { ... }` body.
+//
+// The `after(duration) { ... }` deadline clause inside a `scope {}` body
+// currently only supports empty bodies.  A non-empty body fails closed in HIR
+// lowering.  This is the fail-closed boundary until select/arm dispatch lands.
+//
+// This fixture pins the fail-closed boundary at:
+//   hew-hir/src/lower.rs deadline body guard
+//
+// Harness verb: hew compile
+// Expected diagnostics:
+//   - E_HIR
+//   - "deadline body must be empty"
+
+fn _cleanup() {}
+
+fn main() -> i64 {
+    scope {
+        after(5s) { _cleanup(); }
+    };
+    0
+}

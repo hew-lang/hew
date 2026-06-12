@@ -195,14 +195,6 @@ pub fn __clear_error_for_actor(actor_id: u64, kind: ErrorSlotKind) {
     actor_map_clear(actor_id, kind);
 }
 
-/// Clear all errors for a specific actor ID (all error kinds).
-///
-/// Intended for integration tests.
-#[doc(hidden)]
-pub fn __clear_all_errors_for_actor(actor_id: u64) {
-    actor_map_clear_all_for_actor(actor_id);
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

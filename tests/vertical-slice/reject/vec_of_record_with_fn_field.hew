@@ -1,0 +1,13 @@
+// A Vec element type that CONTAINS a function value is rejected: the
+// layout/owned element ABIs byte-copy the element, which would shallow-copy
+// the closure pair and alias its sole-owner environment. Direct Vec<fn(...)>
+// elements remain the supported boxed-pair class.
+type Holder {
+    cb: fn(i64) -> i64;
+}
+
+fn main() {
+    let h = Holder { cb: |x: i64| x + 1 };
+    let hs: Vec<Holder> = [h];
+    println(hs.len());
+}

@@ -21,7 +21,7 @@ use common::typecheck_isolated;
 
 const ACTOR_WITH_NON_COPY_SEND: &str = r#"
     actor Sink {
-        let _unused: int;
+        let _unused: i64;
         receive fn consume(val: string) {}
     }
 
@@ -34,8 +34,8 @@ const ACTOR_WITH_NON_COPY_SEND: &str = r#"
 
 const ACTOR_WITH_COPY_SEND: &str = r"
     actor Counter {
-        let _unused: int;
-        receive fn bump(n: int) {}
+        let _unused: i64;
+        receive fn bump(n: i64) {}
     }
 
     fn main() {
@@ -61,7 +61,7 @@ fn actor_send_aliasing_map_populated_for_non_copy_send() {
     );
 }
 
-/// `Copy`-typed payloads (`int`) also land in the side table as `Copy`.
+/// `Copy`-typed payloads (`i64`) also land in the side table as `Copy`.
 /// The decision rule never picks `Alias` for `Copy` types because the
 /// alias bit would be ambiguous and the value already fits inline at the
 /// call boundary.
@@ -99,13 +99,13 @@ fn actor_send_aliasing_records_named_actor_field_receive_dispatch() {
     let output = typecheck_isolated(
         r"
         actor Printer {
-            receive fn print_result(n: int) {}
+            receive fn print_result(n: i64) {}
         }
 
         actor Adder {
-            let amount: int;
+            let amount: i64;
             let target: Printer;
-            receive fn add(n: int) {
+            receive fn add(n: i64) {
                 let result = n + amount;
                 target.print_result(result);
             }
@@ -150,7 +150,7 @@ fn actor_send_aliasing_bare_identifier_non_copy_picks_alias() {
     let output = typecheck_isolated(
         r#"
         actor Sink {
-            let _unused: int;
+            let _unused: i64;
             receive fn consume(val: string) {}
         }
 
@@ -191,7 +191,7 @@ fn actor_send_aliasing_field_access_non_copy_stays_copy() {
         }
 
         actor Sink {
-            let _unused: int;
+            let _unused: i64;
             receive fn consume(val: string) {}
         }
 
@@ -219,19 +219,19 @@ fn actor_send_aliasing_field_access_non_copy_stays_copy() {
     );
 }
 
-/// `Copy`-typed payload (`int`) → `Copy`.
+/// `Copy`-typed payload (`i64`) → `Copy`.
 #[test]
 fn actor_send_aliasing_copy_typed_bare_identifier_stays_copy() {
     let output = typecheck_isolated(
         r"
         actor Counter {
-            let _unused: int;
-            receive fn bump(n: int) {}
+            let _unused: i64;
+            receive fn bump(n: i64) {}
         }
 
         fn main() {
             let c = spawn Counter(_unused: 0);
-            let n: int = 42;
+            let n: i64 = 42;
             c.bump(n);
         }
     ",
@@ -263,7 +263,7 @@ fn actor_send_aliasing_impl_drop_payload_stays_copy() {
         }
 
         actor Sink {
-            let _unused: int;
+            let _unused: i64;
             receive fn consume(val: Resource) {}
         }
 
@@ -299,7 +299,7 @@ fn actor_send_aliasing_map_empty_when_no_sends() {
     let output = typecheck_isolated(
         r"
         fn main() {
-            let x: int = 1;
+            let x: i64 = 1;
             let _ = x + 1;
         }
         ",

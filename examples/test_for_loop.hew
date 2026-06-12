@@ -1,5 +1,0 @@
-// Test file to verify for loop compilation
-fn main() {
-    let x = 42;
-    println(x);
-}

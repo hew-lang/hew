@@ -1,0 +1,16 @@
+// Accept fixture: literal constructor payload subpatterns compare the payload
+// value and must not lower as wildcards. Shape::Line(1) must not match
+// Shape::Line(2); main exits with the bound payload (2) from the fallback arm.
+enum Shape {
+    Line(i64);
+    Square(i64);
+}
+
+fn main() -> i64 {
+    let s = Shape::Line(2);
+    match s {
+        Shape::Line(1) => 999,
+        Shape::Line(x) => x,
+        Shape::Square(_) => 0,
+    }
+}

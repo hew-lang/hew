@@ -21,32 +21,33 @@
 ///
 /// Created by `semaphore.new(count)`. Must be freed with `free()` when
 /// no longer needed to avoid leaking memory.
-type Semaphore {
+#[opaque]
+pub type Semaphore {
 }
 
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
     /// Block until a permit is available, then acquire it.
-    fn acquire(sem: Semaphore);
+    fn acquire(self);
 
     /// Try to acquire a permit without blocking.
     ///
     /// Returns `true` if a permit was acquired, `false` otherwise.
-    fn try_acquire(sem: Semaphore) -> bool;
+    fn try_acquire(self) -> bool;
 
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     ///
     /// Returns `true` if a permit was acquired before the timeout.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: int) -> bool;
+    fn acquire_timeout(self, timeout_ms: i64) -> bool;
 
     /// Release a previously acquired permit.
-    fn release(sem: Semaphore);
+    fn release(self);
 
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> int;
+    fn count(self) -> i64;
 
     /// Release the semaphore resources.
-    fn free(sem: Semaphore);
+    fn free(self);
 }
 
 impl SemaphoreMethods for Semaphore {
@@ -63,7 +64,7 @@ impl SemaphoreMethods for Semaphore {
         }
     }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    fn acquire_timeout(sem: Semaphore, timeout_ms: int) -> bool {
+    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
         unsafe {
             hew_semaphore_acquire_timeout(sem, timeout_ms as i64)
         } // INTERNAL-ABI: C ABI takes i64 timeout
@@ -75,9 +76,9 @@ impl SemaphoreMethods for Semaphore {
         };
     }
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> int {
+    fn count(sem: Semaphore) -> i64 {
         unsafe {
-            hew_semaphore_count(sem)
+            hew_semaphore_count(sem) as i64
         }
     }
     /// Release the semaphore resources.
@@ -96,7 +97,7 @@ impl SemaphoreMethods for Semaphore {
 /// ```
 /// let sem = semaphore.new(5);
 /// ```
-pub fn new(count: int) -> Semaphore {
+pub fn new(count: i64) -> Semaphore {
     unsafe {
         hew_semaphore_new(count as i32)
     } // INTERNAL-ABI: C ABI takes i32 initial count

@@ -7,11 +7,6 @@
 //! `from_ty_strict_generic_args` (the fail-closed conversion for THIR→MIR
 //! layer transitions that must not silently accept un-arged generic types).
 //!
-//! Wire-kind dispatch (`wire_kind() -> PrimitiveWireKind`) lives in
-//! `hew-wirecodec::wire_boundary` as an extension trait on `ResolvedTy`,
-//! because `PrimitiveWireKind` is owned by `hew-wirecodec` and that crate
-//! already depends on `hew-types`.
-//!
 //! LESSONS upheld: `checker-output-boundary`, `checker-authority`,
 //! `type-info-survival`, `boundary-fail-closed`.
 
@@ -65,12 +60,15 @@ impl ResolvedTy {
             ResolvedTy::U16 => "u16".into(),
             ResolvedTy::U32 => "u32".into(),
             ResolvedTy::U64 => "u64".into(),
+            ResolvedTy::Isize => "isize".into(),
+            ResolvedTy::Usize => "usize".into(),
             ResolvedTy::F32 => "f32".into(),
             ResolvedTy::F64 => "f64".into(),
             ResolvedTy::Bool => "bool".into(),
             ResolvedTy::Char => "char".into(),
             ResolvedTy::String => "string".into(),
             ResolvedTy::Bytes => "bytes".into(),
+            ResolvedTy::CancellationToken => "CancellationToken".into(),
             ResolvedTy::Duration => "duration".into(),
             ResolvedTy::Unit => "unit".into(),
             ResolvedTy::Never => "never".into(),
@@ -84,8 +82,8 @@ impl ResolvedTy {
             ResolvedTy::Slice(elem) => {
                 format!("[{}]", elem.canonical_string())
             }
-            ResolvedTy::Named { name, args } if args.is_empty() => name.clone(),
-            ResolvedTy::Named { name, args } => {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
+            ResolvedTy::Named { name, args, .. } => {
                 let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
                 format!("{}<{}>", name, arg_strs.join(","))
             }
@@ -119,15 +117,23 @@ impl ResolvedTy {
             } => {
                 format!("*const {}", pointee.canonical_string())
             }
+            ResolvedTy::Borrow { pointee } => {
+                format!("&{}", pointee.canonical_string())
+            }
             ResolvedTy::TraitObject { traits } => {
                 let bound_strs: Vec<String> = traits
                     .iter()
                     .map(|b| {
-                        if b.args.is_empty() {
+                        if b.args.is_empty() && b.assoc_bindings.is_empty() {
                             b.trait_name.clone()
                         } else {
-                            let arg_strs: Vec<String> =
+                            let mut arg_strs: Vec<String> =
                                 b.args.iter().map(Self::canonical_string).collect();
+                            arg_strs.extend(
+                                b.assoc_bindings
+                                    .iter()
+                                    .map(|(name, ty)| format!("{name}={}", ty.canonical_string())),
+                            );
                             format!("{}<{}>", b.trait_name, arg_strs.join(","))
                         }
                     })
@@ -138,6 +144,11 @@ impl ResolvedTy {
             // canonical string uses the same `<task<T>>` spelling as `Display`
             // so diagnostic output is consistent.
             ResolvedTy::Task(inner) => format!("<task<{}>>", inner.canonical_string()),
+            // An abstract parameter mangles to its bare name. A `TypeParam`
+            // only appears in pre-monomorphisation (polymorphic) form; once
+            // substituted it becomes a concrete `ResolvedTy` with its own
+            // canonical string, so this never feeds a final linkable symbol.
+            ResolvedTy::TypeParam { name } => name.clone(),
         }
     }
 

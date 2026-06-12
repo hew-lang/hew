@@ -1,8 +1,0 @@
-// Negative test: flat file imports must reject duplicate public names.
-import "same_name_lib_a.hew";
-import "same_name_lib_b.hew";
-
-fn main() {
-    let msg = greet();
-    println(msg);
-}

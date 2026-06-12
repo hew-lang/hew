@@ -2,10 +2,10 @@
 //!
 //! These tests target code paths not covered by the inline unit tests,
 //! including slices, pointers, trait objects, machine types, qualified
-//! name matching, `can_coerce` branches, error display, and `bind` edge cases.
+//! name matching, error display, and `bind` edge cases.
 
 use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
-use hew_types::unify::{bind, can_coerce, unify, UnifyError};
+use hew_types::unify::{bind, unify, UnifyError};
 
 // ---------------------------------------------------------------------------
 // Helper: fresh substitution
@@ -39,6 +39,7 @@ fn bind_occurs_check_through_named_type() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let ty = Ty::Named {
+        builtin: None,
         name: "Vec".into(),
         args: vec![Ty::Var(v)],
     };
@@ -156,6 +157,15 @@ fn trait_bound(name: &str, args: Vec<Ty>) -> TraitObjectBound {
     TraitObjectBound {
         trait_name: name.to_string(),
         args,
+        assoc_bindings: vec![],
+    }
+}
+
+fn trait_bound_with_assoc(name: &str, assoc_name: &str, assoc_ty: Ty) -> TraitObjectBound {
+    TraitObjectBound {
+        trait_name: name.to_string(),
+        args: vec![],
+        assoc_bindings: vec![(assoc_name.to_string(), assoc_ty)],
     }
 }
 
@@ -231,6 +241,21 @@ fn unify_trait_objects_arg_arity_mismatch() {
     ));
 }
 
+#[test]
+fn unify_trait_objects_different_assoc_bindings_rejects() {
+    let mut subst = fresh_subst();
+    let a = Ty::TraitObject {
+        traits: vec![trait_bound_with_assoc("Iterator", "Item", Ty::I32)],
+    };
+    let b = Ty::TraitObject {
+        traits: vec![trait_bound_with_assoc("Iterator", "Item", Ty::String)],
+    };
+    assert!(matches!(
+        unify(&mut subst, &a, &b),
+        Err(UnifyError::Mismatch { .. })
+    ));
+}
+
 // ===========================================================================
 // Machine type unification
 // ===========================================================================
@@ -239,10 +264,12 @@ fn unify_trait_objects_arg_arity_mismatch() {
 fn unify_machine_types_different_names() {
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "TrafficLight".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "DoorLock".into(),
         args: vec![],
     };
@@ -257,10 +284,12 @@ fn unify_machine_with_named_same_name_no_args() {
     // Machine interops with bare Named of the same name (no type args).
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
@@ -273,10 +302,12 @@ fn unify_machine_with_named_same_name_no_args() {
 fn unify_machine_with_named_different_name() {
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Actuator".into(),
         args: vec![],
     };
@@ -288,10 +319,12 @@ fn unify_machine_with_named_with_args_fails() {
     // Machine only matches Named with empty args.
     let mut subst = fresh_subst();
     let machine = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![],
     };
     let named = Ty::Named {
+        builtin: None,
         name: "Sensor".into(),
         args: vec![Ty::I32],
     };
@@ -307,10 +340,12 @@ fn unify_qualified_and_bare_named() {
     // "json.Value" should unify with "Value"
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "json.Value".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Value".into(),
         args: vec![],
     };
@@ -322,10 +357,12 @@ fn unify_qualified_different_modules_same_bare_name_fails() {
     // "auth.User" vs "billing.User" — both qualified, different modules.
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "auth.User".into(),
         args: vec![],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "billing.User".into(),
         args: vec![],
     };
@@ -337,10 +374,12 @@ fn unify_qualified_with_type_args() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let a = Ty::Named {
+        builtin: None,
         name: "collections.Map".into(),
         args: vec![Ty::String, Ty::Var(v)],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Map".into(),
         args: vec![Ty::String, Ty::I64],
     };
@@ -356,10 +395,12 @@ fn unify_qualified_with_type_args() {
 fn unify_named_type_arity_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Named {
+        builtin: None,
         name: "Result".into(),
         args: vec![Ty::I32, Ty::String],
     };
     let b = Ty::Named {
+        builtin: None,
         name: "Result".into(),
         args: vec![Ty::I32],
     };
@@ -451,86 +492,6 @@ fn error_on_right_unifies_with_anything() {
 }
 
 // ===========================================================================
-// can_coerce() — additional branches
-// ===========================================================================
-
-#[test]
-fn can_coerce_array_to_slice() {
-    let arr = Ty::Array(Box::new(Ty::I32), 10);
-    let slc = Ty::Slice(Box::new(Ty::I32));
-    assert!(can_coerce(&arr, &slc));
-}
-
-#[test]
-fn can_coerce_array_to_slice_element_mismatch() {
-    let arr = Ty::Array(Box::new(Ty::I32), 10);
-    let slc = Ty::Slice(Box::new(Ty::Bool));
-    assert!(!can_coerce(&arr, &slc));
-}
-
-#[test]
-fn can_coerce_mut_pointer_to_const_pointer() {
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::I32),
-    };
-    assert!(can_coerce(&mut_ptr, &const_ptr));
-}
-
-#[test]
-fn can_coerce_const_pointer_to_mut_pointer_fails() {
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::I32),
-    };
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    assert!(!can_coerce(&const_ptr, &mut_ptr));
-}
-
-#[test]
-fn can_coerce_mut_pointer_pointee_mismatch() {
-    let mut_ptr = Ty::Pointer {
-        is_mutable: true,
-        pointee: Box::new(Ty::I32),
-    };
-    let const_ptr = Ty::Pointer {
-        is_mutable: false,
-        pointee: Box::new(Ty::Bool),
-    };
-    assert!(!can_coerce(&mut_ptr, &const_ptr));
-}
-
-#[test]
-fn can_coerce_error_on_right() {
-    assert!(can_coerce(&Ty::I32, &Ty::Error));
-    assert!(can_coerce(&Ty::String, &Ty::Error));
-}
-
-#[test]
-fn can_coerce_error_on_left() {
-    assert!(can_coerce(&Ty::Error, &Ty::I64));
-}
-
-#[test]
-fn can_coerce_never_on_left() {
-    assert!(can_coerce(&Ty::Never, &Ty::Bool));
-    assert!(can_coerce(&Ty::Never, &Ty::String));
-}
-
-#[test]
-fn can_coerce_incompatible_types() {
-    assert!(!can_coerce(&Ty::I32, &Ty::String));
-    assert!(!can_coerce(&Ty::Bool, &Ty::F64));
-}
-
-// ===========================================================================
 // UnifyError Display formatting
 // ===========================================================================
 
@@ -580,7 +541,7 @@ fn resolve_three_var_chain() {
     let v1 = TypeVar::fresh();
     let v2 = TypeVar::fresh();
     let v3 = TypeVar::fresh();
-    // v1 -> v2 -> v3 -> String
+    // v1 -> v2 -> v3 -> string
     subst.insert(v1, &Ty::Var(v2)).unwrap();
     subst.insert(v2, &Ty::Var(v3)).unwrap();
     subst.insert(v3, &Ty::String).unwrap();
@@ -594,10 +555,7 @@ fn resolve_var_in_nested_structure() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     subst.insert(v, &Ty::I64).unwrap();
-    let ty = Ty::Named {
-        name: "Option".into(),
-        args: vec![Ty::Var(v)],
-    };
+    let ty = Ty::option(Ty::Var(v));
     let resolved = subst.resolve(&ty);
     assert_eq!(resolved, Ty::option(Ty::I64));
 }
@@ -638,6 +596,7 @@ fn unify_function_with_tuple_fails() {
 fn unify_named_with_primitive_fails() {
     let mut subst = fresh_subst();
     let named = Ty::Named {
+        builtin: None,
         name: "Vec".into(),
         args: vec![Ty::I32],
     };

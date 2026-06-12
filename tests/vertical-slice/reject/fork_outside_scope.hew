@@ -1,0 +1,15 @@
+// Reject fixture: fork_outside_scope — `fork name = expr` outside a scope{} body.
+//
+// `fork name = expr` is only valid inside a `scope{}` body.  Using it at
+// function scope (not inside any `scope { ... }`) is rejected by the type
+// checker with a clear error.
+//
+// Harness verb: hew check
+// Expected diagnostic: "parser-only in this build"
+
+fn _foo() {}
+
+fn main() -> i64 {
+    fork x = _foo();
+    0
+}

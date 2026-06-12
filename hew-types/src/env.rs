@@ -7,9 +7,15 @@ use crate::ty::Ty;
 use hew_parser::ast::Span;
 use std::collections::HashMap;
 
+/// Checker-local identity for a lexical binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeBindingId(pub u32);
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
+    /// Stable checker-local identity for this lexical binding.
+    pub id: TypeBindingId,
     /// The type of the bound value
     pub ty: Ty,
     /// Whether the binding is mutable (var vs let)
@@ -53,6 +59,7 @@ pub enum ScopeWarningKind {
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
     scopes: Vec<HashMap<String, Binding>>,
+    next_binding_id: u32,
 }
 
 impl TypeEnv {
@@ -61,7 +68,17 @@ impl TypeEnv {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            next_binding_id: 0,
         }
+    }
+
+    fn next_binding_id(&mut self) -> TypeBindingId {
+        let id = TypeBindingId(self.next_binding_id);
+        self.next_binding_id = self
+            .next_binding_id
+            .checked_add(1)
+            .expect("checker binding id overflow");
+        id
     }
 
     /// Push a new scope onto the stack.
@@ -79,10 +96,12 @@ impl TypeEnv {
 
     /// Define a variable in the current scope (synthetic, no source span — not warned about).
     pub fn define(&mut self, name: String, ty: Ty, is_mutable: bool) {
+        let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
                 Binding {
+                    id,
                     ty,
                     is_mutable,
                     is_moved: false,
@@ -97,10 +116,12 @@ impl TypeEnv {
 
     /// Define a user-visible variable with a source span for diagnostics.
     pub fn define_with_span(&mut self, name: String, ty: Ty, is_mutable: bool, span: Span) {
+        let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
                 name,
                 Binding {
+                    id,
                     ty,
                     is_mutable,
                     is_moved: false,

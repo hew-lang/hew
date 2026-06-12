@@ -1,0 +1,1039 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hew.sh/schemas/sandbox/bytecode-v0.schema.json",
+  "title": "Hew Sandbox Bytecode Package v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "hew_version",
+    "compiler_version",
+    "profile",
+    "source_map",
+    "module_graph",
+    "layouts",
+    "stdlib_symbols",
+    "capabilities",
+    "functions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "hew.sandbox.bytecode.v0"
+    },
+    "package_id": {
+      "type": "string",
+      "pattern": "^pkg:[A-Za-z0-9_.:-]+$"
+    },
+    "hew_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compiler_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "type": "string",
+      "pattern": "^sandbox\\.[a-z0-9_.-]+$"
+    },
+    "source_map": {
+      "$ref": "#/$defs/source_map"
+    },
+    "module_graph": {
+      "$ref": "#/$defs/module_graph"
+    },
+    "layouts": {
+      "$ref": "#/$defs/layouts"
+    },
+    "stdlib_symbols": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/stdlib_symbol"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    },
+    "functions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/function"
+      }
+    }
+  },
+  "$defs": {
+    "source_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "spans"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_file"
+          }
+        },
+        "spans": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/span_entry"
+          }
+        }
+      }
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "content_sha256"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/source_id"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "span_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_id",
+        "start",
+        "end"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/span_id"
+        },
+        "source_id": {
+          "$ref": "#/$defs/source_id"
+        },
+        "start": {
+          "$ref": "#/$defs/source_position"
+        },
+        "end": {
+          "$ref": "#/$defs/source_position"
+        }
+      }
+    },
+    "source_position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "line",
+        "column",
+        "byte_offset"
+      ],
+      "properties": {
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "module_graph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "modules"
+      ],
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/module_id"
+        },
+        "modules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/module"
+          }
+        }
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "source_id",
+        "imports",
+        "functions"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/module_id"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_id": {
+          "$ref": "#/$defs/source_id"
+        },
+        "imports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/import_edge"
+          }
+        },
+        "functions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/function_id"
+          }
+        }
+      }
+    },
+    "import_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "resolved_module"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved_module": {
+          "$ref": "#/$defs/module_id"
+        }
+      }
+    },
+    "layouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "types",
+        "records",
+        "enums",
+        "actors",
+        "supervisors",
+        "machines"
+      ],
+      "properties": {
+        "types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_layout"
+          }
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record_layout"
+          }
+        },
+        "enums": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/enum_layout"
+          }
+        },
+        "actors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actor_layout"
+          }
+        },
+        "supervisors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/supervisor_layout"
+          }
+        },
+        "machines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/machine_layout"
+          }
+        }
+      }
+    },
+    "type_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "kind": {
+          "enum": [
+            "unit",
+            "never",
+            "bool",
+            "integer",
+            "float",
+            "string",
+            "regex",
+            "vector",
+            "record",
+            "enum",
+            "actor",
+            "supervisor",
+            "machine",
+            "function",
+            "capability",
+            "opaque"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_id"
+          }
+        }
+      }
+    },
+    "record_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "fields"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_layout"
+          }
+        }
+      }
+    },
+    "field_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "index"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/type_id"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "enum_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "variants"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/variant_layout"
+          }
+        }
+      }
+    },
+    "variant_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "tag",
+        "payload"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_id"
+          }
+        }
+      }
+    },
+    "actor_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "state_fields",
+        "handlers"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field_layout"
+          }
+        },
+        "handlers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/handler_layout"
+          }
+        }
+      }
+    },
+    "handler_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "function"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "function": {
+          "$ref": "#/$defs/function_id"
+        }
+      }
+    },
+    "supervisor_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "strategy",
+        "children"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_id"
+          }
+        }
+      }
+    },
+    "machine_layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "states",
+        "events",
+        "transitions"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/type_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/machine_transition"
+          }
+        }
+      }
+    },
+    "machine_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "from",
+        "to",
+        "span"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        }
+      }
+    },
+    "stdlib_symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "module",
+        "name",
+        "params",
+        "result",
+        "capability",
+        "admission"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/symbol_id"
+        },
+        "module": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/type_id"
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/type_id"
+        },
+        "capability": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "admission": {
+          "enum": [
+            "allowed",
+            "rejected",
+            "reserved"
+          ]
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "disposition",
+        "reason",
+        "required_by"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "enum": [
+            "allowed",
+            "rejected",
+            "reserved"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "required_by": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "module",
+        "name",
+        "params",
+        "result",
+        "locals",
+        "blocks",
+        "span"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/function_id"
+        },
+        "module": {
+          "$ref": "#/$defs/module_id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/local_id"
+          }
+        },
+        "result": {
+          "$ref": "#/$defs/type_id"
+        },
+        "locals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/local"
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/block"
+          }
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        }
+      }
+    },
+    "local": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "type",
+        "mutable",
+        "span"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/local_id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/type_id"
+        },
+        "mutable": {
+          "type": "boolean"
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "params",
+        "instructions",
+        "terminator",
+        "span"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/block_id"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/local_id"
+          }
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/instruction"
+          }
+        },
+        "terminator": {
+          "$ref": "#/$defs/terminator"
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        }
+      }
+    },
+    "instruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "dst",
+        "args",
+        "span"
+      ],
+      "properties": {
+        "op": {
+          "$ref": "#/$defs/instruction_op"
+        },
+        "dst": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/local_id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operand"
+          }
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        },
+        "metadata": {
+          "$ref": "#/$defs/json_value"
+        }
+      }
+    },
+    "terminator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "args",
+        "span"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "br",
+            "br_if",
+            "return",
+            "tail_call",
+            "trap",
+            "unreachable"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/block_id"
+        },
+        "else_target": {
+          "$ref": "#/$defs/block_id"
+        },
+        "condition": {
+          "$ref": "#/$defs/operand"
+        },
+        "function": {
+          "$ref": "#/$defs/function_id"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operand"
+          }
+        },
+        "trap_kind": {
+          "$ref": "#/$defs/trap_kind"
+        },
+        "span": {
+          "$ref": "#/$defs/span_ref"
+        }
+      }
+    },
+    "operand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "local",
+            "constant",
+            "function",
+            "block",
+            "type",
+            "symbol",
+            "capability",
+            "trap",
+            "literal"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/json_value"
+        }
+      }
+    },
+    "instruction_op": {
+      "enum": [
+        "const.unit",
+        "const.bool",
+        "const.i64",
+        "const.u64",
+        "const.f64",
+        "const.string",
+        "const.regex",
+        "local.get",
+        "local.set",
+        "local.move",
+        "local.borrow",
+        "i64.add",
+        "i64.sub",
+        "i64.mul",
+        "i64.div",
+        "i64.rem",
+        "i64.neg",
+        "i64.checked_add",
+        "i64.checked_sub",
+        "i64.checked_mul",
+        "i64.checked_div",
+        "i64.checked_rem",
+        "cmp.eq",
+        "cmp.ne",
+        "cmp.lt",
+        "cmp.le",
+        "cmp.gt",
+        "cmp.ge",
+        "call.direct",
+        "call.indirect",
+        "call.stdlib",
+        "record.new",
+        "record.get",
+        "record.set",
+        "enum.new",
+        "enum.tag",
+        "enum.payload",
+        "vector.new",
+        "vector.push",
+        "vector.get",
+        "vector.set",
+        "vector.len",
+        "string.concat",
+        "string.len",
+        "string.slice",
+        "regex.compile",
+        "regex.is_match",
+        "regex.find",
+        "regex.replace",
+        "regex.free",
+        "panic",
+        "trap",
+        "actor.spawn",
+        "actor.send",
+        "actor.ask",
+        "actor.reply",
+        "mailbox.dequeue",
+        "actor.link",
+        "actor.monitor",
+        "channel.new",
+        "channel.send",
+        "channel.recv",
+        "channel.close",
+        "task.spawn",
+        "task.await",
+        "task.cancel",
+        "select.poll",
+        "clock.sleep",
+        "supervisor.spawn",
+        "supervisor.restart",
+        "supervisor.stop",
+        "machine.new",
+        "machine.step",
+        "machine.state"
+      ]
+    },
+    "trap_kind": {
+      "enum": [
+        "integer_overflow",
+        "divide_by_zero",
+        "invalid_local",
+        "invalid_block",
+        "invalid_call",
+        "invalid_enum_tag",
+        "invalid_record_field",
+        "vector_bounds",
+        "string_bounds",
+        "regex_compile",
+        "capability_missing",
+        "budget_exhausted",
+        "panic",
+        "unsupported_instruction",
+        "internal_error"
+      ]
+    },
+    "span_ref": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/span_id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^src:[A-Za-z0-9_.:-]+$"
+    },
+    "span_id": {
+      "type": "string",
+      "pattern": "^span:[A-Za-z0-9_.:-]+$"
+    },
+    "module_id": {
+      "type": "string",
+      "pattern": "^mod:[A-Za-z0-9_.:-]+$"
+    },
+    "function_id": {
+      "type": "string",
+      "pattern": "^fn:[A-Za-z0-9_.:-]+$"
+    },
+    "local_id": {
+      "type": "string",
+      "pattern": "^local:[A-Za-z0-9_.:-]+$"
+    },
+    "block_id": {
+      "type": "string",
+      "pattern": "^block:[A-Za-z0-9_.:-]+$"
+    },
+    "type_id": {
+      "type": "string",
+      "pattern": "^type:[A-Za-z0-9_.:-]+$"
+    },
+    "symbol_id": {
+      "type": "string",
+      "pattern": "^sym:[A-Za-z0-9_.:-]+$"
+    },
+    "json_value": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/json_value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/json_value"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -372,6 +372,13 @@ jobs:
       # the repo std/. Pin std explicitly for the instrumented run; the normal
       # test job finds it relative to target/debug/ and needs no override.
       HEW_STD: ${{ github.workspace }}/std
+      # SWIM failure-detector tests use wall-clock protocol periods. Under
+      # cargo-llvm-cov instrumentation the build is slow enough to blow the
+      # unscaled budget and false-declare a still-alive peer DEAD
+      # (alive_node_is_not_falsely_killed_by_driven_swim). Widen the SWIM
+      # timing budgets the same way the instrumented sanitizer jobs do
+      # (Makefile asan/tsan set =10) so the detector tolerates the latency.
+      HEW_SWIM_TEST_TIME_SCALE: "10"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'

@@ -89,6 +89,10 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(_meta: *const c_void) {}
 /// Terminate the current process with a Hew integer exit code.
 #[no_mangle]
 pub extern "C" fn hew_exit(code: i64) {
+    hew_exit_impl(code, hew_exit_process_terminate);
+}
+
+fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
     let Ok(code) = i32::try_from(code) else {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();
@@ -103,7 +107,44 @@ pub extern "C" fn hew_exit(code: i64) {
         std::process::abort();
     }
 
-    std::process::exit(code);
+    #[cfg(target_arch = "wasm32")]
+    crate::scheduler_wasm::hew_wasm_runtime_exit();
+
+    terminate(code);
+}
+
+fn hew_exit_process_terminate(status: i32) {
+    #[cfg(test)]
+    if let Some(terminate) = HEW_EXIT_TEST_TERMINATOR.with(Cell::get) {
+        terminate(status);
+        return;
+    }
+
+    std::process::exit(status);
+}
+
+#[cfg(test)]
+thread_local! {
+    static HEW_EXIT_TEST_TERMINATOR: Cell<Option<fn(i32)>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(dead_code, reason = "wasm32-only hew_exit regression test hook")
+)]
+pub(crate) fn with_hew_exit_terminator_for_test<R>(terminate: fn(i32), f: impl FnOnce() -> R) -> R {
+    struct Reset(Option<fn(i32)>);
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            HEW_EXIT_TEST_TERMINATOR.with(|slot| slot.set(self.0));
+        }
+    }
+
+    let previous = HEW_EXIT_TEST_TERMINATOR.with(|slot| slot.replace(Some(terminate)));
+    let _reset = Reset(previous);
+    f()
 }
 
 macro_rules! cabi_guard {

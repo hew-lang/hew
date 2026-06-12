@@ -30,6 +30,8 @@ use crate::actor::HEW_PRIORITY_NORMAL;
 use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW};
 use crate::internal::types::{HewActorState, HewDispatchFn};
 
+static WASM_CLEANUP_RAN: AtomicBool = AtomicBool::new(false);
+
 #[inline]
 fn notify_actor_group_waiters(actor_id: u64) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -631,6 +633,10 @@ pub extern "C" fn hew_sched_shutdown() {
 /// actors not explicitly freed by user code and clears the registry.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_runtime_cleanup() {
+    if WASM_CLEANUP_RAN.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
     // Free all tracked actors.
     // SAFETY: Single-threaded on WASM, called after hew_sched_shutdown.
     unsafe { crate::actor::cleanup_all_actors() };
@@ -707,6 +713,20 @@ pub extern "C" fn hew_sched_run() {
             // This is a cooperative spin; in WASI the OS may preempt us.
         }
     }
+}
+
+/// Drain and tear down a standalone WASM program at normal `main` return.
+///
+/// `hew_sched_run` is intentionally reusable by host-driven embeddings and
+/// re-entrant waits; it must not own process teardown.  The generated
+/// standalone WASM entry epilogue calls this helper instead so short-lived
+/// actor programs get the same shutdown -> cleanup chain native programs run
+/// after their drain epilogue.
+#[cfg_attr(not(test), no_mangle)]
+pub extern "C" fn hew_wasm_runtime_exit() {
+    hew_sched_run();
+    hew_sched_shutdown();
+    hew_runtime_cleanup();
 }
 
 /// Drain both periodic-timer and sleep-queue entries whose deadlines have passed.
@@ -2056,6 +2076,8 @@ mod tests {
     /// Must not be called concurrently with other test code (Rust test
     /// harness serialises tests within the same module by default).
     unsafe fn reset_globals() {
+        WASM_CLEANUP_RAN.store(false, Ordering::Release);
+
         // SAFETY: Single-threaded test environment. Use raw pointer
         // writes to avoid creating references to mutable statics.
         unsafe {
@@ -4222,6 +4244,92 @@ mod tests {
         // SAFETY: mailbox was allocated for this test.
         unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
         hew_sched_shutdown();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn runtime_exit_cleans_up_short_lived_actor_program() {
+        static STATE_DROP_SEEN: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn mark_state_drop(_state: *mut c_void) {
+            STATE_DROP_SEEN.store(true, Ordering::Release);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        STATE_DROP_SEEN.store(false, Ordering::Release);
+        hew_sched_init();
+        let mut initial_state = 1_u8;
+
+        // SAFETY: the one-byte actor state is readable, the actor has no
+        // dispatch work, and the spawned actor is owned by the runtime cleanup
+        // chain after this point.
+        unsafe {
+            let actor = crate::actor::hew_actor_spawn(
+                (&raw mut initial_state).cast(),
+                std::mem::size_of::<u8>(),
+                None,
+            );
+            assert!(!actor.is_null(), "spawn must produce a tracked actor");
+            crate::actor::hew_actor_set_state_drop(actor, mark_state_drop);
+        }
+
+        hew_wasm_runtime_exit();
+
+        assert!(
+            STATE_DROP_SEEN.load(Ordering::Acquire),
+            "standalone WASM runtime exit must run cleanup_all_actors"
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn stdlib_exit_route_cleans_up_short_lived_actor_program_once() {
+        static EXIT_CODE: AtomicI32 = AtomicI32::new(i32::MIN);
+        static STATE_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+        fn record_exit_code(code: i32) {
+            EXIT_CODE.store(code, Ordering::Release);
+        }
+
+        unsafe extern "C" fn count_state_drop(_state: *mut c_void) {
+            STATE_DROP_COUNT.fetch_add(1, Ordering::AcqRel);
+        }
+
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        EXIT_CODE.store(i32::MIN, Ordering::Release);
+        STATE_DROP_COUNT.store(0, Ordering::Release);
+        hew_sched_init();
+        let mut initial_state = 1_u8;
+
+        // SAFETY: the one-byte actor state is readable, the actor has no
+        // dispatch work, and the spawned actor is owned by the runtime cleanup
+        // chain after this point.
+        unsafe {
+            let actor = crate::actor::hew_actor_spawn(
+                (&raw mut initial_state).cast(),
+                std::mem::size_of::<u8>(),
+                None,
+            );
+            assert!(!actor.is_null(), "spawn must produce a tracked actor");
+            crate::actor::hew_actor_set_state_drop(actor, count_state_drop);
+        }
+
+        crate::with_hew_exit_terminator_for_test(record_exit_code, || crate::hew_exit(7));
+        assert_eq!(
+            EXIT_CODE.load(Ordering::Acquire),
+            7,
+            "stdlib exit route must preserve the requested process status"
+        );
+        hew_wasm_runtime_exit();
+        assert_eq!(
+            STATE_DROP_COUNT.load(Ordering::Acquire),
+            1,
+            "stdlib exit route must run cleanup_all_actors exactly once"
+        );
     }
 
     /// `actor_ask_wasm_impl` with a generous wall-clock deadline returns the

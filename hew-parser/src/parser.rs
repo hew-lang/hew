@@ -1023,6 +1023,15 @@ impl<'src> Parser<'src> {
                 if let Some(name) = Self::contextual_keyword_name(tok) {
                     self.advance();
                     Some(name.to_string())
+                } else if let Some(kw) = tok.keyword_str() {
+                    // Reserved keyword in a name position — emit a targeted
+                    // diagnostic so the user knows the word is off-limits.
+                    self.error_at_with_hint(
+                        format!("`{kw}` is a reserved word and cannot be used as a name"),
+                        self.peek_span(),
+                        format!("rename this item to something other than `{kw}`"),
+                    );
+                    None
                 } else {
                     self.error(format!("expected identifier, found {tok}"));
                     None
@@ -1031,6 +1040,100 @@ impl<'src> Parser<'src> {
             None => {
                 self.error("expected identifier, found end of file".to_string());
                 None
+            }
+        }
+    }
+
+    /// Skip tokens until the next actor-body item boundary (`receive`, `fn`,
+    /// `let`, `var`, or the actor's closing `}`) or end-of-file.  Nested
+    /// brace groups (`{…}`) are consumed wholesale so we stop only at the
+    /// actor-level boundary, not inside a method body.
+    ///
+    /// Used for error recovery after a bad item name inside an actor body so
+    /// a single bad declaration does not cascade into dozens of errors.
+    fn skip_to_actor_item_boundary(&mut self) {
+        let mut depth: usize = 0;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::LeftBrace) => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some(Token::RightBrace) => {
+                    if depth == 0 {
+                        // This is the actor-body closing brace — stop here.
+                        break;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                Some(Token::Receive | Token::Fn | Token::Let | Token::Var) if depth == 0 => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Returns true when the token can start a top-level item.
+    fn is_top_level_item_start(tok: &Token<'_>) -> bool {
+        matches!(
+            tok,
+            Token::Fn
+                | Token::Pub
+                | Token::Actor
+                | Token::Type
+                | Token::Trait
+                | Token::Impl
+                | Token::Import
+                | Token::Record
+                | Token::Enum
+                | Token::Machine
+                | Token::Supervisor
+                | Token::Const
+                | Token::Wire
+                | Token::Indirect
+                | Token::Async
+                | Token::Gen
+                | Token::Extern
+                | Token::HashBracket
+                | Token::DocComment(_)
+        )
+    }
+
+    /// Skip tokens until the next top-level item start or end-of-file.
+    /// Always advances at least one token, then skips nested brace groups
+    /// wholesale.  Used for error recovery in `parse_program` so a single
+    /// bad declaration does not cascade into one error per remaining token.
+    fn skip_to_top_level_item_boundary(&mut self) {
+        // Consume at least the current (failed) token so we always make
+        // forward progress even if it looks like an item-start keyword.
+        if !self.at_end() {
+            self.advance();
+        }
+        let mut depth: usize = 0;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::LeftBrace) => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some(Token::RightBrace) => {
+                    if depth == 0 {
+                        self.advance(); // consume stray `}` and stop
+                        break;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                Some(tok) if depth == 0 && Self::is_top_level_item_start(tok) => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
             }
         }
     }
@@ -1262,8 +1365,10 @@ impl<'src> Parser<'src> {
             if let Some(item) = self.parse_item() {
                 items.push(item);
             } else {
-                // Skip to next item on error
-                self.advance();
+                // Skip past the failed item to the next top-level boundary so
+                // a single bad declaration (e.g. a reserved keyword used as a
+                // name) does not cascade into one error per remaining token.
+                self.skip_to_top_level_item_boundary();
             }
         }
 
@@ -2634,7 +2739,13 @@ impl<'src> Parser<'src> {
                     }
                     false
                 };
-                let handler_name = self.expect_ident()?;
+                let Some(handler_name) = self.expect_ident() else {
+                    // Name is missing or is a reserved keyword.  The diagnostic
+                    // has already been emitted by `expect_ident`.  Skip tokens
+                    // up to the next actor-body item so we don't cascade.
+                    self.skip_to_actor_item_boundary();
+                    continue;
+                };
                 let type_params = self.parse_opt_type_params()?;
                 self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
@@ -2681,6 +2792,10 @@ impl<'src> Parser<'src> {
                 {
                     method.doc_comment = doc_comment;
                     methods.push(method);
+                } else {
+                    // parse_function emitted its own diagnostic.  Skip to the
+                    // next item boundary so one bad method name doesn't cascade.
+                    self.skip_to_actor_item_boundary();
                 }
             } else if self.peek() == Some(&Token::Let) {
                 if !attrs.is_empty() {
@@ -8132,6 +8247,121 @@ mod tests {
         } else {
             panic!("expected actor item");
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Reserved-word-as-name diagnostics and recovery
+    // ---------------------------------------------------------------------------
+
+    /// A `receive fn` whose name is a reserved keyword produces exactly ONE
+    /// error that names the keyword and suggests renaming, instead of a
+    /// cascade of parse errors for each remaining token in the declaration.
+    #[test]
+    fn receive_fn_reserved_keyword_name_emits_single_clear_error() {
+        let source = "actor Metrics { receive fn record(n: i64) {} }";
+        let result = parse(source);
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "expected exactly 1 error, got {}: {:?}",
+            result.errors.len(),
+            result.errors
+        );
+        let msg = &result.errors[0].message;
+        assert!(
+            msg.contains("record"),
+            "error message must name the reserved word; got: {msg}"
+        );
+        assert!(
+            msg.contains("reserved") || msg.contains("keyword"),
+            "error message must say reserved/keyword; got: {msg}"
+        );
+    }
+
+    /// Variant: `match` as the name of a plain `fn` method inside an actor.
+    #[test]
+    fn actor_method_reserved_keyword_name_emits_single_clear_error() {
+        let source = "actor A { fn match(n: i64) {} }";
+        let result = parse(source);
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "expected exactly 1 error, got {}: {:?}",
+            result.errors.len(),
+            result.errors
+        );
+        let msg = &result.errors[0].message;
+        assert!(
+            msg.contains("match"),
+            "error must name the reserved word; got: {msg}"
+        );
+    }
+
+    /// Variant: `record` as the name of a top-level `fn` declaration.
+    #[test]
+    fn toplevel_fn_reserved_keyword_name_emits_single_clear_error() {
+        let source = "fn record(n: i64) -> i64 { n }";
+        let result = parse(source);
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "expected exactly 1 error, got {}: {:?}",
+            result.errors.len(),
+            result.errors
+        );
+        let msg = &result.errors[0].message;
+        assert!(
+            msg.contains("record"),
+            "error must name the reserved word; got: {msg}"
+        );
+    }
+
+    /// A valid actor with non-keyword names continues to parse cleanly.
+    #[test]
+    fn actor_with_non_keyword_receive_fn_name_parses_ok() {
+        let source = "actor Metrics { receive fn emit_record(n: i64) {} fn helper() {} }";
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "expected no errors, got: {:?}",
+            result.errors
+        );
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        assert_eq!(actor.receive_fns.len(), 1);
+        assert_eq!(actor.methods.len(), 1);
+    }
+
+    /// Recovery: a second valid receive fn after a reserved-keyword name is
+    /// still parsed correctly (the error does not swallow the rest of the actor).
+    #[test]
+    fn reserved_keyword_name_recovery_continues_parsing_sibling_methods() {
+        let source = "actor Metrics { receive fn record(n: i64) {} receive fn add(m: i64) {} }";
+        let result = parse(source);
+        // One error for the bad name, but the actor and sibling method survive.
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "expected 1 error, got {}: {:?}",
+            result.errors.len(),
+            result.errors
+        );
+        assert_eq!(
+            result.program.items.len(),
+            1,
+            "actor item must still be produced"
+        );
+        let Item::Actor(actor) = &result.program.items[0].0 else {
+            panic!("expected actor");
+        };
+        // The second (valid) receive fn must be recovered.
+        assert_eq!(
+            actor.receive_fns.len(),
+            1,
+            "sibling receive fn `add` must be parsed"
+        );
+        assert_eq!(actor.receive_fns[0].name, "add");
     }
 
     #[test]

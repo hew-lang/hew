@@ -500,6 +500,7 @@ mod tests {
         assert!(current_context().is_null());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn current_context_is_null_on_non_dispatch_thread() {
         let _runtime_guard = crate::runtime_test_guard();

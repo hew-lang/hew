@@ -2392,36 +2392,43 @@ mod tests {
     // the matching `libc::abort()`-on-OOB path. Parent asserts child
     // exited non-zero.
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_index_oob_aborts() {
         run_aborting_subprocess("string_index_oob_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_index_negative_aborts() {
         run_aborting_subprocess("string_index_negative_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_index_null_aborts() {
         run_aborting_subprocess("string_index_null_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_slice_oob_aborts() {
         run_aborting_subprocess("string_slice_oob_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_slice_inverted_aborts() {
         run_aborting_subprocess("string_slice_inverted_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn string_slice_negative_aborts() {
         run_aborting_subprocess("string_slice_negative_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_aborting_subprocess(case: &str) {
         let exe = std::env::current_exe().expect("current_exe");
         let status = std::process::Command::new(exe)

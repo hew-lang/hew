@@ -1408,21 +1408,25 @@ mod tests {
         unsafe { hew_bytes_drop(triple.ptr) };
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_index_oob_aborts() {
         run_aborting_subprocess("bytes_index_oob_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_index_negative_aborts() {
         run_aborting_subprocess("bytes_index_negative_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_slice_oob_aborts() {
         run_aborting_subprocess("bytes_slice_oob_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_slice_inverted_aborts() {
         run_aborting_subprocess("bytes_slice_inverted_aborts");
@@ -1435,11 +1439,13 @@ mod tests {
     // would silently mis-point at the wrong place in the underlying
     // allocation. The new `hew_bytes_abort_offset_overflow` path
     // catches it; these tests exercise the abort.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_index_offset_overflow_aborts() {
         run_aborting_subprocess("bytes_index_offset_overflow_aborts");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_slice_offset_overflow_aborts() {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
@@ -1449,6 +1455,7 @@ mod tests {
     /// when a retain observes a count already past the saturation threshold —
     /// proving the wrap guard is wired into the real path (mirrors
     /// `hew-cabi`'s `cstring_retain_aborts_on_refcount_overflow`).
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_clone_ref_overflow_aborts() {
         run_aborting_subprocess("bytes_clone_ref_overflow_aborts");
@@ -1500,6 +1507,7 @@ mod tests {
     // Spawn ourself with HEW_BYTES_ABORT_CASE set; the matching env-driven
     // test below runs the FFI call that aborts. The parent test asserts
     // (via `should_panic`) that the child exited non-zero (i.e. aborted).
+    #[cfg(not(target_arch = "wasm32"))]
     fn run_aborting_subprocess(case: &str) {
         let exe = std::env::current_exe().expect("current_exe");
         let status = std::process::Command::new(exe)

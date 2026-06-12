@@ -731,6 +731,11 @@ mod tests {
         );
     }
 
+    // Native only: routes allocation through the current-arena slot, which on
+    // wasm32 is the context-based ABI impl needing a live dispatch context
+    // (covered by the execution-context / wasm-parity suites). The standalone
+    // C-API round-trip uses the native test-slot semantics.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn hew_arena_c_api() {
         let arena = hew_arena_new();
@@ -764,6 +769,11 @@ mod tests {
         assert!(ptr.is_null(), "zero-size alloc must return null");
     }
 
+    // Native only: the round-trip relies on the test-slot `set_current_arena`
+    // (itself `cfg(not(wasm32))`). On wasm32 the context-based ABI impl is
+    // active and needs a live dispatch context — exercised by the
+    // execution-context and wasm-parity suites, not this standalone test.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn arena_install_restore_round_trip() {
         // Verify set_current_arena returns the previously installed arena.
@@ -843,6 +853,8 @@ mod tests {
     }
 
     /// `hew_arena_new_with_cap` is the C ABI constructor; verify it enforces the cap.
+    // Native only: same context-based current-arena reason as hew_arena_c_api.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn hew_arena_new_with_cap_c_api() {
         let cap = 128_usize;

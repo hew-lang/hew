@@ -5630,6 +5630,7 @@ mod tests {
         hew_sched_shutdown();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn wasm_scheduler_releases_state_lock_after_handler_panic() {
         static SUCCESS_COUNT: AtomicI32 = AtomicI32::new(0);

@@ -953,7 +953,7 @@ mod tests {
 /// The two reactor UAFs that motivated splitting this slice from Slice 3 hid in
 /// exactly this window — a heap frame's lifecycle across a suspend/resume on a
 /// different worker than the one that parked it.
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod forced_ordering_probe {
     use super::test_support::ScratchFrame;
     use super::*;

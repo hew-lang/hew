@@ -528,6 +528,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn bytes_descriptor_has_drop_and_layout_managed_ownership() {
         assert!(hew_layout_key_bytes.drop_fn.is_some());

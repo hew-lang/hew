@@ -287,6 +287,7 @@ mod tests {
     /// Cross-thread mutual exclusion: two threads each take the lock
     /// 100 times around an increment of a shared counter. Final value
     /// must equal 200 (no races).
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn auto_mutex_excludes_across_threads() {
         use std::sync::atomic::{AtomicI32, Ordering};

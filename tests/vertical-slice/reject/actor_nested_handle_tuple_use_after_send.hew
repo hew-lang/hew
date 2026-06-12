@@ -1,0 +1,26 @@
+// Reject: `rx` is transferred inside a tuple `(rx, 42)` to an actor message
+// boundary. The tuple literal MOVES `rx` (channel handle = single-owner), so
+// any subsequent use of `rx` is a `UseAfterConsume` violation.
+//
+// The hole this pins: before the fix, HIR lowered the TUPLE arg as Read
+// (not Consume) because `checked_span_is_channel_handle` only matched the
+// top-level type. The MIR dataflow checker therefore never saw a Consume
+// intent for `rx`, and `rx.close()` after the send compiled silently —
+// producing a double-close at runtime (SIGABRT).
+import std::channel::channel;
+
+actor Worker {
+    receive fn accept(pair: (channel.Receiver<i64>, i64)) {
+        let (rx, _n) = pair;
+        rx.close();
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+    tx.close();
+    let w = spawn Worker;
+    w.accept((rx, 42));
+    // `rx` was moved into the tuple. Using it here must be refused.
+    rx.close();
+}

@@ -623,3 +623,82 @@ fn vec_machine_element_refuses_at_compile_time() {
         "expected the named machine-Vec refusal diagnostic; got:\n{stderr}",
     );
 }
+
+/// A channel handle nested inside a tuple `(Receiver<i64>, i64)` is still a
+/// single-owner resource. Sending the tuple to an actor transfers the handle;
+/// the caller binding `rx` must be `UseAfterConsume` after the send.
+///
+/// Before the fix, `checked_span_is_channel_handle` only matched the top-level
+/// type — a tuple arg was lowered as `Read` (`CowShare` in MIR), the caller
+/// binding stayed live, and `rx.close()` compiled silently and crashed at
+/// runtime (SIGABRT from double-close, SIGSEGV from a freed-then-read pointer).
+#[test]
+fn nested_channel_handle_in_tuple_use_after_send_refused() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("nested_handle_tuple.hew");
+    std::fs::write(
+        &source,
+        "import std::channel::channel;\n\
+         \n\
+         actor Worker {\n\
+         \x20   receive fn accept(pair: (channel.Receiver<i64>, i64)) {\n\
+         \x20       let (rx, _n) = pair;\n\
+         \x20       rx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   tx.close();\n\
+         \x20   let w = spawn Worker;\n\
+         \x20   w.accept((rx, 42));\n\
+         \x20   rx.close();\n\
+         }\n",
+    )
+    .unwrap();
+
+    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+
+    assert!(
+        !output.status.success(),
+        "rx.close() after transferring rx in a tuple must be refused; it compiled:\n{}",
+        support::describe_output(&output),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("used after it was consumed") && stderr.contains("`rx`"),
+        "expected UseAfterConsume on rx; got:\n{stderr}",
+    );
+}
+
+/// Positive contract: sending a tuple `(Receiver<string>, string)` to an actor
+/// compiles and runs correctly — the handle is transferred (not double-closed),
+/// the worker drains and closes the channel, and both sides produce the
+/// expected output.
+#[test]
+fn nested_channel_handle_in_tuple_transfers_correctly() {
+    run_inline_scribbled(
+        "nested_handle_tuple_transfer",
+        "import std::channel::channel;\n\
+         \n\
+         actor Worker {\n\
+         \x20   receive fn deliver(pair: (channel.Receiver<i64>, i64)) {\n\
+         \x20       let (rx, n) = pair;\n\
+         \x20       rx.close();\n\
+         \x20       println(f\"worker got {n}\");\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   tx.close();\n\
+         \x20   let w = spawn Worker;\n\
+         \x20   w.deliver((rx, 99));\n\
+         \x20   sleep_ms(100);\n\
+         \x20   println(\"done\");\n\
+         }\n",
+        "worker got 99\ndone\n",
+    );
+}

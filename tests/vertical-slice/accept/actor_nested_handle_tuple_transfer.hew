@@ -1,0 +1,32 @@
+// Accept: an actor receive handler whose parameter is a tuple carrying a
+// `channel.Receiver<string>` alongside a `string` tag. The caller passes
+// `(rx, "tag")` as the actor-send arg — ownership of `rx` transfers through
+// the tuple to the handler, which closes the channel.
+//
+// This is the positive half of the W5.0-nested-handle-transfer gate:
+// the transfer compiles, runs, and produces the expected output without a
+// double-close.
+import std::channel::channel;
+
+actor Worker {
+    receive fn deliver(pair: (channel.Receiver<string>, string)) {
+        let (rx, tag) = pair;
+        let msg = match rx.recv() {
+            Some(s) => s,
+            None => "empty",
+        };
+        println(f"worker got {tag}: {msg}");
+        rx.close();
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
+    tx.send("hello");
+    tx.close();
+    let w = spawn Worker;
+    // Transfer rx through a tuple. After this send `rx` must not be used.
+    w.deliver((rx, "payload"));
+    sleep_ms(200);
+    println("done");
+}

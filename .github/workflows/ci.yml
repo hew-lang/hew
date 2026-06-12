@@ -454,6 +454,12 @@ jobs:
     timeout-minutes: 60
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # The 3-core macOS runner (now un-throttled — no CARGO_BUILD_JOBS=1)
+      # runs the SWIM failure-detector tests under enough load that the
+      # default observation window false-positives a still-alive node as
+      # DEAD. Widen the window the same way the coverage job does; the
+      # tests honour this scale (hew-runtime/src/hew_node.rs).
+      HEW_SWIM_TEST_TIME_SCALE: "10"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'

@@ -1043,6 +1043,26 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn is_import_path_segment_token(tok: &Token<'_>) -> bool {
+        matches!(tok, Token::Identifier(_) | Token::Actor)
+            || Self::contextual_keyword_name(tok).is_some()
+    }
+
+    fn expect_import_path_segment(&mut self) -> Option<String> {
+        match self.peek() {
+            Some(Token::Actor) => {
+                self.advance();
+                Some("actor".to_string())
+            }
+            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
+                let name = Self::contextual_keyword_name(tok).expect("checked above");
+                self.advance();
+                Some(name.to_string())
+            }
+            _ => self.expect_ident(),
+        }
+    }
+
     /// Skip tokens until the next actor-body item boundary (`receive`, `fn`,
     /// `let`, `var`, or the actor's closing `}`) or end-of-file.  Nested
     /// brace groups (`{…}`) are consumed wholesale so we stop only at the
@@ -4560,34 +4580,12 @@ impl<'src> Parser<'src> {
         let mut path = Vec::new();
 
         loop {
-            path.push(self.expect_ident()?);
+            path.push(self.expect_import_path_segment()?);
             // Only continue path if :: is followed by an identifier
             if self.peek() == Some(&Token::DoubleColon) {
                 let saved = self.save_pos();
                 self.advance(); // consume ::
-                if !matches!(
-                    self.peek(),
-                    Some(
-                        Token::Identifier(_)
-                            | Token::After
-                            | Token::From
-                            | Token::Init
-                            | Token::Child
-                            | Token::Restart
-                            | Token::Budget
-                            | Token::Strategy
-                            | Token::Permanent
-                            | Token::Transient
-                            | Token::Temporary
-                            | Token::OneForOne
-                            | Token::OneForAll
-                            | Token::RestForOne
-                            | Token::Wire
-                            | Token::Optional
-                            | Token::Deprecated
-                            | Token::Reserved
-                    )
-                ) {
+                if !self.peek().is_some_and(Self::is_import_path_segment_token) {
                     // :: followed by *, {, etc. — restore and let spec parsing handle it
                     self.restore_pos(saved);
                     break;
@@ -8248,6 +8246,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn actor_keyword_still_starts_actor_item() {
+        let source = "actor ActorPathRegression { receive fn ping() {} }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(matches!(&result.program.items[0].0, Item::Actor(_)));
+    }
+
     // ---------------------------------------------------------------------------
     // Reserved-word-as-name diagnostics and recovery
     // ---------------------------------------------------------------------------
@@ -8312,6 +8318,19 @@ mod tests {
         assert!(
             msg.contains("record"),
             "error must name the reserved word; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn toplevel_fn_actor_name_still_reports_reserved_word() {
+        let source = "fn actor() {}";
+        let result = parse(source);
+        assert!(
+            result.errors.iter().any(|err| err
+                .message
+                .contains("`actor` is a reserved word and cannot be used as a name")),
+            "expected reserved-word diagnostic for actor function name, got: {:?}",
+            result.errors
         );
     }
 
@@ -9545,6 +9564,18 @@ fn demo() {}
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         if let Item::Import(imp) = &result.program.items[0].0 {
             assert_eq!(imp.path, vec!["std", "fs"]);
+        } else {
+            panic!("expected import");
+        }
+    }
+
+    #[test]
+    fn parse_import_actor_path_segment() {
+        let source = "import std::actor::monitor;";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Import(imp) = &result.program.items[0].0 {
+            assert_eq!(imp.path, vec!["std", "actor", "monitor"]);
         } else {
             panic!("expected import");
         }

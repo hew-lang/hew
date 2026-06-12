@@ -1673,10 +1673,11 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_program, hir_diagnostics_to_frontend, load_dependencies, load_lockfile,
-        load_package_name, parse_source, run_file_frontend_to_typecheck, FrontendDiagnosticKind,
-        FrontendOptions,
+        check_file, check_file_with_state, check_program, hir_diagnostics_to_frontend,
+        load_dependencies, load_lockfile, load_package_name, parse_source,
+        run_file_frontend_to_typecheck, FrontendDiagnosticKind, FrontendOptions,
     };
+    use hew_parser::ast::Item;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -2091,6 +2092,38 @@ mod tests {
 
         check_file(&input, &FrontendOptions::default())
             .expect("explicit file import should keep _test.hew semantics");
+    }
+
+    #[test]
+    fn module_import_with_actor_path_segment_resolves() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let actor_dir = dir.path().join("actor");
+        fs::create_dir_all(&actor_dir).expect("create actor module dir");
+        write_source(&actor_dir, "monitor.hew", "pub fn ping() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import actor::monitor;\n\nfn main() -> i64 { 0 }\n",
+        );
+
+        let (_output, state) = check_file_with_state(
+            &input,
+            &FrontendOptions {
+                no_typecheck: true,
+                ..Default::default()
+            },
+        )
+        .expect("actor path segment import should resolve");
+
+        let Item::Import(import) = &state.program.items[0].0 else {
+            panic!("expected import item");
+        };
+        assert_eq!(import.path, vec!["actor", "monitor"]);
+        assert!(import
+            .resolved_items
+            .as_ref()
+            .is_some_and(|items| !items.is_empty()));
+        assert_eq!(import.resolved_source_paths.len(), 1);
     }
 
     /// Two different modules each exporting a `pub actor` with the same bare

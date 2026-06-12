@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v2
+          key: llvm-22.1.0-freebsd15-amd64-v3
 
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
@@ -64,7 +64,7 @@ jobs:
               cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_TARGETS_TO_BUILD="X86" \
+                -DLLVM_TARGETS_TO_BUILD="X86;AArch64;WebAssembly" \
                 -DLLVM_BUILD_TOOLS=ON \
                 -DLLVM_BUILD_UTILS=ON \
                 -DLLVM_INSTALL_UTILS=ON \
@@ -137,4 +137,4 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v2
+          key: llvm-22.1.0-freebsd15-amd64-v3

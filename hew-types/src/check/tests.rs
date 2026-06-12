@@ -768,6 +768,93 @@ fn turbofish_arity_mismatch_is_rejected() {
 }
 
 #[test]
+fn block_wrapped_await_actor_ask_types_as_result() {
+    // `await { actor.method() }` — the method call is wrapped in a bare block
+    // whose trailing expression is the method call. The checker must unwrap the
+    // block and recognise the ask, returning `Result<i64, AskError>` rather than
+    // the raw method return type `i64`.  Before the fix this produced a
+    // "constructor pattern `Ok` cannot match non-enum type `i64`" error.
+    let output = check_source(
+        r"
+        actor Doubler {
+            receive fn process(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() {
+            let doubler = spawn Doubler;
+            let r = match await { doubler.process(5) } {
+                Ok(v) => v,
+                Err(_) => -1,
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "block-wrapped actor-ask await must type-check without errors; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn bare_await_actor_ask_in_match_still_types_as_result() {
+    // Regression guard: the bare form `await actor.method()` must continue
+    // to resolve to `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
+    let output = check_source(
+        r"
+        actor Doubler {
+            receive fn process(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() {
+            let doubler = spawn Doubler;
+            let r = match await doubler.process(5) {
+                Ok(v) => v,
+                Err(_) => -1,
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "bare actor-ask await in match must type-check without errors; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn constructor_pattern_against_non_enum_still_errors() {
+    // Negative: an `Ok`/`Err` pattern against a plain integer literal must
+    // still produce a "cannot match non-enum type" diagnostic. The block-unwrap
+    // in the await arm must not loosen the check for non-await match scrutinees.
+    let output = check_source(
+        r"
+        fn main() {
+            let r = match 42 {
+                Ok(v) => v,
+                Err(_) => -1,
+            };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|e| {
+            matches!(e.kind, TypeErrorKind::Mismatch { .. })
+                && e.message.contains("cannot match non-enum type")
+        }),
+        "Ok/Err pattern against i64 must still emit a non-enum-type mismatch error; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn supervisor_wired_to_rejects_remote_pid_by_role() {
     let output = check_source(
         r"

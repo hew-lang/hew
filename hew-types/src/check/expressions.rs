@@ -364,10 +364,30 @@ impl Checker {
             // Await
             Expr::Await(inner) => {
                 // Signal to check_named_method_fallback that an actor-ask method
-                // call under `await` is valid.  Cleared immediately after.
+                // call under `await` is valid.  Save and restore so nested awaits
+                // (e.g. `await { await expr }`) do not clobber the outer flag.
+                let prev_inside_await = self.inside_await_expr;
                 self.inside_await_expr = true;
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
-                self.inside_await_expr = false;
+                self.inside_await_expr = prev_inside_await;
+
+                // When the user writes `await { method_call }` the inner expression
+                // is an `Expr::Block` wrapping a single trailing method call, not a
+                // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
+                // dispatch guard and span-key lookup below can find the right node.
+                let (effective_expr, effective_span) = match &inner.0 {
+                    Expr::Block(block)
+                        if block.stmts.is_empty()
+                            && block
+                                .trailing_expr
+                                .as_deref()
+                                .is_some_and(|(e, _)| matches!(e, Expr::MethodCall { .. })) =>
+                    {
+                        let trailing = block.trailing_expr.as_deref().unwrap();
+                        (&trailing.0, &trailing.1)
+                    }
+                    _ => (&inner.0, &inner.1),
+                };
 
                 // await Task<T> → T (simplified)
                 match inner_ty {
@@ -376,18 +396,20 @@ impl Checker {
                     // But NOT for method calls that happen to return an ActorRef —
                     // those should pass through the method's declared return type.
                     _ if inner_ty.as_actor_handle().is_some()
-                        && !matches!(inner.0, Expr::MethodCall { .. }) =>
+                        && !matches!(effective_expr, Expr::MethodCall { .. }) =>
                     {
                         Ty::Unit
                     }
-                    // Named-actor ask: `await ref.method(args)` where the method is
-                    // an ask-shaped receive fn (non-unit return). The checker recorded
-                    // an `ActorMethodKind::Ask` entry for the inner method-call span;
-                    // unify with the lambda/remote paths by returning `Result<R, AskError>`.
-                    _ if matches!(inner.0, Expr::MethodCall { .. }) => {
-                        let inner_span_key = SpanKey::in_module(&inner.1, self.current_module_idx);
+                    // Named-actor ask: `await ref.method(args)` (bare or block-wrapped)
+                    // where the method is an ask-shaped receive fn (non-unit return).
+                    // The checker recorded an `ActorMethodKind::Ask` entry for the
+                    // inner method-call span; unify with the lambda/remote paths by
+                    // returning `Result<R, AskError>`.
+                    _ if matches!(effective_expr, Expr::MethodCall { .. }) => {
+                        let dispatch_key =
+                            SpanKey::in_module(effective_span, self.current_module_idx);
                         if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                            self.actor_method_dispatch.get(&inner_span_key).cloned()
+                            self.actor_method_dispatch.get(&dispatch_key).cloned()
                         {
                             Ty::result(reply_ty, Ty::ask_error())
                         } else {

@@ -19561,6 +19561,75 @@ mod task_type_surface_rules {
         );
     }
 
+    // ── fork arg move semantics ──────────────────────────────────────────────
+    //
+    // These tests verify that non-Copy arguments to a named fork spawn are
+    // marked consumed in the parent scope, so that a subsequent use of the
+    // same binding is rejected as UseAfterMove. BitCopy scalars (i64, bool,
+    // etc.) are exempt and must remain live after the fork.
+    //
+    // Pin: hew-types/src/check/expressions.rs `synthesize_concurrency`
+    // (the `Expr::ForkChild` arm marks non-Copy arg identifiers moved after
+    // `synthesize` runs the call).
+
+    #[test]
+    fn fork_string_arg_parent_use_after_fork_rejected() {
+        // `fork ts = shout(greeting)` moves `greeting` (a non-Copy `string`)
+        // into the child task env. The parent must not be able to use it again
+        // — UseAfterMove must fire on the second reference.
+        let output = check_source(
+            r#"
+            fn shout(msg: string) {}
+
+            fn main() {
+                let greeting: string = "hello" + " world";
+                scope {
+                    fork ts = shout(greeting);
+                    await ts;
+                }
+                // greeting was moved into the fork — UseAfterMove here.
+                let _x = greeting;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
+            "parent use of a string arg after fork must be UseAfterMove; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_bitcopy_arg_parent_use_after_fork_accepted() {
+        // i64 is BitCopy / Copy — the arg is shared into the fork env by
+        // value, not transferred. The parent must retain ownership and be able
+        // to use the binding again without any error.
+        let output = check_source(
+            r"
+            fn add_print(a: i64, b: i64) {}
+
+            fn main() {
+                let x: i64 = 20;
+                let y: i64 = 22;
+                scope {
+                    fork t = add_print(x, y);
+                    await t;
+                }
+                // BitCopy scalars remain live in the parent.
+                let _sum = x + y;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "parent use of i64 args after fork must check clean (BitCopy exemption); got: {:#?}",
+            output.errors
+        );
+    }
+
     // ── in_unsafe scope flag sentinel ────────────────────────────────────────
     //
     // These tests verify that the `in_unsafe` flag is correctly set to `true`

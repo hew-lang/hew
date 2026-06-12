@@ -1570,6 +1570,37 @@ impl Checker {
                     return Ty::Error;
                 }
                 let ret_ty = self.synthesize(&child.0, &child.1);
+                // Mark non-Copy call arguments as moved into the fork child.
+                //
+                // `fork name = f(a, b)` transfers ownership of non-Copy args
+                // into the child task env. The general `Expr::Call` arm of
+                // `synthesize` does NOT mark args as moved (regular function
+                // calls are by-value but the type checker treats them as
+                // borrows), so without this pass a `string` arg remains live
+                // in the parent scope and a subsequent use goes unreported.
+                //
+                // We read each arg's type via `lookup_ref` (no read-count
+                // increment — `synthesize` already counted the read) and
+                // delegate to `mark_expr_moved_if_non_copy`, which gates on
+                // `!Copy` and only marks `Expr::Identifier` nodes.
+                //
+                // WHEN-OBSOLETE: if the general call-arg path gains its own
+                // move-tracking, this pass becomes redundant and can be
+                // deleted. Until then this is the sole source of
+                // UseAfterMove diagnostics for named fork spawn args.
+                if let Expr::Call { args, .. } = &child.0 {
+                    for arg in args {
+                        let (arg_expr, arg_span) = arg.expr();
+                        if let Expr::Identifier(arg_name) = arg_expr {
+                            if let Some(binding_ty) =
+                                self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
+                            {
+                                let resolved = self.subst.resolve(&binding_ty);
+                                self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
+                            }
+                        }
+                    }
+                }
                 if let Some(name) = binding {
                     // Mirror `let`: introduce the binding into the enclosing
                     // block scope so later statements (`await t`) resolve it.

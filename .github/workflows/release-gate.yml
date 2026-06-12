@@ -178,15 +178,12 @@ jobs:
           wasmtime --version
 
       - name: Run Rust workspace tests
-        # Driven-SWIM tests use a deliberately tight timing envelope; hosted
-        # 4-core runners need the test-only scale knob even unsanitized.
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
         # the runner process itself died of ENOSPC twice mid-run even after
         # the free-disk step. Full debug info is the dominant target/ cost
         # and nothing in CI reads it.
         env:
-          HEW_SWIM_TEST_TIME_SCALE: "5"
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
@@ -296,10 +293,7 @@ jobs:
           wasmtime --version
 
       - name: Run Rust workspace tests
-        # Driven-SWIM tests use a deliberately tight timing envelope; hosted
-        # 4-core runners need the test-only scale knob even unsanitized.
         env:
-          HEW_SWIM_TEST_TIME_SCALE: "5"
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         # The two-process remote-ask tests fail only on hosted arm64 runners
         # (child helper exits 101); they pass natively on arm64 Linux
@@ -374,8 +368,6 @@ jobs:
           wasm-ld --version
 
       - name: Run Rust workspace tests
-        env:
-          HEW_SWIM_TEST_TIME_SCALE: "5"
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and

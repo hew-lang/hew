@@ -14,6 +14,12 @@ use std::sync::OnceLock;
 static CODEGEN_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 static WASI_RUNNER_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
+const WASI_STDLIB_ARCHIVES: &[(&str, &str)] = &[
+    ("hew-std-encoding-json", "libhew_std_encoding_json.a"),
+    ("hew-std-encoding-yaml", "libhew_std_encoding_yaml.a"),
+    ("hew-std-encoding-toml", "libhew_std_encoding_toml.a"),
+];
+
 pub fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -146,7 +152,15 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
         .join("wasm32-wasip1")
         .join(build_profile)
         .join("libhew_runtime.a");
-    if runtime_path.is_file() {
+    if runtime_path.is_file()
+        && WASI_STDLIB_ARCHIVES.iter().all(|(_, archive)| {
+            target_dir
+                .join("wasm32-wasip1")
+                .join(build_profile)
+                .join(archive)
+                .is_file()
+        })
+    {
         return Ok(());
     }
 
@@ -190,6 +204,10 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
         ));
     }
 
+    for (package, archive) in WASI_STDLIB_ARCHIVES {
+        build_wasi_stdlib_archive(&target_dir, build_profile, package, archive)?;
+    }
+
     if !runtime_path.is_file() {
         // Cargo can exit 0 without producing the staticlib when a stale
         // fingerprint (e.g. from a CI cache hit that only cached the rlib)
@@ -204,6 +222,55 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
                 runtime_path.display()
             ));
         }
+    }
+
+    Ok(())
+}
+
+fn build_wasi_stdlib_archive(
+    target_dir: &std::path::Path,
+    build_profile: &str,
+    package: &str,
+    archive: &str,
+) -> Result<(), String> {
+    let archive_path = target_dir
+        .join("wasm32-wasip1")
+        .join(build_profile)
+        .join(archive);
+    if archive_path.is_file() {
+        return Ok(());
+    }
+
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "-q", "-p", package, "--target", "wasm32-wasip1"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root());
+    if build_profile == "release" {
+        command.arg("--release");
+    }
+
+    let output = command.output().map_err(|error| {
+        format!("failed to invoke `cargo build -p {package} --target wasm32-wasip1`: {error}")
+    })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "failed to bootstrap WASI stdlib archive with `cargo build -p {package} --target wasm32-wasip1{}`\n{}",
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            },
+            describe_output(&output)
+        ));
+    }
+
+    if !archive_path.is_file() {
+        return Err(format!(
+            "WASI stdlib archive bootstrap succeeded but {} was not created",
+            archive_path.display()
+        ));
     }
 
     Ok(())

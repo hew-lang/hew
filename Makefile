@@ -58,7 +58,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -213,6 +213,26 @@ ci-preflight-strict:
 	$(MAKE) playground-check
 	$(MAKE) test
 	$(MAKE) stdlib-lint
+
+# ── Local Linux CI-parity harness ────────────────────────────────────────────
+# Runs the GitHub Actions `Build & test (Linux)` job on a NATIVE x86_64 Linux
+# host over ssh — the faithful, fast local parity. Docker on Apple Silicon is a
+# dead end here (qemu segfaults rustc; arm64 containers diverge from CI on the
+# ppv-lite86 SIMD path and the ARM64 LLVM tarball). See scripts/ci-local-linux.sh
+# and LESSONS.md `ci-local-parity-needs-native-x86_64`.
+#
+#   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
+#   make ci-local-linux CI_LINUX_HOST=user@host STEP=vertical-slice
+#   STEP ∈ { wasm workspace vertical-slice pkg-import hew-ratchet stdlib-ratchet sandbox all }
+#
+# The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
+# Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
+# HEW_CI_LLVM_PREFIX for byte-faithful parity against CI's upstream LLVM tarball.
+STEP ?= all
+
+ci-local-linux:
+	@test -n "$(CI_LINUX_HOST)" || { echo "error: set CI_LINUX_HOST=<user@host> (a native x86_64 Linux box)"; exit 2; }
+	STEP="$(STEP)" CI_LINUX_HOST="$(CI_LINUX_HOST)" scripts/ci-local-linux.sh
 
 fuzz-corpus:
 	scripts/fuzz/hydrate-corpus.sh

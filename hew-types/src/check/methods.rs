@@ -3649,9 +3649,31 @@ impl Checker {
     /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
     /// owned enum.
     pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
-        if let Ty::Named { name, builtin, .. } = elem_ty {
+        if let Ty::Named {
+            name,
+            builtin,
+            args,
+        } = elem_ty
+        {
             if builtin.is_none() {
                 if let Some(type_def) = self.type_defs.get(name) {
+                    if matches!(type_def.kind, TypeDefKind::Machine) {
+                        if !args.is_empty() {
+                            return "a generic machine instantiation has no \
+                                    per-instantiation layout (machines canonicalize to one \
+                                    bare-named declaration layout); only monomorphic \
+                                    machine values can ride the owned-element queue witness"
+                                .to_string();
+                        }
+                        // Monomorphic machine: valid as a channel/queue element
+                        // but not as a Vec element — there is no
+                        // `__hew_machine_*_inplace` Vec thunk synthesis path
+                        // today. Use a channel to pass machine snapshots.
+                        return "machine values cannot be `Vec` elements; \
+                                use a channel (`Sender<M>`/`Receiver<M>`) to \
+                                pass machine snapshots between actors"
+                            .to_string();
+                    }
                     let is_record_or_enum = matches!(
                         type_def.kind,
                         TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
@@ -3691,7 +3713,15 @@ impl Checker {
     /// - heap-owning record/enum/tuple value types the owned-element Vec
     ///   thunk path admits ([`Self::vec_owned_element_admissible`] — the SAME
     ///   authority codegen's witness synthesis delegates to, so the checker
-    ///   and the witness can never disagree about one element type).
+    ///   and the witness can never disagree about one element type);
+    /// - monomorphic machine values — machines are tagged-union value types
+    ///   whose state-variant layout is registered in `type_defs.variants`,
+    ///   so the owned-element queue witness can describe them (same `RcFree` +
+    ///   no-unowned-container requirements as for enum channel elements).
+    ///   Generic machine instantiations are excluded (the substrate
+    ///   canonicalizes to one bare-named layout; per-instantiation witnesses
+    ///   do not exist). Machine admission lives HERE, not in
+    ///   `vec_owned_element_admissible`, so `Vec<machine>` stays fail-closed.
     ///
     /// Everything else fails closed: builtin container/handle nominals
     /// (`Vec`/`HashMap`/streams/channels/pids), closures, and any type
@@ -3707,6 +3737,39 @@ impl Checker {
             // only by a literal (`tx.send(42)`) must not be rejected
             // before defaulting runs.
             Ty::String | Ty::Bytes | Ty::IntLiteral | Ty::FloatLiteral => true,
+            // Monomorphic machine values travel the owned-element queue
+            // witness: machines are tagged-union value types registered in
+            // `type_defs.variants`, satisfying the same thunk-path
+            // requirements as enums. Generic machine instantiations are
+            // refused (canonicalised to one bare-named decl layout; no
+            // per-instantiation witness exists).
+            Ty::Named {
+                name,
+                builtin,
+                args,
+            } if builtin.is_none() => {
+                if let Some(type_def) = self.type_defs.get(name) {
+                    if matches!(type_def.kind, TypeDefKind::Machine) {
+                        // Generic instantiation: no per-instantiation layout.
+                        if !args.is_empty() {
+                            return false;
+                        }
+                        // Monomorphic: apply the same RcFree + no-unowned-container
+                        // requirements as for enum channel elements.
+                        return matches!(
+                            self.registry.rc_free_status(elem_ty),
+                            RcFreeStatus::RcFree
+                        ) && !self.vec_element_contains_unowned_container(
+                            elem_ty,
+                            &HashSet::new(),
+                            &mut HashSet::new(),
+                        );
+                    }
+                }
+                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
+                    .is_some()
+                    || self.vec_owned_element_admissible(elem_ty)
+            }
             _ => {
                 crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
                     .is_some()
@@ -3754,7 +3817,11 @@ impl Checker {
                         &mut HashSet::new(),
                     )
             }
-            Ty::Named { name, builtin, .. } => {
+            Ty::Named {
+                name,
+                builtin,
+                args: _,
+            } => {
                 // Builtin nominals (Vec/HashMap/Rc/...) are not user records/enums.
                 if builtin.is_some() {
                     return false;
@@ -3763,7 +3830,14 @@ impl Checker {
                     return false;
                 };
                 // Only record/struct/enum value types have synthesizable
-                // inplace thunks.
+                // inplace thunks. Machine types are NOT admitted here —
+                // machine values are valid as CHANNEL/QUEUE elements (where
+                // `queue_elem_admissible` handles them directly), but
+                // `Vec<machine>` has no Vec-construction thunk path and must
+                // refuse at compile time with a named diagnostic. Admitting
+                // Machine here would let `Vec<SomeMachine>` compile and then
+                // panic at runtime; keeping it out preserves fail-closed
+                // parity with the base (614e0bed).
                 if !matches!(
                     type_def.kind,
                     TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum

@@ -1,0 +1,26 @@
+// Reject: `rx` is placed into a bound tuple `pair = (rx, 42)`, then `pair`
+// is sent to an actor. After the tuple is constructed, `rx` must be
+// `UseAfterConsume` — the tuple took exclusive ownership of the channel handle.
+//
+// This is the bound-variable variant of the nested-handle transfer gate. The
+// checker (hew-types) marks `pair` moved at the send site (non-Copy type),
+// but the inner `rx` must also be consumed at tuple-construction time so that
+// referring to `rx` — even before `pair` is sent — is refused.
+import std::channel::channel;
+
+actor Worker {
+    receive fn accept(pair: (channel.Receiver<i64>, i64)) {
+        let (rx, _n) = pair;
+        rx.close();
+    }
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);
+    tx.close();
+    let w = spawn Worker;
+    let pair = (rx, 42);
+    w.accept(pair);
+    // `rx` was consumed into `pair` at construction. Using it here must be refused.
+    rx.close();
+}

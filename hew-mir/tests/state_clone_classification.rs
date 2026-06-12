@@ -655,3 +655,120 @@ fn vec_of_non_opaque_record_actor_state_classifies_clean() {
         "Vec<Point> actor state must classify (no over-fire)",
     );
 }
+
+// ─── Machine state fields (transition-watch lane, stage-0 pin) ────────────
+
+/// Source fixture: a locally declared machine held as an actor state field.
+const MACHINE_FIELD_SOURCE: &str = "
+    machine Light {
+        events {
+            Flip;
+        }
+        state Off;
+        state On;
+        on Flip: Off => On { On }
+        on Flip: On => Off { Off }
+    }
+
+    actor Holder {
+        var light: Light = Light::Off;
+        receive fn flip() {
+            light.step(Flip);
+        }
+    }
+
+    fn main() {
+        let h = spawn Holder;
+        h.flip();
+    }
+";
+
+/// A machine-typed actor state field classifies through the enum
+/// clone/drop authority (machines are enums at the value-classification
+/// layer — the machine layouts project into enum-layout views). Was the
+/// stage-0 fail-closed pin
+/// (`machine_actor_state_field_currently_fails_classification`) before the
+/// projection landed.
+#[test]
+fn machine_actor_state_field_classifies_as_enum() {
+    let pipeline = lower_source(MACHINE_FIELD_SOURCE);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "machine state field must classify clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_some() && holder.state_drop_fn_symbol.is_some(),
+        "machine state field must earn the paired clone/drop symbols; got \
+         clone={:?} drop={:?}",
+        holder.state_clone_fn_symbol,
+        holder.state_drop_fn_symbol,
+    );
+    let kinds = holder
+        .state_field_clone_kinds
+        .as_ref()
+        .expect("classified actor must carry per-field kinds");
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [StateFieldCloneKind::Enum { name }] if name == "Light"
+        ),
+        "machine field must classify as Enum {{ name: \"Light\" }}; got {kinds:?}",
+    );
+}
+
+/// A machine with a heap-payload state (`Failed {{ reason: string }}`)
+/// rides the same enum classification — the clone/drop thunks walk the
+/// string payload exactly as an enum variant's.
+#[test]
+fn heap_payload_machine_state_field_classifies_as_enum() {
+    let pipeline = lower_source(
+        "
+        machine Conn {
+            events {
+                Connect;
+                Fail { reason: string; }
+            }
+            state Idle;
+            state Failed { reason: string; }
+            on Connect: _ => _ { state }
+            on Fail: Idle => Failed { Conn::Failed { reason: event.reason } }
+            on Fail: _ => _ { state }
+        }
+
+        actor Holder {
+            var c: Conn = Conn::Idle;
+            receive fn poke() {
+                c.step(ConnEvent::Fail { reason: \"boom\" });
+            }
+        }
+
+        fn main() {
+            let h = spawn Holder;
+            h.poke();
+        }
+    ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "heap-payload machine state field must classify clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_some() && holder.state_drop_fn_symbol.is_some(),
+        "heap-payload machine field must earn the paired clone/drop symbols",
+    );
+    let kinds = holder
+        .state_field_clone_kinds
+        .as_ref()
+        .expect("classified actor must carry per-field kinds");
+    assert!(
+        matches!(
+            kinds.as_slice(),
+            [StateFieldCloneKind::Enum { name }] if name == "Conn"
+        ),
+        "heap-payload machine field must classify as Enum {{ name: \"Conn\" }}; got {kinds:?}",
+    );
+}

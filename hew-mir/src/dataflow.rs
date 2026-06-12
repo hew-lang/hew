@@ -174,6 +174,27 @@ fn min_site(a: SiteId, b: SiteId) -> SiteId {
     }
 }
 
+/// True for channel handle types (`Sender<T>` / `Receiver<T>`).
+///
+/// `#[opaque]`-only handles classify as `BitCopy` on the REPRESENTATION
+/// axis (pointer-width, memcpy'd, no implicit drop), which normally
+/// suppresses the consume transition below. Channel handles are still
+/// single-owner on the OWNERSHIP axis: `close()` releases the underlying
+/// resource and an actor-message transfer hands the pointer to the
+/// receiving handler. A use after either consume races the new owner /
+/// double-closes the channel, so explicit `Consume`-intent uses of these
+/// types must transition to `Consumed` despite the `BitCopy` representation.
+/// Read-intent uses (`send`/`recv`/`clone`, plain rebinds) are untouched.
+fn is_channel_handle_ty(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver),
+            ..
+        }
+    )
+}
+
 /// Forward-scan transfer function over one block's statements.
 /// Emits `InitialisedBeforeUse` / `UseAfterConsume` checks as it
 /// goes; returns the exit state for this block's terminator.
@@ -238,7 +259,8 @@ fn transfer_block(
                 // and the use was already flagged. For any other prior state a
                 // genuine `Consume` use transitions to `Consumed` as usual.
                 if *intent == IntentKind::Consume
-                    && ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+                    && (ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
+                        || is_channel_handle_ty(ty))
                     && !matches!(
                         state.get(binding),
                         Some(BindingState::AliasedIntoAggregate(_))
@@ -389,8 +411,22 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. }
             | Terminator::Join { next, .. } => emit_edge(*next),
+            // The runtime dispatch jumps to exactly one winning arm's
+            // `body_block`; each body reaches `next` (the join) through its
+            // own `Goto`. Without the body edges the arm bodies are
+            // unreachable, their exit states are discarded by the
+            // reachable-only meet, and any aggregate arm binding whose uses
+            // span blocks inside a body trips a false `InitialisedBeforeUse`.
+            // The direct `next` edge is kept as the conservative no-arm path
+            // (`Join` has no body blocks — its branches converge in the
+            // terminator itself).
+            Terminator::Select { arms, next } => {
+                for arm in arms {
+                    emit_edge(arm.body_block);
+                }
+                emit_edge(*next);
+            }
             // Suspend's default edge exits the function (returns to the
             // executor); resume + cleanup are the in-CFG successor edges.
             Terminator::Suspend {
@@ -444,8 +480,16 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         | Terminator::Send { next, .. }
         | Terminator::Ask { next, .. }
         | Terminator::RemoteAsk { next, .. }
-        | Terminator::Select { next, .. }
         | Terminator::Join { next, .. } => vec![*next],
+        // Arm body blocks are real runtime successors (the dispatch jumps to
+        // the winning arm); `next` is kept as the conservative no-arm path.
+        // Must mirror `build_preds` exactly or the worklist and the meet
+        // disagree about the CFG.
+        Terminator::Select { arms, next } => {
+            let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+            succs.push(*next);
+            succs
+        }
         // Suspend's default edge exits the function; resume + cleanup are the
         // in-CFG successors.
         Terminator::Suspend {

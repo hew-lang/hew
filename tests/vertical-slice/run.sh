@@ -615,7 +615,9 @@ for fixture in \
   move_into_enum_string \
   move_into_enum_vec \
   move_into_array_string \
-  move_into_array_vec
+  move_into_array_vec \
+  actor_nested_handle_tuple_use_after_send \
+  actor_nested_handle_bound_tuple_rx_use_after_send
 do
   reject_check_use_after_consume "${fixture}"
 done
@@ -729,6 +731,13 @@ run_accept_expect_stdout "actor_multi_arg_tell"
 # packs both args into one record and the reply rides the existing ask
 # channel; covers i64+i64 and string+i64 ask payloads.
 run_accept_expect_stdout "actor_multi_arg_ask"
+
+# Accept + run: a channel handle nested inside a tuple `(Receiver<string>, string)`
+# as an actor receive-fn parameter. Transfers the Receiver through the mailbox;
+# the worker drains and closes it. Pins the recursive handle predicate: before
+# the fix the tuple arg was lowered as Read (not Consume), and a later
+# `rx.close()` in the caller compiled and double-closed the channel at runtime.
+run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
 # Reject: an ask-shaped receive method called on a struct-field actor receiver
 # must be `await`ed. `actor B { let out: W; ... out.get() }` invokes W's

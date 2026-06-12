@@ -2616,6 +2616,25 @@ Because `machine` is a value type, assigning a machine variable copies it.
 The `step()` method mutates the variable in place — it does not return a new
 value.
 
+**Implementation status (v0.5.1):** machine-typed actor state fields are
+supported, including heap-payload states (the field rides the enum
+clone/drop substrate; `step()` on a field stores back through the
+state-field overwrite-release path). Generic machine instantiations other
+than all-`i64` type arguments are refused at compile time (the machine
+substrate keeps one bare-named layout per declaration). Machine-state
+actors are not yet admitted as supervisor children (state constructors are
+not literal child-init values), so supervisor restart-clone of machine
+state is unreachable until that slice widens.
+
+Because there is no shared machine instance, transition OBSERVATION is a
+library pattern, not a language construct: the owner publishes
+transitions into a `std/channel` `Sender` and observers select on the
+receive arm with an `after` safety net. Machine values themselves can
+also travel as channel elements (state snapshots) and pattern-match on
+state variants at the receiver. See
+`examples/machine/select_on_transition.hew` and
+`examples/machine/transition_watch_baseline.hew`.
+
 ### 3.11.8 Type System Integration
 
 - A machine type is a nominal type; it does not implicitly unify with any

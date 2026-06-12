@@ -4430,6 +4430,48 @@ struct LowerCtx {
     current_module_idx: u32,
 }
 
+/// True when `ty` is — or transitively carries through generic args, tuples,
+/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+///
+/// This mirrors `resolved_ty_contains_channel_handle` in
+/// `hew-codegen-rs/src/llvm.rs`, which drives the xnode-codec skip for
+/// handle-bearing message types. Both predicates must stay in sync:
+/// a type the codegen predicate marks as handle-bearing must also be marked
+/// by this one so HIR's consume decision and codegen's codec decision agree
+/// (`dedup-semantic-boundary` LESSONS invariant).
+///
+/// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
+/// handle still reaches the serialiser walk and fails closed there, so we do
+/// not need to recurse into struct fields here.
+fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            matches!(
+                builtin,
+                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
+            ) || matches!(
+                name.rsplit("::")
+                    .next()
+                    .unwrap_or(name.as_str())
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(name.as_str()),
+                "Sender" | "Receiver"
+            ) || args.iter().any(resolved_ty_contains_channel_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_channel_handle(inner)
+        }
+        _ => false,
+    }
+}
+
 impl LowerCtx {
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
@@ -4585,6 +4627,60 @@ impl LowerCtx {
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     fn checked_ty(&self, span: &Span) -> Option<&ResolvedTy> {
         self.resolved_expr_types.get(&self.mk_key(span))
+    }
+
+    /// True when the checker typed the expression at `span` as a channel
+    /// handle (`Sender<T>` / `Receiver<T>`). Resolves through
+    /// `ResolvedTy::from_ty` so the decision rides the typed builtin
+    /// discriminant, never the (possibly module-qualified) name string.
+    /// Absent or unconvertible entries answer `false` — the conservative
+    /// no-ownership-transfer default.
+    fn checked_span_is_channel_handle(&self, span: &Span) -> bool {
+        self.expr_types
+            .get(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .is_some_and(|resolved| {
+                matches!(
+                    resolved,
+                    ResolvedTy::Named {
+                        builtin: Some(
+                            hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver
+                        ),
+                        ..
+                    }
+                )
+            })
+    }
+
+    /// True when the checker typed the expression at `span` as a type that
+    /// transitively contains a channel handle (`Sender<T>` / `Receiver<T>`).
+    ///
+    /// This is the recursive version of `checked_span_is_channel_handle` and
+    /// mirrors `resolved_ty_contains_channel_handle` from codegen. A direct
+    /// handle, a tuple carrying one, or a generic whose type arg is a handle
+    /// all return true. Absent or unconvertible entries answer `false` —
+    /// the conservative no-ownership-transfer default.
+    ///
+    /// ## Why this matters at the actor-send boundary
+    ///
+    /// Channel handles are single-owner on the ownership axis even though they
+    /// are `BitCopy` on the representation axis (`#[opaque]`-only types are
+    /// pointer-width and memcpy'd). The HIR actor-send lowering must issue
+    /// `Consume` intent for any arg whose type transitively carries a handle so
+    /// that the MIR dataflow checker sees a `Use { intent: Consume }` and
+    /// transitions the binding to `Consumed`. Without this, a tuple arg such as
+    /// `(rx, "tag")` is lowered as `Read` (`CowShare` in MIR), the caller binding
+    /// stays live, and a subsequent `rx.close()` is not statically refused —
+    /// producing a double-close at runtime (SIGABRT / SIGSEGV).
+    ///
+    /// Codegen's `resolved_ty_contains_channel_handle` predicate serves the
+    /// same purpose for the xnode-codec skip; the two predicates must stay in
+    /// sync (`dedup-semantic-boundary` LESSONS invariant).
+    fn checked_span_contains_channel_handle(&self, span: &Span) -> bool {
+        self.expr_types
+            .get(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .is_some_and(|resolved| resolved_ty_contains_channel_handle(&resolved))
     }
 
     /// Construct a `SpanKey` for `span` in the current module context.
@@ -11782,10 +11878,23 @@ impl LowerCtx {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
                 // The element type comes from the checker-resolved
-                // `Receiver<T>` handle type.
+                // `Receiver<T>` handle type. Dispatch on the typed builtin
+                // discriminator (with the short-name fallback) — the name
+                // string is `"Receiver"` for a locally constructed handle but
+                // module-qualified (`"channel.Receiver"`) for an annotated
+                // parameter, and the bare-name compare silently produced
+                // `Option<Unit>` for the latter (surfacing later as a D10
+                // emitter refusal).
                 let elem = match &receiver.ty {
-                    ResolvedTy::Named { name, args, .. }
-                        if name == "Receiver" && args.len() == 1 =>
+                    ResolvedTy::Named {
+                        name,
+                        args,
+                        builtin,
+                        ..
+                    } if args.len() == 1
+                        && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
+                            || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
+                                == "Receiver") =>
                     {
                         args[0].clone()
                     }
@@ -13025,9 +13134,27 @@ impl LowerCtx {
 
         // Lower each element expression. The checker has already validated
         // each element type matches the corresponding tuple slot.
+        //
+        // Channel handles (`Sender<T>` / `Receiver<T>`) are single-owner on
+        // the ownership axis even though they are `BitCopy` on the
+        // representation axis. A handle placed into a tuple is MOVED — the
+        // tuple takes exclusive ownership. Lower such elements with
+        // `IntentKind::Consume` so the MIR dataflow checker transitions the
+        // source binding to `Consumed`. Without this, a binding like `rx` stays
+        // live after being packed into a tuple, and a subsequent `rx.close()`
+        // is not statically refused — producing a double-close at runtime.
+        //
+        // Non-handle elements keep `Read` (the existing copy/clone semantics).
         let hir_elements: Vec<HirExpr> = elems
             .iter()
-            .map(|elem| self.lower_expr(elem, IntentKind::Read))
+            .map(|elem| {
+                let intent = if self.checked_span_is_channel_handle(&elem.1) {
+                    IntentKind::Consume
+                } else {
+                    IntentKind::Read
+                };
+                self.lower_expr(elem, intent)
+            })
             .collect();
 
         (
@@ -15452,7 +15579,32 @@ impl LowerCtx {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let lowered_args: Vec<HirExpr> = args
                 .iter()
-                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                .map(|arg| {
+                    // A channel handle (`Sender<T>`/`Receiver<T>`) crossing an
+                    // actor message boundary transfers ownership to the
+                    // receiving handler — the mailbox copies the handle
+                    // pointer, not the channel. Lower such args with
+                    // `IntentKind::Consume` so the move-checker marks the
+                    // caller binding consumed: a later use (`rx.close()`, a
+                    // second send) would race the new owner and double-close
+                    // the underlying channel. Every other arg keeps `Read` —
+                    // the existing boundary copy/clone semantics.
+                    //
+                    // The predicate is RECURSIVE: a direct `Sender<T>` /
+                    // `Receiver<T>` arg AND any arg whose type transitively
+                    // carries a handle (e.g. a tuple `(Receiver<T>, string)`)
+                    // both transfer the handle pointer. Without the recursive
+                    // check a nested-handle arg is lowered as `Read` (CowShare
+                    // in MIR), the caller binding stays live, and a subsequent
+                    // `rx.close()` silently double-closes the channel.
+                    let spanned = arg.expr();
+                    let intent = if self.checked_span_contains_channel_handle(&spanned.1) {
+                        IntentKind::Consume
+                    } else {
+                        IntentKind::Read
+                    };
+                    self.lower_expr(spanned, intent)
+                })
                 .collect();
             return match dispatch {
                 ActorMethodKind::Fire(method_id) => (

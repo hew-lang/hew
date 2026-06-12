@@ -1026,6 +1026,37 @@ pub struct EnumLayout {
     pub is_indirect: bool,
 }
 
+/// Project a machine layout into the enum-layout view.
+///
+/// A machine is an enum at the value-classification layer: both share the
+/// tagged-union substrate (`{ tag: iW, payload: [N x i8] }`) and the
+/// `MachineVariantLayout` per-variant shape; a machine differs only in
+/// carrying the event-companion list, which has no meaning for value
+/// classification, cloning, or dropping. Projecting through this view lets
+/// the actor-state classifier and the clone/drop thunk synthesis treat a
+/// machine-typed value exactly like an enum-typed one — same admissions,
+/// same refusals, same `__hew_enum_{clone,drop}_inplace_*` thunk family
+/// (codegen's `machine_layout_map` already registers machines by name, so
+/// the synthesis finds the tagged-union layout under the same key).
+///
+/// Machines are never `indirect` (no self-recursive states), so the view's
+/// `is_indirect` is always `false`.
+#[must_use]
+pub fn machine_enum_view(layout: &MachineLayout) -> EnumLayout {
+    EnumLayout {
+        name: layout.name.clone(),
+        tag_width: layout.tag_width,
+        variants: layout.variants.clone(),
+        is_indirect: false,
+    }
+}
+
+/// [`machine_enum_view`] over a whole machine-layout list.
+#[must_use]
+pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> {
+    machine_layouts.iter().map(machine_enum_view).collect()
+}
+
 /// Unqualified tail of a possibly module-qualified type name
 /// (`"mod.Expr"` → `"Expr"`). The single short-name authority shared by
 /// the MIR drop elaborator and the codegen layout lookup.

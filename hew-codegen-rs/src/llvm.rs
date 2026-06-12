@@ -4040,6 +4040,58 @@ fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
+/// True when `ty` names a machine (short-name match against the machine
+/// layout set) directly or through generic args / tuples / arrays / slices.
+/// Drives the deferred (post-machine) enum-registration pass: an enum
+/// instantiation whose payload embeds a machine value must be sized after
+/// the machine's named struct has a body.
+fn resolved_ty_references_machine(ty: &ResolvedTy, machine_short_names: &HashSet<&str>) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            machine_short_names.contains(short_name(name))
+                || args
+                    .iter()
+                    .any(|a| resolved_ty_references_machine(a, machine_short_names))
+        }
+        ResolvedTy::Tuple(elems) => elems
+            .iter()
+            .any(|e| resolved_ty_references_machine(e, machine_short_names)),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_references_machine(inner, machine_short_names)
+        }
+        _ => false,
+    }
+}
+
+/// True when `ty` is — or transitively carries through generic args, tuples,
+/// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
+/// Dispatched on the typed builtin discriminant with a short-name fallback
+/// (import-use sites carry module-qualified spellings like
+/// `channel.Receiver`). Record/enum FIELD recursion is deliberately absent:
+/// an aggregate hiding a handle still reaches the serializer walk and fails
+/// closed there at compile time — never a miscompile.
+fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            matches!(
+                builtin,
+                Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
+            ) || matches!(short_name(name), "Sender" | "Receiver")
+                || args.iter().any(resolved_ty_contains_channel_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_channel_handle(inner)
+        }
+        _ => false,
+    }
+}
+
 /// Recursively replace every `Named { name, .. }` in `ty` with its
 /// short (unqualified) name, stripping any leading `"module."` prefix.
 ///
@@ -9331,7 +9383,18 @@ fn collect_vec_owned_element_seeds(
     ) {
         match ty {
             ResolvedTy::Named { name, args, .. } => {
-                if name == "Vec" {
+                // Queue carriers (`Sender<T>`/`Receiver<T>`/`Stream<T>`)
+                // share the owned-element layout witness with `Vec<T>`
+                // (`channel_elem_layout_witness_ptr` →
+                // `owned_elem_layout_descriptor_ptr` references the same
+                // `__hew_{record,enum}_{clone,drop}_inplace_*` thunks), so
+                // their element types must be seeded identically or the
+                // witness's thunk pointers dangle at llvm-verify for any
+                // heap-payload enum element reachable only through a
+                // channel (string-bearing records were masked by the
+                // Lane-A direct-string record seed). Carrier names may be
+                // module-qualified (`channel.Receiver`) — compare short.
+                if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
                     }
@@ -13805,12 +13868,20 @@ fn lower_instruction(
             // 3. GEP into the per-machine `__hew_state_name_table` global
             //    using `[i32 0, i64 tag]`.
             // 4. Load the pointer entry and store it into `dest`.
-            let layout = fn_ctx.machine_layouts.get(machine_name).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::MachineStateName references machine `{machine_name}` which is \
+            // The MIR carries the use-site spelling, which is
+            // module-qualified for an imported machine (`toggle.Toggle`);
+            // registration uses the bare decl name. Mirror the
+            // short-name fallback the Place::MachineTag lookup applies.
+            let layout = fn_ctx
+                .machine_layouts
+                .get(machine_name)
+                .or_else(|| fn_ctx.machine_layouts.get(short_name(machine_name)))
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "Instr::MachineStateName references machine `{machine_name}` which is \
                      not in the layout map — register_machine_layouts must populate it"
-                ))
-            })?;
+                    ))
+                })?;
             let table_global = layout.state_name_table.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Instr::MachineStateName: machine `{machine_name}` has no state-name \
@@ -15513,6 +15584,26 @@ fn abi_size_align<'ctx>(
         BasicTypeEnum::ScalableVectorType(t) => (td.get_abi_size(&t), td.get_abi_alignment(&t)),
     };
     if size == 0 || align == 0 {
+        // Stale StructLayout-cache repair. LLVM's `TargetData` caches struct
+        // layouts by type pointer; a named struct measured while still
+        // OPAQUE (predeclare-then-fill ordering: `predeclare_named_layouts`
+        // creates every record/enum/machine outer as opaque, bodies land
+        // later) poisons the long-lived TD (the shared `TargetMachine`'s)
+        // with a `size=0` entry that survives `set_body`. Machine outer
+        // structs reached this first via the channel-element witness path.
+        // Re-measure on a FRESH TargetData built from the SAME layout
+        // string: identical target rules, empty cache. A genuinely
+        // zero-sized element still fails closed below.
+        if let BasicTypeEnum::StructType(st) = ty {
+            if !st.is_opaque() && st.count_fields() > 0 {
+                let fresh = TargetData::create(&td.get_data_layout().as_str().to_string_lossy());
+                let (fresh_size, fresh_align) =
+                    (fresh.get_abi_size(&ty), fresh.get_abi_alignment(&ty));
+                if fresh_size > 0 && fresh_align > 0 {
+                    return Ok((fresh_size, fresh_align));
+                }
+            }
+        }
         return Err(CodegenError::FailClosed(format!(
             "layout Vec element has invalid ABI layout size={size} align={align}"
         )));
@@ -15800,6 +15891,20 @@ fn owned_elem_thunk_key(
     };
     if let Some(key) = enum_key {
         return Some((OwnedElemThunkKind::Enum, key));
+    }
+    // Machine: an enum at the value-classification layer (same tagged-union
+    // substrate; the clone/drop synthesis emits its
+    // `__hew_enum_{clone,drop}_inplace_<Machine>` bodies over the machine
+    // layout). Generic instantiations canonicalize to the bare decl name —
+    // the same short-name registration `resolve_ty`'s fallback resolves the
+    // element struct through. State-side machine entries are distinguished
+    // from event companions / plain enums by their state-name table.
+    if fn_ctx
+        .machine_layouts
+        .get(short)
+        .is_some_and(|m| m.state_name_table.is_some())
+    {
+        return Some((OwnedElemThunkKind::Enum, short.to_string()));
     }
     // Record: look up the codegen record registry key (mangled if generic).
     let lookup_key = if args.is_empty() {
@@ -23570,6 +23675,18 @@ fn resolved_ty_contains_heap_leaf(
                 {
                     owns = layout.variants.iter().any(|v| {
                         v.field_tys
+                            .iter()
+                            .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, visiting))
+                    });
+                }
+            }
+            // Machine state payloads (machines are enums at the
+            // value-classification layer; their per-variant field types
+            // live in the machine layout registry, not `enum_layouts`).
+            if !owns {
+                if let Some(machine) = fn_ctx.machine_layouts.get(short) {
+                    owns = machine.variant_field_tys.iter().any(|fields| {
+                        fields
                             .iter()
                             .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, visiting))
                     });
@@ -36857,9 +36974,36 @@ fn build_module_for_target<'ctx>(
     // `machine_layout_for_local` is keyed by type name and does not
     // distinguish surface form. Outer structs were predeclared above; this
     // call sets each body on the existing opaque via `build_tagged_union_layout`.
+    //
+    // MACHINE-REFERENCING enums are deferred to a second registration pass
+    // AFTER the machines: an enum-instantiation payload can embed a machine
+    // value (`Option<Conn>` — the binding every machine-element channel
+    // recv produces), and `build_tagged_union_layout` sizes the payload via
+    // `get_abi_size` on the variant structs. Sizing while the machine's
+    // named struct is still OPAQUE yields 0, the payload array under-sizes,
+    // and the recv decode writes past the alloca (observed as a clobbered
+    // receiver handle and a lost wake). Machines may reference plain enums
+    // in their state payloads (pass 1), and the deferred enums may
+    // reference machines (pass 3) — the split keeps both directions sized
+    // against bodied members.
+    let machine_short_names: HashSet<&str> = pipeline
+        .machine_layouts
+        .iter()
+        .map(|m| short_name(&m.name))
+        .collect();
+    let (machine_free_enums, machine_ref_enums): (
+        Vec<hew_mir::EnumLayout>,
+        Vec<hew_mir::EnumLayout>,
+    ) = pipeline.enum_layouts.iter().cloned().partition(|layout| {
+        !layout.variants.iter().any(|v| {
+            v.field_tys
+                .iter()
+                .any(|t| resolved_ty_references_machine(t, &machine_short_names))
+        })
+    });
     register_enum_layouts(
         ctx,
-        &pipeline.enum_layouts,
+        &machine_free_enums,
         &mut record_layouts,
         &mut machine_layouts,
         Some(&target_data),
@@ -36877,6 +37021,15 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
     )?;
     machine_layouts.extend(machine_layout_map);
+    // Second enum pass: the machine-referencing instantiations, sized now
+    // that every machine body is set.
+    register_enum_layouts(
+        ctx,
+        &machine_ref_enums,
+        &mut record_layouts,
+        &mut machine_layouts,
+        Some(&target_data),
+    )?;
     // Register synthesised generator-body state-record structs from
     // `pipeline.gen_state_layouts` into `record_layouts`. This must happen
     // BEFORE any function-body lowering because the S3b MIR pass allocates
@@ -36988,10 +37141,24 @@ fn build_module_for_target<'ctx>(
     // Vec descriptor is the only referent; without this seed the thunk pointers
     // dangle at link). Enum seeds merge into the EnumInPlace seed list; record
     // seeds go through the dedicated `extra_record_seeds` channel.
+    // Machines are enums at the value-classification layer: the seed scan
+    // and the clone/drop synthesis below resolve machine names against the
+    // enum view, so the machine projections join the list once here.
+    // `machine_layout_map` registers every machine's tagged-union layout
+    // under the same name, so the emitted
+    // `__hew_enum_{clone,drop}_inplace_<Machine>` bodies walk the real
+    // machine layout. The pipeline's own `enum_layouts` (registration,
+    // xnode codecs) stays untouched.
+    let synthesis_enum_layouts: Vec<hew_mir::EnumLayout> = pipeline
+        .enum_layouts
+        .iter()
+        .cloned()
+        .chain(hew_mir::machine_enum_views(&pipeline.machine_layouts))
+        .collect();
     let (mut vec_owned_record_seeds, vec_owned_enum_seeds) = collect_vec_owned_element_seeds(
         &pipeline.raw_mir,
         &pipeline.record_layouts,
-        &pipeline.enum_layouts,
+        &synthesis_enum_layouts,
     );
     for enum_seed in vec_owned_enum_seeds {
         if !enum_inplace_drop_seeds.contains(&enum_seed) {
@@ -37040,7 +37207,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.actor_layouts,
         &pipeline.record_layouts,
         &record_layouts,
-        &pipeline.enum_layouts,
+        &synthesis_enum_layouts,
         &pipeline.opaque_handle_names,
         &machine_layouts,
         Some(&target_data),
@@ -39486,6 +39653,20 @@ fn emit_xnode_codec_module_init<'ctx>(
             let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
+            // Channel handles (`Sender<T>`/`Receiver<T>`) are process-local
+            // runtime resources: the local mailbox transfers the retained
+            // handle pointer (ownership moves; the checker consumes the
+            // caller binding), and the checker's Serializable enforcement
+            // already refuses them at every RemotePid boundary with a named
+            // diagnostic. Emitting a codec here would fail the WHOLE compile
+            // for a purely local program. Skip the msg_type instead — the
+            // cross-node receive direction stays on the runtime's no-codec
+            // fail-closed drop path, exactly like the packed-args skip above.
+            if resolved_ty_contains_channel_handle(msg_ty)
+                || resolved_ty_contains_channel_handle(&h.return_ty)
+            {
+                continue;
+            }
             if entries.iter().any(|(mt, _, _)| *mt == h.msg_type) {
                 continue;
             }

@@ -5247,3 +5247,146 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
         sign_output.errors
     );
 }
+
+// ===========================================================================
+// Machine channel elements (transition-watch lane, stage-0 pin)
+// ===========================================================================
+
+/// A monomorphic machine value as a channel element typechecks clean —
+/// machines are enums at the value-classification layer and ride the
+/// owned-element queue witness. Was the stage-0 fail-closed pin
+/// (`machine_channel_element_currently_fails_closed`) before the machine
+/// admission landed.
+#[test]
+fn monomorphic_machine_channel_element_admitted() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        machine Light {
+            events {
+                Flip;
+            }
+            state Off;
+            state On;
+            on Flip: Off => On { On }
+            on Flip: On => Off { Off }
+        }
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = channel.new(2);
+            tx.send(Light::Off);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "monomorphic machine channel element must be admitted; got: {:#?}",
+        output.errors
+    );
+}
+
+/// A GENERIC machine instantiation as a channel element stays refused:
+/// the machine substrate canonicalizes instantiations to one bare-named
+/// decl layout, so the recv binding's `Option<T>` has no
+/// per-instantiation layout to land in. The imported spelling resolves
+/// through the generic no-thunk-path clause (the tailored bare-canon
+/// clause fires for locally declared generic machines, whose type defs
+/// resolve by bare name).
+#[test]
+fn generic_machine_instantiation_channel_element_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::concurrency::lifecycle;
+        import std::channel::channel;
+
+        fn main() {
+            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("Lifecycle<i64>") && e.message.contains("is not supported")),
+        "generic machine instantiation element must be refused; got: {:#?}",
+        output.errors
+    );
+}
+
+/// A machine whose state payload carries a container (`Vec<i64>`) stays
+/// refused exactly as a container-bearing enum would — the machine
+/// admission rides the same transitive container walk.
+#[test]
+fn container_bearing_machine_channel_element_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        machine Buffered {
+            events {
+                Load { items: Vec<i64>; }
+            }
+            state Empty;
+            state Loaded { items: Vec<i64>; }
+            on Load: Empty => Loaded { Buffered::Loaded { items: event.items } }
+            on Load: _ => _ { state }
+        }
+
+        fn main() {
+            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = channel.new(2);
+            tx.send(Buffered::Empty);
+            tx.close();
+            let _ = rx.recv();
+            rx.close();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("is not supported")),
+        "container-bearing machine element must stay refused; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Cross-node guard for the local channel-handle transfer surface: a
+/// `RemotePid<T>` exposes no receive-fn dispatch, so a channel handle can
+/// never ride an actor message across a node boundary through this
+/// surface. If `RemotePid` ever grows handler dispatch, its payloads must
+/// route through the Serializable enforcement (channel handles are not
+/// Serializable) — this pin fails first.
+#[test]
+fn remote_receive_fn_dispatch_with_channel_handle_refused() {
+    let output = typecheck_inline(
+        r"
+        import std::channel::channel;
+
+        actor Observer {
+            receive fn watch(rx: channel.Receiver<string>) {
+                rx.close();
+            }
+        }
+
+        fn forward(o: RemotePid<Observer>, rx: channel.Receiver<string>) {
+            o.watch(rx);
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|e| e
+            .message
+            .contains("no method `watch` on `RemotePid<Observer>`")),
+        "remote receive-fn dispatch must stay refused; got: {:#?}",
+        output.errors
+    );
+}

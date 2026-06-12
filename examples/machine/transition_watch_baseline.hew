@@ -1,0 +1,43 @@
+// Machine transition watch — the supported observation pattern.
+//
+// A machine is a value type: the owner steps it in place and publishes
+// each observed transition into a std/channel `Sender`. The observer
+// waits with the sealed `from ... recv()` select arm composed with
+// `after`, so a stalled owner can never wedge the watcher.
+//
+// This baseline keeps owner and observer in one actor; the cross-actor
+// split (channel handles travelling through actor messages) builds on
+// the same shape.
+import std::concurrency::lifecycle;
+
+import std::channel::channel;
+
+actor Combined {
+    receive fn run() {
+        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(8);
+        var lc: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle::Created;
+        let before = lc.state_name();
+        lc.step(Initialise);
+        let after_step = lc.state_name();
+        if before != after_step {
+            tx.send(f"{before} -> {after_step}");
+        }
+        tx.close();
+        select {
+            t from rx.recv() => {
+                match t {
+                    Some(tr) => println(tr),
+                    None => println("watch closed"),
+                }
+            },
+            after 2s => println("timeout"),
+        };
+        rx.close();
+    }
+}
+
+fn main() {
+    let c = spawn Combined;
+    c.run();
+    sleep_ms(200);
+}

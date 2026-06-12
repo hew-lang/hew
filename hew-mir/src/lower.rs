@@ -1140,6 +1140,55 @@ pub fn lower_hir_module_with_facts(
         })
         .collect();
 
+    // Machines are enums at the value-classification layer: build every
+    // machine's layout descriptor BEFORE the actor classification pass
+    // (the main item loop below runs after it) and project the layouts
+    // into enum-layout views, so a machine-typed actor state field
+    // classifies through the same enum clone/drop authority — same
+    // admissions, same refusals, no wider surface.
+    for item in &module.items {
+        if let HirItem::Machine(md) = item {
+            machine_layouts.push(build_machine_layout(md));
+        }
+    }
+    let machine_enum_views: Vec<crate::model::EnumLayout> =
+        crate::model::machine_enum_views(&machine_layouts);
+    // Generic machine instantiations canonicalize to the BARE decl name
+    // across the whole substrate: one i64-defaulted layout per decl, one
+    // `<Name>__step` symbol, one LLVM struct (`%Lifecycle`, never
+    // `%Lifecycle$$i64`). Classification follows the same canon: an
+    // all-`i64` instantiation field type is normalized to the bare name so
+    // it resolves the decl-level view; any other instantiation keeps its
+    // args, misses the (mangled) enum lookup, and fails closed with the
+    // named classification diagnostic — matching the Move-type refusal
+    // such programs already hit at codegen.
+    let machine_decl_short_names: std::collections::HashSet<String> = machine_layouts
+        .iter()
+        .map(|m| short_name(&m.name).to_string())
+        .collect();
+    let normalize_machine_field_ty = |ty: &ResolvedTy| -> ResolvedTy {
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } = ty
+        {
+            if !args.is_empty()
+                && machine_decl_short_names.contains(short_name(name))
+                && args.iter().all(|a| matches!(a, ResolvedTy::I64))
+            {
+                return ResolvedTy::Named {
+                    name: name.clone(),
+                    args: vec![],
+                    builtin: *builtin,
+                    is_opaque: *is_opaque,
+                };
+            }
+        }
+        ty.clone()
+    };
+
     // Second pass — per-actor state-field clone/drop classification.
     // Deferred from the item loop so the classifier sees the fully-merged
     // `record_layouts`/`enum_layouts`: monomorphic user records/enums (item
@@ -1153,6 +1202,14 @@ pub fn lower_hir_module_with_facts(
     // Single classification authority (`state_clone::*`); no duplicate
     // divergent classifier call sites. `deferred_actors` is in source order,
     // so `actor_layouts` order matches the pre-refactor single-pass form.
+    //
+    // The classification view = real enum layouts + machine-as-enum
+    // projections, so machine-typed fields take the Enum arm.
+    let classification_enum_layouts: Vec<crate::model::EnumLayout> = enum_layouts
+        .iter()
+        .cloned()
+        .chain(machine_enum_views.iter().cloned())
+        .collect();
     for &actor in &deferred_actors {
         // Run BEFORE constructing the `ActorLayout` so the classifier outcome
         // decides whether to populate the `state_clone_fn_symbol` /
@@ -1161,7 +1218,7 @@ pub fn lower_hir_module_with_facts(
         let state_field_tys: Vec<ResolvedTy> = actor
             .state_fields
             .iter()
-            .map(|field| field.ty.clone())
+            .map(|field| normalize_machine_field_ty(&field.ty))
             .collect();
         // Closure-valued actor state is rejected before classification: the
         // classifier now admits `fn(...)` fields for the RECORD value-class
@@ -1177,7 +1234,7 @@ pub fn lower_hir_module_with_facts(
         let classification = crate::state_clone::classify_actor_state_fields_with_opaque_handles(
             &state_field_tys,
             &record_layouts,
-            &enum_layouts,
+            &classification_enum_layouts,
             &opaque_handle_names,
         );
         let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
@@ -1231,9 +1288,9 @@ pub fn lower_hir_module_with_facts(
                     for (idx, field) in actor.state_fields.iter().enumerate() {
                         let mut v = std::collections::HashSet::new();
                         if crate::state_clone::classify_state_field_full(
-                            &field.ty,
+                            &normalize_machine_field_ty(&field.ty),
                             &record_layouts,
-                            &enum_layouts,
+                            &classification_enum_layouts,
                             &opaque_handle_names,
                             &mut v,
                         )
@@ -1980,46 +2037,11 @@ pub fn lower_hir_module_with_facts(
                 elaborated_mir.push(lowered.elaborated);
                 diagnostics.extend(lowered.diagnostics);
 
-                // Build and record the per-machine layout descriptor.
-                // `tag_width` is the minimum bit width to index all states:
-                // max(1, ceil(log2(state_count))). A single-state machine uses
-                // 1 bit (tag field is always present) so `Place::MachineTag`
-                // is always addressable. `variants` is empty in Slice 4a;
-                // Slice 5 fills the per-state `field_tys` lists when it walks
-                // `HirMachineState.fields`. The layout entry here is the
-                // metadata anchor that Slice 4b (transition body lowering) and
-                // Slice 4c (drop-elaboration) need to size switch dispatch and
-                // tag-dominance checks without re-reading HIR.
-                let state_count = u32::try_from(md.states.len().max(1)).unwrap_or(u32::MAX);
-                let tag_width = u32::max(1, state_count.next_power_of_two().trailing_zeros());
-                machine_layouts.push(crate::model::MachineLayout {
-                    name: md.name.clone(),
-                    tag_width,
-                    variants: md
-                        .states
-                        .iter()
-                        .map(|s| crate::model::MachineVariantLayout {
-                            name: s.name.clone(),
-                            field_tys: s
-                                .fields
-                                .iter()
-                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
-                                .collect(),
-                        })
-                        .collect(),
-                    events: md
-                        .events
-                        .iter()
-                        .map(|e| crate::model::MachineVariantLayout {
-                            name: e.name.clone(),
-                            field_tys: e
-                                .fields
-                                .iter()
-                                .map(|f| default_machine_type_params_to_i64(&f.ty, md))
-                                .collect(),
-                        })
-                        .collect(),
-                });
+                // The per-machine layout descriptor was already built by the
+                // pre-classification machine-layout pass (see
+                // `build_machine_layout` and the loop ahead of the actor
+                // state-field classification) so machine-typed actor state
+                // fields classify through the enum clone/drop path.
             }
         }
     }
@@ -3369,6 +3391,49 @@ fn is_machine_state_passthrough(expr: &hew_hir::HirExpr) -> bool {
             .as_deref()
             .is_some_and(is_machine_state_passthrough),
         _ => false,
+    }
+}
+
+/// Build the per-machine layout descriptor from its HIR declaration.
+///
+/// `tag_width` is the minimum bit width to index all states:
+/// max(1, `ceil(log2(state_count))`). A single-state machine uses 1 bit
+/// (the tag field is always present) so `Place::MachineTag` is always
+/// addressable. State and event payload field types ride the
+/// v0.5 generic-machine doctrine: type parameters default to `i64`
+/// (`default_machine_type_params_to_i64`); non-`i64` instantiations fail
+/// closed downstream at codegen's Move type check, so the defaulted
+/// layout is exact for every instantiation that can actually run.
+fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
+    let state_count = u32::try_from(md.states.len().max(1)).unwrap_or(u32::MAX);
+    let tag_width = u32::max(1, state_count.next_power_of_two().trailing_zeros());
+    crate::model::MachineLayout {
+        name: md.name.clone(),
+        tag_width,
+        variants: md
+            .states
+            .iter()
+            .map(|s| crate::model::MachineVariantLayout {
+                name: s.name.clone(),
+                field_tys: s
+                    .fields
+                    .iter()
+                    .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                    .collect(),
+            })
+            .collect(),
+        events: md
+            .events
+            .iter()
+            .map(|e| crate::model::MachineVariantLayout {
+                name: e.name.clone(),
+                field_tys: e
+                    .fields
+                    .iter()
+                    .map(|f| default_machine_type_params_to_i64(&f.ty, md))
+                    .collect(),
+            })
+            .collect(),
     }
 }
 
@@ -9158,7 +9223,23 @@ impl Builder {
                     });
                     return None;
                 };
-                let Some(receiver_slot) = self.binding_locals.get(binding_id).copied() else {
+                // Resolve the store-back target. A machine held in a LOCAL
+                // binding stores back into its binding slot; a machine held
+                // in ACTOR STATE has no binding slot — the receiver loads
+                // via `ActorStateFieldLoad` (the BindingRef fallback in
+                // `lower_value`) and the store-back targets the state field
+                // through `ActorStateFieldStore`, riding the same
+                // overwrite-release path every other state-field store uses
+                // (the old state's heap payload is released before the new
+                // value lands).
+                let receiver_slot = self.binding_locals.get(binding_id).copied();
+                let field_offset = if receiver_slot.is_some() {
+                    None
+                } else if let Some((field_offset, _)) =
+                    self.current_actor_state_fields.get(receiver_name).cloned()
+                {
+                    Some(field_offset)
+                } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
                             binding: *binding_id,
@@ -9201,13 +9282,20 @@ impl Builder {
                 });
                 self.start_block(next);
                 // Store-back: write the call's return into the receiver's
-                // binding slot. The MIR producer emits this unconditionally;
-                // even when the transition was a self-transition the value
-                // is consistent with the helper's return.
-                self.instructions.push(Instr::Move {
-                    dest: receiver_slot,
-                    src: ret_local,
-                });
+                // slot. The MIR producer emits this unconditionally; even
+                // when the transition was a self-transition the value is
+                // consistent with the helper's return.
+                if let Some(receiver_slot) = receiver_slot {
+                    self.instructions.push(Instr::Move {
+                        dest: receiver_slot,
+                        src: ret_local,
+                    });
+                } else if let Some(field_offset) = field_offset {
+                    self.instructions.push(Instr::ActorStateFieldStore {
+                        field_offset,
+                        src: ret_local,
+                    });
+                }
                 // `m.step(ev)` is typed Unit at the call site (HIR
                 // lower.rs:4949). No value is produced for the surrounding
                 // expression; HIR-side evaluation of the assignment-like
@@ -17272,9 +17360,23 @@ impl Builder {
                     // from a runtime symbol name.
                     let recv_place = self.lower_value(receiver)?;
                     let receiver_ty = self.subst_ty(&receiver.ty);
+                    // Dispatch on the typed builtin discriminator (with the
+                    // short-name fallback): the name string is `"Receiver"`
+                    // for a locally constructed handle but module-qualified
+                    // (`"channel.Receiver"`) for an annotated parameter, and
+                    // the bare-name compare silently fell through to the Unit
+                    // witness. Mirrors `select_arm_binding_ty` in
+                    // `hew-hir/src/lower.rs`.
                     let elem = match receiver_ty {
-                        ResolvedTy::Named { name, mut args, .. }
-                            if name == "Receiver" && args.len() == 1 =>
+                        ResolvedTy::Named {
+                            name,
+                            mut args,
+                            builtin,
+                            ..
+                        } if args.len() == 1
+                            && (matches!(builtin, Some(hew_types::BuiltinType::Receiver))
+                                || name.rsplit_once('.').map_or(name.as_str(), |(_, s)| s)
+                                    == "Receiver") =>
                         {
                             args.remove(0)
                         }

@@ -155,12 +155,12 @@ fn push_unescaped_sequence(
     idx: usize,
     out: &mut String,
     extra_escapes: &[char],
-) -> usize {
+) -> (usize, Option<&'static str>) {
     debug_assert_eq!(chars[idx].1, '\\');
 
     let Some((_, next)) = chars.get(idx + 1).copied() else {
         out.push('\\');
-        return 1;
+        return (1, None);
     };
 
     match next {
@@ -180,13 +180,74 @@ fn push_unescaped_sequence(
                 out.push(hi);
                 out.push(lo);
             }
-            return 4;
+            return (4, None);
         }
         'x' => {
             out.push('\\');
             out.push('x');
         }
         '\\' => out.push('\\'),
+        'u' if chars.get(idx + 2).map(|c| c.1) == Some('{') => {
+            // \u{H...} — 1–6 hex digits forming a Unicode scalar value.
+            let mut consumed = 3; // backslash, u, {
+            let mut hex = String::new();
+            let mut found_close = false;
+            let mut non_hex = false;
+            while let Some(&(_, ch)) = chars.get(idx + consumed) {
+                if ch == '}' {
+                    consumed += 1;
+                    found_close = true;
+                    break;
+                } else if ch.is_ascii_hexdigit() && !non_hex {
+                    hex.push(ch);
+                    consumed += 1;
+                } else {
+                    non_hex = true;
+                    consumed += 1;
+                }
+            }
+            if !found_close {
+                return (
+                    consumed,
+                    Some("invalid Unicode escape: missing `}` in \\u{...}"),
+                );
+            }
+            if non_hex {
+                return (
+                    consumed,
+                    Some("invalid Unicode escape: non-hex digit in \\u{...}"),
+                );
+            }
+            if hex.is_empty() {
+                return (
+                    consumed,
+                    Some("invalid Unicode escape: \\u{} must contain 1–6 hex digits"),
+                );
+            }
+            if hex.len() > 6 {
+                return (
+                    consumed,
+                    Some("invalid Unicode escape: \\u{...} must have at most 6 hex digits"),
+                );
+            }
+            let codepoint = u32::from_str_radix(&hex, 16).unwrap();
+            if (0xD800..=0xDFFF).contains(&codepoint) {
+                return (
+                    consumed,
+                    Some(
+                        "invalid Unicode escape: surrogate codepoints (U+D800–U+DFFF) are not valid Unicode scalars",
+                    ),
+                );
+            }
+            if codepoint > 0x0010_FFFF {
+                return (
+                    consumed,
+                    Some("invalid Unicode escape: codepoint exceeds U+10FFFF"),
+                );
+            }
+            out.push(char::from_u32(codepoint).unwrap());
+            return (consumed, None);
+        }
         other if extra_escapes.contains(&other) => out.push(other),
         other => {
             out.push('\\');
@@ -194,7 +255,7 @@ fn push_unescaped_sequence(
         }
     }
 
-    2
+    (2, None)
 }
 
 /// Normalise a `re"..."` token into the regex pattern string.
@@ -236,20 +297,29 @@ pub(crate) fn normalize_regex_literal(raw: &str) -> String {
 }
 
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
-/// `\\`, `\"`, and `\0` to their corresponding characters.
-fn unescape_string(s: &str) -> String {
+/// `\\`, `\"`, `\0`, `\xHH`, and `\u{HHHHHH}` to their corresponding characters.
+///
+/// Returns the decoded string together with a list of `(byte_offset, message)` pairs for
+/// any malformed escape sequences, where `byte_offset` is relative to the start of `s`.
+fn unescape_string(s: &str) -> (String, Vec<(usize, &'static str)>) {
     let mut out = String::with_capacity(s.len());
+    let mut errors: Vec<(usize, &'static str)> = Vec::new();
     let chars: Vec<_> = s.char_indices().collect();
     let mut idx = 0;
     while idx < chars.len() {
         if chars[idx].1 == '\\' {
-            idx += push_unescaped_sequence(&chars, idx, &mut out, &[]);
+            let byte_off = chars[idx].0;
+            let (consumed, err) = push_unescaped_sequence(&chars, idx, &mut out, &[]);
+            if let Some(msg) = err {
+                errors.push((byte_off, msg));
+            }
+            idx += consumed;
         } else {
             out.push(chars[idx].1);
             idx += 1;
         }
     }
-    out
+    (out, errors)
 }
 
 /// Split an interpolated string (f-string or template literal) into literal
@@ -260,6 +330,10 @@ fn unescape_string(s: &str) -> String {
 /// * `suffix_len` — bytes to strip from the end (1 for `"` or `` ` ``)
 /// * `expr_open` — the marker that opens an expression (`"{"` or `"${"`)
 /// * `span_start` — byte offset of the token in the original source
+#[expect(
+    clippy::too_many_lines,
+    reason = "string interpolation parsing and escape diagnostics are handled together"
+)]
 fn parse_string_parts(
     raw: &str,
     prefix_len: usize,
@@ -280,7 +354,19 @@ fn parse_string_parts(
 
         // Handle escape sequences — prevents `\{` or `\$` from opening an expr
         if c == '\\' {
-            idx += push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '$', '`']);
+            let (consumed, unescape_err) =
+                push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '$', '`']);
+            if let Some(msg) = unescape_err {
+                let abs_off = inner_offset + chars[idx].0;
+                errors.push(ParseError {
+                    message: msg.to_string(),
+                    span: abs_off..abs_off + consumed,
+                    hint: None,
+                    severity: Severity::Error,
+                    kind: ParseDiagnosticKind::InvalidLiteral,
+                });
+            }
+            idx += consumed;
             continue;
         }
 
@@ -6312,9 +6398,21 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::StringLit(s) => {
-                let s = unescape_string(unquote_str(s));
+                let inner = unquote_str(s);
+                let tok_start = start;
+                let (unescaped, unescape_errs) = unescape_string(inner);
+                for (off, msg) in unescape_errs {
+                    let err_start = tok_start + 1 + off;
+                    self.errors.push(ParseError {
+                        message: msg.to_string(),
+                        span: err_start..err_start + 2,
+                        hint: None,
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::InvalidLiteral,
+                    });
+                }
                 self.advance();
-                Expr::Literal(Literal::String(s))
+                Expr::Literal(Literal::String(unescaped))
             }
             Token::CharLit(s) => {
                 let inner = s
@@ -6339,7 +6437,18 @@ impl<'src> Parser<'src> {
                     .strip_prefix("b\"")
                     .and_then(|s| s.strip_suffix('"'))
                     .unwrap_or(s);
-                let unescaped = unescape_string(inner);
+                let tok_start = start;
+                let (unescaped, unescape_errs) = unescape_string(inner);
+                for (off, msg) in unescape_errs {
+                    let err_start = tok_start + 2 + off;
+                    self.errors.push(ParseError {
+                        message: msg.to_string(),
+                        span: err_start..err_start + 2,
+                        hint: None,
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::InvalidLiteral,
+                    });
+                }
                 self.advance();
                 Expr::ByteStringLiteral(unescaped.into_bytes())
             }
@@ -7817,9 +7926,21 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::StringLit(s)) => {
-                let s = unescape_string(unquote_str(s));
+                let inner = unquote_str(s);
+                let tok_start = self.peek_span().start;
+                let (unescaped, unescape_errs) = unescape_string(inner);
+                for (off, msg) in unescape_errs {
+                    let err_start = tok_start + 1 + off;
+                    self.errors.push(ParseError {
+                        message: msg.to_string(),
+                        span: err_start..err_start + 2,
+                        hint: None,
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::InvalidLiteral,
+                    });
+                }
                 self.advance();
-                Pattern::Literal(Literal::String(s))
+                Pattern::Literal(Literal::String(unescaped))
             }
             Some(Token::CharLit(s)) => {
                 let inner = s
@@ -9920,13 +10041,13 @@ fn demo() {}
     #[test]
     fn test_hex_escape_in_string() {
         // \x41 = 'A', \x42 = 'B'
-        assert_eq!(unescape_string(r"\x41\x42"), "AB");
+        assert_eq!(unescape_string(r"\x41\x42").0, "AB");
         // Mixed with normal text and other escapes
-        assert_eq!(unescape_string(r"hi\x21\n"), "hi!\n");
+        assert_eq!(unescape_string(r"hi\x21\n").0, "hi!\n");
         // Invalid hex digits preserved as-is
-        assert_eq!(unescape_string(r"\xZZ"), "\\xZZ");
+        assert_eq!(unescape_string(r"\xZZ").0, "\\xZZ");
         // Truncated hex escape (only one char after \x)
-        assert_eq!(unescape_string("\\x4"), "\\x4");
+        assert_eq!(unescape_string("\\x4").0, "\\x4");
     }
 
     #[test]

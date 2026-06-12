@@ -9,12 +9,23 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 use crate::actor::HEW_MAX_WORKERS;
 use crate::cabi::{free_cstring, str_to_malloc};
 use crate::lifetime::PoisonSafe;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::util::{CondvarExt, MutexExt};
 
 const SHARD_COUNT: usize = HEW_MAX_WORKERS + 1;
+const OBSERVE_BARRIER_OK: i64 = 0;
+const OBSERVE_BARRIER_ERR_WORKER_CONTEXT: i64 = -1;
+const OBSERVE_BARRIER_ERR_TIMEOUT: i64 = -2;
+#[cfg(not(target_arch = "wasm32"))]
+const OBSERVE_BARRIER_TIMEOUT: Duration = Duration::from_secs(30);
 
 thread_local! {
     static WORKER_SHARD: Cell<usize> = const { Cell::new(0) };
@@ -48,6 +59,31 @@ static THREADS_BLOCKING_COUNT: AtomicU64 = AtomicU64::new(0);
 
 static ATTRIBUTED_TURNS: PoisonSafe<Option<HashMap<(usize, i32), AttributedTurn>>> =
     PoisonSafe::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+static DISPATCH_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+static DISPATCH_BARRIER: DispatchBarrier = DispatchBarrier {
+    state: Mutex::new(DispatchBarrierState {
+        opened_epoch: 0,
+        closed_epoch: 0,
+    }),
+    cond: Condvar::new(),
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+struct DispatchBarrier {
+    state: Mutex<DispatchBarrierState>,
+    cond: Condvar,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy)]
+struct DispatchBarrierState {
+    opened_epoch: u64,
+    closed_epoch: u64,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AttributedTurn {
@@ -150,6 +186,32 @@ pub(crate) fn record_actor_turn(duration_ns: u64) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_dispatch_begin() {
+    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
+    state.opened_epoch = state.opened_epoch.saturating_add(1);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn observe_dispatch_close() {
+    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
+    if state.closed_epoch < state.opened_epoch {
+        state.closed_epoch = state.closed_epoch.saturating_add(1);
+        DISPATCH_EPOCH.store(state.closed_epoch, Ordering::Release);
+        DISPATCH_BARRIER.cond.notify_all();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_dispatch_attributed() {
+    observe_dispatch_close();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_dispatch_abandon() {
+    observe_dispatch_close();
+}
+
 pub(crate) fn record_scheduler_park() {
     SCHEDULER_PARKS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -220,6 +282,51 @@ pub(crate) fn record_blocking_finish() {
 #[no_mangle]
 pub extern "C" fn hew_observe_hot_tier_enabled() -> i32 {
     i32::from(observe_hot_tier_enabled())
+}
+
+/// Wait until all native actor dispatches that started before this call have
+/// reached their observe attribution point.
+///
+/// Returns 0 on success, -1 when called from inside an actor dispatch (which
+/// would deadlock with `HEW_WORKERS=1`), and -2 after the bounded 30-second
+/// internal timeout.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub extern "C" fn hew_observe_barrier() -> i64 {
+    if !crate::execution_context::current_context().is_null() {
+        crate::set_last_error("observe.barrier: cannot wait from inside an actor dispatch");
+        return OBSERVE_BARRIER_ERR_WORKER_CONTEXT;
+    }
+
+    let deadline = Instant::now() + OBSERVE_BARRIER_TIMEOUT;
+    let mut state = DISPATCH_BARRIER.state.lock_or_recover();
+    let target_epoch = state.opened_epoch;
+    while state.closed_epoch < target_epoch {
+        let now = Instant::now();
+        if now >= deadline {
+            crate::set_last_error("observe.barrier: timed out after 30 seconds");
+            return OBSERVE_BARRIER_ERR_TIMEOUT;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let (next_state, wait_result) = DISPATCH_BARRIER
+            .cond
+            .wait_timeout_or_recover(state, remaining);
+        state = next_state;
+        if wait_result.timed_out() && state.closed_epoch < target_epoch {
+            crate::set_last_error("observe.barrier: timed out after 30 seconds");
+            return OBSERVE_BARRIER_ERR_TIMEOUT;
+        }
+    }
+
+    OBSERVE_BARRIER_OK
+}
+
+/// WASM currently has no scheduler attribution probe path; keep the observe
+/// surface target-neutral like `series`/`scrape` and make the barrier a no-op.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn hew_observe_barrier() -> i64 {
+    OBSERVE_BARRIER_OK
 }
 
 #[no_mangle]
@@ -633,6 +740,14 @@ pub(crate) fn reset_all() {
             map.clear();
         }
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut state = DISPATCH_BARRIER.state.lock_or_recover();
+        state.opened_epoch = 0;
+        state.closed_epoch = 0;
+        DISPATCH_EPOCH.store(0, Ordering::Release);
+        DISPATCH_BARRIER.cond.notify_all();
+    }
 }
 
 pub(crate) fn register_reset_hooks() {
@@ -706,6 +821,58 @@ mod tests {
         assert!(!ptr.is_null());
         // SAFETY: ptr was returned by hew_observe_scrape and is released once.
         unsafe { hew_observe_string_free(ptr) };
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_returns_immediately_when_already_attributed() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        observe_dispatch_begin();
+        observe_dispatch_attributed();
+
+        let started = Instant::now();
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "already-attributed barrier should not wait for a future dispatch"
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_wakes_when_concurrent_dispatch_is_attributed() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        observe_dispatch_begin();
+
+        let worker = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(25));
+            observe_dispatch_attributed();
+        });
+
+        let started = Instant::now();
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "barrier should wake on attribution notify"
+        );
+        worker.join().unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_fails_fast_from_worker_context() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        let mut ctx =
+            std::mem::MaybeUninit::<crate::execution_context::HewExecutionContext>::uninit();
+        let prev = crate::execution_context::set_current_context(ctx.as_mut_ptr());
+
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_ERR_WORKER_CONTEXT);
+
+        let restored = crate::execution_context::set_current_context(prev);
+        assert_eq!(restored, ctx.as_mut_ptr());
     }
 
     #[test]

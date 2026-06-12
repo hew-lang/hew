@@ -1472,6 +1472,7 @@ fn activate_actor(actor: *mut HewActor) {
                     let installed_prev = crate::execution_context::set_current_context(ec_ptr);
                     debug_assert_eq!(installed_prev, prev_context);
                     crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
+                    crate::observe::observe_dispatch_begin();
 
                     // SAFETY: `execution_context` is the scheduler-owned stack
                     // context for this dispatch and its lock seat came from the
@@ -1516,6 +1517,7 @@ fn activate_actor(actor: *mut HewActor) {
                             (*msg).reply_channel = std::ptr::null_mut();
                             hew_msg_node_free(msg);
                         }
+                        crate::observe::observe_dispatch_abandon();
                         crashed = true;
                         break;
                     }
@@ -1573,6 +1575,7 @@ fn activate_actor(actor: *mut HewActor) {
                             (*msg).reply_channel = std::ptr::null_mut();
                             hew_msg_node_free(msg);
                         }
+                        crate::observe::observe_dispatch_abandon();
                         crashed = true;
                         break;
                     }
@@ -1670,6 +1673,7 @@ fn activate_actor(actor: *mut HewActor) {
                         msg_ref.msg_type,
                         elapsed_ns,
                     );
+                    crate::observe::observe_dispatch_attributed();
 
                     // SAFETY: `msg` was returned by `hew_mailbox_try_recv` and is
                     // now exclusively owned by this worker.
@@ -1865,6 +1869,7 @@ fn activate_actor(actor: *mut HewActor) {
                     }
 
                     // Stop processing further messages for this actor.
+                    crate::observe::observe_dispatch_abandon();
                     crashed = true;
                     break;
                 }

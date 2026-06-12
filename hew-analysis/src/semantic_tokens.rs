@@ -143,7 +143,70 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
         });
     }
 
+    // Regular (non-doc) comments are skipped by the lexer, so they never appear
+    // as tokens above. They live entirely in the gaps between successive lexer
+    // tokens (a gap holds only whitespace and comments — string literals are
+    // their own tokens), so scan each gap and emit COMMENT tokens. This keeps
+    // comment highlighting on par with grammar-based tokenizers.
+    let mut prev_end = 0usize;
+    for (_, span) in &lexer_tokens {
+        scan_comments(source, prev_end, span.start, &mut result);
+        if span.end > prev_end {
+            prev_end = span.end;
+        }
+    }
+    scan_comments(source, prev_end, source.len(), &mut result);
+
+    result.sort_by_key(|token| token.start);
     result
+}
+
+/// Emit COMMENT tokens for `//` line comments and `/* */` (nestable) block
+/// comments in `source[start..end]`. The range is a gap between lexer tokens,
+/// so it contains only whitespace and comments — there are no string literals
+/// to confuse `//` / `/*` detection. Offsets are absolute byte offsets.
+fn scan_comments(source: &str, start: usize, end: usize, out: &mut Vec<SemanticToken>) {
+    let bytes = source.as_bytes();
+    let end = end.min(bytes.len());
+    let mut i = start;
+    while i < end {
+        if bytes[i] == b'/' && i + 1 < end && bytes[i + 1] == b'/' {
+            let mut j = i + 2;
+            while j < end && bytes[j] != b'\n' {
+                j += 1;
+            }
+            out.push(SemanticToken {
+                start: i,
+                length: j - i,
+                token_type: token_types::COMMENT,
+                modifiers: 0,
+            });
+            i = j;
+        } else if bytes[i] == b'/' && i + 1 < end && bytes[i + 1] == b'*' {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < end && depth > 0 {
+                if j + 1 < end && bytes[j] == b'/' && bytes[j + 1] == b'*' {
+                    depth += 1;
+                    j += 2;
+                } else if j + 1 < end && bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            out.push(SemanticToken {
+                start: i,
+                length: j - i,
+                token_type: token_types::COMMENT,
+                modifiers: 0,
+            });
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +229,34 @@ mod tests {
             tokens[1].modifiers & token_modifiers::DECLARATION,
             0,
             "x should have DECLARATION modifier"
+        );
+    }
+
+    #[test]
+    fn line_and_block_comments_are_emitted() {
+        let source = "// hi\nlet x = 1; /* mid */\n/* multi\nline */ fn f() {}";
+        let tokens = build_semantic_tokens(source);
+        let comments: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::COMMENT)
+            .collect();
+        // `// hi`, `/* mid */`, and the multi-line `/* multi\nline */`.
+        assert_eq!(comments.len(), 3, "expected three comment tokens");
+        // Tokens stay sorted by absolute start offset.
+        assert!(tokens.windows(2).all(|w| w[0].start <= w[1].start));
+        // First comment covers exactly `// hi`.
+        assert_eq!(comments[0].start, 0);
+        assert_eq!(comments[0].length, 5);
+    }
+
+    #[test]
+    fn slash_in_string_is_not_a_comment() {
+        // A `//` inside a string literal must not be treated as a comment, and
+        // division `/` stays an operator — neither lands in a token gap.
+        let tokens = build_semantic_tokens("let s = \"a // b\"; let q = 6 / 2;");
+        assert!(
+            tokens.iter().all(|t| t.token_type != token_types::COMMENT),
+            "no comment tokens expected"
         );
     }
 

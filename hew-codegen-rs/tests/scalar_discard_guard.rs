@@ -213,9 +213,13 @@ fn discard_string_extern_in_statement_position_fails_closed() {
     }
 }
 
-/// A discarded `bytes`-returning extern (LLVM struct / `BytesTriple` type)
-/// with `dest = None` must surface `CodegenError::FailClosed`. This covers
-/// the aggregate (struct) branch of the guard in addition to the pointer branch.
+/// A `bytes`-returning extern not in any ABI registry must surface
+/// `CodegenError::FailClosed` naming the symbol. The fail-closed gate fires in
+/// `predeclare_extern_decls` (before the discard arm), so the message now names
+/// `is_bytes_triple_return_producer` rather than "pointer or aggregate". The
+/// invariant tested is unchanged: unknown bytes-return externs are rejected loud.
+///
+/// LESSONS applied: `boundary-fail-closed` (P0).
 #[test]
 fn discard_bytes_extern_in_statement_position_fails_closed() {
     let pipeline = pipeline_discard_extern("probe_make_bytes", ResolvedTy::Bytes, vec![], vec![]);
@@ -228,15 +232,18 @@ fn discard_bytes_extern_in_statement_position_fails_closed() {
                 "FailClosed message must name the callee; got: {msg}"
             );
             assert!(
-                msg.contains("pointer or aggregate"),
-                "FailClosed message must explain the pointer/aggregate rejection; got: {msg}"
+                msg.contains("is_bytes_triple_return_producer"),
+                "FailClosed message must point at the ABI registry so authors \
+                 know where to register the symbol; got: {msg}"
             );
         }
         Err(other) => {
-            panic!("expected CodegenError::FailClosed for aggregate-return discard, got {other:?}")
+            panic!(
+                "expected CodegenError::FailClosed for unknown bytes-return extern, got {other:?}"
+            )
         }
         Ok(_) => {
-            panic!("bytes-returning extern discarded with dest=None must fail closed; got Ok(_)")
+            panic!("bytes-returning extern not in any ABI registry must fail closed; got Ok(_)")
         }
     }
 }

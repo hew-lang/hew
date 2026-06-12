@@ -2231,11 +2231,15 @@ mod tests {
 ///
 /// # Safety
 ///
-/// `msg` must be a valid, NUL-terminated C string.
+/// `msg` must be a valid, non-null pointer to a `BytesTriple` whose active
+/// region `[offset, offset + len)` contains valid UTF-8 text.
+/// (`is_bytes_by_pointer_consumer` in codegen passes the triple's alloca
+/// address rather than the struct value — the previous `*const c_char`
+/// signature ignored `offset` and only worked by accident when offset==0.)
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_broadcast_except(
     exclude_conn: c_int,
-    msg: *const c_char,
+    msg: *const crate::bytes::BytesTriple,
 ) -> c_int {
     cabi_guard!(msg.is_null(), {
         hew_cabi::sink::set_last_error_with_errno(
@@ -2244,8 +2248,17 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
         );
         -1
     });
-    // SAFETY: caller guarantees `msg` is a valid C string.
-    let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
+    // SAFETY: caller guarantees `msg` points to a valid BytesTriple.
+    let triple = unsafe { &*msg };
+    let active = if triple.len == 0 || triple.ptr.is_null() {
+        b"" as &[u8]
+    } else {
+        // SAFETY: BytesTriple invariant: ptr+offset..ptr+offset+len is valid.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+    };
+    let Ok(text) = std::str::from_utf8(active) else {
         hew_cabi::sink::set_last_error_with_errno(
             "hew_tcp_broadcast_except: invalid UTF-8 in message".into(),
             22, // EINVAL: Invalid argument

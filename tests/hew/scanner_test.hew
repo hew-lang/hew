@@ -331,6 +331,9 @@ fn test_collect_exhausted_scanner_returns_empty() {
 #[test]
 fn test_from_file_scans_real_empty_line_and_eof() {
     let path = ".tmp/scanner-test-input.txt";
+    // Ensure the scratch directory exists — it is gitignored and may be absent
+    // in a fresh worktree.  mkdir_all is idempotent on an existing directory.
+    let _ = fs.mkdir_all(".tmp");
     let _ = fs.write(path, "red\n\nblue\n");
 
     match scanner.from_file(path) {

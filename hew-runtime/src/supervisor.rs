@@ -1375,6 +1375,28 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
         }
     } else {
+        // Legacy byte-copy path: no `state_clone_fn` registered.
+        //
+        // SAFETY boundary: this byte-copy is only sound for BitCopy actor state
+        // (plain-old-data fields with no owned heap pointers).  If `state_drop_fn`
+        // is also set, the template and the spawned actor share heap pointer aliases
+        // → double-free on teardown.
+        //
+        // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
+        // and rejects owned-handle init args at compile time before this path is
+        // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
+        // and register `state_drop_fn` without `state_clone_fn` will encounter the
+        // use-after-free silently in this path.
+        //
+        // WHY this is not a debug_assert: the assert would fire in existing tests
+        // that probe the legacy byte-copy path directly (see
+        // `state_clone_fn_null_falls_back_to_bytecopy`), which are present to
+        // document backward compatibility for out-of-tree consumers.
+        // WHEN obsolete: when the v0.6 init-closure restart model lands and
+        // every supervised actor with owned-heap state registers `state_clone_fn`.
+        // REAL FIX: extend the checker wall to cover all paths, then make
+        // `state_clone_fn` mandatory for any actor with owned-heap fields.
+        //
         // SAFETY: opts is valid.
         unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
     };

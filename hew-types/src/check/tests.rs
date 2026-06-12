@@ -23085,6 +23085,365 @@ fn supervisor_permanent_record_containing_vec_known_residual_gap() {
     );
 }
 
+// ── E_SUPERVISOR_INIT_ARG_NON_BITCOPY — byte-copy wall for init args ───────────
+//
+// Negative tests: init args whose actor init-parameter type is an owned-heap
+// type must be rejected, regardless of restart policy.
+//
+// Positive tests: scalar/BitCopy init args and pool children remain admitted.
+
+fn assert_supervisor_init_arg_non_bitcopy(source: &str, param_type_source: &str) {
+    let output = check_source(source);
+    let init_start = source
+        .find("init(")
+        .unwrap_or_else(|| panic!("test source must contain an init block"));
+    let expected_span_start = source
+        .get(init_start..)
+        .and_then(|init_source| init_source.find(param_type_source))
+        .map_or_else(
+            || panic!("test source must contain `{param_type_source}`"),
+            |offset| init_start + offset,
+        );
+    let expected_span = expected_span_start..expected_span_start + param_type_source.len();
+    let wall_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"))
+        .collect();
+
+    assert!(
+        wall_errors.iter().any(|e| e.span == expected_span),
+        "supervisor init arg of type `{param_type_source}` must be rejected with \
+         E_SUPERVISOR_INIT_ARG_NON_BITCOPY at the parameter type span {expected_span:?}; \
+         wall errors: {wall_errors:#?}; all errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_string_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r#"
+        actor Greeter {
+            let name: string;
+            init(name: string) {
+                name = name;
+            }
+            receive fn greet() {}
+        }
+
+        supervisor App {
+            child g: Greeter(name: "hello");
+        }
+        "#,
+        "string",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_vec_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Collector {
+            let items: Vec<i64>;
+            init(items: Vec<i64>) {
+                items = items;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child c: Collector(items: []);
+        }
+        ",
+        "Vec<i64>",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_bytes_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Payload {
+            let data: bytes;
+            init(data: bytes) {
+                data = data;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child p: Payload(data: []);
+        }
+        ",
+        "bytes",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_option_string_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r#"
+        actor MaybeGreeter {
+            let name: Option<string>;
+            init(name: Option<string>) {
+                name = name;
+            }
+            receive fn greet() {}
+        }
+
+        supervisor App {
+            child g: MaybeGreeter(name: Some("hello"));
+        }
+        "#,
+        "Option<string>",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_tuple_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r#"
+        actor PairHolder {
+            let pair: (string, i64);
+            init(pair: (string, i64)) {
+                pair = pair;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child p: PairHolder(pair: ("hello", 1));
+        }
+        "#,
+        "(string, i64)",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_record_wrapping_vec_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        record Wrapper { inner: Vec<i64> }
+
+        actor Holder {
+            let data: Wrapper;
+            init(data: Wrapper) {
+                data = data;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child h: Holder(data: Wrapper { inner: [] });
+        }
+        ",
+        "Wrapper",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_alias_of_string_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r#"
+        type Name = string;
+
+        actor Greeter {
+            let name: Name;
+            init(name: Name) {
+                name = name;
+            }
+            receive fn greet() {}
+        }
+
+        supervisor App {
+            child g: Greeter(name: "hello");
+        }
+        "#,
+        "Name",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_hashmap_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Index {
+            let entries: HashMap<string, i64>;
+            init(entries: HashMap<string, i64>) {
+                entries = entries;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child i: Index(entries: HashMap::<string, i64>::new());
+        }
+        ",
+        "HashMap<string, i64>",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_hashset_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Seen {
+            let ids: HashSet<i64>;
+            init(ids: HashSet<i64>) {
+                ids = ids;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child s: Seen(ids: HashSet::<i64>::new());
+        }
+        ",
+        "HashSet<i64>",
+    );
+}
+
+#[test]
+fn supervisor_init_arg_sender_handle_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Forwarder {
+            let tx: channel.Sender<string>;
+            init(tx: channel.Sender<string>) {
+                tx = tx;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child f: Forwarder(tx: 0);
+        }
+        ",
+        "channel.Sender<string>",
+    );
+}
+
+// Positive tests — admitted cases.
+
+#[test]
+fn supervisor_init_arg_i64_admitted() {
+    let output = check_source(
+        r"
+        actor Counter {
+            let start: i64;
+            init(start: i64) {
+                start = start;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child c: Counter(start: 0);
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "i64 init arg must be admitted; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_bool_and_f64_admitted() {
+    let output = check_source(
+        r"
+        actor Sensor {
+            let enabled: bool;
+            let threshold: f64;
+            init(enabled: bool, threshold: f64) {
+                enabled = enabled;
+                threshold = threshold;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child s: Sensor(enabled: true, threshold: 0.5);
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "bool and f64 init args must be admitted; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_child_string_init_arg_exempt() {
+    // Pool children are dynamically spawned, not from a fixed state template,
+    // so the byte-copy wall does not apply to them.
+    let output = check_source(
+        r"
+        actor Worker {
+            let name: string;
+            init(name: string) {
+                name = name;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "pool child init args must not trigger the byte-copy wall; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_child_no_init_args_string_field_not_flagged_by_bitcopy_wall() {
+    // The E_SUPERVISOR_INIT_ARG_NON_BITCOPY check only fires when the child
+    // declaration passes explicit args.  An actor with a string field but no
+    // args in the child spec is handled by E_SUPERVISOR_PERMANENT_OWNED_HEAP
+    // (permanent policy) or not at all (transient/temporary).
+    let output = check_source(
+        r"
+        actor Worker {
+            let items: Vec<i64>;
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child w: Worker restart: transient;
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "child with no init args must not trigger the bitcopy wall; errors: {:#?}",
+        output.errors
+    );
+}
+
 // ── W3.001 Stage 2 — #[extern_symbol] ingest into FnSig.extern_symbol ─────────
 
 /// `#[extern_symbol("…")]` on an `extern "C"` block fn populates

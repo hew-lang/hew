@@ -73,6 +73,13 @@ impl ExecutionContextReader {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ActorInitParamInfo {
+    pub(super) name: String,
+    pub(super) ty: Ty,
+    pub(super) span: Span,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -2201,12 +2208,10 @@ pub struct Checker {
     /// is gated on first-insert per span — one warning per closure literal,
     /// distinct literals still warn independently.
     pub(super) closure_escape_advisory_spans: HashSet<SpanKey>,
-    /// Maps actor name to its `init()` parameter list: `(param_name, outer_type, first_type_arg)`.
+    /// Maps actor name to its resolved `init()` parameter list.
     ///
-    /// `outer_type` is the outermost named type (e.g. `"ActorRef"` for `ActorRef<WorkerPool>`).
-    /// `first_type_arg` is the first generic argument's name if present (e.g. `"WorkerPool"`).
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
-    pub(super) actor_init_params: HashMap<String, Vec<(String, String, Option<String>)>>,
+    pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,

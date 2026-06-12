@@ -45,7 +45,7 @@ mod types;
 mod util;
 
 use self::types::{
-    ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
+    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,

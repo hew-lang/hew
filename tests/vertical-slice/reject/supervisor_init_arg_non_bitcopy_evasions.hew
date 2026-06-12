@@ -1,0 +1,75 @@
+// Reject fixture: supervised child init arg evasion shapes must fail closed.
+//
+// The checker admits only scalar BitCopy primitives for permanent supervised
+// child init args because the supervisor restart path byte-copies the init
+// state template. Lossy or non-scalar shapes are rejected until the v0.6
+// init-closure restart model.
+
+type Name = string;
+
+record Wrapper { inner: Vec<i64> }
+
+actor MaybeGreeter {
+    var name: Option<string>;
+    init(name: Option<string>) {
+        name = name;
+    }
+    receive fn greet() {}
+}
+
+actor PairHolder {
+    var pair: (string, i64);
+    init(pair: (string, i64)) {
+        pair = pair;
+    }
+    receive fn noop() {}
+}
+
+actor WrapperHolder {
+    var data: Wrapper;
+    init(data: Wrapper) {
+        data = data;
+    }
+    receive fn noop() {}
+}
+
+actor AliasGreeter {
+    var name: Name;
+    init(name: Name) {
+        name = name;
+    }
+    receive fn greet() {}
+}
+
+actor Index {
+    var entries: HashMap<string, i64>;
+    init(entries: HashMap<string, i64>) {
+        entries = entries;
+    }
+    receive fn noop() {}
+}
+
+actor Seen {
+    var ids: HashSet<i64>;
+    init(ids: HashSet<i64>) {
+        ids = ids;
+    }
+    receive fn noop() {}
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child maybe: MaybeGreeter(name: Some("hello"));
+    child pair: PairHolder(pair: ("hello", 1));
+    child wrap: WrapperHolder(data: Wrapper { inner: [] });
+    child alias: AliasGreeter(name: "hello");
+    child index: Index(entries: HashMap::<string, i64>::new());
+    child seen: Seen(ids: HashSet::<i64>::new());
+}
+
+fn main() -> i64 {
+    spawn App;
+    42
+}

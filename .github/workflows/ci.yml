@@ -194,7 +194,7 @@ jobs:
     name: Build & test (Linux)
     needs: changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
@@ -497,7 +497,7 @@ jobs:
     name: Build & test (macOS arm64)
     needs: changes
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
@@ -594,6 +594,16 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
+        #
+        # macos-14 is a 3-core / 7 GB runner. Test binaries that statically
+        # link llvm-sys pull in the full LLVM archive; ld64.lld linking
+        # several of them in parallel (default -j3) peaks well past 7 GB and
+        # the runner swaps itself into a multi-minute stall (orphaned lld,
+        # no progress). CARGO_BUILD_JOBS=1 serialises the build so at most
+        # one heavy link runs at a time. Cold builds are slower but complete
+        # within the timeout; cached (warm) runs are unaffected.
+        env:
+          CARGO_BUILD_JOBS: "1"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

@@ -23304,6 +23304,26 @@ fn supervisor_init_arg_hashset_rejects() {
     );
 }
 
+#[test]
+fn supervisor_init_arg_sender_handle_rejects() {
+    assert_supervisor_init_arg_non_bitcopy(
+        r"
+        actor Forwarder {
+            let tx: channel.Sender<string>;
+            init(tx: channel.Sender<string>) {
+                tx = tx;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App {
+            child f: Forwarder(tx: 0);
+        }
+        ",
+        "channel.Sender<string>",
+    );
+}
+
 // Positive tests — admitted cases.
 
 #[test]

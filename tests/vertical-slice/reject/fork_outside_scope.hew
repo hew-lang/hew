@@ -5,7 +5,7 @@
 // checker with a clear error.
 //
 // Harness verb: hew check
-// Expected diagnostic: "parser-only in this build"
+// Expected diagnostic: "`fork` is only valid inside a `scope { }` body"
 
 fn _foo() {}
 

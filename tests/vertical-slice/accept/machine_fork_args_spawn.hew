@@ -1,0 +1,33 @@
+// Accept fixture: `fork child = worker(42)` inside a machine state entry
+// block compiles end to end. Machine entry blocks are spawn-capable contexts
+// (TI-1 implicit spawns already compile there); the arg-bearing named fork
+// rides the fork-entry shim env like any other scope-body spawn. HIR unit
+// coverage continues to pin the Item::Machine task-gate walker directly.
+//
+// Harness verb: hew compile (must succeed; compile-only — main never
+// instantiates the machine)
+fn worker(x: i64) {}
+
+machine M {
+    events {
+        Tick;
+    }
+
+    state Idle {
+        entry {
+            scope {
+                fork child = worker(42);
+                await child;
+            }
+        }
+    }
+    state Done;
+
+    on Tick: Idle => Done {
+        Done
+    }
+
+    default { state }
+}
+
+fn main() {}

@@ -2254,6 +2254,13 @@ pub struct Checker {
     pub(super) in_actor_handler_context: bool,
     /// Whether we are currently inside an unsafe block.
     pub(super) in_unsafe: bool,
+    /// Nesting depth of `scope { }` structured-concurrency blocks in the
+    /// expression currently being checked. `fork name = call(...)` child
+    /// bindings are only valid at depth > 0; the counter is cleared for
+    /// nested lambda bodies because a closure body does not inherit the
+    /// lexical task scope it was written inside (it may run after the
+    /// scope has joined).
+    pub(super) task_scope_depth: u32,
     /// The module currently being processed (enables per-module scoping in future).
     pub(super) current_module: Option<String>,
     /// 1-based index of the non-root module currently being type-checked.
@@ -2567,6 +2574,7 @@ impl Checker {
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_unsafe: false,
+            task_scope_depth: 0,
             current_module: None,
             current_module_idx: 0,
             local_type_defs: HashSet::new(),

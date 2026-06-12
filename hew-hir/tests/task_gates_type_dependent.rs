@@ -2,10 +2,10 @@
 //! side tables. Adjacent `TypeCheckOutput::default()` debt outside
 //! `task_gates.rs` is intentionally left to the follow-up lane.
 //!
-//! Current source cannot yet produce every task-gate side-table fact end to end:
-//! `fork name = expr` is still a checker-level parser-only surface. These tests
-//! pin the reachable checker facts plus the task-gate predicates that consume
-//! them without changing production behavior.
+//! These tests pin the reachable checker facts plus the task-gate predicates
+//! that consume them without changing production behavior. They predate the
+//! checker accepting `fork name = call(...)` and remain the direct-predicate
+//! coverage for facts end-to-end source cannot isolate.
 
 #[path = "support/mod.rs"]
 mod support;

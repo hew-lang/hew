@@ -4275,3 +4275,44 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
          got: {combined}"
     );
 }
+
+/// Arg-bearing fork callees under the poisoned allocator: the fixture moves
+/// a heap `string` into a fork-entry shim env via the named form
+/// (`fork ts = shout(greeting); await ts;`). `MallocScribble`/`MallocPreScribble`
+/// poison freed and fresh allocations, so a child reading the env after a
+/// premature parent-side free deterministically corrupts the output (or
+/// aborts) instead of passing by luck. The structural single-owner proof
+/// lives in `hew-mir/tests/cancellation_scope.rs`
+/// (`fork_string_arg_parent_and_shim_emit_no_drops_for_moved_arg`); this is
+/// the behavioural freed-read guard on the emitted native binary.
+#[test]
+fn run_fork_args_spawn_scribbled_no_freed_read() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/fork_args_spawn.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/fork_args_spawn.expected"),
+    )
+    .expect("read fork_args_spawn.expected");
+
+    let mut command = support::hew_command();
+    command
+        .arg("run")
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1");
+    let output =
+        support::run_bounded_command(command, format!("hew run {} (scribbled)", source.display()));
+
+    assert!(
+        output.status.success(),
+        "fork_args_spawn must run cleanly under the poisoned allocator; \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}

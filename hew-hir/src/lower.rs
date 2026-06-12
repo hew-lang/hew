@@ -18181,9 +18181,11 @@ impl LowerCtx {
                                 span: span.clone(),
                             }
                         } else if let Some(binding_name) = binding {
-                            // FC-P1-A1 Blocker 1+2: Validate fork child spawn shape before lowering
+                            // FC-P1-A1 Blocker 1+2: Validate fork child spawn shape before lowering.
+                            // named_form = true: the checker type-checks this call in
+                            // synthesize_concurrency, so arg-bearing calls are permitted.
                             if let Expr::Call { function, args, .. } = &child_expr.0 {
-                                self.validate_task_spawn_call(function, args, &child_expr.1);
+                                self.validate_task_spawn_call(function, args, &child_expr.1, true);
                             }
 
                             // Lower the call synchronously first to get the return type,
@@ -18306,9 +18308,11 @@ impl LowerCtx {
         let span = expr.1.clone();
 
         // FC-P1-A1 Blocker 1: Validate spawned call shape at lowering site
-        // (implicit spawns never reach the AST walker)
+        // (implicit spawns never reach the AST walker).
+        // named_form = false: the checker does not visit implicit spawn sites,
+        // so args would bypass type-checking — reject them here.
         if let Expr::Call { function, args, .. } = &expr.0 {
-            self.validate_task_spawn_call(function, args, &span);
+            self.validate_task_spawn_call(function, args, &span, false);
         }
 
         // Lower the call normally to resolve the callee and argument types.
@@ -18364,25 +18368,23 @@ impl LowerCtx {
     }
 
     /// FC-P1-A1 helper: Validate task spawn call shape.
-    /// Checks: (1) callee is direct fn or valid closure, (2) args list is empty,
-    /// (3) for closures: params are empty, return is unit, captures are Send.
+    ///
+    /// `named_form` is `true` for `fork name = call(args)` (the checker
+    /// type-checks the call, so arguments are allowed). It is `false` for
+    /// implicit scope-statement spawns (`scope { f(args); }`) and any other
+    /// non-named path — the checker does not visit those call sites, so
+    /// argument-bearing calls there bypass type-checking and must be rejected.
+    ///
+    /// Checks: (1) callee is a registered direct fn or valid closure,
+    /// (2) for non-named forms: args list is empty,
+    /// (3) for closures: args/params are empty, return is unit, captures are Send.
     fn validate_task_spawn_call(
         &mut self,
         function: &Spanned<Expr>,
         args: &[CallArg],
         span: &Span,
+        named_form: bool,
     ) {
-        // Check args list is empty (required for all spawned calls)
-        if !args.is_empty() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::TaskSpawnSignatureUnsupported {
-                    site: self.ids.site(),
-                },
-                span.clone(),
-                "spawned call must have zero arguments".to_string(),
-            ));
-        }
-
         match &function.0 {
             Expr::Identifier(name) => {
                 // FC-P1-A1 (revision pass 2, Finding 2): parser emits
@@ -18400,11 +18402,37 @@ impl LowerCtx {
                         format!("spawned callee '{name}' is not a direct module function"),
                     ));
                 }
+                // For the named form (`fork t = f(args)`), the checker
+                // type-checks the call in synthesize_concurrency; args are
+                // permitted and MIR lowers them through the fork-entry shim.
+                // For non-named forms the checker never visits the call, so
+                // args would bypass type-checking — reject them here.
+                if !named_form && !args.is_empty() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::TaskSpawnSignatureUnsupported {
+                            site: self.ids.site(),
+                        },
+                        span.clone(),
+                        "spawned call must have zero arguments; use `fork name = f(args)` for argument-bearing spawns".to_string(),
+                    ));
+                }
                 // Note: Return type validation happens in lower_spawned_call after type resolution
             }
             Expr::Lambda {
                 params, body: _, ..
             } => {
+                // Spawned closure literals stay nullary: the arg-bearing lift
+                // covers direct-fn callees only (captures already carry the
+                // closure's environment; call-site args have no slot).
+                if !args.is_empty() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
+                            site: self.ids.site(),
+                        },
+                        span.clone(),
+                        "spawned closure call must have zero arguments".to_string(),
+                    ));
+                }
                 // FC-P1-A1 Blocker 3: Validate closure signature
                 // (1) Zero params
                 if !params.is_empty() {
@@ -20952,16 +20980,10 @@ fn check_fork_child_shape(
             // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
             // VALID at spawn time — see `lower_spawned_call` comment. The
             // await-site gate (MIR :7871) handles non-unit results.
-            // Check args are empty
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned function must have zero arguments".to_string(),
-                ));
-            }
+            // Args are valid on direct-fn fork children: MIR transfers them
+            // through the fork-entry shim env; the per-arg type restriction
+            // is enforced fail-closed at the MIR spawn site.
+            let _ = args;
         }
         Expr::Lambda {
             params, body: _, ..
@@ -21086,6 +21108,16 @@ fn check_fork_block_shape(
             }
             // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
             // VALID at spawn time — see `lower_spawned_call` comment.
+            //
+            // The block form (`fork { f(…); }`) stays nullary: the checker
+            // never visits block bodies, so arg types are unchecked there.
+            // Argument-bearing spawns must use the named form
+            // (`fork t = f(args)`), where the checker fully type-checks the
+            // call. Any args here would silently bypass type-checking.
+            //
+            // WHY: block bodies are not visited by synthesize_concurrency;
+            // WHEN: remove this gate when ForkBlock bodies are checker-visited;
+            // WHAT: add an Expr::ForkBlock arm to synthesize_concurrency.
             if !args.is_empty() {
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ForkBlockBodyUnsupported {
@@ -21093,7 +21125,7 @@ fn check_fork_block_shape(
                         reason: "function has arguments".to_string(),
                     },
                     span.clone(),
-                    "fork block function must have zero arguments".to_string(),
+                    "fork block callee must have zero arguments; use `fork name = f(args)` for argument-bearing spawns".to_string(),
                 ));
             }
         } else {

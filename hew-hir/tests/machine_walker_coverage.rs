@@ -35,13 +35,10 @@ fn has_blocking_recv(out: &hew_hir::LowerOutput) -> bool {
     })
 }
 
-fn has_task_signature_unsupported(out: &hew_hir::LowerOutput) -> bool {
-    out.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
-        )
-    })
+fn has_task_callee_unsupported(out: &hew_hir::LowerOutput) -> bool {
+    out.diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }))
 }
 
 // ── wasm_blocking_recv: 4 positions + 1 negative ───────────────────────────
@@ -159,30 +156,32 @@ fn wasm_machine_without_recv_no_diagnostic() {
 
 // ── task_gates: 4 positions + 1 negative ───────────────────────────────────
 //
-// Plant `scope { fork child = worker(42); }` — the fork-child-with-args
-// shape that triggers `TaskSpawnSignatureUnsupported` per
-// `check_fork_child_shape` (hew-hir/src/lower.rs:11688). Target is host
+// Plant `scope { fork child = helper(); }` where `helper` is NOT a module
+// function in `fn_registry` — the non-direct-callee shape that triggers
+// `TaskSpawnCalleeUnsupported` per `check_fork_child_shape`. (The previous
+// probe, fork-child-with-args, is a supported surface since the arg-bearing
+// fork lift; the walker-position coverage is what these tests pin, so they
+// ride whichever fork-child shape the walker still rejects.) Target is host
 // (task gate is target-agnostic).
 
 #[test]
 fn task_gate_in_machine_state_entry() {
     let source = r"
-        fn worker(x: int) {}
         machine M {
             events {
                 Tick;
             }
 
             state Idle {
-                entry { scope { fork child = worker(42); } }
+                entry { scope { fork child = helper(); } }
             }
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_host(source);
     assert!(
-        has_task_signature_unsupported(&out),
-        "fork-child-with-args in state.entry must be detected; got: {:#?}",
+        has_task_callee_unsupported(&out),
+        "non-direct fork callee in state.entry must be detected; got: {:#?}",
         out.diagnostics
     );
 }
@@ -190,22 +189,21 @@ fn task_gate_in_machine_state_entry() {
 #[test]
 fn task_gate_in_machine_state_exit() {
     let source = r"
-        fn worker(x: int) {}
         machine M {
             events {
                 Tick;
             }
 
             state Idle {
-                exit { scope { fork child = worker(42); } }
+                exit { scope { fork child = helper(); } }
             }
             on Tick: Idle => Idle reenter { Idle }
         }
     ";
     let out = lower_host(source);
     assert!(
-        has_task_signature_unsupported(&out),
-        "fork-child-with-args in state.exit must be detected; got: {:#?}",
+        has_task_callee_unsupported(&out),
+        "non-direct fork callee in state.exit must be detected; got: {:#?}",
         out.diagnostics
     );
 }
@@ -217,7 +215,6 @@ fn task_gate_in_machine_transition_guard() {
     // type-check time but the HIR pre-pass walker runs before the checker
     // narrows types.
     let source = r"
-        fn worker(x: int) {}
         machine M {
             events {
                 Tick;
@@ -225,14 +222,14 @@ fn task_gate_in_machine_transition_guard() {
 
             state Idle;
             on Tick: Idle => Idle reenter
-                when { scope { fork child = worker(42); } true }
+                when { scope { fork child = helper(); } true }
                 { Idle }
         }
     ";
     let out = lower_host(source);
     assert!(
-        has_task_signature_unsupported(&out),
-        "fork-child-with-args in transition.guard must be detected; got: {:#?}",
+        has_task_callee_unsupported(&out),
+        "non-direct fork callee in transition.guard must be detected; got: {:#?}",
         out.diagnostics
     );
 }
@@ -240,7 +237,6 @@ fn task_gate_in_machine_transition_guard() {
 #[test]
 fn task_gate_in_machine_transition_body() {
     let source = r"
-        fn worker(x: int) {}
         machine M {
             events {
                 Tick;
@@ -248,15 +244,15 @@ fn task_gate_in_machine_transition_body() {
 
             state Idle;
             on Tick: Idle => Idle reenter {
-                scope { fork child = worker(42); }
+                scope { fork child = helper(); }
                 Idle
             }
         }
     ";
     let out = lower_host(source);
     assert!(
-        has_task_signature_unsupported(&out),
-        "fork-child-with-args in transition.body must be detected; got: {:#?}",
+        has_task_callee_unsupported(&out),
+        "non-direct fork callee in transition.body must be detected; got: {:#?}",
         out.diagnostics
     );
 }
@@ -279,8 +275,34 @@ fn task_gate_machine_without_fork_no_diagnostic() {
     ";
     let out = lower_host(source);
     assert!(
-        !has_task_signature_unsupported(&out),
+        !has_task_callee_unsupported(&out),
         "benign machine must not trigger task gate; got: {:#?}",
+        out.diagnostics
+    );
+}
+
+#[test]
+fn task_gate_machine_arg_bearing_direct_fork_no_diagnostic() {
+    // Negative (arg-bearing fork lift): a direct module-fn fork child WITH
+    // args in a machine entry is a supported surface — the walker must not
+    // reject it. (MIR enforces the per-arg type restriction fail-closed.)
+    let source = r"
+        fn worker(x: int) {}
+        machine M {
+            events {
+                Tick;
+            }
+
+            state Idle {
+                entry { scope { fork child = worker(42); await child; } }
+            }
+            on Tick: Idle => Idle reenter { Idle }
+        }
+    ";
+    let out = lower_host(source);
+    assert!(
+        !has_task_callee_unsupported(&out),
+        "direct arg-bearing fork callee must pass the walker; got: {:#?}",
         out.diagnostics
     );
 }

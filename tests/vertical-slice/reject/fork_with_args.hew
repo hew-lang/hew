@@ -1,15 +1,13 @@
-// Reject fixture: fork_with_args — `fork`-spawned callee takes arguments.
+// Reject fixture: fork_with_args — implicit-spawn callee takes arguments.
 //
-// The structured-concurrency scope currently supports only no-argument functions
-// returning unit.  Attempting to spawn a callee that takes arguments (here i64)
-// fails closed in HIR lowering with a targeted TaskSpawnSignatureUnsupported
-// diagnostic before MIR/codegen see the unsupported task shape.
+// Argument-bearing task spawns are only valid through the named form
+// (`fork name = f(args)`), where the checker fully type-checks the call.
+// Implicit scope-statement spawns (`scope { f(args); }`) bypass the
+// checker and must remain nullary; ill-typed args there would bypass
+// type-checking and reach codegen unchecked.
 //
 // This fixture pins the fail-closed boundary at:
-//   hew-hir/src/lower.rs task-spawn signature gate
-//
-// When S5 widens fork to accept argument-bearing callees this fixture moves to
-// accept/.
+//   hew-hir/src/lower.rs  validate_task_spawn_call (non-named path)
 //
 // Harness verb: hew compile
 // Expected diagnostics:

@@ -1539,14 +1539,82 @@ impl Checker {
     )]
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         match expr {
-            Expr::ForkChild { .. } => {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`fork name = expr;` is parser-only in this build; type checking lands in a follow-up change"
-                        .to_string(),
-                );
-                Ty::Error
+            Expr::ForkChild {
+                binding,
+                expr: child,
+            } => {
+                // `fork name = call(...)` is a child-task spawn statement and is
+                // only meaningful inside a `scope { }` body (TI-2). HIR lowering
+                // enforces the same position rule; rejecting here as well gives a
+                // check-time diagnostic instead of a lowering error.
+                if self.task_scope_depth == 0 {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`fork` is only valid inside a `scope { }` body".to_string(),
+                    );
+                    return Ty::Error;
+                }
+                // Parity with HIR's ForkChildNotACall gate: the child must be a
+                // call expression — task spawning needs a callee to run, not a
+                // value to wrap.
+                if !matches!(child.0, Expr::Call { .. }) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &child.1,
+                        "`fork name = expr` requires a call expression as the \
+                         right-hand side; other expression forms cannot be \
+                         spawned as tasks"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
+                let ret_ty = self.synthesize(&child.0, &child.1);
+                // Mark non-Copy call arguments as moved into the fork child.
+                //
+                // `fork name = f(a, b)` transfers ownership of non-Copy args
+                // into the child task env. The general `Expr::Call` arm of
+                // `synthesize` does NOT mark args as moved (regular function
+                // calls are by-value but the type checker treats them as
+                // borrows), so without this pass a `string` arg remains live
+                // in the parent scope and a subsequent use goes unreported.
+                //
+                // We read each arg's type via `lookup_ref` (no read-count
+                // increment — `synthesize` already counted the read) and
+                // delegate to `mark_expr_moved_if_non_copy`, which gates on
+                // `!Copy` and only marks `Expr::Identifier` nodes.
+                //
+                // WHEN-OBSOLETE: if the general call-arg path gains its own
+                // move-tracking, this pass becomes redundant and can be
+                // deleted. Until then this is the sole source of
+                // UseAfterMove diagnostics for named fork spawn args.
+                if let Expr::Call { args, .. } = &child.0 {
+                    for arg in args {
+                        let (arg_expr, arg_span) = arg.expr();
+                        if let Expr::Identifier(arg_name) = arg_expr {
+                            if let Some(binding_ty) =
+                                self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
+                            {
+                                let resolved = self.subst.resolve(&binding_ty);
+                                self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
+                            }
+                        }
+                    }
+                }
+                if let Some(name) = binding {
+                    // Mirror `let`: introduce the binding into the enclosing
+                    // block scope so later statements (`await t`) resolve it.
+                    // The handle types as Task<T> where T is the callee's
+                    // return type; `await` typing unwraps it (await Task<T> → T).
+                    self.env.define_with_span(
+                        name.clone(),
+                        Ty::Task(Box::new(ret_ty)),
+                        false,
+                        span.clone(),
+                    );
+                }
+                // The fork statement itself produces no value.
+                Ty::Unit
             }
             Expr::SpawnLambdaActor {
                 is_move,
@@ -1704,7 +1772,11 @@ impl Checker {
             Expr::Scope { body: block } => {
                 // Type-check the block body for diagnostics; the scope itself is Unit
                 // (it is a lifetime boundary, not a value-producing block).
+                // Track the nesting depth so `fork name = call(...)` statements
+                // can verify they appear inside a scope body.
+                self.task_scope_depth += 1;
                 self.check_block(block, None);
+                self.task_scope_depth -= 1;
                 Ty::Unit
             }
             Expr::UnsafeBlock(block) => {
@@ -4648,6 +4720,11 @@ impl Checker {
         let prev_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
         let prev_actor_handler_context = self.in_actor_handler_context;
         self.in_actor_handler_context = false;
+        // A lambda body does not inherit the lexical task scope it is written
+        // inside: the closure may run after the scope has joined, so `fork`
+        // statements inside it have no spawn context.
+        let prev_task_scope_depth = self.task_scope_depth;
+        self.task_scope_depth = 0;
 
         // Record the scope depth BEFORE pushing the lambda scope — any variable
         // found below this depth during body checking is a capture.
@@ -4765,6 +4842,7 @@ impl Checker {
 
         self.current_return_type = prev_return_type;
         self.in_actor_handler_context = prev_actor_handler_context;
+        self.task_scope_depth = prev_task_scope_depth;
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
 

@@ -428,6 +428,11 @@ jobs:
     timeout-minutes: 60
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
+      # NASM on windows-msvc; the documented escape consumes the crate's
+      # pregenerated assembly objects, so the test-time hew-lib bootstrap links
+      # without a NASM toolchain. (Parity with release-gate.yml / release.yml.)
+      AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'

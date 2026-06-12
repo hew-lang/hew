@@ -110,8 +110,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
-# Safe handle wrappers for integration tests (RAII over runtime FFI).
-hew-runtime-testkit = { path = "../hew-runtime-testkit" }
 # For unit tests
 rand = "0.10.1"
 tempfile.workspace = true
@@ -120,9 +118,6 @@ tracing-subscriber.workspace = true
 ureq = { version = "3", default-features = false }
 # For profiler server JSON-escape unit tests
 serde_json.workspace = true
-# Microbenchmarks for the HashMap layout-kernel (Stage C0a baseline + regression
-# signal for Stage C/D). Harness is disabled per bench; see benches/.
-criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "hashmap_layout_kernel"
@@ -140,6 +135,14 @@ harness = false
 # native-only, so this scoping costs no test coverage on wasm.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest = "1"
+# Safe handle wrappers for integration tests (RAII over runtime FFI). Native
+# only: wraps FFI (e.g. hew_actor_trap) the runtime does not export on wasm32.
+hew-runtime-testkit = { path = "../hew-runtime-testkit" }
+# Microbenchmarks for the HashMap layout-kernel (Stage C0a baseline + regression
+# signal for Stage C/D). Harness is disabled per bench; see benches/. Scoped to
+# non-wasm targets: criterion pulls Rayon, which refuses to compile for
+# wasm32-wasip1. The benches are native-only, so this costs no coverage.
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [lints]
 workspace = true

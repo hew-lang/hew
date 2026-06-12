@@ -408,7 +408,7 @@ jobs:
 
       - name: Attest toolchain archive provenance
         if: steps.check.outputs.skip != 'true'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: ${{ env.ASSET_NAME }}
 
@@ -427,7 +427,7 @@ jobs:
     steps:
       - name: Check if cache already exists
         id: check
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
           key: ${{ env.LLVM_CACHE_KEY_BSD }}
@@ -439,7 +439,7 @@ jobs:
 
       - name: Build LLVM on FreeBSD
         if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
         with:
           release: "15.0"
           mem: 8192
@@ -492,7 +492,7 @@ jobs:
 
       - name: Save cache
         if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
           key: ${{ env.LLVM_CACHE_KEY_BSD }}

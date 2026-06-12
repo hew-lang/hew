@@ -32,9 +32,9 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       playground: ${{ steps.filter.outputs.playground }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: filter
         with:
           # Required heavy checks may no-op for docs-only changes, but anything
@@ -86,13 +86,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         with:
+          toolchain: stable
           components: clippy, rustfmt
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: |
             ~/.cargo/registry/
@@ -137,7 +138,7 @@ jobs:
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@c35d1b164463ee62a100735382aaaa525c5d3496  # codeql-bundle-v2.25.6 (v4)
         with:
           sarif_file: clippy-results.sarif
           category: clippy
@@ -158,11 +159,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: stable
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: |
             ~/.cargo/registry/
@@ -200,7 +203,7 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install build tools
@@ -215,13 +218,17 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          toolchain: stable
 
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          tool: nextest
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
@@ -302,7 +309,7 @@ jobs:
 
       - name: Setup Node.js for sandbox parity
         if: env.RUN_CODE_PATH == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
           cache: npm
@@ -314,7 +321,7 @@ jobs:
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Linux)
@@ -347,20 +354,25 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy coverage work while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         if: env.RUN_CODE_PATH == 'true'
         with:
+          toolchain: stable
           components: llvm-tools
 
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         if: env.RUN_CODE_PATH == 'true'
-      - uses: taiki-e/install-action@nextest
+        with:
+          tool: cargo-llvm-cov
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          tool: nextest
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
@@ -409,14 +421,14 @@ jobs:
 
       - name: Upload coverage (lcov)
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-lcov
           path: lcov.info
 
       - name: Upload coverage (HTML)
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-html
           path: coverage-html/
@@ -442,7 +454,7 @@ jobs:
         run: echo "No code changes detected; skipping heavy Windows CI while satisfying the required check."
         shell: pwsh
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
@@ -451,13 +463,17 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          toolchain: stable
 
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          tool: nextest
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         if: env.RUN_CODE_PATH == 'true'
         with:
           path: |
@@ -488,7 +504,7 @@ jobs:
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'
-        uses: mikepenz/action-junit-report@v5
+        uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Windows)
@@ -508,16 +524,19 @@ jobs:
         if: env.RUN_CODE_PATH != 'true'
         run: echo "No code changes detected; skipping heavy macOS arm64 CI while satisfying the required check."
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
         if: env.RUN_CODE_PATH == 'true'
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912  # v2.81.10
         if: env.RUN_CODE_PATH == 'true'
+        with:
+          tool: nextest
 
       - name: Install build tools
         if: env.RUN_CODE_PATH == 'true'
@@ -559,7 +578,7 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         if: env.RUN_CODE_PATH == 'true'
         with:
           path: |

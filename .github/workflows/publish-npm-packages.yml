@@ -1,12 +1,12 @@
-name: Publish npm packages (npmjs canonical + GitHub Packages mirror)
+name: Publish npm packages to GitHub Packages
 
-# Publishes the browser-facing Hew packages, versioned in lockstep with the
+# Publishes the browser-facing Hew packages to GitHub Packages (the sole
+# canonical registry for the @hew-lang scope), versioned in lockstep with the
 # Cargo workspace version:
 #   @hew-lang/wasm          (hew-wasm — analysis / editor + LSP tooling)
 #   @hew-lang/sandbox-wasm  (hew-sandbox-wasm — sandbox bytecode export)
 #   @hew-lang/sandbox-vm    (hew-sandbox-vm — deterministic TS interpreter)
 #
-# npmjs is canonical; GitHub Packages is a mirror published in the same run.
 # Manual dispatch keeps publishing decoupled from the large release.yml gate.
 
 on:
@@ -17,24 +17,19 @@ on:
         required: true
         default: true
         type: boolean
-      registry_url:
-        description: "Canonical registry URL to publish to"
-        required: true
-        default: "https://registry.npmjs.org/"
-        type: string
 
 concurrency:
   group: publish-npm-packages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-and-publish-npm:
-    name: Build + publish to npmjs (canonical)
+  publish:
+    name: Build + publish to GitHub Packages
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -67,60 +62,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: ${{ inputs.registry_url }}
-
-      - name: Build npm packages
-        run: node scripts/build-npm-packages.mjs
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-packages
-          path: target/npm
-
-      - name: Publish to npmjs
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          REGISTRY_URL: ${{ inputs.registry_url }}
-        run: |
-          set -euo pipefail
-          for dir in target/npm/*/; do
-            name="$(node -p "require('./${dir}package.json').name")"
-            version="$(node -p "require('./${dir}package.json').version")"
-            if npm view "${name}@${version}" version --registry "$REGISTRY_URL" >/dev/null 2>&1; then
-              echo "::notice::${name}@${version} already on ${REGISTRY_URL}; skipping."
-              continue
-            fi
-            if [ "$DRY_RUN" = "true" ]; then
-              npm publish "$dir" --dry-run --ignore-scripts --registry "$REGISTRY_URL"
-            else
-              npm publish "$dir" --provenance --ignore-scripts --registry "$REGISTRY_URL"
-            fi
-          done
-
-  mirror-github-packages:
-    name: Mirror to GitHub Packages
-    needs: build-and-publish-npm
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
           registry-url: https://npm.pkg.github.com
           scope: "@hew-lang"
 
-      - name: Download package artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-packages
-          path: target/npm
+      - name: Build npm packages
+        run: node scripts/build-npm-packages.mjs
 
       - name: Publish to GitHub Packages
         env:

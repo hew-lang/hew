@@ -8,6 +8,9 @@ pub mod discovery;
 pub mod output;
 pub mod runner;
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 pub fn cmd_test(args: &crate::args::TestArgs) {
     let filter = args.filter.as_deref();
     let use_color = !args.no_color;
@@ -20,23 +23,27 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
-    let paths: Vec<String> = if args.paths.is_empty() {
-        vec![".".to_string()]
+    let paths: Vec<PathBuf> = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
     } else {
-        args.paths.iter().map(|p| p.display().to_string()).collect()
+        args.paths.clone()
     };
+    let paths = canonicalize_test_paths(&paths).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    });
 
     // Discover test files and test cases.
     let mut all_tests = Vec::new();
     let mut discovered_files = 0usize;
     let mut had_parse_errors = false;
+    let mut seen_files = HashSet::new();
     for path in &paths {
-        let p = std::path::Path::new(path);
-        if !p.exists() {
-            eprintln!("Error: path not found: {path}");
-            std::process::exit(1);
-        }
+        let p = Path::new(path);
         if p.is_file() {
+            if !seen_files.insert(path.clone()) {
+                continue;
+            }
             match discovery::discover_tests_in_file(path) {
                 Ok(discovered) => {
                     discovered_files += 1;
@@ -52,6 +59,9 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
             match discovery::discover_test_files(path) {
                 Ok(files) => {
                     for file in files {
+                        if !seen_files.insert(file.clone()) {
+                            continue;
+                        }
                         match discovery::discover_tests_in_file(&file) {
                             Ok(discovered) => {
                                 discovered_files += 1;
@@ -107,6 +117,20 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
     if summary.failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn canonicalize_test_paths(paths: &[PathBuf]) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            if !path.exists() {
+                return Err(format!("path not found: {}", path.display()));
+            }
+            path.canonicalize()
+                .map_err(|error| format!("cannot canonicalize {}: {error}", path.display()))
+                .map(|path| path.display().to_string())
+        })
+        .collect()
 }
 
 fn handle_discovered_file(file: &discovery::DiscoveredTestFile) -> bool {

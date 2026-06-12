@@ -459,7 +459,7 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     // `main`) are visible and libraries can satisfy its undefined references.
     cmd.arg(object_path);
 
-    // Link focused WASM support archives. JSON/YAML archives come before the
+    // Link focused WASM support archives. Encoding archives come before the
     // runtime so wasm-ld can resolve their runtime references in one pass.
     for lib in find_wasm_link_libs(target)? {
         cmd.arg(&lib);
@@ -499,8 +499,11 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     Ok(())
 }
 
-const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 2] =
-    ["libhew_std_encoding_json.a", "libhew_std_encoding_yaml.a"];
+const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 3] = [
+    "libhew_std_encoding_json.a",
+    "libhew_std_encoding_yaml.a",
+    "libhew_std_encoding_toml.a",
+];
 const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
 /// Sibling stdlib staticlibs the native linker pulls in (best-effort) so
@@ -1563,7 +1566,11 @@ mod tests {
     fn wasm_link_archives_keep_wire_support_libs_before_runtime() {
         assert_eq!(
             WASM_OPTIONAL_LINK_ARCHIVES,
-            ["libhew_std_encoding_json.a", "libhew_std_encoding_yaml.a"]
+            [
+                "libhew_std_encoding_json.a",
+                "libhew_std_encoding_yaml.a",
+                "libhew_std_encoding_toml.a"
+            ]
         );
         assert_eq!(WASM_RUNTIME_ARCHIVE, "libhew_runtime.a");
     }

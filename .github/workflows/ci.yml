@@ -332,6 +332,12 @@ jobs:
     timeout-minutes: 30
     env:
       RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # cargo-llvm-cov builds into target/llvm-cov-target/, so the `hew`
+      # binary the e2e tests spawn sits one directory deeper than the normal
+      # target/debug/ — its exe-relative std discovery (../../std) then misses
+      # the repo std/. Pin std explicitly for the instrumented run; the normal
+      # test job finds it relative to target/debug/ and needs no override.
+      HEW_STD: ${{ github.workspace }}/std
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'

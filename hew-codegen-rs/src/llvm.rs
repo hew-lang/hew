@@ -1042,19 +1042,19 @@ struct FnCtx<'a, 'ctx> {
     /// the lowerer, so the drain is part of the program's control-flow graph
     /// rather than a codegen epilogue injection.
     emit_drain_epilogue: bool,
-    /// Emit `hew_sched_run()` before the `Terminator::Return` of the wasm32
-    /// program entry point of an actor-using program — the wasm analogue of
-    /// `emit_drain_epilogue`.
+    /// Emit `hew_wasm_runtime_exit()` before the `Terminator::Return` of the
+    /// wasm32 program entry point of an actor-using program — the wasm analogue
+    /// of `emit_drain_epilogue`.
     ///
     /// `true` ONLY when ALL of: `func.name == "main"`, the module has at least
     /// one actor layout, the target is wasm32 (`emit_wasm_entry_alias`), and
     /// there are no supervisors. The native epilogue uses a thread-backed
     /// `hew_shutdown_initiate`/`_wait`; on the wasm32 cooperative scheduler
-    /// that has no driver, the standalone-WASM `hew_sched_run()` runs all
-    /// runnable actors to completion synchronously so fire-and-forget messages
-    /// are processed before the program exits. Without it the mailbox never
-    /// drains and the program produces no output.
-    emit_wasm_sched_drain: bool,
+    /// that has no driver, the standalone-WASM runtime-exit helper runs all
+    /// runnable actors to completion synchronously and then performs scheduler
+    /// shutdown plus actor cleanup. Without it the mailbox never drains and
+    /// short-lived programs skip the runtime cleanup chain.
+    emit_wasm_runtime_exit: bool,
     /// Emit `hew_lambda_drain_all(0)` before the `Terminator::Return` of
     /// `main` on the native target so spawned lambda-actor dispatch
     /// threads finish processing their mailboxes before the process
@@ -1880,14 +1880,15 @@ fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
-        // hew_sched_run() -> void (`hew-runtime/src/scheduler_wasm.rs:676`).
-        // The standalone-WASM cooperative drain: runs all runnable actors to
-        // completion. Emitted by the wasm32 actor main-exit drain (the wasm
-        // analogue of the native `hew_shutdown_initiate`/`_wait` epilogue),
-        // because nothing else drives the cooperative scheduler when a
-        // standalone `hew run --target wasm32-wasi` program reaches `main`'s
-        // return without the program itself calling into the scheduler.
+        // hew_sched_run() -> void (`hew-runtime/src/scheduler_wasm.rs`).
+        // Host/re-entrant cooperative drain: runs runnable actors to completion
+        // without owning scheduler shutdown or actor cleanup.
         "hew_sched_run" => ctx.void_type().fn_type(&[], false),
+        // hew_wasm_runtime_exit() -> void (`hew-runtime/src/scheduler_wasm.rs`).
+        // Standalone-WASM main-return epilogue: drains runnable actors, shuts
+        // down scheduler state, and runs the runtime cleanup chain before WASI
+        // process return. WASI has no runtime-owned atexit hook to fill this gap.
+        "hew_wasm_runtime_exit" => ctx.void_type().fn_type(&[], false),
         // hew_shutdown_initiate(drain_timeout_ms: i64) -> void
         // (`hew-runtime/src/shutdown.rs:183`). Non-blocking — sets the
         // shutdown phase to QUIESCE and spawns an orchestrator thread that
@@ -30734,20 +30735,21 @@ fn lower_terminator<'ctx>(
                     .build_call(shutdown_wait, &[], "hew_shutdown_wait_call")
                     .llvm_ctx("hew_shutdown_wait call")?;
             }
-            // wasm32 cooperative-scheduler drain: run all runnable actors to
-            // completion before `main` returns. The standalone-WASM analogue of
-            // the native drain epilogue above; see `emit_wasm_sched_drain`.
-            if fn_ctx.emit_wasm_sched_drain {
-                let sched_run = intern_runtime_decl(
+            // wasm32 cooperative-scheduler normal exit: run all runnable actors
+            // to completion, then shut down scheduler state and clean up tracked
+            // actors before `main` returns. The standalone-WASM analogue of the
+            // native drain+cleanup exit path; see `emit_wasm_runtime_exit`.
+            if fn_ctx.emit_wasm_runtime_exit {
+                let wasm_runtime_exit = intern_runtime_decl(
                     fn_ctx.ctx,
                     fn_ctx.llvm_mod,
                     &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_sched_run",
+                    "hew_wasm_runtime_exit",
                 )?;
                 fn_ctx
                     .builder
-                    .build_call(sched_run, &[], "hew_sched_run_call")
-                    .llvm_ctx("hew_sched_run call")?;
+                    .build_call(wasm_runtime_exit, &[], "hew_wasm_runtime_exit_call")
+                    .llvm_ctx("hew_wasm_runtime_exit call")?;
             }
             // Lambda-actor drain: each lambda actor runs on its own OS
             // thread outside the work-stealing scheduler, so the
@@ -35783,12 +35785,13 @@ fn lower_function<'ctx>(
     let emit_lambda_drain_epilogue = func.name == "main" && !emit_wasm_entry_alias;
 
     // The wasm32 analogue: a standalone `hew run --target wasm32-wasi` actor
-    // program has no scheduler driver, so `main` must drain the cooperative
-    // scheduler itself via `hew_sched_run()`. Same gate as the native epilogue
-    // but for the wasm target (`emit_wasm_entry_alias`). Supervisors are
-    // HIR-gated off wasm32, so `!has_supervisors` is always true here; it is
-    // kept for symmetry with the native condition.
-    let emit_wasm_sched_drain = func.name == "main"
+    // program has no scheduler driver or runtime-owned atexit hook, so `main`
+    // must drain and clean up the cooperative runtime itself via
+    // `hew_wasm_runtime_exit()`. Same gate as the native epilogue but for the
+    // wasm target (`emit_wasm_entry_alias`). Supervisors are HIR-gated off
+    // wasm32, so `!has_supervisors` is always true here; it is kept for
+    // symmetry with the native condition.
+    let emit_wasm_runtime_exit = func.name == "main"
         && !actor_layouts.is_empty()
         && !has_supervisors
         && emit_wasm_entry_alias;
@@ -35797,7 +35800,7 @@ fn lower_function<'ctx>(
         ctx,
         llvm_mod,
         emit_drain_epilogue,
-        emit_wasm_sched_drain,
+        emit_wasm_runtime_exit,
         emit_lambda_drain_epilogue,
         target_data,
         builder,
@@ -43405,7 +43408,7 @@ mod tests {
             // the flag off so the test builder's block does not attempt to
             // intern shutdown symbols that are absent from the minimal fixture.
             emit_drain_epilogue: false,
-            emit_wasm_sched_drain: false,
+            emit_wasm_runtime_exit: false,
             emit_lambda_drain_epilogue: false,
             target_data: &harness.target_data,
             builder,
@@ -45641,6 +45644,38 @@ mod tests {
         assert!(
             ir.contains("hew_shutdown_wait"),
             "actor-using main must emit hew_shutdown_wait call before return:\n{ir}"
+        );
+    }
+
+    /// For a wasm32 actor-using program, the `main` function's IR must contain
+    /// `hew_wasm_runtime_exit`, not just `hew_sched_run`. The helper owns the
+    /// standalone WASM normal-exit sequence: drain, scheduler shutdown, and
+    /// runtime cleanup.
+    #[test]
+    fn wasm_actor_using_main_emits_runtime_exit_epilogue() {
+        let pipeline = minimal_pipeline_with_unit_main(true);
+        let ctx = Context::create();
+        let machine =
+            target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
+        let m = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "wasm_runtime_exit_actor_test",
+            Some(&machine),
+        )
+        .expect("wasm actor runtime-exit epilogue module must build");
+        assert!(
+            m.verify().is_ok(),
+            "wasm module with runtime-exit epilogue must pass LLVM verify"
+        );
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("hew_wasm_runtime_exit"),
+            "wasm actor-using main must emit hew_wasm_runtime_exit before return:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_sched_run_call"),
+            "wasm actor-using main must not regress to drain-only epilogue:\n{ir}"
         );
     }
 

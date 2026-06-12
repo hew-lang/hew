@@ -1,9 +1,23 @@
 {
-  "name": "@hew-lang/sandbox-vm-spec",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Specification and validation scaffold for the Hew educational sandbox VM.",
+  "name": "@hew-lang/sandbox-vm",
+  "version": "0.5.0",
+  "description": "Deterministic TypeScript interpreter for the Hew educational sandbox",
   "type": "module",
+  "main": "./dist/interpreter/index.js",
+  "types": "./dist/interpreter/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/interpreter/index.js",
+      "types": "./dist/interpreter/index.d.ts"
+    },
+    "./scheduler": {
+      "import": "./dist/scheduler/scheduler.js",
+      "types": "./dist/scheduler/scheduler.d.ts"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
   "scripts": {
     "build": "tsc --project src/tsconfig.json && node scaffolding/scripts/validate-sandbox-vm.mjs",
     "parity:run": "node dist/interpreter/parity-runner.js",
@@ -15,6 +29,22 @@
     "conformance:m6": "npm run build && node --test test/m6-conformance.test.mjs",
     "conformance:m7": "npm run build && node --test test/m7-conformance.test.mjs",
     "conformance": "npm run build && node --test test/m3-conformance.test.mjs test/m4-conformance.test.mjs test/m5-conformance.test.mjs test/m6-conformance.test.mjs test/m7-conformance.test.mjs"
+  },
+  "keywords": [
+    "hew",
+    "sandbox",
+    "interpreter",
+    "webassembly"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hew-lang/hew.git",
+    "directory": "hew-sandbox-vm"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",

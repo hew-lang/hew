@@ -1,0 +1,133 @@
+# Publish Hew browser/LSP/sandbox npm packages to GitHub Packages.
+#
+# Registry: https://npm.pkg.github.com  (@hew-lang scope = hew-lang org)
+# Auth:     GITHUB_TOKEN  (no external secret required)
+# Access:   public  (consumers must still provide a GitHub token to install
+#           from GitHub Packages, even for public packages)
+#
+# Trigger: manual workflow_dispatch only — publishing is decoupled from the
+# release tag gate so the maintainer controls the exact moment of publication.
+#
+# dry_run defaults to true so accidental runs are safe. Set to false only
+# when ready to publish for real.
+#
+# Packages:
+#   @hew-lang/wasm          ← hew-wasm crate
+#   @hew-lang/sandbox-wasm  ← hew-sandbox-wasm crate
+#   @hew-lang/sandbox-vm    ← hew-sandbox-vm TypeScript interpreter
+
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run only (build + pack, skip publish)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-npm-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: stable
+
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache Cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+          key: publish-npm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: publish-npm-${{ runner.os }}-
+
+      - name: Install wasm-pack v0.13.1
+        run: |
+          set -euo pipefail
+          WASM_PACK_VERSION=0.13.1
+          TARBALL="wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${TARBALL}" \
+            -o "/tmp/${TARBALL}"
+          tar -xzf "/tmp/${TARBALL}" -C /tmp
+          echo "/tmp/wasm-pack-v${WASM_PACK_VERSION}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@hew-lang"
+
+      - name: Build all npm packages
+        run: node scripts/build-npm-packages.mjs
+        env:
+          # Release profile in CI (wasm-opt disabled per Cargo.toml metadata).
+          NPM_WASM_PROFILE: release
+
+      - name: Dry-run pack (verify staging)
+        run: |
+          for pkg in wasm sandbox-wasm sandbox-vm; do
+            echo "=== @hew-lang/${pkg} ==="
+            npm pack --dry-run "target/npm/@hew-lang/${pkg}"
+            echo ""
+          done
+
+      - name: Publish @hew-lang/wasm
+        if: ${{ !inputs.dry_run }}
+        run: |
+          # PKG_DIR and version are literal constants — no user input is interpolated.
+          PKG_DIR="target/npm/@hew-lang/wasm"
+          PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/wasm/package.json').version")"
+          if npm view "@hew-lang/wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
+            echo "::notice::@hew-lang/wasm@${PKG_VERSION} already published — skipping"
+          else
+            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish @hew-lang/sandbox-wasm
+        if: ${{ !inputs.dry_run }}
+        run: |
+          PKG_DIR="target/npm/@hew-lang/sandbox-wasm"
+          PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/sandbox-wasm/package.json').version")"
+          if npm view "@hew-lang/sandbox-wasm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
+            echo "::notice::@hew-lang/sandbox-wasm@${PKG_VERSION} already published — skipping"
+          else
+            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish @hew-lang/sandbox-vm
+        if: ${{ !inputs.dry_run }}
+        run: |
+          PKG_DIR="target/npm/@hew-lang/sandbox-vm"
+          PKG_VERSION="$(node -p "require('./target/npm/@hew-lang/sandbox-vm/package.json').version")"
+          if npm view "@hew-lang/sandbox-vm@${PKG_VERSION}" --registry https://npm.pkg.github.com > /dev/null 2>&1; then
+            echo "::notice::@hew-lang/sandbox-vm@${PKG_VERSION} already published — skipping"
+          else
+            npm publish "${PKG_DIR}" --ignore-scripts --registry https://npm.pkg.github.com
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -263,199 +263,73 @@ else
     SKIPPED=$((SKIPPED + 1))
 fi
 
-# 3b. hew.sh — copy dist/hew.tmLanguage.json → public/syntax/
-next_step "hew.sh (TextMate grammar)..."
-if [ -d "$HEW_SH" ]; then
-    if [ -f "$DIST_DIR/hew.tmLanguage.json" ]; then
-        # Determine the correct destination path
-        local_tm_dest=""
-        for candidate in "public/syntax" "src/lib/syntax"; do
-            if [ -d "$HEW_SH/$candidate" ]; then
-                local_tm_dest="$candidate/hew.tmLanguage.json"
-                break
-            fi
-        done
-        if [ -z "$local_tm_dest" ]; then
-            # Default to src/lib/syntax
-            local_tm_dest="src/lib/syntax/hew.tmLanguage.json"
-            mkdir -p "$HEW_SH/src/lib/syntax"
-        fi
-
-        if $CHECK_ONLY; then
-            info "Comparing dist/hew.tmLanguage.json with hew.sh/$local_tm_dest..."
-            if cmp -s "$DIST_DIR/hew.tmLanguage.json" "$HEW_SH/$local_tm_dest" 2>/dev/null; then
-                ok "Already in sync"
-            else
-                fail "Drift detected in $local_tm_dest"
-                DRIFTS=$((DRIFTS + 1))
-            fi
-        else
-            cp "$DIST_DIR/hew.tmLanguage.json" "$HEW_SH/$local_tm_dest"
-            cd "$HEW_SH"
-            if git diff --quiet "$local_tm_dest" 2>/dev/null; then
-                ok "Already up to date"
-            else
-                ok "Updated $local_tm_dest"
-                UPDATED=$((UPDATED + 1))
-                if $COMMIT; then
-                    try_commit "$HEW_SH" "Sync TextMate grammar with compiler syntax data" \
-                        "$local_tm_dest"
-                fi
-            fi
-        fi
-    else
-        warn "dist/hew.tmLanguage.json not available (skipped)"
-        SKIPPED=$((SKIPPED + 1))
-    fi
-else
-    warn "Not found at $HEW_SH (skipped)"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# 3c. hew.run — copy dist/hew.tmLanguage.json → static/syntax/
-next_step "hew.run (TextMate grammar)..."
-if [ -d "$HEW_RUN" ]; then
-    if [ -f "$DIST_DIR/hew.tmLanguage.json" ]; then
-        # Determine the correct destination path
-        local_tm_dest=""
-        for candidate in "static/syntax" "src/lib/syntax"; do
-            if [ -d "$HEW_RUN/$candidate" ]; then
-                local_tm_dest="$candidate/hew.tmLanguage.json"
-                break
-            fi
-        done
-        if [ -z "$local_tm_dest" ]; then
-            local_tm_dest="static/syntax/hew.tmLanguage.json"
-            mkdir -p "$HEW_RUN/static/syntax"
-        fi
-
-        if $CHECK_ONLY; then
-            info "Comparing dist/hew.tmLanguage.json with hew.run/$local_tm_dest..."
-            if cmp -s "$DIST_DIR/hew.tmLanguage.json" "$HEW_RUN/$local_tm_dest" 2>/dev/null; then
-                ok "Already in sync"
-            else
-                fail "Drift detected in $local_tm_dest"
-                DRIFTS=$((DRIFTS + 1))
-            fi
-        else
-            cp "$DIST_DIR/hew.tmLanguage.json" "$HEW_RUN/$local_tm_dest"
-            cd "$HEW_RUN"
-            if git diff --quiet "$local_tm_dest" 2>/dev/null; then
-                ok "Already up to date"
-            else
-                ok "Updated $local_tm_dest"
-                UPDATED=$((UPDATED + 1))
-                if $COMMIT; then
-                    try_commit "$HEW_RUN" "Sync TextMate grammar with compiler syntax data" \
-                        "$local_tm_dest"
-                fi
-            fi
-        fi
-    else
-        warn "dist/hew.tmLanguage.json not available (skipped)"
-        SKIPPED=$((SKIPPED + 1))
-    fi
-else
-    warn "Not found at $HEW_RUN (skipped)"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# 3d. hew.run — copy hew-wasm/pkg/ artefacts → static/wasm/ and src/lib/wasm/
-next_step "hew.run (wasm artefacts)..."
+# 3b. hew.run / hew.sh / hew-studio — sync hew-wasm/pkg artefacts.
+#
+# These web playgrounds drive syntax highlighting from the compiler frontend's
+# semantic tokens (hew-wasm `semantic_tokens`), so they no longer consume the
+# TextMate grammar — only vscode-hew (3a above) still uses dist/hew.tmLanguage.json.
 WASM_PKG="$REPO_ROOT/hew-wasm/pkg"
-if [ -d "$HEW_RUN" ]; then
-    if [ ! -f "$WASM_PKG/hew_wasm_bg.wasm" ]; then
-        warn "hew-wasm/pkg/hew_wasm_bg.wasm not found — run: wasm-pack build --target web hew-wasm/"
+
+# sync_wasm_repo <repo_dir> <label> <bin_dir>
+# Copies hew_wasm_bg.wasm → <bin_dir>/ and hew_wasm.js/.d.ts → src/lib/wasm/.
+sync_wasm_repo() {
+    local repo_dir="$1" label="$2" bin_dir="$3"
+    next_step "$label (wasm artefacts)..."
+    if [ ! -d "$repo_dir" ]; then
+        warn "Not found at $repo_dir (skipped)"
         SKIPPED=$((SKIPPED + 1))
-    else
-        WASM_DEST_BIN="static/wasm/hew_wasm_bg.wasm"
-        WASM_DEST_JS="src/lib/wasm/hew_wasm.js"
-        WASM_DEST_DTS="src/lib/wasm/hew_wasm.d.ts"
-        mkdir -p "$HEW_RUN/static/wasm" "$HEW_RUN/src/lib/wasm"
-
-        if $CHECK_ONLY; then
-            info "Checking hew-wasm artefacts for drift in hew.run..."
-            wasm_drifts=0
-            for pair in "$WASM_PKG/hew_wasm_bg.wasm:$WASM_DEST_BIN" \
-                        "$WASM_PKG/hew_wasm.js:$WASM_DEST_JS" \
-                        "$WASM_PKG/hew_wasm.d.ts:$WASM_DEST_DTS"; do
-                src="${pair%%:*}"
-                rel="${pair##*:}"
-                dest="$HEW_RUN/$rel"
-                if ! cmp -s "$src" "$dest" 2>/dev/null; then
-                    fail "Drift detected in $rel"
-                    wasm_drifts=$((wasm_drifts + 1))
-                    DRIFTS=$((DRIFTS + 1))
-                fi
-            done
-            if [ $wasm_drifts -eq 0 ]; then
-                ok "Already in sync"
-            fi
-        else
-            wasm_updated=0
-            cp "$WASM_PKG/hew_wasm_bg.wasm" "$HEW_RUN/$WASM_DEST_BIN"
-            cp "$WASM_PKG/hew_wasm.js"      "$HEW_RUN/$WASM_DEST_JS"
-            cp "$WASM_PKG/hew_wasm.d.ts"    "$HEW_RUN/$WASM_DEST_DTS"
-            cd "$HEW_RUN"
-            for rel in "$WASM_DEST_BIN" "$WASM_DEST_JS" "$WASM_DEST_DTS"; do
-                if ! git diff --quiet "$rel" 2>/dev/null; then
-                    ok "Updated $rel"
-                    wasm_updated=$((wasm_updated + 1))
-                fi
-            done
-            if [ $wasm_updated -gt 0 ]; then
-                UPDATED=$((UPDATED + 1))
-                if $COMMIT; then
-                    try_commit "$HEW_RUN" "Bundle hew wasm artefacts" \
-                        "$WASM_DEST_BIN" "$WASM_DEST_JS" "$WASM_DEST_DTS"
-                fi
-            else
-                ok "Already up to date"
-            fi
-        fi
+        return
     fi
-else
-    warn "Not found at $HEW_RUN (skipped)"
-    SKIPPED=$((SKIPPED + 1))
-fi
+    if [ ! -f "$WASM_PKG/hew_wasm_bg.wasm" ]; then
+        warn "hew-wasm/pkg/hew_wasm_bg.wasm not found — run: make wasm"
+        SKIPPED=$((SKIPPED + 1))
+        return
+    fi
+    local dest_bin="$bin_dir/hew_wasm_bg.wasm"
+    local dest_js="src/lib/wasm/hew_wasm.js"
+    local dest_dts="src/lib/wasm/hew_wasm.d.ts"
+    mkdir -p "$repo_dir/$bin_dir" "$repo_dir/src/lib/wasm"
 
-# 3e. hew-studio — copy dist/hew.tmLanguage.json → src/lib/syntax/
-next_step "hew-studio (TextMate grammar)..."
-if [ -d "$HEW_STUDIO" ]; then
-    if [ -f "$DIST_DIR/hew.tmLanguage.json" ]; then
-        local_tm_dest="src/lib/syntax/hew.tmLanguage.json"
-        mkdir -p "$HEW_STUDIO/src/lib/syntax"
-
-        if $CHECK_ONLY; then
-            info "Comparing dist/hew.tmLanguage.json with hew-studio/$local_tm_dest..."
-            if cmp -s "$DIST_DIR/hew.tmLanguage.json" "$HEW_STUDIO/$local_tm_dest" 2>/dev/null; then
-                ok "Already in sync"
-            else
-                fail "Drift detected in $local_tm_dest"
+    if $CHECK_ONLY; then
+        local wasm_drifts=0
+        for pair in "$WASM_PKG/hew_wasm_bg.wasm:$dest_bin" \
+                    "$WASM_PKG/hew_wasm.js:$dest_js" \
+                    "$WASM_PKG/hew_wasm.d.ts:$dest_dts"; do
+            if ! cmp -s "${pair%%:*}" "$repo_dir/${pair##*:}" 2>/dev/null; then
+                fail "Drift detected in ${pair##*:}"
+                wasm_drifts=$((wasm_drifts + 1))
                 DRIFTS=$((DRIFTS + 1))
             fi
-        else
-            cp "$DIST_DIR/hew.tmLanguage.json" "$HEW_STUDIO/$local_tm_dest"
-            cd "$HEW_STUDIO"
-            if git diff --quiet "$local_tm_dest" 2>/dev/null; then
-                ok "Already up to date"
-            else
-                ok "Updated $local_tm_dest"
-                UPDATED=$((UPDATED + 1))
-                if $COMMIT; then
-                    try_commit "$HEW_STUDIO" "Sync TextMate grammar with compiler syntax data" \
-                        "$local_tm_dest"
-                fi
-            fi
-        fi
+        done
+        [ $wasm_drifts -eq 0 ] && ok "Already in sync"
     else
-        warn "dist/hew.tmLanguage.json not available (skipped)"
-        SKIPPED=$((SKIPPED + 1))
+        cp "$WASM_PKG/hew_wasm_bg.wasm" "$repo_dir/$dest_bin"
+        cp "$WASM_PKG/hew_wasm.js"      "$repo_dir/$dest_js"
+        cp "$WASM_PKG/hew_wasm.d.ts"    "$repo_dir/$dest_dts"
+        cd "$repo_dir"
+        local wasm_updated=0
+        for rel in "$dest_bin" "$dest_js" "$dest_dts"; do
+            if ! git diff --quiet "$rel" 2>/dev/null; then
+                ok "Updated $rel"
+                wasm_updated=$((wasm_updated + 1))
+            fi
+        done
+        if [ $wasm_updated -gt 0 ]; then
+            UPDATED=$((UPDATED + 1))
+            if $COMMIT; then
+                try_commit "$repo_dir" "Bundle hew wasm artefacts" \
+                    "$dest_bin" "$dest_js" "$dest_dts"
+            fi
+        else
+            ok "Already up to date"
+        fi
+        cd "$REPO_ROOT"
     fi
-else
-    warn "Not found at $HEW_STUDIO (skipped)"
-    SKIPPED=$((SKIPPED + 1))
-fi
+}
+
+sync_wasm_repo "$HEW_RUN" "hew.run" "static/wasm"
+sync_wasm_repo "$HEW_SH" "hew.sh" "public/wasm"
+sync_wasm_repo "$HEW_STUDIO" "hew-studio" "public/wasm"
 
 # 3e. tree-sitter-hew — patch grammar.js keyword blocks
 next_step "tree-sitter-hew (grammar.js keyword sync)..."

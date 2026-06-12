@@ -34,10 +34,16 @@ runs:
         # the caller passes the full upstream tag (e.g. 22.1.5). Derive major.
         major="${{ inputs.version }}"
         major="${major%%.*}"
-        brew install "llvm@${major}"
+        # Homebrew packages lld (which provides wasm-ld / ld.lld) as a SEPARATE
+        # formula from llvm; the vendored upstream tarball bundled both. Install
+        # both so the wasm32 build and the WASI prereq check find wasm-ld.
+        # Mirrors release-gate.yml's macOS LLVM step.
+        brew install "llvm@${major}" "lld@${major}"
         prefix="$(brew --prefix "llvm@${major}")"
+        lld_prefix="$(brew --prefix "lld@${major}")"
         echo "LLVM_SYS_221_PREFIX=${prefix}" >> "$GITHUB_ENV"
         echo "${prefix}/bin" >> "$GITHUB_PATH"
+        echo "${lld_prefix}/bin" >> "$GITHUB_PATH"
 
     # Resolve the per-platform asset name, expected sha256 (pinned from the
     # sigstore attestations published alongside each release tarball at

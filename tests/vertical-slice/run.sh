@@ -1427,7 +1427,7 @@ expect_check_fail_contains \
 # must:
 #   1. typecheck cleanly (`hew check` exits 0).
 #   2. produce a RawMirFunction whose instruction stream contains the
-#      canonical hew_task_scope_* and hew_task_new symbols.
+#      canonical TaskScope* and TaskNew runtime-call families.
 #   3. NOT mention the legacy hew_scope_* family anywhere in the dump.
 #   4. compile and run end-to-end now that W4.010 synthesizes a TaskEntry
 #      adapter for the free-function task body.
@@ -1441,28 +1441,28 @@ grep -q ": OK$" "${accept_output}" || {
 }
 
 "${HEW}" compile --dump-mir raw "${w2006_fixture}" >"${accept_output}" 2>&1
-grep -qF 'symbol: "hew_task_scope_new"' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain hew_task_scope_new" >&2
+grep -qF 'family: TaskScopeNew,' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain the TaskScopeNew runtime-call family" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'symbol: "hew_task_scope_spawn"' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain hew_task_scope_spawn" >&2
+grep -qF 'family: TaskScopeSpawn,' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain the TaskScopeSpawn runtime-call family" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'symbol: "hew_task_new"' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain hew_task_new (preceding hew_task_scope_spawn)" >&2
+grep -qF 'family: TaskNew,' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain the TaskNew runtime-call family (preceding TaskScopeSpawn)" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'symbol: "hew_task_scope_destroy"' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain hew_task_scope_destroy" >&2
+grep -qF 'family: TaskScopeDestroy,' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain the TaskScopeDestroy runtime-call family" >&2
   cat "${accept_output}" >&2
   exit 1
 }
 # Legacy ABI must be fully removed.
-if grep -qE 'symbol: "hew_scope_(spawn|new|create|free|destroy|cancel|is_cancelled|wait_all)"' "${accept_output}"; then
+if grep -qE 'hew_scope_(spawn|new|create|free|destroy|cancel|is_cancelled|wait_all)' "${accept_output}"; then
   echo "W2.006: legacy hew_scope_* symbol leaked into MIR dump — removal incomplete" >&2
   cat "${accept_output}" >&2
   exit 1

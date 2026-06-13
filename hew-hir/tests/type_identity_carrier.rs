@@ -12,7 +12,7 @@
 use hew_hir::{dump_hir, lower_program_host_target, HirItem, HirTypeDecl, ResolutionCtx};
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 /// Build a `Program` containing a non-root module `bank` with arbitrary
 /// source. Mirrors the imported-free-fn / actor-carrier harness shape.
@@ -186,4 +186,40 @@ fn hir_dump_shows_qualified_identity_only_for_imported_types() {
         !dump.contains("defining-module bank qualified=bank.Local"),
         "root type must not carry a defining-module line; dump:\n{dump}"
     );
+}
+
+/// A module-qualified user-type annotation (`bank.Widget`) must lower to a
+/// `ResolvedTy::Named` that KEEPS the `{module}.{name}` qualifier. Without this
+/// the HIR `resolve_named_type_ref` strips the module prefix to the bare short
+/// name, and two same-bare-name types from different packages collapse to one
+/// MIR layout key — the i8-vs-i64 `Widget` collision. The stamping is what lets
+/// the layout/field-order lookup reach the correct per-module layout. Bare
+/// references (single-module programs) keep their short name and are unaffected.
+#[test]
+fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
+    let program = build_program_with_imported_module(
+        "pub type Widget { v: i64 }\n",
+        "fn read(w: bank.Widget) -> i64 { w.v }\n\
+         fn main() -> i64 { 0 }",
+    );
+    let (output, tco) = lower_with_checker(&program);
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+
+    let read_fn = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(f) if f.name == "read" => Some(f),
+            _ => None,
+        })
+        .expect("root `read` function must lower");
+    let param = read_fn.params.first().expect("read has one param");
+    match &param.ty {
+        ResolvedTy::Named { name, .. } => assert_eq!(
+            name, "bank.Widget",
+            "qualified annotation must keep its module qualifier into HIR, not strip to bare"
+        ),
+        other => panic!("expected ResolvedTy::Named, got {other:?}"),
+    }
 }

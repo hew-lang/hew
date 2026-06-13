@@ -14245,6 +14245,18 @@ impl LowerCtx {
             // collides with a user record/enum of the same name. See
             // `LowerCtx::resolves_to_opaque_handle`.
             ResolvedTy::named_opaque(type_name.to_string(), args)
+        } else if name.contains('.') {
+            // Module-qualified user type (`widgeti64.Widget`). Preserve the
+            // full `{module}.{name}` identity so MIR layout keys and field
+            // resolution distinguish two same-bare-name types from different
+            // packages (the `i8` vs `i64` `Widget` collision). The MIR
+            // `lookup_record_field_order` already strips the prefix on a miss,
+            // so a layout registered under either the qualified or the bare
+            // key still resolves; carrying the qualifier is what lets the
+            // per-module layout (keyed by `HirTypeDecl::qualified_name()`) win
+            // over the bare last-write-wins entry once MIR keys by it. A bare
+            // reference (single-module program) keeps its short name unchanged.
+            ResolvedTy::named_user(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
         }

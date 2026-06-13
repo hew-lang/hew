@@ -9363,10 +9363,8 @@ mod tests {
 
     #[test]
     fn parse_actor_on_upgrade_hook_attaches_to_method() {
-        // E1: `#[on(upgrade)]` parses on an actor method. v0.5 emits a
-        // reserved-marker only; runtime invocation is deferred.
-        // WASM-TODO(#1817): wire `#[on(upgrade)]` to a live runtime
-        // invocation path (E3 of the failure-philosophy plan).
+        // E1: `#[on(upgrade)]` parses on an actor method. The parser accepts
+        // it; the type-checker rejects it as a reserved, unsupported attribute.
         let source = r"actor Worker {
     #[on(upgrade)]
     fn on_upgrade() { }

@@ -1,0 +1,199 @@
+//! Status: runnable
+//! Description: observe_supervisor_showcase.hew — Supervision-focused exemplar for hew-observe
+
+// observe_supervisor_showcase.hew — Supervision-focused exemplar for hew-observe
+//
+// Companion to observe_showcase.hew. Where that program populates the
+// Overview/Actors/Messages/Timeline tabs, THIS program additionally drives
+// the **Supervisors** tab with a live, restartable supervision tree.
+//
+// Run with profiling enabled:
+//   HEW_PPROF=auto hew run examples/observe_supervisor_showcase.hew
+//
+// Then in another terminal:
+//   hew-observe              # auto-discovers via unix socket
+//   hew-observe --list       # shows the running program
+//
+// Or hit the profiler HTTP API directly:
+//   HEW_PPROF=:6060 hew run examples/observe_supervisor_showcase.hew
+//   curl http://localhost:6060/api/supervisors   # live supervision tree
+//   curl http://localhost:6060/api/actors        # the supervised children
+//
+// Exercises the following hew-observe tabs:
+//   ① Overview     — scheduler counters, message rates, memory sparklines
+//   ② Actors       — the supervised children, with per-actor message profiles
+//   ④ Supervisors  — TWO live supervision trees (one_for_one + one_for_all),
+//                    including a child with a NON-ZERO restart count
+//   ⑥ Messages     — trace events: spawns, sends, and the crash/restart
+//   ⑦ Timeline     — same events as a time-density view
+//
+// ── Why this works where supervisor_showcase.hew does not ───────────────
+// The Supervisors tab is fed by the runtime's live supervisor profiler.
+// Any supervisor that boots cleanly shows up there. The catch: supervised
+// children whose `init() {}` blocks run during the supervisor bootstrap are
+// not yet supported by codegen, so a tree built from init-style children
+// never starts and never reaches the profiler.
+//
+// The workaround used here is to give every child DEFAULT FIELD VALUES and
+// CONSTRUCTOR ARGUMENTS instead of an init() block. That is a fully
+// supported path: children boot cleanly, the supervisor registers, and the
+// profiler serves a real tree.
+//
+// NOTE: #[on(start)] lifecycle hooks are also skipped for supervised
+//       children today (the supervisor bootstrap does not run them), so we
+//       deliberately avoid them here — all child setup is via field
+//       defaults and constructor arguments only.
+
+// ── Actor types ─────────────────────────────────────────────────────────
+
+// A resilient task worker. Default field values + constructor args mean it
+// boots cleanly under a supervisor with no init() block. This is the
+// canonical supervised-child shape for a live Supervisors tab.
+actor Worker {
+    let id: i32;
+    var processed: i32 = 0;
+    receive fn process(item: i32) {
+        processed = processed + 1;
+    }
+    receive fn stats() -> i32 {
+        processed
+    }
+    // Deliberate crash: panic() trips the supervisor, which restarts this
+    // child. The restart bumps the child's "restarts" counter — visible in
+    // the Supervisors tab as `(restarts: N)`.
+    receive fn crash() {
+        panic("worker hit a poison message");
+    }
+}
+
+// A lightweight stateful service. Used as the one_for_all children so a
+// single crash restarts the whole group — useful for contrasting the two
+// restart strategies side by side in the Supervisors tab.
+actor Service {
+    let port: i32;
+    var requests: i32 = 0;
+    receive fn handle() {
+        requests = requests + 1;
+    }
+    receive fn load() -> i32 {
+        requests
+    }
+}
+
+// ── Supervisors ─────────────────────────────────────────────────────────
+
+// one_for_one: when a child crashes, ONLY that child restarts. The siblings
+// keep their state and keep running. This is the worker-pool pattern.
+supervisor WorkerPool {
+    strategy: one_for_one;
+    intensity: 10 within 60s;
+
+    child alpha: Worker(id: 1, processed: 0);
+    child beta: Worker(id: 2, processed: 0);
+    child gamma: Worker(id: 3, processed: 0);
+}
+
+// one_for_all: when ANY child crashes, the supervisor restarts ALL of them.
+// This is for tightly-coupled services that must come up together (e.g. a
+// connection pool plus its health checker). We do not crash this tree — it
+// stays at restarts:0 so the two strategies read cleanly in the tab.
+supervisor ServiceStack {
+    strategy: one_for_all;
+    intensity: 5 within 30s;
+
+    child api: Service(port: 8080, requests: 0);
+    child cache: Service(port: 6379, requests: 0);
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────
+fn main() {
+    println("=== hew-observe supervisor showcase ===");
+    println("Run hew-observe in another terminal to inspect this program.");
+    println("Watch the Supervisors tab for two live trees and a restart.");
+    println("");
+
+    // Spawn both trees. Each `spawn` registers a supervision tree with the
+    // runtime profiler, so both appear in the Supervisors tab immediately.
+    // (`pool` is a reserved word in Hew, so the handle is named `workers`.)
+    let workers = spawn WorkerPool;
+    let stack = spawn ServiceStack;
+    sleep_ms(100);
+
+    // Typed handles to the supervised children. The compiler knows the field
+    // types from the supervisor declaration.
+    let alpha = workers.alpha;
+    let beta = workers.beta;
+    let gamma = workers.gamma;
+    let api = stack.api;
+    let cache = stack.cache;
+    println("2 supervisors, 5 supervised children spawned.");
+    println("Exercising the tree, then crashing one worker...");
+    println("");
+
+    // ── Warm up the tree ──
+    // Send a burst of work so the Actors/Messages/Timeline tabs show traffic
+    // before the crash.
+    var i: i32 = 0;
+    while i < 50 {
+        alpha.process(i);
+        beta.process(i);
+        gamma.process(i);
+        api.handle();
+        cache.handle();
+        i = i + 1;
+    }
+    sleep_ms(200);
+
+    // ── Crash + restart ──
+    // Crash `alpha` once. Under one_for_one only `alpha` restarts; beta and
+    // gamma keep their accumulated `processed` counts. After this the
+    // Supervisors tab shows `alpha (restarts: 1)`.
+    println("--- crashing worker 'alpha' (one_for_one restart) ---");
+    alpha.crash();
+    sleep_ms(300);
+
+    // Re-fetch the restarted child's handle and resume work. Its `processed`
+    // counter is reset to the default (0) because the restart spawns a fresh
+    // actor — visible if you compare it against its still-running siblings.
+    let alpha2 = workers.alpha;
+    alpha2.process(999);
+    sleep_ms(100);
+    println("Worker restarted. Supervision tree is intact.");
+    println("Running steady workload for ~60 seconds so you can watch...");
+    println("");
+
+    // ── Steady-state workload ──
+    // ~60 rounds, one per second. The profiler samples once per second, so
+    // each round produces one sparkline point in Overview and one density
+    // band in Timeline. The supervision trees stay live the whole time.
+    var round: i32 = 0;
+    while round < 60 {
+        var j: i32 = 0;
+        while j < 25 {
+            alpha2.process(round + j);
+            beta.process(round + j);
+            gamma.process(round + j);
+            j = j + 1;
+        }
+        api.handle();
+        cache.handle();
+        sleep_ms(1000);
+        round = round + 1;
+    }
+    // Final tallies — proves the restarted worker kept processing and the
+    // siblings were undisturbed by the crash.
+    let a_total = match await alpha2.stats() {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let b_total = match await beta.stats() {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    println("");
+    print("alpha (restarted) processed: ");
+    println(a_total);
+    print("beta  (never crashed) processed: ");
+    println(b_total);
+    println("Supervisor showcase complete.");
+}

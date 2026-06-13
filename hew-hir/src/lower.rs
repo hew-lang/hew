@@ -10724,6 +10724,38 @@ impl LowerCtx {
                                 IntentKind::Read,
                             ))
                         });
+                    // A bare construction (`Widget { … }`) constrained by a
+                    // module-qualified expected type is checked against the
+                    // qualified type def, and the checker records the QUALIFIED
+                    // `Named { name: "widgeti8.Widget" }` at this span. Carry
+                    // that qualifier onto the init expression's type so MIR can
+                    // resolve the per-module layout when two packages export a
+                    // same-bare-name type. Only adopt the recorded name when it
+                    // is the dotted form of the same short construction name and
+                    // names a non-builtin user type; a single-module construction
+                    // records the bare name and keeps `name` byte-identically.
+                    // For a non-colliding qualified reference MIR keeps the bare
+                    // layout key and codegen resolves the qualified name to the
+                    // single bare struct by short-name, so this is safe even when
+                    // the type does not collide.
+                    let result_name = self
+                        .expr_types
+                        .get(&self.mk_key(&span))
+                        .and_then(|ty| match ty {
+                            Ty::Named {
+                                name: recorded,
+                                builtin: None,
+                                ..
+                            } if recorded.contains('.')
+                                && recorded
+                                    .rsplit_once('.')
+                                    .is_some_and(|(_, short)| short == name.as_str()) =>
+                            {
+                                Some(recorded.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| name.clone());
                     (
                         HirExprKind::StructInit {
                             name: name.clone(),
@@ -10732,7 +10764,7 @@ impl LowerCtx {
                             base: hir_base,
                         },
                         ResolvedTy::Named {
-                            name: name.clone(),
+                            name: result_name,
                             args: resolved_type_args,
                             builtin: None,
                             is_opaque: false,

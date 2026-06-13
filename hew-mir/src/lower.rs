@@ -877,6 +877,51 @@ pub fn lower_hir_module_with_facts(
     // Key: (supervisor_name, child_name) → Vec<(field_name, HirExpr)>.
     let mut supervisor_child_hir_init_args: HashMap<(String, String), Vec<(String, HirExpr)>> =
         HashMap::new();
+    // Pre-scan for same-bare-name TYPE collisions across modules. Two imported
+    // packages that each export a `Widget` with a divergent layout collide if
+    // the layout registry keys by the bare name (last-write-wins). Only such a
+    // genuine collision earns the module-qualified registry key; a type whose
+    // bare name is unique in the module keeps the bare key, byte-identical to
+    // the pre-qualification behaviour (so a single `pub type Ctx` constructed
+    // and returned within its own module — qualified at the import boundary but
+    // bare internally — is untouched and never grows a second LLVM struct).
+    //
+    // A name collides when two non-generic record/type decls share a bare name
+    // but have distinct qualified identities (`{module}.{name}`). Generic decls
+    // are excluded (they emit no bare-name layout here; their per-instantiation
+    // layouts are mangled). Built once, consulted by every layout arm below.
+    let collided_type_names: HashSet<String> = {
+        let mut bare_to_qualified: HashMap<&str, HashSet<String>> = HashMap::new();
+        for item in &module.items {
+            let (bare, qualified) = match item {
+                HirItem::Record(decl) if decl.type_params.is_empty() => {
+                    (decl.name.as_str(), decl.qualified_name())
+                }
+                HirItem::TypeDecl(decl) if decl.type_params.is_empty() => {
+                    (decl.name.as_str(), decl.qualified_name())
+                }
+                _ => continue,
+            };
+            bare_to_qualified.entry(bare).or_default().insert(qualified);
+        }
+        bare_to_qualified
+            .into_iter()
+            .filter(|(_, quals)| quals.len() > 1)
+            .map(|(bare, _)| bare.to_string())
+            .collect()
+    };
+    // The registry key for a monomorphic module type: its qualified identity
+    // (`{module}.{name}`) ONLY when its bare name collides with another module's
+    // same-bare type; otherwise the bare name (byte-identical to the pre-C1
+    // behaviour). A colliding type's construction sites carry the same qualified
+    // name (the Stage-2 checker stamps it), so they resolve to the right layout.
+    let type_layout_key = |bare: &str, qualified: String| -> String {
+        if collided_type_names.contains(bare) {
+            qualified
+        } else {
+            bare.to_string()
+        }
+    };
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -901,13 +946,14 @@ pub fn lower_hir_module_with_facts(
                 // slice — codegen will fail-closed on any
                 // `ResolvedTy::Named` reach-through that names a tuple
                 // record.
+                let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
-                        name: decl.name.clone(),
+                        name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                     });
                 }
-                record_field_orders.insert(decl.name.clone(), fields);
+                record_field_orders.insert(layout_key, fields);
             }
             HirItem::TypeDecl(decl) => {
                 // `pub type Foo { ... }` and `pub type Foo<T> { ... }` are
@@ -928,6 +974,10 @@ pub fn lower_hir_module_with_facts(
                 if !decl.type_params.is_empty() {
                     continue;
                 }
+                // Same collision-aware keying as the record arm: a same-bare
+                // `pub type` (struct- OR enum-shaped) from two packages keys by
+                // its qualified identity; a unique bare name keys bare.
+                let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 let fields: Vec<(String, ResolvedTy)> = decl
                     .fields
                     .iter()
@@ -935,10 +985,10 @@ pub fn lower_hir_module_with_facts(
                     .collect();
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
-                        name: decl.name.clone(),
+                        name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                     });
-                    record_field_orders.insert(decl.name.clone(), fields);
+                    record_field_orders.insert(layout_key.clone(), fields);
                 }
                 // Enum-kind type decls: register a tagged-union layout for
                 // every monomorphic enum, walking ALL variants (unit, tuple,
@@ -958,8 +1008,11 @@ pub fn lower_hir_module_with_facts(
                             field_tys: v.field_tys(),
                         })
                         .collect();
+                    // Enum-shaped pub types collide the same way (R6): a
+                    // same-bare-name enum from two packages keys by its
+                    // qualified identity, a unique one stays bare.
                     enum_layouts.push(crate::model::EnumLayout {
-                        name: decl.name.clone(),
+                        name: layout_key,
                         tag_width,
                         variants,
                         is_indirect: decl.is_indirect,
@@ -8046,11 +8099,28 @@ impl Builder {
                 // is `Named { name, args: <concrete> }` and the layout was
                 // registered under the mangled name; for a monomorphic
                 // record `args` is empty and the bare name is the key.
+                //
+                // A bare construction (`Widget { … }`) constrained by a
+                // module-qualified expected type carries the QUALIFIED name on
+                // `expr.ty` (the HIR lowering stamps it from the checker-recorded
+                // type). Prefer that qualified name so the lookup hits the
+                // per-module layout when two packages export a same-bare-name
+                // type. A non-colliding type keeps a bare layout key, but
+                // `lookup_record_field_order` strips the module prefix on a miss,
+                // so a qualified `expr.ty` still resolves the bare entry. A
+                // single-module construction never carries a dotted name and
+                // falls through to the bare syntactic `name` byte-identically.
                 let expr_ty = self.subst_ty(&expr.ty);
                 let record_key = match &expr_ty {
                     ResolvedTy::Named {
                         name: tname, args, ..
                     } if !args.is_empty() => hew_hir::mangle(tname, args),
+                    ResolvedTy::Named {
+                        name: tname,
+                        args,
+                        builtin: None,
+                        ..
+                    } if args.is_empty() && tname.contains('.') => tname.clone(),
                     _ => name.clone(),
                 };
                 // Look up the declaration-order field list for this record.

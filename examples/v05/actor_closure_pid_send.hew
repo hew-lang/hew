@@ -4,11 +4,9 @@
 // the parent binding remains usable alongside the closure.
 actor Counter {
     var count: i64;
-
     receive fn increment(n: i64) {
         count = count + n;
     }
-
     receive fn total() -> i64 {
         count
     }
@@ -16,7 +14,9 @@ actor Counter {
 
 fn main() -> i64 {
     let counter = spawn Counter(count: 0);
-    let bump = |n: i64| { counter.increment(n); };
+    let bump = |n: i64| {
+        counter.increment(n);
+    };
     bump(10);
     bump(32);
     match await counter.total() {

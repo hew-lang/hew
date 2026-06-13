@@ -6,6 +6,14 @@ use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use serde::{de::DeserializeOwned, Deserialize};
 
 #[derive(Debug, Clone, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent, orthogonal frontend toggle \
+              (no_typecheck/warnings_as_errors/enable_wasm_target/repl_fragment) \
+              queried separately at distinct pipeline stages — collapsing into a \
+              state enum would force unrelated flags to share variants and add \
+              per-flag matches at every read site"
+)]
 pub struct FrontendOptions {
     pub no_typecheck: bool,
     pub enable_wasm_target: bool,
@@ -23,6 +31,16 @@ pub struct FrontendOptions {
     /// semantics and is checked uniformly at the end of each pipeline's
     /// success arm so no path silently swallows warnings.
     pub warnings_as_errors: bool,
+    /// Suppress the completeness lints that assume a whole, finished program.
+    ///
+    /// The `hew eval` REPL compiles a synthetic fragment — accumulated session
+    /// statements wrapped in a generated `main` — where a binding used only on
+    /// a later line, a helper called only later, or an import staged for a
+    /// future input all look "unused" or "dead" to a whole-program checker but
+    /// are not. When `true`, the `DeadCode`, `UnusedImport`, `UnusedVariable`,
+    /// and `UnusedMut` lints are skipped. Eval-only: `hew check`/`hew build`
+    /// leave it `false` and keep emitting them.
+    pub repl_fragment: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +490,9 @@ fn typecheck_program_with_diagnostics(
     let mut checker = hew_types::Checker::new(module_registry);
     if options.enable_wasm_target {
         checker.enable_wasm_target();
+    }
+    if options.repl_fragment {
+        checker.set_repl_fragment();
     }
     let tco = checker.check_program(program);
     let module_source_map = build_module_source_map(program);

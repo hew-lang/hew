@@ -922,6 +922,12 @@ impl ReplSession {
             let options = hew_compile::FrontendOptions {
                 enable_wasm_target: self.is_wasm_target(),
                 project_dir: self.project_dir.clone(),
+                // This probe type-checks the same accumulated REPL fragment, so
+                // it must suppress the completeness lints too; otherwise an
+                // unrelated eval failure would surface the probe's spurious
+                // `unused import`/`unused variable` warnings alongside the real
+                // error.
+                repl_fragment: true,
                 ..hew_compile::FrontendOptions::default()
             };
             let state = hew_compile::run_program_frontend_to_typecheck(
@@ -1386,6 +1392,7 @@ fn run_inprocess_compiled(
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
+            repl_fragment: true,
             ..crate::compile::CompileOptions::default()
         },
     )
@@ -1500,6 +1507,7 @@ fn run_wasm_eval_compiled(
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
+            repl_fragment: true,
             ..crate::compile::CompileOptions::default()
         },
     )
@@ -1553,8 +1561,11 @@ pub fn run_interactive(
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
     if death_count > 0 {
         eprintln!(
-            "warning: last session ended in an uncaught signal \
-             ({death_count} such event{} in the last 7 days)",
+            "note: a previous session ended without a clean :quit \
+             ({death_count} time{} in the last 7 days) — usually from closing \
+             the terminal or stopping the process, not a defect. Each input is \
+             evaluated in its own subprocess, so a crash there cannot take this \
+             REPL down with it.",
             if death_count == 1 { "" } else { "s" }
         );
     }

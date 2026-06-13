@@ -9,6 +9,13 @@ impl Checker {
     /// Uses BFS reachability from entry points: main, actor handlers, and
     /// underscore-prefixed functions.
     pub(super) fn emit_dead_code_warnings(&mut self) {
+        // A REPL fragment's helpers are routinely defined on one input and
+        // called on a later one, so whole-program reachability would flag
+        // them as dead. Suppress the lint for eval fragments.
+        if self.repl_fragment {
+            return;
+        }
+
         let mut reachable = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
 
@@ -264,7 +271,16 @@ impl Checker {
     /// Pop the current scope and emit warnings for unused/unmutated bindings.
     pub(super) fn emit_scope_warnings(&mut self) {
         use crate::env::ScopeWarningKind;
-        for w in self.env.pop_scope_with_warnings() {
+        // Pop unconditionally so env scope state stays consistent, then decide
+        // whether to surface the warnings: a REPL fragment's bindings are
+        // intentionally carried across inputs, so one unused (or never-yet
+        // reassigned) within a single accumulated fragment is expected, not a
+        // defect. Suppress the per-binding lints for eval fragments.
+        let scope_warnings = self.env.pop_scope_with_warnings();
+        if self.repl_fragment {
+            return;
+        }
+        for w in scope_warnings {
             match w.kind {
                 ScopeWarningKind::Unused => {
                     self.warnings.push(TypeError {

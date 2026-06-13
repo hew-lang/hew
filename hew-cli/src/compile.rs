@@ -35,6 +35,11 @@ pub struct CompileOptions {
     /// Anchor an in-memory compile to a specific project directory so that
     /// manifest-aware import resolution matches `compile_file` behaviour.
     pub project_dir: Option<PathBuf>,
+    /// Compile a synthetic `hew eval` REPL fragment rather than a finished
+    /// program, suppressing the whole-program completeness lints. See
+    /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
+    /// set this; `hew check`/`hew build` leave it `false`.
+    pub repl_fragment: bool,
 }
 
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
@@ -44,6 +49,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         enable_wasm_target: target.is_wasm(),
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        repl_fragment: options.repl_fragment,
     }
 }
 
@@ -60,6 +66,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         enable_wasm_target: false,
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
+        repl_fragment: options.repl_fragment,
     }
 }
 

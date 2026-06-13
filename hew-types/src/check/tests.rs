@@ -4774,6 +4774,99 @@ fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<TypeError>)
     (output.errors, output.warnings)
 }
 
+/// `set_repl_fragment` suppresses the four whole-program completeness lints
+/// (`UnusedImport`, `DeadCode`, `UnusedVariable`, `UnusedMut`) that misfire on
+/// a synthetic `hew eval` fragment, while the default checker still emits every
+/// one. This is the contract the eval REPL relies on; `hew check`/`hew build`
+/// leave the flag at its `false` default and must keep emitting the lints.
+#[test]
+fn repl_fragment_suppresses_completeness_lints_default_keeps_them() {
+    const SOURCE: &str = r"
+import std::math;
+
+fn dead_helper() -> i64 { 5 }
+
+fn main() {
+    let unused_binding = 41;
+    var never_reassigned = 7;
+    let _kept = never_reassigned + 1;
+}
+";
+    let parsed = hew_parser::parse(SOURCE);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture should parse cleanly, got: {:?}",
+        parsed.errors
+    );
+
+    let has = |warnings: &[TypeError], kind: &TypeErrorKind, needle: &str| {
+        warnings
+            .iter()
+            .any(|w| &w.kind == kind && w.message.contains(needle))
+    };
+
+    // Default mode: every completeness lint fires.
+    let mut default_checker = Checker::new(test_registry());
+    let default_out = default_checker.check_program(&parsed.program);
+    assert!(
+        has(&default_out.warnings, &TypeErrorKind::UnusedImport, "math"),
+        "default should warn unused import, got: {:?}",
+        default_out.warnings
+    );
+    assert!(
+        has(
+            &default_out.warnings,
+            &TypeErrorKind::DeadCode,
+            "dead_helper"
+        ),
+        "default should warn dead code, got: {:?}",
+        default_out.warnings
+    );
+    assert!(
+        has(
+            &default_out.warnings,
+            &TypeErrorKind::UnusedVariable,
+            "unused_binding"
+        ),
+        "default should warn unused variable, got: {:?}",
+        default_out.warnings
+    );
+    assert!(
+        has(
+            &default_out.warnings,
+            &TypeErrorKind::UnusedMut,
+            "never_reassigned"
+        ),
+        "default should warn unused mut, got: {:?}",
+        default_out.warnings
+    );
+
+    // REPL-fragment mode: none of the four fire, and suppression does not
+    // manufacture an error.
+    let mut repl_checker = Checker::new(test_registry());
+    repl_checker.set_repl_fragment();
+    let repl_out = repl_checker.check_program(&parsed.program);
+    let suppressed = [
+        TypeErrorKind::UnusedImport,
+        TypeErrorKind::DeadCode,
+        TypeErrorKind::UnusedVariable,
+        TypeErrorKind::UnusedMut,
+    ];
+    assert!(
+        repl_out
+            .warnings
+            .iter()
+            .all(|w| !suppressed.contains(&w.kind)),
+        "repl_fragment should suppress all four completeness lints, got: {:?}",
+        repl_out.warnings
+    );
+    assert!(
+        repl_out.errors.is_empty(),
+        "repl_fragment fixture should have no errors, got: {:?}",
+        repl_out.errors
+    );
+}
+
 #[test]
 fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
     let result = hew_parser::parse(

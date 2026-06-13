@@ -321,6 +321,7 @@ pub enum RuntimeCallFamily {
     ObserveReadU64,
     ObserveScrape,
     ObserveSeries,
+    ObserveBarrier,
 
     // --- Option<T> helpers --------------------------------------------------
     OptionIsNone,
@@ -579,6 +580,7 @@ impl RuntimeCallFamily {
             Self::ObserveReadU64 => "hew_observe_read_u64",
             Self::ObserveScrape => "hew_observe_scrape",
             Self::ObserveSeries => "hew_observe_series",
+            Self::ObserveBarrier => "hew_observe_barrier",
             // Option helpers
             Self::OptionIsNone => "hew_option_is_none",
             Self::OptionIsSome => "hew_option_is_some",
@@ -809,6 +811,7 @@ impl RuntimeCallFamily {
             "hew_observe_read_u64" => Self::ObserveReadU64,
             "hew_observe_scrape" => Self::ObserveScrape,
             "hew_observe_series" => Self::ObserveSeries,
+            "hew_observe_barrier" => Self::ObserveBarrier,
             // Option helpers
             "hew_option_is_none" => Self::OptionIsNone,
             "hew_option_is_some" => Self::OptionIsSome,
@@ -1056,6 +1059,7 @@ impl RuntimeCallFamily {
             | F::ObserveReadU64
             | F::ObserveScrape
             | F::ObserveSeries
+            | F::ObserveBarrier
             | F::OptionIsNone
             | F::OptionIsSome
             | F::OptionUnwrap(_)

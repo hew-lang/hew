@@ -1328,6 +1328,7 @@ fn activate_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
                 // Prepare crash recovery context (stores actor/msg metadata).
                 //
                 // SAFETY: `actor` is valid (CAS succeeded, we own it) and
@@ -1362,6 +1363,7 @@ fn activate_actor(actor: *mut HewActor) {
                         // the full crash path (link propagation, monitor
                         // notification, supervisor restart).
                         crate::signal::clear_dispatch_recovery();
+                        crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                         // SAFETY: `actor` is valid — we hold it via CAS.
                         unsafe { crate::actor::hew_actor_trap(actor, -1) };
                         // SAFETY: `msg` is exclusively owned by this worker.
@@ -1516,6 +1518,7 @@ fn activate_actor(actor: *mut HewActor) {
                             (*msg).reply_channel = std::ptr::null_mut();
                             hew_msg_node_free(msg);
                         }
+                        crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                         crashed = true;
                         break;
                     }
@@ -1573,6 +1576,7 @@ fn activate_actor(actor: *mut HewActor) {
                             (*msg).reply_channel = std::ptr::null_mut();
                             hew_msg_node_free(msg);
                         }
+                        crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                         crashed = true;
                         break;
                     }
@@ -1670,6 +1674,7 @@ fn activate_actor(actor: *mut HewActor) {
                         msg_ref.msg_type,
                         elapsed_ns,
                     );
+                    crate::observe::observe_dispatch_attributed(observe_dispatch_ticket);
 
                     // SAFETY: `msg` was returned by `hew_mailbox_try_recv` and is
                     // now exclusively owned by this worker.
@@ -1865,6 +1870,7 @@ fn activate_actor(actor: *mut HewActor) {
                     }
 
                     // Stop processing further messages for this actor.
+                    crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                     crashed = true;
                     break;
                 }

@@ -23,8 +23,19 @@ pub fn series() -> string {
     }
 }
 
+/// Wait for actor-turn observe attribution visible to `series`/`scrape`.
+///
+/// Returns 0 on success, -1 when called from inside an actor turn, and -2 if
+/// the native runtime's bounded 30-second internal wait expires.
+pub fn barrier() -> i64 {
+    unsafe {
+        hew_observe_barrier()
+    }
+}
+
 extern "C" {
     fn hew_observe_read_u64(name: string) -> i64;
     fn hew_observe_scrape() -> string;
     fn hew_observe_series() -> string;
+    fn hew_observe_barrier() -> i64;
 }

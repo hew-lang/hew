@@ -244,6 +244,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // when no lambda actors have ever been spawned.
     "hew_lambda_drain_all",
     // --- Observe read surface ------------------------------------------------
+    "hew_observe_barrier",
     "hew_observe_read_u64",
     "hew_observe_scrape",
     "hew_observe_series",

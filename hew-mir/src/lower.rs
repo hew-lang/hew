@@ -16097,7 +16097,10 @@ impl Builder {
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
             "hew_bytes_index" => self.lower_bytes_get_u8(hir_args, site, context),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
-            "hew_observe_read_u64" | "hew_observe_scrape" | "hew_observe_series" => {
+            "hew_observe_read_u64"
+            | "hew_observe_scrape"
+            | "hew_observe_series"
+            | "hew_observe_barrier" => {
                 self.lower_observe_runtime_call(symbol, hir_args, site, context)
             }
             "hew_option_is_none"
@@ -16299,6 +16302,7 @@ impl Builder {
         let (expected_arity, return_ty) = match symbol {
             "hew_observe_read_u64" => (1, ResolvedTy::I64),
             "hew_observe_scrape" | "hew_observe_series" => (0, ResolvedTy::String),
+            "hew_observe_barrier" => (0, ResolvedTy::I64),
             _ => unreachable!("observe lowering called for non-observe symbol"),
         };
         if hir_args.len() != expected_arity {

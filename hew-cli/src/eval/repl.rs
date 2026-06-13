@@ -56,6 +56,10 @@ pub enum CliEvalError {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        /// Terminating signal (e.g. `8` for `SIGFPE`) when the child was
+        /// killed by a signal rather than exiting normally. Used to synthesise
+        /// a message when the child produced no stderr of its own.
+        signal: Option<i32>,
     },
 }
 
@@ -79,6 +83,26 @@ impl fmt::Display for CliEvalError {
 
 impl std::error::Error for CliEvalError {}
 
+impl From<CompiledEvalError> for CliEvalError {
+    fn from(error: CompiledEvalError) -> Self {
+        match error {
+            CompiledEvalError::DiagnosticsRendered => Self::DiagnosticsRendered,
+            CompiledEvalError::Message(message) => Self::Message(message),
+            CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+                signal,
+            } => Self::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+                signal,
+            },
+        }
+    }
+}
+
 impl fmt::Display for LoadFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -96,8 +120,9 @@ fn load_file_error_from_cli(error: CliEvalError) -> LoadFileError {
             stdout,
             stderr,
             exit_code,
+            signal,
         } => {
-            emit_runtime_failure_output(&stdout, &stderr);
+            emit_runtime_failure_output(&stdout, &stderr, exit_code, signal);
             LoadFileError::Message(format!("program exited with status {exit_code}"))
         }
     }
@@ -141,14 +166,53 @@ enum CompiledEvalError {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        signal: Option<i32>,
     },
 }
 
-pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
+/// Synthesise a user-facing message for a runtime failure whose child produced
+/// no stderr of its own.
+///
+/// A signal-killed child (e.g. `1 / 0` raising `SIGFPE`) reports no exit code
+/// and writes nothing to stderr, so without this the failure surfaces as a bare
+/// non-zero exit with no explanation. Naming the signal — and, for the common
+/// arithmetic trap, the divide-by-zero cause — turns a silent failure into an
+/// actionable one.
+pub(crate) fn describe_runtime_failure(exit_code: i32, signal: Option<i32>) -> String {
+    if let Some(sig) = signal {
+        let detail = match sig {
+            4 => "SIGILL (illegal instruction; for a Hew program usually a runtime safety trap such as divide-by-zero or integer overflow)",
+            5 => "SIGTRAP (runtime trap; for a Hew program usually divide-by-zero, integer overflow, or a bounds check)",
+            6 => "SIGABRT (abort)",
+            8 => "SIGFPE (arithmetic exception, e.g. divide-by-zero)",
+            10 => "SIGBUS (bus error)",
+            11 => "SIGSEGV (segmentation fault)",
+            _ => "",
+        };
+        if detail.is_empty() {
+            format!("runtime error: program terminated by signal {sig}")
+        } else {
+            format!("runtime error: program terminated by signal {sig} — {detail}")
+        }
+    } else {
+        format!("runtime error: program exited with status {exit_code}")
+    }
+}
+
+pub(crate) fn emit_runtime_failure_output(
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    signal: Option<i32>,
+) {
     if !stdout.is_empty() {
         print!("{stdout}");
     }
-    if !stderr.is_empty() {
+    if stderr.is_empty() {
+        // The child died without saying why (e.g. a signal-killed arithmetic
+        // trap). Synthesise an explanation so the failure is not silent.
+        eprintln!("{}", describe_runtime_failure(exit_code, signal));
+    } else {
         eprint!("{stderr}");
     }
 }
@@ -635,14 +699,20 @@ impl ReplSession {
                 stdout,
                 stderr,
                 exit_code,
+                signal,
             }) => {
-                if !stderr.is_empty() {
+                let message = if stderr.is_empty() {
+                    let synth = describe_runtime_failure(exit_code, signal);
+                    eprintln!("{synth}");
+                    synth
+                } else {
                     eprint!("{stderr}");
-                }
+                    format!("program exited with status {exit_code}")
+                };
                 EvalResult {
                     output: stdout,
                     had_errors: true,
-                    errors: vec![format!("program exited with status {exit_code}")],
+                    errors: vec![message],
                 }
             }
         }
@@ -716,17 +786,7 @@ impl ReplSession {
                 self.record_success(trimmed, &checked_program.kind);
                 Ok(output)
             }
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -808,17 +868,7 @@ impl ReplSession {
                 self.record_success(trimmed, &kind);
                 Ok(output)
             }
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -1168,17 +1218,7 @@ impl ReplSession {
             self.jit_mode,
         ) {
             Ok(output) => Ok(output),
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -1221,6 +1261,7 @@ impl ReplSession {
                     stdout,
                     stderr,
                     exit_code,
+                    signal,
                 }) => {
                     // Prepend output collected from successful earlier chunks so
                     // callers (non-JSON print path, JSON stdout field, :load) all
@@ -1232,12 +1273,14 @@ impl ReplSession {
                             stdout: collected,
                             stderr,
                             exit_code,
+                            signal,
                         });
                     }
                     return Err(CliEvalError::RuntimeFailure {
                         stdout,
                         stderr,
                         exit_code,
+                        signal,
                     });
                 }
                 Err(e) => return Err(e),
@@ -1253,6 +1296,7 @@ impl ReplSession {
                     stdout,
                     stderr,
                     exit_code,
+                    signal,
                 }) => {
                     if !collected.is_empty() {
                         collected.push_str(&stdout);
@@ -1260,12 +1304,14 @@ impl ReplSession {
                             stdout: collected,
                             stderr,
                             exit_code,
+                            signal,
                         });
                     }
                     return Err(CliEvalError::RuntimeFailure {
                         stdout,
                         stderr,
                         exit_code,
+                        signal,
                     });
                 }
                 Err(e) => return Err(e),
@@ -1302,8 +1348,9 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
             stdout,
             stderr,
             exit_code,
+            signal,
         }) => {
-            emit_runtime_failure_output(&stdout, &stderr);
+            emit_runtime_failure_output(&stdout, &stderr, exit_code, signal);
             InteractiveEvalOutcome::MessageError(format!("program exited with status {exit_code}"))
         }
     }
@@ -1351,10 +1398,12 @@ fn run_inprocess_compiled(
             stdout,
             stderr,
             exit_code,
+            signal,
         }) => Err(CompiledEvalError::RuntimeFailure {
             stdout: normalize_captured_output(&stdout),
             stderr: normalize_captured_output(&stderr),
             exit_code,
+            signal,
         }),
         Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
             "evaluation timed out after {}",
@@ -1426,6 +1475,7 @@ fn run_inprocess_jit(
                 stdout: String::new(),
                 stderr: msg,
                 exit_code: 1,
+                signal: None,
             })
         }
     }
@@ -1467,6 +1517,9 @@ fn run_wasm_eval_compiled(
             stdout,
             stderr,
             exit_code,
+            // WASM traps surface as exit codes via wasi_runner, not host
+            // signals.
+            signal: None,
         }),
         Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
             Err(CompiledEvalError::Message(format!(
@@ -1707,6 +1760,28 @@ fn pluralize_session_entry(count: usize, singular: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_runtime_failure_names_arithmetic_signal() {
+        // SIGFPE (8) is x86's divide-by-zero trap.
+        let msg = describe_runtime_failure(1, Some(8));
+        assert!(msg.contains("signal 8"), "missing signal number: {msg}");
+        assert!(msg.contains("divide-by-zero"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_trap_signal() {
+        // SIGTRAP (5) is the ARM divide-by-zero / safety-trap path.
+        let msg = describe_runtime_failure(1, Some(5));
+        assert!(msg.contains("signal 5"), "missing signal number: {msg}");
+        assert!(msg.contains("divide-by-zero"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_falls_back_to_exit_code() {
+        let msg = describe_runtime_failure(42, None);
+        assert!(msg.contains("status 42"), "missing exit code: {msg}");
+    }
 
     #[cfg(unix)]
     fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {

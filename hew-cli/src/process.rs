@@ -23,6 +23,10 @@ pub(crate) enum BinaryRunOutcome {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        /// The terminating signal number when the child was killed by a
+        /// signal (Unix), e.g. `8` for `SIGFPE`. `None` when the child exited
+        /// normally with a non-zero code or on platforms without signals.
+        signal: Option<i32>,
     },
     /// The process exceeded the timeout and was terminated.
     Timeout,
@@ -257,6 +261,23 @@ impl BoundedChild {
     }
 }
 
+/// Extract the terminating signal number from a child exit status.
+///
+/// On Unix a child killed by a signal (e.g. divide-by-zero raising `SIGFPE`)
+/// reports `None` from [`ExitStatus::code`]; the signal is the only record of
+/// *why* it died. Capturing it lets the eval boundary synthesise a meaningful
+/// message instead of failing silently. Returns `None` on non-Unix platforms.
+#[cfg(unix)]
+fn terminating_signal(status: ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn terminating_signal(_status: ExitStatus) -> Option<i32> {
+    None
+}
+
 /// Execute a native binary with bounded wall-clock time.
 ///
 /// Both stdout and stderr are drained concurrently in background threads to
@@ -296,6 +317,7 @@ pub(crate) fn run_command_captured(
                     stdout,
                     stderr,
                     exit_code: status.code().unwrap_or(1),
+                    signal: terminating_signal(status),
                 });
             }
             Ok(None) => {

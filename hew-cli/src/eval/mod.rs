@@ -263,13 +263,27 @@ fn eval_result_to_json(
             stdout,
             stderr,
             exit_code,
-        }) => EvalJsonOutput {
-            status: EvalStatus::RuntimeFailure,
-            stdout,
-            stderr,
-            exit_code,
-            diagnostics: String::new(),
-        },
+            signal,
+        }) => {
+            // When the child died without writing stderr (e.g. a signal-killed
+            // arithmetic trap), synthesise a message so the JSON contract's
+            // `stderr` and `diagnostics` are not both silently empty. A child
+            // that DID write stderr keeps its own message and an empty
+            // `diagnostics`, preserving the panic-path contract.
+            let (stderr, diagnostics) = if stderr.is_empty() {
+                let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
+                (synth.clone(), synth)
+            } else {
+                (stderr, String::new())
+            };
+            EvalJsonOutput {
+                status: EvalStatus::RuntimeFailure,
+                stdout,
+                stderr,
+                exit_code,
+                diagnostics,
+            }
+        }
         Err(repl::CliEvalError::DiagnosticsRendered) => EvalJsonOutput {
             status: EvalStatus::CompileError,
             stdout: String::new(),
@@ -297,10 +311,11 @@ fn exit_eval_error(error: repl::CliEvalError) -> ! {
             stdout,
             stderr,
             exit_code,
+            signal,
         } => {
             // Surface any output the program produced before it failed, then
             // exit with the child's own exit code so callers can observe it.
-            repl::emit_runtime_failure_output(&stdout, &stderr);
+            repl::emit_runtime_failure_output(&stdout, &stderr, exit_code, signal);
             std::process::exit(exit_code);
         }
         repl::CliEvalError::DiagnosticsRendered => {

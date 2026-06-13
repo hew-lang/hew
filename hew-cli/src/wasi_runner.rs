@@ -90,6 +90,7 @@ pub(crate) fn run_module_captured(
             stdout,
             stderr,
             exit_code,
+            signal: _,
         } => {
             let (trap_exit_code, stderr) = extract_hew_wasi_trap_exit(&stderr);
             Ok(WasiCapturedOutcome::Failed {

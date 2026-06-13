@@ -3426,14 +3426,21 @@ mod registry_tests {
         hew_registry_clear, hew_registry_count, hew_registry_lookup, hew_registry_register,
         hew_registry_unregister,
     };
+    use hew_runtime::scheduler::hew_sched_init;
 
-    /// All registry tests share a global `REGISTRY` and call `hew_registry_clear`,
-    /// so they must not run in parallel.
+    /// The name registry lives on the default `RuntimeInner`; every registry FFI
+    /// call resolves it through `rt_current()`, which fails closed when no
+    /// runtime is installed. `hew_sched_init` installs the process-wide default
+    /// runtime and is idempotent (a second call is a no-op), so each test calls
+    /// it before touching the registry. The runtime is intentionally never torn
+    /// down — it persists for the whole test binary, shared across tests, which
+    /// is why `LOCK` serializes them.
     static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn register_and_lookup() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_lookup_actor").unwrap();
@@ -3450,6 +3457,7 @@ mod registry_tests {
     #[test]
     fn register_duplicate_returns_error() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_dup_actor").unwrap();
@@ -3468,6 +3476,7 @@ mod registry_tests {
     #[test]
     fn unregister_then_lookup_returns_null() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_unreg_actor").unwrap();
@@ -3485,6 +3494,7 @@ mod registry_tests {
     #[test]
     fn clear_resets_count_to_zero() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let a = CString::new("reg_clear_a").unwrap();

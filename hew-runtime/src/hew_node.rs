@@ -3424,9 +3424,12 @@ mod tests {
     }
 
     fn run_registry_gossip_server_helper() {
-        crate::registry::hew_registry_clear();
         reset_two_process_delivery();
+        // Install the runtime before touching the name registry: in this helper
+        // subprocess no `runtime_test_guard` is held, so the registry's
+        // `rt_current()` resolver has nothing to read until init runs.
         init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
         crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
@@ -3464,8 +3467,10 @@ mod tests {
     }
 
     fn run_registry_gossip_client_helper() {
-        crate::registry::hew_registry_clear();
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
         init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")
@@ -3531,12 +3536,14 @@ mod tests {
         ) -> *mut c_void,
         hold_after_observed: Duration,
     ) {
-        crate::registry::hew_registry_clear();
         // The inbound-ask path decodes the request and encodes the reply via the
         // registered codec (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
         reset_two_process_ask_observed();
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
         init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(node_id);
         crate::pid::hew_pid_set_local_node(node_id);
@@ -3645,11 +3652,13 @@ mod tests {
         server_node_id: u16,
         registry_name: &str,
     ) -> (TestNode, u64) {
-        crate::registry::hew_registry_clear();
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
         init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")

@@ -1042,6 +1042,10 @@ mod tests {
 
     #[test]
     fn send_to_unknown_actor_returns_error() {
+        // `hew_wasm_send` resolves the target through the name registry, a
+        // runtime authority; install a worker-less default runtime so the
+        // lookup resolves instead of trapping in `rt_current()`.
+        let _runtime_guard = crate::runtime_test_guard();
         let _guard = TEST_LOCK.lock().unwrap();
         reset_bridge();
 

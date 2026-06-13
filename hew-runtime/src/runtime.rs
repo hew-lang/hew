@@ -38,6 +38,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::lifetime::live_actors::LiveActors;
 use crate::lifetime::poison_safe::PoisonSafe;
+use crate::registry::ShardedRegistry;
 use crate::scheduler::Scheduler;
 use crate::shutdown::SupervisorPtr;
 
@@ -74,6 +75,10 @@ pub(crate) struct RuntimeInner {
     /// Live-actor liveness registry + deferred-teardown join handles. Was the
     /// `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals.
     pub(crate) live_actors: LiveActors,
+    /// Name registry mapping actor names to pointers (256 `RwLock` shards). Was
+    /// the `REGISTRY` global. Swept by `hew_registry_clear` during cleanup while
+    /// the runtime is still installed, then dropped with the runtime.
+    pub(crate) registry: ShardedRegistry,
     /// Current graceful-shutdown phase (running/quiesce/drain/terminate/done/
     /// failed). Was the `SHUTDOWN_PHASE` global. `PHASE_RUNNING == 0`, so a
     /// freshly-constructed runtime starts running.
@@ -91,6 +96,7 @@ impl RuntimeInner {
             id: RuntimeId::DEFAULT,
             scheduler,
             live_actors: LiveActors::new(),
+            registry: ShardedRegistry::new(),
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
             supervisor_roots: PoisonSafe::new(Vec::new()),
         }

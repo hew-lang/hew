@@ -15,8 +15,9 @@
 mod native {
     use std::collections::HashMap;
     use std::ffi::{c_char, c_void};
-    use std::sync::{LazyLock, RwLock};
+    use std::sync::RwLock;
 
+    use crate::runtime::rt_current;
     use crate::util::RwLockExt;
 
     const N_SHARDS: usize = 256;
@@ -32,14 +33,20 @@ mod native {
     // SAFETY: Access is serialized by the RwLock wrapping the RegistryShard.
     unsafe impl Sync for RegistryShard {}
 
-    /// Sharded registry with 256 shards to reduce lock contention.
-    struct ShardedRegistry {
+    /// Runtime-owned name registry: 256 `RwLock` shards mapping a string name to
+    /// an actor pointer.
+    ///
+    /// Was the `REGISTRY` process-global (`LazyLock<ShardedRegistry>`); now a
+    /// field of `RuntimeInner`, resolved through [`rt_current`]. Dropping it with
+    /// the runtime releases the (normally empty after `hew_registry_clear` during
+    /// cleanup) shard maps.
+    pub(crate) struct ShardedRegistry {
         shards: [RwLock<RegistryShard>; N_SHARDS],
     }
 
     impl ShardedRegistry {
-        /// Create a new sharded registry.
-        fn new() -> Self {
+        /// Create an empty sharded registry for a new runtime.
+        pub(crate) fn new() -> Self {
             Self {
                 shards: std::array::from_fn(|_| RwLock::new(RegistryShard(HashMap::new()))),
             }
@@ -69,8 +76,6 @@ mod native {
         hash
     }
 
-    static REGISTRY: LazyLock<ShardedRegistry> = LazyLock::new(ShardedRegistry::new);
-
     /// Register an actor by name.
     ///
     /// Returns 0 on success, -1 if the name is already taken.
@@ -87,7 +92,7 @@ mod native {
             return -1;
         };
         let key = key.to_owned();
-        let shard = REGISTRY.shard_for(&key);
+        let shard = rt_current().registry.shard_for(&key);
         let mut reg = shard.write_or_recover();
         if reg.0.contains_key(&key) {
             return -1;
@@ -109,7 +114,7 @@ mod native {
         let Some(key) = (unsafe { crate::util::cstr_to_str(&name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
         };
-        let shard = REGISTRY.shard_for(key);
+        let shard = rt_current().registry.shard_for(key);
         let reg = shard.read_or_recover();
         reg.0.get(key).copied().unwrap_or(std::ptr::null_mut())
     }
@@ -128,7 +133,7 @@ mod native {
         else {
             return -1;
         };
-        let shard = REGISTRY.shard_for(key);
+        let shard = rt_current().registry.shard_for(key);
         let mut reg = shard.write_or_recover();
         if reg.0.remove(key).is_some() {
             0
@@ -141,7 +146,7 @@ mod native {
     #[no_mangle]
     pub extern "C" fn hew_registry_count() -> i32 {
         let mut total_count = 0usize;
-        for shard in &REGISTRY.shards {
+        for shard in &rt_current().registry.shards {
             let reg = shard.read_or_recover();
             total_count += reg.0.len();
         }
@@ -158,15 +163,21 @@ mod native {
     }
 
     /// Remove all entries from the registry.
+    ///
+    /// Called during `hew_runtime_cleanup` while the runtime is still installed —
+    /// after the worker join, before the final detach+drop — so [`rt_current`]
+    /// resolves the draining runtime's own registry.
     #[no_mangle]
     pub extern "C" fn hew_registry_clear() {
-        for shard in &REGISTRY.shards {
+        for shard in &rt_current().registry.shards {
             let mut reg = shard.write_or_recover();
             reg.0.clear();
         }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::ShardedRegistry;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
 
@@ -180,6 +191,10 @@ mod tests {
     /// A poisoned `RwLock` shard must not crash subsequent registry operations.
     #[test]
     fn registry_survives_poisoned_shard() {
+        // The name registry is a runtime authority; install a worker-less
+        // default runtime so the `hew_registry_*` calls below resolve it.
+        let _guard = crate::runtime_test_guard();
+
         // Poison a shard by panicking inside a write guard.
         let lock = RwLock::new(42);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -210,6 +225,10 @@ mod tests {
 
     #[test]
     fn registry_rejects_invalid_utf8_keys() {
+        // The name registry is a runtime authority; install a worker-less
+        // default runtime so the `hew_registry_*` calls below resolve it.
+        let _guard = crate::runtime_test_guard();
+
         hew_registry_clear();
         crate::hew_clear_error();
         let invalid_name = b"bad\xff\0";

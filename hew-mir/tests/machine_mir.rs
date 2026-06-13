@@ -530,6 +530,7 @@ fn resource_field_transition_out_drops() {
         id: hew_hir::ItemId(1),
         node: hew_hir::HirNodeId(1),
         name: "FileHandle".to_string(),
+        defining_module: None,
         type_params: Vec::new(),
         fields: vec![HirField {
             name: "raw".to_string(),

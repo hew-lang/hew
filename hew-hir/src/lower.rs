@@ -2164,7 +2164,8 @@ pub fn lower_program_with_mono_cap(
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {
-                            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let hir_decl =
+                                ctx.lower_imported_type_decl(decl, span.clone(), module_short);
                             ctx.type_classes
                                 .entry(hir_decl.name.clone())
                                 .or_insert((hir_decl.marker, None));
@@ -2718,9 +2719,11 @@ pub fn lower_program_with_mono_cap(
                             if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
                                 items.push(HirItem::TypeDecl(hir_decl));
                             } else {
-                                items.push(HirItem::TypeDecl(
-                                    ctx.lower_type_decl(decl, span.clone()),
-                                ));
+                                items.push(HirItem::TypeDecl(ctx.lower_imported_type_decl(
+                                    decl,
+                                    span.clone(),
+                                    module_short,
+                                )));
                             }
                         }
                         // Emit `HirItem::Machine` entries for imported pub
@@ -7896,6 +7899,10 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root/local identity by default; the imported-module carrier
+            // (`lower_imported_type_decl`) stamps `Some(module_short)` for
+            // package-exported types.
+            defining_module: None,
             marker,
             is_opaque: decl.is_opaque,
             is_indirect: decl.is_indirect,
@@ -7950,10 +7957,35 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root/local identity by default; an imported-record carrier would
+            // stamp `Some(module_short)`. Imported records are not yet emitted
+            // as `HirItem::Record` (the imported `Item::Record` arm is a skip),
+            // so today every lowered record is root-identity.
+            defining_module: None,
             type_params,
             fields,
             span,
         }
+    }
+
+    /// Lower a type declared in an imported package module.
+    ///
+    /// Identical to [`lower_type_decl`](Self::lower_type_decl) except that the
+    /// resulting `HirTypeDecl` carries `defining_module = Some(module_short)` —
+    /// the `(defining-module, name)` identity (mirroring
+    /// [`lower_imported_actor`](Self::lower_imported_actor)) that lets MIR
+    /// layout keys and codegen symbols distinguish two same-named types from
+    /// different modules. The decl `name` stays bare; switching keys/symbols to
+    /// `qualified_name()` is the downstream re-key this carrier enables.
+    fn lower_imported_type_decl(
+        &mut self,
+        decl: &TypeDecl,
+        span: std::ops::Range<usize>,
+        module_short: &str,
+    ) -> HirTypeDecl {
+        let mut lowered = self.lower_type_decl(decl, span);
+        lowered.defining_module = Some(module_short.to_string());
+        lowered
     }
 
     /// Lower a `supervisor` declaration to `HirSupervisorDecl`.

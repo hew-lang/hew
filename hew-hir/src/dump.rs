@@ -86,6 +86,14 @@ pub fn dump_hir(module: &HirModule) -> String {
                     decl.id, decl.name, decl.marker
                 )
                 .expect("write to string");
+                if let Some(module_short) = &decl.defining_module {
+                    writeln!(
+                        out,
+                        "  defining-module {module_short} qualified={}",
+                        decl.qualified_name()
+                    )
+                    .expect("write to string");
+                }
                 for field in &decl.fields {
                     writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
                         .expect("write to string");
@@ -118,6 +126,14 @@ pub fn dump_hir(module: &HirModule) -> String {
             }
             HirItem::Record(record) => {
                 writeln!(out, "record {} {}", record.id, record.name).expect("write to string");
+                if let Some(module_short) = &record.defining_module {
+                    writeln!(
+                        out,
+                        "  defining-module {module_short} qualified={}",
+                        record.qualified_name()
+                    )
+                    .expect("write to string");
+                }
                 for field in &record.fields {
                     writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
                         .expect("write to string");

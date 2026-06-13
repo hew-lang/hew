@@ -167,13 +167,14 @@ validate_linux() {
         set -e
         echo "==> Step 1: Static-link release build"
         # This is the exact build that the release CI does
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release 2>&1
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --release 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
         target/release/hew --version
         target/release/adze --version
         target/release/hew-lsp --version
+        target/release/hew-observe --version
         test -f target/release/libhew.a
 
         echo "==> Step 3: Smoke test — compile and run a Hew program"
@@ -219,7 +220,7 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp target/release/hew target/release/adze target/release/hew-lsp "${package_root}/bin/"
+        cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
         cp target/release/libhew.a "${package_root}/lib/"
         cp target/release/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
@@ -278,12 +279,13 @@ validate_macos() {
             export PATH=\"/opt/homebrew/opt/llvm@22/bin:/opt/homebrew/bin:\$PATH\"
             export LLVM_PREFIX=\"\$(brew --prefix llvm@22 2>/dev/null || echo /opt/homebrew/opt/llvm)\"
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -355,7 +357,7 @@ validate_linux_aarch64() {
             export CC=clang-22
             export CXX=clang++-22
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
@@ -363,6 +365,7 @@ validate_linux_aarch64() {
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
             test -f target/release/libhew.a
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
@@ -429,12 +432,13 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -498,7 +502,7 @@ if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
 \$env:CC = '${WINDOWS_CC}'
 \$env:CXX = '${WINDOWS_CXX}'
 
-cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
 Assert-NativeSuccess 'cargo build release binaries'
 
 cargo build -p hew-lib --release
@@ -512,6 +516,9 @@ Assert-NativeSuccess 'adze.exe --version'
 
 & .\\target\\release\\hew-lsp.exe --version
 Assert-NativeSuccess 'hew-lsp.exe --version'
+
+& .\\target\\release\\hew-observe.exe --version
+Assert-NativeSuccess 'hew-observe.exe --version'
 "
 
         echo "==> Smoke test on Windows"

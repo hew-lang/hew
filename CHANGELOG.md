@@ -958,13 +958,13 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 
 ## v0.1.0 — 2026-02-22
 
-**Hew** is a statically-typed, actor-oriented programming language for concurrent and distributed systems. It features Erlang-inspired supervision trees, first-class async/await, and message-passing concurrency — compiled to native code via MLIR and LLVM.
+**Hew** is a statically-typed, actor-oriented programming language for concurrent and distributed systems. It features Erlang-inspired supervision trees, first-class async/await, and message-passing concurrency — compiled to native code via the Rust hew-codegen-rs backend over LLVM (inkwell).
 
 ### Added
 
 #### Language
 
-- Full compilation pipeline: `.hew` → Rust frontend → MLIR → LLVM → native binary
+- Full compilation pipeline: `.hew` → Rust frontend → hew-codegen-rs → LLVM → native binary
 - Core language: functions, variables (`let`/`var`), control flow (`if`/`else`, `while`, `for`, `loop`), match expressions, closures/lambdas (including mutable capture), generics, traits with vtable dispatch, tuples, string interpolation (f-strings), range expressions, `defer`
 - Actors: `spawn`, `send`, `receive`, `ask`/`await`, lambda actors
 - Supervision trees: `supervisor` keyword with `one_for_one`, `one_for_all`, `rest_for_one` strategies

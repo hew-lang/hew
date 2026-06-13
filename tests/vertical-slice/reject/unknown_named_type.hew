@@ -1,6 +1,6 @@
 // Reject: a function that uses a named user type with no known ValueClass.
 // Under D10, this must be rejected at the MIR boundary with UnknownType,
-// never emitting MLIR with "UnknownBlocked" in hew.value_decision.
+// never reaching codegen with an "UnknownBlocked" value decision.
 fn f(x: Foo) -> Foo {
     return x;
 }

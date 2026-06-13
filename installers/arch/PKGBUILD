@@ -34,6 +34,7 @@ package() {
   install -Dm755 "${_srcdir}/bin/hew"          "${pkgdir}/usr/bin/hew"
   install -Dm755 "${_srcdir}/bin/adze"         "${pkgdir}/usr/bin/adze"
   install -Dm755 "${_srcdir}/bin/hew-lsp"      "${pkgdir}/usr/bin/hew-lsp"
+  install -Dm755 "${_srcdir}/bin/hew-observe"  "${pkgdir}/usr/bin/hew-observe"
 
   # Combined runtime + stdlib library
   install -Dm644 "${_srcdir}/lib/libhew.a" \

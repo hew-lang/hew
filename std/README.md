@@ -148,7 +148,7 @@ Each stdlib module includes:
 Implementation strategy varies by module:
 
 - Some modules are implemented entirely in Hew, with the Rust crate retained only as a build placeholder
-- Some modules, such as `std::math`, expose a Hew surface that codegen lowers directly to compiler intrinsics/MLIR ops, again leaving the Rust crate as a placeholder
+- Some modules, such as `std::math`, expose a Hew surface that codegen lowers directly to compiler intrinsics / Rust backend LLVM lowering, again leaving the Rust crate as a placeholder
 - Modules that need native capabilities still use their Rust crates for the final linked implementation
 
 The compiler resolves `import std::*` paths against the `HEW_STD` directory and links any corresponding native static libraries required by the build graph at compile time, whether they provide runtime FFI symbols or act only as placeholders.

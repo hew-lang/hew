@@ -50,6 +50,7 @@ in stdenv.mkDerivation rec {
     install -Dm755 bin/hew          $out/bin/hew
     install -Dm755 bin/adze         $out/bin/adze
     install -Dm755 bin/hew-lsp      $out/bin/hew-lsp
+    install -Dm755 bin/hew-observe  $out/bin/hew-observe
     install -Dm644 lib/libhew.a $out/lib/hew/libhew.a
 
     # Install target-specific lib subtree for Darwin so find_hew_lib() can

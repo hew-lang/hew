@@ -977,7 +977,7 @@ impl Checker {
             // The collection itself still owns heap memory, so the alias
             // path's contract (no sender-side drop) would leak the
             // backing buffer.  Classify them as `Copy(StdlibDrop)` so the
-            // legacy `deepCopyOwnedArgs` clone fires and the receiver
+            // codegen deep-copy fires and the receiver
             // gets an independent copy.
             if builtin.is_some_and(BuiltinType::is_collection) {
                 return ActorSendAliasing::Copy(ActorSendCopyReason::StdlibDrop);
@@ -6037,8 +6037,7 @@ impl Checker {
     /// (`Expr::Lambda`). Everything else maps to `Stack` (already
     /// stack-shaped) or `Indeterminate` (unknown form, no hint).
     fn classify_alloc(&self, expr: &Expr, span: &Span) -> AllocationClass {
-        // Closure literals are env-heap regardless of resolved type
-        // (`MLIRGenExpr.cpp:6009`).
+        // Closure literals are env-heap regardless of resolved type.
         if matches!(expr, Expr::Lambda { .. }) {
             return AllocationClass::ClosureEnv;
         }

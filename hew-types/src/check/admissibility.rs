@@ -140,7 +140,7 @@ pub(crate) fn compute_copy_record_layout(
 ///    cannot occur through the normal construction path
 ///    (`LoweringFact::from_hashset_element_type`) but the check is kept as a
 ///    hard contract at the boundary so that any future serialization round-trip
-///    or factory bypasses are caught at check time rather than in C++ codegen.
+///    or factory bypasses are caught at check time rather than in codegen.
 ///
 /// Note: element types that resolve to `Ty::Error` are already handled earlier
 /// in `finalize_lowering_facts` (silent drop, no new error).  The orphan-prune
@@ -382,7 +382,7 @@ impl Checker {
     /// A type cannot be both fieldless-opaque in the stdlib handle registry
     /// (`module_registry.handle_types`) and field-bearing in `TypeDef.fields`:
     /// the two representations are incompatible in codegen (the opaque-handle
-    /// MLIR path versus the struct-layout path).  If both are present the
+    /// path versus the struct-layout path).  If both are present the
     /// opaque path silently wins, producing wrong codegen without a diagnostic.
     ///
     /// Only types with non-empty `fields` are checked — a user-declared type
@@ -2106,7 +2106,7 @@ mod tests {
 
     /// A type whose fully-qualified name appears in `module_registry.handle_types`
     /// AND has non-empty `TypeDef.fields` must be rejected and pruned from
-    /// `type_defs` so the incompatible representations (opaque-handle MLIR path
+    /// `type_defs` so the incompatible representations (opaque-handle path
     /// vs struct-layout path) can never both reach codegen.
     ///
     /// Regression guard for hew-lang/hew#1252.

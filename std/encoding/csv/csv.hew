@@ -173,7 +173,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
                             headers.push(cur_row.get(i));
                         }
                     } else {
-                        rows.push(copy_str_vec(cur_row));
+                        rows.push(cur_row);
                     }
                     cur_row.clear();
                 }
@@ -195,7 +195,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
                         headers.push(cur_row.get(i));
                     }
                 } else {
-                    rows.push(copy_str_vec(cur_row));
+                    rows.push(cur_row);
                 }
                 cur_row.clear();
             }
@@ -223,7 +223,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
                 headers.push(cur_row.get(i));
             }
         } else {
-            rows.push(copy_str_vec(cur_row));
+            rows.push(cur_row);
         }
         cur_row.clear();
     }
@@ -235,21 +235,6 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
         }
     }
     Table { hdrs: headers, data: rows }
-}
-
-/// Copy a `Vec<string>` into a new `Vec<string>`.
-///
-/// Returning the copy from a function rather than building it inline avoids a
-/// Hew runtime lifetime issue where a `Vec<string>` created inside a block
-/// scope and pushed into a `Vec<Vec<string>>` loses its contents when the
-/// inner scope exits.  Returning from a function correctly extends the
-/// lifetime of the contained strings through the ownership transfer.
-fn copy_str_vec(src: Vec<string>) -> Vec<string> {
-    let dst: Vec<string> = Vec::new();
-    for i in 0 .. src.len() {
-        dst.push(src.get(i));
-    }
-    dst
 }
 
 /// Find the column index for a header name. Returns -1 if not found.

@@ -34,6 +34,7 @@ class Hew < Formula
     bin.install "bin/hew"
     bin.install "bin/adze"
     bin.install "bin/hew-lsp"
+    bin.install "bin/hew-observe"
     lib.install "lib/libhew.a"
 
     # Install target-specific lib subtree so find_hew_lib() can probe
@@ -80,5 +81,6 @@ class Hew < Formula
     system "#{bin}/hew", "version"
     system "#{bin}/adze", "--version"
     system "#{bin}/hew-lsp", "--version"
+    system "#{bin}/hew-observe", "--version"
   end
 end

@@ -1,7 +1,7 @@
 //! Hew runtime: `option` module.
 //!
 //! Tagged union for `Option<T>` — either `None` (tag=0) or `Some(value)` (tag=1).
-//! Layout-compatible with the C runtime representation used by MLIR codegen.
+//! Layout-compatible with the C runtime representation used by codegen.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."

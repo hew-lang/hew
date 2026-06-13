@@ -11,7 +11,7 @@
 // on these receivers.
 //
 // This fixture is also a regression anchor for the to_string(string) clone
-// special-case that exists in the current MLIRGen.cpp.  The v0.5 IR ladder
+// special-case that exists in the current codegen backend.  The v0.5 IR ladder
 // replaces that special-case with a `hew.read` against an immutable
 // `!hew.string_ref` / `!hew.cow<string>` view.  The caller's value is
 // unaffected; no clone, no consume.

@@ -4613,8 +4613,7 @@ fn primitive_to_llvm<'ctx>(
         // in the alloca — the same representation used for Duplex/Vec/Task
         // handles. `Instr::StringLit` stores the address of an LLVM global
         // constant into this slot; C-string runtime ops (`hew_string_*`) load
-        // from it. Matches the C++ codegen's `hew.global_string` →
-        // `llvm.mlir.addressof` pattern (codegen.cpp ~line 264).
+        // from it.
         ResolvedTy::String => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         // CancellationToken is an opaque runtime handle. Locals store the
         // handle pointer; observation borrows it and drop paths release it via
@@ -13442,9 +13441,7 @@ fn lower_instruction(
         Instr::StringLit { bytes, dest } => {
             // Emit an LLVM global constant for the string bytes (NUL-terminated,
             // internal linkage, read-only) and store its address into the `dest`
-            // alloca. Matches the C++ codegen's `hew.global_string` →
-            // `llvm.mlir.addressof` pattern (codegen.cpp `ConstantOpLowering` /
-            // `GlobalStringOpLowering`, ~lines 257-265).
+            // alloca.
             //
             // The `dest` local must have been allocated with `ResolvedTy::String`,
             // which `primitive_to_llvm` maps to an opaque `ptr`. The pointer to the
@@ -15907,6 +15904,14 @@ enum OwnedElemThunkKind {
     /// on demand (reusing the record-field clone/drop machinery over the
     /// tuple's struct fields) and the key is a structural fingerprint.
     Tuple,
+    /// Nested collection handle — `Vec<E>` / `HashMap<K,V>` / `HashSet<T>` as a
+    /// Vec element (#1722). Like `Tuple`, there is no registry entry: the
+    /// element slot holds a single owned collection handle, so the body is a
+    /// small wrapper thunk synthesized on demand (`load handle / call the
+    /// collection's canonical clone-or-free primitive / store`). The key is a
+    /// structural fingerprint (`mangle_resolved_ty`) so `Vec<string>` and
+    /// `Vec<i64>` never share a thunk.
+    Collection,
 }
 
 /// Structural, injective per-tuple thunk key (`tuple_<elem>_<elem>...`), used as
@@ -15971,10 +15976,206 @@ fn get_or_declare_tuple_drop_inplace<'ctx>(
     )
 }
 
-/// Map a tuple element `ResolvedTy` to the `StateFieldCloneKind` the per-field
-/// clone/drop steps consume. Reuses the record-field classifier (which handles
-/// string/bytes/record/enum/bitcopy); a nested tuple field is not supported in
-/// this slice and fails closed (nested owned tuples are a follow-on).
+/// Select the canonical `(clone, free)` runtime symbol pair for a nested
+/// collection Vec element (#1722). The clone is `fn(*const handle) -> *mut
+/// handle`; the free `fn(*mut handle)`. The synthesized collection-handle
+/// wrapper thunk (`__hew_collection_{clone,drop}_inplace_<key>`) loads the
+/// handle from the element slot and calls these. Returns `None` for any element
+/// with no canonical clone primitive (a closure-pair `Vec<fn>`/`Vec<closure>`)
+/// so the descriptor build fails closed (`boundary-fail-closed`).
+///
+/// owned-vs-managed selection for a `Vec<E>` element is the crux of the
+/// clone-thunk-primitive-mis-selection risk: an inner Vec whose own element
+/// owns heap is itself an owned-descriptor vec and MUST clone/free through the
+/// `_owned` pair (the managed pair aborts on a LayoutManaged descriptor);
+/// every other inner Vec (string/scalar/BitCopy-record element) is managed and
+/// uses the managed pair. The selector consults the SAME authority the inner
+/// Vec's constructor uses (`resolved_ty_element_owns_heap_for_owned_vec`), so
+/// the clone primitive can never disagree with the inner Vec's actual ABI.
+fn collection_elem_clone_drop_syms(
+    fn_ctx: &FnCtx<'_, '_>,
+    elem_ty: &ResolvedTy,
+) -> Option<(&'static str, &'static str)> {
+    match elem_ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Vec),
+            args,
+            ..
+        } => {
+            // Closure-pair `Vec<fn>`/`Vec<closure>`: no managed/owned clone
+            // primitive (the closure-pairs family is a separate lane). Fail
+            // closed so the constructor never references a non-existent thunk.
+            if args.first().is_some_and(|e| {
+                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+            }) {
+                return None;
+            }
+            if args
+                .first()
+                .is_some_and(|e| resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, e))
+            {
+                // Inner Vec is itself owned-descriptor — deep clone/free run the
+                // inner per-element descriptor thunks.
+                Some(("hew_vec_clone_owned", "hew_vec_free_owned"))
+            } else {
+                // Inner Vec is managed (string/scalar/BitCopy element): the
+                // managed pair reads the handle descriptor (legacy/BitCopy) and
+                // deep-copies the buffer.
+                Some((VEC_CLONE_MANAGED_SYMBOL, VEC_FREE_MANAGED_SYMBOL))
+            }
+        }
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::HashMap),
+            ..
+        } => Some((HASHMAP_CLONE_LAYOUT_SYMBOL, HASHMAP_FREE_LAYOUT_SYMBOL)),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::HashSet),
+            ..
+        } => Some((HASHSET_CLONE_LAYOUT_SYMBOL, HASHSET_FREE_LAYOUT_SYMBOL)),
+        _ => None,
+    }
+}
+
+/// Lookup-or-declare the synthesized per-collection in-place clone helper.
+/// Signature mirrors the record/tuple helper: `fn(*const src, *mut dst) -> i32`
+/// (0 = success). The body loads the inner collection handle from the source
+/// slot, deep-clones it via the element's canonical clone primitive, and stores
+/// the fresh handle into the destination slot (COPY-IN).
+fn get_or_declare_collection_clone_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_collection_clone_inplace_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    llvm_mod.add_function(
+        &sym,
+        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Lookup-or-declare the synthesized per-collection in-place drop helper.
+/// Signature: `fn(*mut)`. Loads the inner collection handle from the slot and
+/// frees it via the element's canonical free primitive (null-tolerant).
+fn get_or_declare_collection_drop_inplace<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_collection_drop_inplace_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Emit the bodies of the collection-handle clone/drop wrapper thunks (#1722),
+/// idempotently (no-op if a body already exists — same lazy contract as the
+/// tuple thunk emitter). `clone_sym`/`drop_sym` are the element's canonical
+/// collection clone/free runtime symbols (see `collection_elem_clone_drop_syms`).
+///
+/// The element slot holds a single owned collection handle (a pointer). The
+/// clone thunk is COPY-IN: it loads the source handle, deep-clones it, and
+/// OVERWRITES the destination slot with the fresh handle — `hew_vec_push_owned`
+/// first memcpy's the shallow handle into the slot, which this store harmlessly
+/// replaces, so the source retains sole ownership of the original (no alias).
+/// The drop thunk loads the slot's handle and frees it (the free primitives
+/// no-op on null, so a moved-out/cleared slot is safe).
+fn emit_collection_handle_thunk_bodies<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    key: &str,
+    clone_sym: &'static str,
+    drop_sym: &'static str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let llvm_mod = fn_ctx.llvm_mod;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+
+    let clone_fn = get_or_declare_collection_clone_inplace(ctx, llvm_mod, key);
+    if clone_fn.count_basic_blocks() == 0 {
+        let runtime_clone = llvm_mod.get_function(clone_sym).unwrap_or_else(|| {
+            llvm_mod.add_function(
+                clone_sym,
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(clone_fn, "entry");
+        builder.position_at_end(entry);
+        let src = clone_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("collection clone thunk missing src param".to_string())
+            })?
+            .into_pointer_value();
+        let dst = clone_fn
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("collection clone thunk missing dst param".to_string())
+            })?
+            .into_pointer_value();
+        let src_handle = builder
+            .build_load(ptr_ty, src, "coll_src_handle")
+            .llvm_ctx("collection clone load src handle")?;
+        let cloned = builder
+            .build_call(runtime_clone, &[src_handle.into()], "coll_clone_call")
+            .llvm_ctx("collection clone call")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "collection clone primitive `{clone_sym}` returned void"
+                ))
+            })?;
+        builder
+            .build_store(dst, cloned)
+            .llvm_ctx("collection clone store dst handle")?;
+        builder
+            .build_return(Some(&i32_ty.const_zero()))
+            .llvm_ctx("collection clone ret")?;
+    }
+
+    let drop_fn = get_or_declare_collection_drop_inplace(ctx, llvm_mod, key);
+    if drop_fn.count_basic_blocks() == 0 {
+        let runtime_drop = llvm_mod.get_function(drop_sym).unwrap_or_else(|| {
+            llvm_mod.add_function(
+                drop_sym,
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(drop_fn, "entry");
+        builder.position_at_end(entry);
+        let slot = drop_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("collection drop thunk missing slot param".to_string())
+            })?
+            .into_pointer_value();
+        let handle = builder
+            .build_load(ptr_ty, slot, "coll_slot_handle")
+            .llvm_ctx("collection drop load slot handle")?;
+        builder
+            .build_call(runtime_drop, &[handle.into()], "coll_drop_call")
+            .llvm_ctx("collection drop call")?;
+        builder.build_return(None).llvm_ctx("collection drop ret")?;
+    }
+    Ok(())
+}
+
 fn tuple_field_clone_kind(
     elem_ty: &ResolvedTy,
     record_layouts: &[hew_mir::RecordLayout],
@@ -16112,6 +16313,29 @@ fn owned_elem_thunk_key(
     if let ResolvedTy::Tuple(elems) = elem_ty {
         return Some((OwnedElemThunkKind::Tuple, tuple_thunk_key(elems)));
     }
+    // Nested collection element (#1722): `Vec<E>` / `HashMap` / `HashSet`. Like
+    // the tuple shape there is no registry entry — synthesize a structural
+    // thunk key (`mangle_resolved_ty` distinguishes `Vec<string>` from
+    // `Vec<i64>`). Gated on a resolvable clone/free primitive so a closure-pair
+    // `Vec<fn>` element resolves to `None` here (fail closed at descriptor
+    // build) rather than naming a thunk that cannot be synthesized.
+    if matches!(
+        elem_ty,
+        ResolvedTy::Named {
+            builtin: Some(
+                hew_types::BuiltinType::Vec
+                    | hew_types::BuiltinType::HashMap
+                    | hew_types::BuiltinType::HashSet
+            ),
+            ..
+        }
+    ) && collection_elem_clone_drop_syms(fn_ctx, elem_ty).is_some()
+    {
+        return Some((
+            OwnedElemThunkKind::Collection,
+            hew_hir::mangle_resolved_ty(elem_ty),
+        ));
+    }
     let ResolvedTy::Named { name, args, .. } = elem_ty else {
         return None;
     };
@@ -16198,6 +16422,7 @@ fn owned_elem_layout_descriptor_ptr<'ctx>(
         OwnedElemThunkKind::Record => "rec",
         OwnedElemThunkKind::Enum => "enum",
         OwnedElemThunkKind::Tuple => "tup",
+        OwnedElemThunkKind::Collection => "coll",
     };
     let global_name = format!("__hew_vec_elem_layout_{kind_tag}_{key}_{size}_{align}");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
@@ -16231,6 +16456,25 @@ fn owned_elem_layout_descriptor_ptr<'ctx>(
             (
                 get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
                 get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            )
+        }
+        OwnedElemThunkKind::Collection => {
+            // The collection-handle wrapper thunk BODY is synthesized eagerly
+            // here (like the tuple thunk — no registry-driven seeding): a
+            // collection element is referenced only through this descriptor.
+            // Idempotent: the emitter no-ops if the body already exists.
+            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, elem_resolved_ty)
+                .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "owned collection descriptor at `{label}`: element \
+                         {elem_resolved_ty:?} has no canonical clone/free primitive \
+                         (closure-pair Vec elements are a separate lane)"
+                ))
+            })?;
+            emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
+            (
+                get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+                get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
             )
         }
     };
@@ -23910,10 +24154,28 @@ fn resolved_ty_element_owns_heap_for_owned_vec(fn_ctx: &FnCtx<'_, '_>, elem: &Re
             .iter()
             .any(|f| resolved_ty_contains_heap_leaf(fn_ctx, f, &mut HashSet::new())),
         // A user record/enum nominal is owned when it transitively owns heap.
-        // Builtin nominals (Vec/HashMap/...) never reach the owned-element ABI.
         ResolvedTy::Named { builtin: None, .. } => {
             resolved_ty_contains_heap_leaf(fn_ctx, elem, &mut HashSet::new())
         }
+        // Nested collection elements (Vec<E> / HashMap / HashSet) are owned
+        // heap handles — route the outer Vec through the W5.016 owned descriptor
+        // ABI (#1722). A closure-pair Vec<fn>/Vec<closure> keeps its
+        // pointer/closure-pairs release (`cow_heap_release_symbol` checks
+        // fn/closure FIRST); exclude it here so the constructor never builds an
+        // owned descriptor for a closure-pair element (which has no managed
+        // clone primitive — `collection_elem_clone_drop_syms` returns None).
+        // Must mirror the MIR `is_owned_vec_element` predicate exactly.
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet),
+            ..
+        } => true,
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Vec),
+            args,
+            ..
+        } => !args
+            .first()
+            .is_some_and(|e| matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })),
         _ => false,
     }
 }

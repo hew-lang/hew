@@ -314,7 +314,7 @@ pub struct TraceEvent {
     pub actor_type_id: u64,
     /// Registered Hew type name for this actor (e.g. `"Counter"`), or `None`
     /// when the dispatch function has not been registered via
-    /// `hew_actor_register_type` (requires MLIR codegen emission — see #1258).
+    /// `hew_actor_register_type` (requires codegen emission — see #1258).
     #[serde(default)]
     pub actor_type: Option<String>,
     #[serde(default)]

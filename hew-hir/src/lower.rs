@@ -13219,6 +13219,12 @@ impl LowerCtx {
         }
     }
 
+    #[allow(
+        clippy::match_same_arms,
+        reason = "tuple, nested-collection, and closure-pair arms intentionally stay \
+                  separate to document distinct ownership/release contracts, even where \
+                  two arms emit the same push symbol at this layer"
+    )]
     fn vec_push_symbol_for_elem(&self, elem_ty: &ResolvedTy) -> Option<&'static str> {
         match elem_ty {
             ResolvedTy::Bool => Some("hew_vec_push_bool"),
@@ -13227,16 +13233,33 @@ impl LowerCtx {
             ResolvedTy::F64 => Some("hew_vec_push_f64"),
             ResolvedTy::String => Some("hew_vec_push_str"),
             ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
+            // A closure-pair `Vec<fn>` / `Vec<closure>` element keeps the
+            // pointer push (boxing marshalling + `hew_vec_free_closure_pairs`
+            // release) — a separate lane (#1722 out-of-scope). Checked before
+            // the general collection arm so it is never routed to copy-in.
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec),
+                args,
+                ..
+            } if args.first().is_some_and(|e| {
+                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+            }) =>
+            {
+                Some("hew_vec_push_ptr")
+            }
+            // Nested collection handles (Vec<T> / HashMap / HashSet) push
+            // through the layout-descriptor symbol; the MIR push-upgrade
+            // override (`vec_receiver_has_owned_element`) rewrites it to
+            // `hew_vec_push_owned` (COPY-IN) so each pushed collection is
+            // deep-copied and the outer Vec owns its storage (#1722).
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+                ..
+            } => Some("hew_vec_push_layout"),
             // Closure-pair elements ride the pointer convention: codegen's
             // push marshalling boxes the 16-byte pair behind a heap handle
             // (same authority as `vec_element_runtime_suffix`'s fn arm).
-            // Collection handles share the pointer-element push.
-            ResolvedTy::Function { .. }
-            | ResolvedTy::Closure { .. }
-            | ResolvedTy::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => Some("hew_vec_push_ptr"),
+            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some("hew_vec_push_ptr"),
             ResolvedTy::Named { .. } => match ValueClass::of_ty(elem_ty, &self.type_classes) {
                 ValueClass::CowValue
                 | ValueClass::PersistentShare
@@ -15456,8 +15479,8 @@ impl LowerCtx {
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
-    /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
-    /// pipeline, not the Rust MIR pipeline).
+    /// other rewrite variants are rejected as unsupported (they targeted the legacy
+    /// codegen pipeline, not the Rust MIR pipeline).
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -16231,8 +16254,8 @@ impl LowerCtx {
                 )
             }
             Some(MethodCallRewrite::DeferToLowering) => {
-                // `DeferToLowering` targets the C++/MLIR pipeline and is not
-                // consumed by the Rust MIR pipeline.  Fail-closed.
+                // `DeferToLowering` belonged to the legacy codegen pipeline and is
+                // not consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
                         construct: format!("method-call rewrite variant for `.{method}`"),

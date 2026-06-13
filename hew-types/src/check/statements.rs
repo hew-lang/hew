@@ -685,7 +685,7 @@ impl Checker {
                     _ => self.synthesize(&target.0, &target.1),
                 };
                 // Record the type-shape metadata for every accepted target
-                // immediately after synthesising the target type so the MLIR
+                // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without
                 // falling back to the unreliable `resolvedTypeOf` path.
                 if self

@@ -3808,6 +3808,20 @@ impl Checker {
                     .is_some()
                     || self.vec_owned_element_admissible(elem_ty)
             }
+            // Builtin container/handle nominals (`Vec`/`HashMap`/`HashSet`/
+            // `Rc`/handles/...) can never ride the element-layout queue
+            // witness: their ownership lives in a runtime context the queue
+            // cannot clone or drop. This stays in lockstep with
+            // `queue_elem_rejection_reason`, which rejects every `builtin:
+            // Some(_)`. `vec_owned_element_admissible` now admits nested-
+            // container Vec ELEMENTS for copy-in push (#1722), but that is a
+            // Vec-storage property, not a queue property, and must not leak
+            // here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
+            // variants (not `Ty::Named`), so they remain queue-admissible via
+            // the `_` arm's `primitive_copy_layout` check.
+            Ty::Named {
+                builtin: Some(_), ..
+            } => false,
             _ => {
                 crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
                     .is_some()
@@ -3858,11 +3872,45 @@ impl Checker {
             Ty::Named {
                 name,
                 builtin,
-                args: _,
+                args,
             } => {
-                // Builtin nominals (Vec/HashMap/Rc/...) are not user records/enums.
-                if builtin.is_some() {
-                    return false;
+                // Nested collection elements (Vec<T> / HashMap / HashSet) route
+                // through the owned descriptor with COPY-IN, exactly like an
+                // owned record: each pushed collection is deep-cloned so the
+                // outer Vec is its sole owner, and released via the per-element
+                // drop_fn. Admit on the same RcFree gate the record arm uses
+                // (deterministic per-element drop). A closure-pair `Vec<fn>` /
+                // `Vec<closure>` element keeps its existing pointer/closure-
+                // pairs ABI (separate lane, #1722 out-of-scope) — never copy-in.
+                // The owned-vs-managed clone selection is congruent by
+                // construction: codegen's `collection_elem_clone_drop_syms` and
+                // the inner Vec's own constructor both consult
+                // `resolved_ty_element_owns_heap_for_owned_vec`, so the clone
+                // primitive can never disagree with the inner Vec's ABI.
+                match builtin {
+                    Some(BuiltinType::HashMap | BuiltinType::HashSet) => {
+                        return matches!(
+                            self.registry.rc_free_status(elem_ty),
+                            RcFreeStatus::RcFree
+                        );
+                    }
+                    Some(BuiltinType::Vec) => {
+                        if args
+                            .first()
+                            .is_some_and(|e| matches!(e, Ty::Function { .. } | Ty::Closure { .. }))
+                        {
+                            return false;
+                        }
+                        return matches!(
+                            self.registry.rc_free_status(elem_ty),
+                            RcFreeStatus::RcFree
+                        );
+                    }
+                    // Other builtin nominals (Rc/Option/Result/handles) are not
+                    // user records/enums and have no owned-Vec thunk path.
+                    Some(_) => return false,
+                    // User-defined record/enum: fall through to the logic below.
+                    None => {}
                 }
                 let Some(type_def) = self.type_defs.get(name) else {
                     return false;

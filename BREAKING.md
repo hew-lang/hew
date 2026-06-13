@@ -4,12 +4,12 @@
 
 Hew is entering the v0.5 compiler-foundation cutover. The goal is a clean,
 typed intermediate-representation stack — Resolved HIR → THIR → Raw MIR —
-that replaces the current MLIRGen walker and the wrapper-shape registry that
+that replaces the legacy codegen walker and the wrapper-shape registry that
 grew up around it.
 
 v0.5 prioritises landing that new foundation correctly. It does **not**
 prioritise keeping the v0.4 internal surfaces stable. Any code that drives
-the MLIRGen walker, the wrapper-shape registry, or the `expr_types`-keyed
+the legacy codegen walker, the wrapper-shape registry, or the `expr_types`-keyed
 ownership side tables should be treated as transitional until the cutover
 steps that replace those surfaces have landed.
 
@@ -23,7 +23,7 @@ The compiler-foundation reference document is
 The following categories of change are **frozen on `main`** until the
 corresponding cutover step lands:
 
-1. **No new structural MLIRGen walker patches** unless the change qualifies
+1. **No new structural patches to the legacy codegen walker** unless the change qualifies
    as a bridge fix under the criteria below.
 
 2. **No new wrapper-shape registry expansions.** Adding entries to the

@@ -7,6 +7,7 @@
 #   bin/hew           — compiler driver (Rust + LLVM via inkwell)
 #   bin/adze          — package manager
 #   bin/hew-lsp       — Language Server Protocol server
+#   bin/hew-observe   — actor observer TUI
 #   lib/libhew.a      — combined runtime + stdlib static library
 #   std/              — standard library sources
 #   completions/      — shell completions (bash, zsh, fish), generated at build time
@@ -245,20 +246,23 @@ jobs:
 
       # ── Rust builds ─────────────────────────────────────────────────────
 
-      - name: Build hew, adze, and hew-lsp
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
+      - name: Build hew, adze, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
 
-      - name: Smoke test hew-lsp (Unix)
+      - name: Smoke test hew-lsp and hew-observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
           ./target/${{ matrix.rust_target }}/release/hew-lsp --version
+          ./target/${{ matrix.rust_target }}/release/hew-observe --version
 
-      - name: Smoke test hew-lsp (Windows)
+      - name: Smoke test hew-lsp and hew-observe (Windows)
         if: startsWith(matrix.target, 'windows')
-        run: ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
+        run: |
+          ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
+          ./target/${{ matrix.rust_target }}/release/hew-observe.exe --version
 
       # ── Package archive ─────────────────────────────────────────────────
 
@@ -276,6 +280,7 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
+          cp "target/${{ matrix.rust_target }}/release/hew-observe"      "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
           # Combined runtime + stdlib library (flat path — universal fallback)
@@ -341,6 +346,7 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
+          Copy-Item "target/${{ matrix.rust_target }}/release/hew-observe.exe"        "${ArchiveName}/bin/"
           Copy-Item "${ReleaseDir}/hew.lib"                                      "${ArchiveName}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
@@ -418,13 +424,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-lsp; do
+          for bin in hew adze hew-lsp hew-observe; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-lsp; do
+          for bin in hew adze hew-lsp hew-observe; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -532,12 +538,26 @@ jobs:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp
 
+      - name: Upload hew-observe standalone (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: hew-observe-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-observe
+
       - name: Upload hew-lsp standalone (Windows)
         if: startsWith(matrix.target, 'windows')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
+
+      - name: Upload hew-observe standalone (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: hew-observe-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-observe.exe
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux build — glibc baseline artifacts built inside Ubuntu 22.04
@@ -606,8 +626,8 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
-      - name: Build hew, adze, and hew-lsp
-        run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
+      - name: Build hew, adze, hew-lsp, and hew-observe
+        run: cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
@@ -618,6 +638,7 @@ jobs:
           "target/${{ matrix.rust_target }}/release/hew" --version
           "target/${{ matrix.rust_target }}/release/adze" --version
           "target/${{ matrix.rust_target }}/release/hew-lsp" --version
+          "target/${{ matrix.rust_target }}/release/hew-observe" --version
           test -f "target/${{ matrix.rust_target }}/release/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
@@ -637,6 +658,7 @@ jobs:
           cp "${RELEASE_DIR}/hew" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/adze" "${ARCHIVE_NAME}/bin/"
           cp "${RELEASE_DIR}/hew-lsp" "${ARCHIVE_NAME}/bin/"
+          cp "${RELEASE_DIR}/hew-observe" "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
           cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
@@ -652,7 +674,7 @@ jobs:
 
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          for b in hew adze hew-lsp; do
+          for b in hew adze hew-lsp hew-observe; do
             strip "${ARCHIVE_NAME}/bin/${b}"
           done
 
@@ -691,6 +713,12 @@ jobs:
         with:
           name: hew-lsp-${{ matrix.target }}
           path: target/${{ matrix.rust_target }}/release/hew-lsp
+
+      - name: Upload hew-observe standalone
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: hew-observe-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-observe
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD build — x86_64 via QEMU VM (tier-2, continue-on-error)
@@ -763,7 +791,7 @@ jobs:
             # llvm-sys-221 discovers LLVM via this variable; the source-built
             # prefix is not on PATH inside the VM.
             export LLVM_SYS_221_PREFIX="${LLVM_PREFIX}"
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
             # ── Package archive ────────────────────────────────────────────
@@ -776,6 +804,7 @@ jobs:
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
             cp target/release/adze          "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
+            cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
             # Combined runtime + stdlib library
@@ -796,7 +825,7 @@ jobs:
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
             # existing files must still fail the job.
-            for b in hew adze hew-lsp; do
+            for b in hew adze hew-lsp hew-observe; do
               bin="${ARCHIVE_NAME}/bin/${b}"
               if [[ -f "${bin}" ]]; then
                 strip "${bin}"

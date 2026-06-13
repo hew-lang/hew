@@ -217,7 +217,7 @@ impl RequestMethods for Request {
     /// Send a full HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond(req: Request, status: i64, content_type: string, body: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond(); call FFI
-        //   directly to preserve the arith.trunci that MLIR verification requires.
+        //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond(status, content_type, body);
         let n = unsafe {
@@ -232,7 +232,7 @@ impl RequestMethods for Request {
     /// Send a plain-text HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_text(req: Request, status: i64, body: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_text(); call FFI
-        //   directly to preserve the arith.trunci that MLIR verification requires.
+        //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_text(status, body);
         let n = unsafe {
@@ -247,7 +247,7 @@ impl RequestMethods for Request {
     /// Send a JSON HTTP response; returns Err(IoError::Other(0)) on failure.
     fn try_respond_json(req: Request, status: i64, json: string) -> Result<i64, fs.IoError> {
         // SHIM: WHY — codegen drops the `as i32` cast when inlining through respond_json(); call FFI
-        //   directly to preserve the arith.trunci that MLIR verification requires.
+        //   directly to preserve the i32 truncation the FFI signature requires.
         // WHEN — remove when codegen correctly propagates explicit casts through method-call inlining.
         // WHAT — restore to: let n = req.respond_json(status, json);
         let n = unsafe {

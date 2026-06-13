@@ -16,8 +16,8 @@ use crate::ty::Ty;
 /// The canonical type descriptor that crosses every layer of the v0.5 IR ladder.
 ///
 /// This is a type alias, not a separate type. There is exactly one
-/// representation: [`ResolvedTy`]. Downstream consumers (codegen, wire codecs,
-/// MLIR dialect emitter) consume this alias so that the authority is clear
+/// representation: [`ResolvedTy`]. Downstream consumers (codegen, wire codecs)
+/// consume this alias so that the authority is clear
 /// without forking the type.
 pub type TypeDescriptor = ResolvedTy;
 

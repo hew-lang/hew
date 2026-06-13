@@ -14,6 +14,7 @@ mod ui;
 
 use std::fmt;
 use std::io;
+use std::io::IsTerminal as _;
 use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -311,6 +312,14 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if !std::io::stdout().is_terminal() {
+        eprintln!(
+            "error: hew-observe requires a terminal (stdout is not a TTY); \
+             use the HTTP endpoints directly in non-interactive contexts."
+        );
+        std::process::exit(1);
+    }
 
     enable_raw_mode().expect("failed to enable raw mode");
     io::stdout()

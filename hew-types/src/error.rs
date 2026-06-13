@@ -467,7 +467,7 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
-    /// `#[on(upgrade)]` is parsed but rejected until the runtime invokes it.
+    /// `#[on(upgrade)]` is parsed but rejected: it is reserved and not supported.
     OnUpgradeNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,

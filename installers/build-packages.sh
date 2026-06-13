@@ -169,8 +169,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-lib (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-lib --release
+    info "cargo" "hew-cli adze-cli hew-lsp hew-observe hew-lib (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe -p hew-lib --release
 
     step "Assembling tarball"
     local staging_root="${DIST_DIR}/.staging-$$"
@@ -178,7 +178,7 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-    for bin in hew adze hew-lsp; do
+    for bin in hew adze hew-lsp hew-observe; do
         if [[ -f "${REPO_DIR}/target/release/${bin}" ]]; then
             cp "${REPO_DIR}/target/release/${bin}" "${staging}/bin/"
             chmod +x "${staging}/bin/${bin}"
@@ -440,7 +440,7 @@ build_alpine() {
         info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-lib)
+                -p hew-cli -p adze-cli -p hew-lsp -p hew-observe -p hew-lib)
 
         # Assemble Alpine tarball
         local staging_root="${DIST_DIR}/.alpine-staging-$$"
@@ -449,7 +449,7 @@ build_alpine() {
         mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
         local musl_release="${REPO_DIR}/target/${musl_target}/release"
-        for bin in hew adze hew-lsp; do
+        for bin in hew adze hew-lsp hew-observe; do
             if [[ -f "${musl_release}/${bin}" ]]; then
                 cp "${musl_release}/${bin}" "${staging}/bin/"
                 chmod +x "${staging}/bin/${bin}"
@@ -580,6 +580,7 @@ RUN apk add --no-cache \
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
+COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 ENV HEW_STD=/usr/local/share/hew/std

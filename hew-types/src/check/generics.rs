@@ -452,7 +452,7 @@ impl Checker {
             // guard in `record_concrete_call_type_args` (calls.rs) ensures that
             // any entry that still carries an inference var is also excluded from
             // the codegen `call_type_args` output, preventing unresolved holes
-            // from reaching the C++ MLIR generator. `drain_deferred_bound_checks`
+            // from reaching the codegen backend. `drain_deferred_bound_checks`
             // revisits the deferred entry once post-inference defaulting settles.
             if resolved_arg.has_inference_var() {
                 self.deferred_bound_checks.push(DeferredBoundCheck {

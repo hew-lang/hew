@@ -45,6 +45,7 @@
 #   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
+#   make test-real-timing  — serialized real wall-clock / OS-timing quarantine tests (narrow)
 #   make test-lane CRATE=<crate> — fast in-process tier for one crate (lane iteration)
 #   make test-lane-all          — fast in-process tier for the whole workspace
 #   make test-hew          — run Hew test files (std/ *_test.hew)
@@ -59,7 +60,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -566,6 +567,18 @@ test-runtime-net:
 # Run `cargo test -p hew-runtime` for the full suite including QUIC, TLS, and profiler paths.
 test-runtime-unit:
 	cargo nextest run --profile ci -p hew-runtime --no-default-features
+
+# Real-timing quarantine gate: the genuinely-real wall-clock / OS-timing tests
+# (SIGKILL delivery to a process group + the two-process loopback ask) that run
+# serialized in the `real-timing` nextest group (max-threads = 1; see
+# .config/nextest.toml) and are kept off the lane/smoke fast tiers.  Scoped to the
+# owning crates so the gate stays prompt.  Keep this selector in sync with the
+# `real-timing` group membership in .config/nextest.toml.
+test-real-timing:
+	cargo nextest run --profile ci \
+		-p hew-cli \
+		-p hew-runtime \
+		-E 'test(bounded_child_timeout_kills_grandchild_process_group) or test(two_process_remote_ask_echo_double_returns_42) or test(remote_ask_two_process_echo_client_helper)'
 
 # ── Lane-iteration tier ──────────────────────────────────────────────────────
 # Fast in-process tests only — exec/e2e corpus excluded (see profile.lane in

@@ -23,6 +23,16 @@ unsafe extern "C-unwind" fn noop_dispatch(
     std::ptr::null_mut()
 }
 
+/// Spawning an actor (or a supervisor child) records it in the runtime-owned
+/// live-actor registry, which resolves through `rt_current()` and fails closed
+/// when no runtime is installed. `hew_sched_init` installs the process-wide
+/// default runtime and is idempotent (a second call is a no-op), so each test
+/// calls this first. The runtime is intentionally never torn down — it persists
+/// for the whole test binary, shared across tests.
+fn ensure_runtime() {
+    hew_runtime::scheduler::hew_sched_init();
+}
+
 fn spawn_with_cycle_flag(cycle_capable: i32) -> *mut hew_runtime::actor::HewActor {
     let opts = HewActorOpts {
         init_state: ptr::null_mut(),
@@ -42,6 +52,7 @@ fn spawn_with_cycle_flag(cycle_capable: i32) -> *mut hew_runtime::actor::HewActo
 
 #[test]
 fn spawn_opts_accepts_nonzero_cycle_capable_bit() {
+    ensure_runtime();
     let actor = spawn_with_cycle_flag(1);
     assert!(!actor.is_null(), "cycle-capable spawn opts should succeed");
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -49,6 +60,7 @@ fn spawn_opts_accepts_nonzero_cycle_capable_bit() {
 
 #[test]
 fn spawn_opts_accepts_zero_cycle_capable_default() {
+    ensure_runtime();
     let actor = spawn_with_cycle_flag(0);
     assert!(!actor.is_null(), "non-cycle spawn opts should succeed");
     assert_eq!(unsafe { hew_actor_free(actor) }, 0);
@@ -56,6 +68,7 @@ fn spawn_opts_accepts_zero_cycle_capable_default() {
 
 #[test]
 fn supervisor_child_spec_accepts_cycle_capable_bit() {
+    ensure_runtime();
     let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 1) };
     assert!(!sup.is_null(), "supervisor allocation should succeed");
 

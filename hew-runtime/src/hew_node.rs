@@ -4284,6 +4284,11 @@ mod tests {
 
     #[test]
     fn test_node_unregister() {
+        // `hew_node_new` records the node in the runtime-owned node slot, which
+        // resolves through `rt_current()` and fails closed when no runtime is
+        // installed; the guard installs the worker-less default runtime.
+        let _guard = crate::runtime_test_guard();
+
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(50, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
@@ -4325,6 +4330,11 @@ mod tests {
     /// string for the second actor succeeds (the refusal is per-name).
     #[test]
     fn register_same_name_different_actor_fails_closed_with_diagnostic() {
+        // `hew_node_new` records the node in the runtime-owned node slot, which
+        // resolves through `rt_current()` and fails closed when no runtime is
+        // installed; the guard installs the worker-less default runtime.
+        let _guard = crate::runtime_test_guard();
+
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(51, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());

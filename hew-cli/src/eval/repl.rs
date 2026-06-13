@@ -1703,16 +1703,20 @@ Commands:
   :help, :h         Show this help message
   :session, :show   Summarize remembered session state
   :items            List remembered top-level items
-  :bindings         List persistent let/var bindings
+  :bindings         List remembered let/var bindings
   :quit, :q         Exit the REPL
   :clear, :reset    Reset session (clear all definitions)
   :type <expr>      Show the inferred type of an expression
   :load <file>      Load a .hew file into the session
 
 Input types:
-  fn, struct, ...   Top-level items are remembered across evaluations
-  let x = ...;      Bindings persist in the session
+  fn, struct, ...   Top-level items are remembered for the session
+  let x = ...;      let/var bindings are remembered for the session
   <expression>      Bare expressions are evaluated and printed
+
+This is a lightweight evaluator, not a stateful interpreter: reassignments
+and in-place mutations are not carried across inputs. For a multi-statement
+program, use `hew eval -f <file>` or `hew run`.
 "
 }
 

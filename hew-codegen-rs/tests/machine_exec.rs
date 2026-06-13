@@ -323,18 +323,44 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
     }
 }
 
-#[test]
-fn run_machine_fixtures_execute_with_expected_stdout() {
+/// Build and run a single machine fixture by its `FIXTURES` stem, asserting the
+/// prebuilt binary's stdout matches the committed `.expected` oracle. Driving
+/// each per-fixture `#[test]` through this keeps `FIXTURES` the single source of
+/// truth and isolates a contention retry to the one unlucky fixture rather than
+/// the whole set.
+fn execute_fixture(stem: &str) {
     let repo = repo_root();
-    for fixture in FIXTURES {
-        let path = fixture_path(&repo, fixture.stem);
-        let expected_path = path.with_extension("expected");
-        let expected = std::fs::read_to_string(&expected_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
+    let fixture = FIXTURES
+        .iter()
+        .find(|fixture| fixture.stem == stem)
+        .unwrap_or_else(|| panic!("no FIXTURES entry for stem `{stem}`"));
+    let path = fixture_path(&repo, fixture.stem);
+    let expected_path = path.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
 
-        let (_build_dir, bin) = build_fixture_binary(&repo, &path, fixture.stem);
-        run_prebuilt(&bin, &format!("run {} fixture", fixture.stem), &expected);
-    }
+    let (_build_dir, bin) = build_fixture_binary(&repo, &path, fixture.stem);
+    run_prebuilt(&bin, &format!("run {} fixture", fixture.stem), &expected);
+}
+
+#[test]
+fn traffic_light_executes_with_expected_stdout() {
+    execute_fixture("run_traffic_light");
+}
+
+#[test]
+fn tcp_handshake_executes_with_expected_stdout() {
+    execute_fixture("run_tcp_handshake");
+}
+
+#[test]
+fn default_stay_executes_with_expected_stdout() {
+    execute_fixture("run_default_stay");
+}
+
+#[test]
+fn connection_lifecycle_executes_with_expected_stdout() {
+    execute_fixture("run_connection_lifecycle");
 }
 
 #[test]

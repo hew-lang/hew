@@ -1,0 +1,49 @@
+// Regression guard: supervised actor with init() block (issue #382 Bug 1).
+//
+// Before the fix: restart_child_from_spec -> hew_actor_spawn_opts ->
+// build_spawned_actor (actor.rs) did not initialise the child actor's
+// mailbox. A supervised child with an `init()` block would SIGSEGV on
+// the first dispatch because the mailbox pointer was uninitialised.
+//
+// After the fix: build_spawned_actor receives a fully-constructed mailbox
+// from hew_actor_spawn_opts before the actor enters the scheduler.
+// Worker__init (the ActorHandler-ABI symbol emitted for the init() block)
+// fires via the spawn-lifecycle path without crashing.
+//
+// The supervisor passes `value: 42` via HewChildSpec.init_state. The
+// init() block exercises the Worker__init codegen symbol; after the
+// dispatch the actor holds value = 42.
+//
+// Exit code 42 proves:
+//   1. The supervisor bootstrapped (hew_supervisor_new + add_child_spec +
+//      hew_supervisor_start) without aborting.
+//   2. sup.w1 returned a Live handle (tag=0 from hew_supervisor_child_get).
+//   3. The init() dispatch ran and the actor replied correctly.
+actor Worker {
+    var value: i64;
+    init(value: i64) {
+
+        // The init() block generates Worker__init in codegen.
+        // Supervisor sets value = 42 via HewChildSpec.init_state; the
+        // init dispatch fires the ActorHandler path on the fresh mailbox.
+    }
+    receive fn get_value() -> i64 {
+        value
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: Worker(value: 42);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w1;
+    match await w.get_value() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

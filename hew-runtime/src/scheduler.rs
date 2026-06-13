@@ -20,7 +20,12 @@
 
 use std::ffi::{c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+// `AtomicPtr` is used only by test-only code: the `SCHED_TEST_DRAIN_PTR`
+// handshake and the in-module `HewActor` test literals. The default-runtime
+// slot itself now lives in `crate::runtime`.
+#[cfg(test)]
+use std::sync::atomic::AtomicPtr;
 use std::sync::{Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -186,30 +191,26 @@ fn restore_current_context_after_dispatch() {
 
 // ── Global scheduler instance ───────────────────────────────────────────
 
-/// Global scheduler pointer. Initialized once by `hew_sched_init()`,
-/// freed by `hew_runtime_cleanup()`. Using `AtomicPtr` instead of
-/// `OnceLock` allows the scheduler to be dropped on shutdown, freeing
-/// the crossbeam deques, parkers, and stealer handles.
-static SCHEDULER: AtomicPtr<Scheduler> = AtomicPtr::new(std::ptr::null_mut());
+use crate::runtime::{self, RuntimeInner};
 
 /// Test-only drain handshake for [`NoWorkerSchedulerForTest`].
 ///
-/// `SCHED_TEST_DRAIN_PTR` holds the transient, worker-less scheduler currently
-/// installed by the guard (or null when none is installed).
+/// `SCHED_TEST_DRAIN_PTR` holds the transient, worker-less default runtime
+/// currently installed by the guard (or null when none is installed).
 /// `SCHED_TEST_DRAIN_COUNT` is the number of worker threads currently executing
 /// the body of [`worker_loop`] while bound to that transient.
 ///
 /// A late-starting worker from a prior `hew_sched_init` can cache the transient
 /// pointer during the install window; the guard's `Drop` must not free the
 /// transient while such a worker is mid-iteration. Workers register in the
-/// counter (and re-check the global `SCHEDULER` pointer) before touching any
+/// counter (and re-check the default-runtime pointer) before touching any
 /// scheduler field; `Drop` spins until the counter reaches zero before freeing.
 /// Both statics live for the lifetime of the process and are never freed, so the
-/// handshake itself is memory-safe even as the transient scheduler is torn down.
+/// handshake itself is memory-safe even as the transient runtime is torn down.
 /// In non-test builds none of this is compiled, so the production hot path is
 /// unaffected.
 #[cfg(test)]
-static SCHED_TEST_DRAIN_PTR: AtomicPtr<Scheduler> = AtomicPtr::new(std::ptr::null_mut());
+static SCHED_TEST_DRAIN_PTR: AtomicPtr<RuntimeInner> = AtomicPtr::new(std::ptr::null_mut());
 
 #[cfg(test)]
 static SCHED_TEST_DRAIN_COUNT: std::sync::atomic::AtomicUsize =
@@ -227,7 +228,7 @@ impl Drop for SchedDrainGuard {
     }
 }
 
-/// Get a reference to the global scheduler, if initialized.
+/// Get a reference to the default runtime's scheduler, if initialized.
 ///
 /// # Safety
 ///
@@ -235,15 +236,9 @@ impl Drop for SchedDrainGuard {
 /// has not been called. Since cleanup only runs after all worker
 /// threads have been joined, this is safe for all normal use.
 fn get_scheduler() -> Option<&'static Scheduler> {
-    let ptr = SCHEDULER.load(Ordering::Acquire);
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: Non-null means hew_sched_init set it, and the
-        // scheduler remains valid until hew_runtime_cleanup frees it
-        // (which only happens after all workers are joined).
-        Some(unsafe { &*ptr })
-    }
+    // The scheduler now lives in the default `RuntimeInner`; its lifetime is
+    // the runtime's, freed by `hew_runtime_cleanup` after workers are joined.
+    runtime::rt_default().map(|rt| &rt.scheduler)
 }
 
 /// Return `true` when the native scheduler has no observable work left to drain.
@@ -274,7 +269,7 @@ pub(crate) fn drain_is_idle() -> bool {
 ///
 /// Worker thread handles are stored behind a `PoisonSafe` so they can be
 /// `take`-n during shutdown (`JoinHandle` is `Send` but not `Sync`).
-struct Scheduler {
+pub(crate) struct Scheduler {
     // native-only: worker_handles are OS JoinHandles; no WASM scheduler thread model
     worker_handles: PoisonSafe<Vec<Option<JoinHandle<()>>>>,
     global_queue: GlobalQueue,
@@ -398,25 +393,14 @@ pub extern "C" fn hew_sched_init() -> c_int {
         worker_count,
     });
 
-    // Store via CAS; second calls are harmless no-ops.
-    // NOTE: The scheduler is visible to concurrent callers from this point,
+    // Install via CAS; second calls are harmless no-ops.
+    // NOTE: The runtime is visible to concurrent callers from this point,
     // but workers are not yet spawned. A concurrent `hew_sched_init` will
     // return 0 (no-op) even if this thread later fails to spawn workers and
     // tears down. This is acceptable because init is expected to run once
     // from the main thread before any actor work begins.
-    let ptr = Box::into_raw(scheduler);
-    if SCHEDULER
-        .compare_exchange(
-            std::ptr::null_mut(),
-            ptr,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_err()
-    {
-        // Another thread beat us — drop ours.
-        // SAFETY: We just allocated this Box.
-        drop(unsafe { Box::from_raw(ptr) });
+    if !runtime::install_default(Box::new(RuntimeInner::new(*scheduler))) {
+        // Another thread beat us — `install_default` already dropped ours.
         return 0;
     }
 
@@ -485,17 +469,23 @@ pub extern "C" fn hew_sched_init() -> c_int {
     0
 }
 
-/// Signal, wake, and join scheduler workers, optionally detaching the
-/// scheduler from the global pointer for caller-controlled final drop.
+/// Signal, wake, and join scheduler workers, optionally detaching the owning
+/// default runtime from its slot for caller-controlled final drop.
 ///
 /// When `handles` is `None`, the worker-handle list is swapped out of the
 /// scheduler mutex before joining so no lock is held across the
 /// potentially-unbounded `join()` calls.
+///
+/// When `take_scheduler` is true, the default `RuntimeInner` is detached from
+/// its slot and returned to the caller, who drops it last (dropping the
+/// scheduler — deques, parkers, stealers — as the final teardown step). The
+/// scheduler is owned by the runtime, so detaching the runtime is what frees
+/// the scheduler.
 fn teardown_workers(
     scheduler: Option<*const Scheduler>,
     handles: Option<Vec<Option<JoinHandle<()>>>>,
     take_scheduler: bool,
-) -> Option<Box<Scheduler>> {
+) -> Option<Box<RuntimeInner>> {
     // Take a raw pointer (not `&'static Scheduler`): a reference argument is
     // strongly protected for the whole call, and the `take_scheduler` branch
     // below `Box::from_raw`-frees this same allocation. Freeing strongly-protected
@@ -536,20 +526,16 @@ fn teardown_workers(
         return None;
     }
 
-    let ptr = SCHEDULER.swap(std::ptr::null_mut(), Ordering::AcqRel);
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: The pointer was installed by `hew_sched_init`, and worker
-        // teardown above ensures no thread can still access it.
-        Some(unsafe { Box::from_raw(ptr) })
-    }
+    // Detach the owning runtime from its slot. Worker teardown above ensures no
+    // thread can still access it; the caller drops the runtime last so the
+    // scheduler's deques/parkers/stealers free as the final step.
+    runtime::take_default()
 }
 
 /// Clean up after a worker spawn failure during initialisation.
 ///
-/// Signals shutdown, joins all successfully-spawned workers, then removes
-/// and drops the scheduler from the global pointer.
+/// Signals shutdown, joins all successfully-spawned workers, then detaches and
+/// drops the default runtime (freeing its scheduler).
 fn teardown_after_spawn_failure(handles: Vec<Option<JoinHandle<()>>>) {
     drop(teardown_workers(
         get_scheduler().map(|s| s as *const Scheduler),
@@ -606,9 +592,10 @@ pub extern "C" fn hew_runtime_cleanup() {
     // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
     unsafe { crate::timer_periodic::hew_periodic_shutdown() };
 
-    // Detach the scheduler from the global pointer and join any lingering
-    // workers before freeing actor/timer state they might still reference.
-    let scheduler = teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, true);
+    // Detach the default runtime from its slot and join any lingering workers
+    // before freeing actor/timer state they might still reference. Dropping the
+    // runtime (below) frees its scheduler.
+    let runtime = teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, true);
 
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
@@ -631,8 +618,9 @@ pub extern "C" fn hew_runtime_cleanup() {
     //       and needs teardown alongside the other native registry state.
     // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
 
-    // Free the scheduler itself (deques, parkers, stealers, global queue).
-    drop(scheduler);
+    // Free the runtime itself — dropping it frees the scheduler (deques,
+    // parkers, stealers, global queue) as the final teardown step.
+    drop(runtime);
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -769,17 +757,17 @@ pub fn sched_try_wake() {
 
 /// Main loop executed by each worker thread.
 fn worker_loop(id: usize, local: &WorkDeque) {
-    // Production invariant: the global SCHEDULER pointer never changes after
+    // Production invariant: the default runtime pointer never changes after
     // hew_sched_init, so a missing scheduler here is a hard logic error — keep
     // the loud panic (the same contract as before this fix).
     let sched = get_scheduler().expect("scheduler not initialized");
-    // In test builds, capture the raw pointer this worker is bound to. The
-    // NoWorkerSchedulerForTest harness can swap SCHEDULER out from under a
-    // late-starting worker; the per-iteration check below detects that swap and
-    // drains cleanly before any freed pointer is dereferenced. See
-    // NoWorkerSchedulerForTest::Drop for the matching spin-until-zero drain.
+    // In test builds, capture the raw default-runtime pointer this worker is
+    // bound to. The NoWorkerSchedulerForTest harness can swap the runtime out
+    // from under a late-starting worker; the per-iteration check below detects
+    // that swap and drains cleanly before any freed pointer is dereferenced.
+    // See NoWorkerSchedulerForTest::Drop for the matching spin-until-zero drain.
     #[cfg(test)]
-    let sched_raw: *mut Scheduler = (sched as *const Scheduler).cast_mut();
+    let rt_raw: *mut RuntimeInner = runtime::default_runtime_ptr(Ordering::Relaxed);
     let mut rng = Xorshift64::new(crate::deterministic::effective_worker_seed(id as u64));
     crate::observe::set_current_worker_shard(id);
 
@@ -791,32 +779,32 @@ fn worker_loop(id: usize, local: &WorkDeque) {
     crate::signal::init_worker_recovery(id as u32);
 
     loop {
-        // Test-only drain handshake. In production SCHEDULER is never swapped
-        // during a worker's lifetime, so this entire block is compiled away
-        // with zero hot-path overhead.
+        // Test-only drain handshake. In production the default-runtime pointer
+        // is never swapped during a worker's lifetime, so this entire block is
+        // compiled away with zero hot-path overhead.
         #[cfg(test)]
         let _drain = {
-            // Fast path: if the global pointer no longer matches the one this
-            // worker bound to (NoWorkerSchedulerForTest::install/Drop swapped
-            // it), exit before touching any scheduler field.
-            if SCHEDULER.load(Ordering::Relaxed) != sched_raw {
+            // Fast path: if the default-runtime pointer no longer matches the
+            // one this worker bound to (NoWorkerSchedulerForTest::install/Drop
+            // swapped it), exit before touching any scheduler field.
+            if runtime::default_runtime_ptr(Ordering::Relaxed) != rt_raw {
                 break;
             }
-            // If we are bound to the installed transient scheduler, register in
+            // If we are bound to the installed transient runtime, register in
             // the process-static drain counter so the guard's Drop defers the
             // free until we leave the loop body. The statics are never freed, so
-            // this registration is memory-safe even though `sched` may be the
-            // transient about to be torn down.
-            if SCHED_TEST_DRAIN_PTR.load(Ordering::SeqCst) == sched_raw {
+            // this registration is memory-safe even though `sched` may belong to
+            // the transient about to be torn down.
+            if SCHED_TEST_DRAIN_PTR.load(Ordering::SeqCst) == rt_raw {
                 SCHED_TEST_DRAIN_COUNT.fetch_add(1, Ordering::SeqCst);
-                // Re-read SCHEDULER *after* the increment. This SeqCst load
-                // pairs with the SeqCst swap + counter load in Drop: if Drop
+                // Re-read the runtime pointer *after* the increment. This SeqCst
+                // load pairs with the SeqCst swap + counter load in Drop: if Drop
                 // already swapped the transient out, back out (decrement) and
                 // exit before dereferencing `sched`. The total-order guarantee
                 // makes it impossible for both this load to miss the swap and
                 // Drop's spin to miss our increment, so a worker still inside
                 // the body is always reflected in the counter Drop waits on.
-                if SCHEDULER.load(Ordering::SeqCst) != sched_raw {
+                if runtime::default_runtime_ptr(Ordering::SeqCst) != rt_raw {
                     SCHED_TEST_DRAIN_COUNT.fetch_sub(1, Ordering::SeqCst);
                     break;
                 }
@@ -2026,6 +2014,30 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
 #[cfg(test)]
 pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Box `sched` inside a default `RuntimeInner` and install it in the runtime
+/// slot, returning the raw `RuntimeInner` pointer the test owns.
+///
+/// Tests must hold [`SCHED_TEST_MUTEX`] across install + teardown so the slot
+/// is not raced. Teardown detaches via [`take_default_runtime_for_test`].
+#[cfg(test)]
+fn install_scheduler_for_test(sched: Scheduler) -> *mut RuntimeInner {
+    let rt_ptr = Box::into_raw(Box::new(RuntimeInner::new(sched)));
+    runtime::test_store_default(rt_ptr);
+    rt_ptr
+}
+
+/// Detach and drop the default runtime installed by a test (no-op if absent).
+#[cfg(test)]
+fn take_default_runtime_for_test() {
+    let ptr = runtime::test_swap_default(std::ptr::null_mut());
+    if !ptr.is_null() {
+        // SAFETY: installed by `install_scheduler_for_test` via Box::into_raw;
+        // the test holds SCHED_TEST_MUTEX so no other thread can free it, and
+        // any worker spawned by the test has been joined before teardown.
+        drop(unsafe { Box::from_raw(ptr) });
+    }
+}
+
 /// Guard that installs a worker-less scheduler for the duration of a test and
 /// removes + frees it on drop.
 ///
@@ -2049,16 +2061,17 @@ pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new
 /// touching the production hot path.
 #[cfg(test)]
 pub(crate) struct NoWorkerSchedulerForTest {
-    previous: *mut Scheduler,
-    // Held for the guard's lifetime so the installed scheduler cannot race the
+    previous: *mut RuntimeInner,
+    // Held for the guard's lifetime so the installed runtime cannot race the
     // module-level scheduler tests (or another worker-less install) on the
-    // global `SCHEDULER` pointer. Dropped after the scheduler is restored.
+    // default-runtime pointer. Dropped after the runtime is restored.
     _sched_lock: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
 impl NoWorkerSchedulerForTest {
-    /// Install a scheduler with a single global queue and no worker threads.
+    /// Install a runtime whose scheduler has a single global queue and no
+    /// worker threads.
     pub(crate) fn install() -> Self {
         let sched_lock = SCHED_TEST_MUTEX
             .lock()
@@ -2077,12 +2090,12 @@ impl NoWorkerSchedulerForTest {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        // Publish the transient pointer *before* the SCHEDULER swap so any
-        // worker that subsequently observes SCHEDULER == sched_ptr also sees a
+        let rt_ptr = Box::into_raw(Box::new(RuntimeInner::new(sched)));
+        // Publish the transient pointer *before* the runtime swap so any worker
+        // that subsequently observes the default runtime == rt_ptr also sees a
         // matching SCHED_TEST_DRAIN_PTR and registers in the drain counter.
-        SCHED_TEST_DRAIN_PTR.store(sched_ptr, Ordering::SeqCst);
-        let previous = SCHEDULER.swap(sched_ptr, Ordering::SeqCst);
+        SCHED_TEST_DRAIN_PTR.store(rt_ptr, Ordering::SeqCst);
+        let previous = runtime::test_swap_default(rt_ptr);
         Self {
             previous,
             _sched_lock: sched_lock,
@@ -2120,25 +2133,26 @@ impl NoWorkerSchedulerForTest {
 #[cfg(test)]
 impl Drop for NoWorkerSchedulerForTest {
     fn drop(&mut self) {
-        let ptr = SCHEDULER.swap(self.previous, Ordering::SeqCst);
+        let ptr = runtime::test_swap_default(self.previous);
         if !ptr.is_null() {
             // SAFETY: `ptr` was allocated by `install` via Box::into_raw and has
             // not been freed yet (Drop runs once, under SCHED_TEST_MUTEX).
             let installed = unsafe { &*ptr };
             // Tell any worker bound to this transient to stop, and wake parked
             // ones so they re-check promptly rather than waiting out PARK_TIMEOUT.
-            installed.shutdown.store(true, Ordering::Release);
-            for parker in &installed.parkers {
+            installed.scheduler.shutdown.store(true, Ordering::Release);
+            for parker in &installed.scheduler.parkers {
                 parker.cond.notify_all();
             }
             // Deterministic drain (replaces the old timing-based sleep): spin
             // until every worker that entered the loop body bound to this
             // transient has left it (counter == 0). The SeqCst swap above pairs
-            // with each worker's post-increment SCHEDULER re-read, so any worker
-            // still inside the body is already counted here. After the swap no
-            // new worker can enter (they fail the pointer check at the loop top),
-            // so the counter only decreases — the spin is bounded by the longest
-            // single in-flight loop-body iteration, independent of system load.
+            // with each worker's post-increment runtime-pointer re-read, so any
+            // worker still inside the body is already counted here. After the
+            // swap no new worker can enter (they fail the pointer check at the
+            // loop top), so the counter only decreases — the spin is bounded by
+            // the longest single in-flight loop-body iteration, independent of
+            // system load.
             //
             // The drain is unconditional and cheap: with no late worker bound to
             // this transient the counter is already zero and the spin exits
@@ -3747,6 +3761,107 @@ mod tests {
         );
     }
 
+    /// Build a worker-less scheduler suitable for deterministic lifecycle tests.
+    fn worker_less_scheduler_for_test() -> Scheduler {
+        Scheduler {
+            worker_count: 1,
+            parkers: vec![Parker {
+                mutex: Mutex::new(()),
+                cond: Condvar::new(),
+            }],
+            stealers: Vec::new(),
+            worker_handles: PoisonSafe::new(Vec::new()),
+            // SAFETY: single-threaded test setup with scheduler-owned queue state.
+            global_queue: unsafe { crate::deque::GlobalQueue::new() },
+            shutdown: AtomicBool::new(false),
+        }
+    }
+
+    /// Drop-order / release-count oracle for the M1 de-globalization: the
+    /// default runtime is detached from its slot *before* it is freed, and it
+    /// is freed exactly once on cleanup. A leak detector running green is
+    /// non-evidence for this (thread-backed handle leaks are invisible to it);
+    /// the honest oracle is the exact `RUNTIME_INNER_DROPS` count below.
+    #[test]
+    fn default_runtime_detaches_before_free_and_drops_exactly_once() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+        let _rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
+
+        // While installed, nothing has been freed.
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before,
+            "installing the runtime must not free anything"
+        );
+
+        // Detach: the slot is cleared, but the box is still alive (not yet freed)
+        // — proving the free is driven by the explicit drop, never by the slot.
+        let taken = runtime::take_default().expect("a runtime was installed");
+        assert!(
+            runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "take_default must clear the slot before the runtime is freed"
+        );
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before,
+            "detaching the runtime from its slot must not free it"
+        );
+
+        // Explicit drop is the single free site — exactly once, never twice.
+        drop(taken);
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "the detached runtime must be freed exactly once on explicit drop"
+        );
+
+        // The slot is empty and a second teardown is a harmless no-op (no double
+        // free): take_default returns None and the drop count is unchanged.
+        assert!(runtime::take_default().is_none());
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "a second teardown of an empty slot must not free anything"
+        );
+    }
+
+    /// A second `install_default` is a harmless no-op that frees the rejected
+    /// runtime exactly once (the "second `hew_sched_init` is a no-op" contract):
+    /// no leak of the loser, no displacement of the installed runtime.
+    #[test]
+    fn second_install_is_noop_and_frees_the_rejected_runtime_once() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let first = install_scheduler_for_test(worker_less_scheduler_for_test());
+        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+
+        // Attempt to install a second runtime: rejected (slot occupied).
+        let installed = runtime::install_default(Box::new(RuntimeInner::new(
+            worker_less_scheduler_for_test(),
+        )));
+        assert!(!installed, "second install must be rejected");
+        // The rejected runtime is freed immediately, exactly once.
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "install_default must free the rejected runtime exactly once"
+        );
+        // The originally-installed runtime is still the one in the slot.
+        assert_eq!(
+            runtime::default_runtime_ptr(Ordering::SeqCst),
+            first,
+            "second install must not displace the installed runtime"
+        );
+
+        take_default_runtime_for_test();
+    }
+
     #[test]
     fn spawn_failure_teardown_joins_partial_worker_set_and_drops_scheduler() {
         use std::sync::Arc;
@@ -3767,8 +3882,7 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let _rt_ptr = install_scheduler_for_test(sched);
 
         let exited = Arc::new(AtomicBool::new(false));
         let exited2 = Arc::clone(&exited);
@@ -3786,8 +3900,8 @@ mod tests {
             "spawn-failure teardown must join every spawned worker"
         );
         assert!(
-            SCHEDULER.load(Ordering::Acquire).is_null(),
-            "spawn-failure teardown must clear the global scheduler pointer"
+            runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+            "spawn-failure teardown must clear the default runtime pointer"
         );
     }
 
@@ -3817,8 +3931,7 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let _rt_ptr = install_scheduler_for_test(sched);
 
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let done = Arc::new(AtomicBool::new(false));
@@ -3837,8 +3950,7 @@ mod tests {
         // Insert the thread's handle into worker_handles so
         // hew_sched_shutdown will encounter it during the join loop.
         {
-            // SAFETY: sched_ptr was just allocated above and is valid.
-            let sched = unsafe { &*SCHEDULER.load(Ordering::Acquire) };
+            let sched = get_scheduler().expect("scheduler installed above");
             sched
                 .worker_handles
                 .access(|handles| handles.push(Some(handle)));
@@ -3856,13 +3968,8 @@ mod tests {
             "hew_sched_shutdown deadlocked on self-join"
         );
 
-        // Clean up the scheduler pointer.
-        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            // SAFETY: ptr was allocated with Box::into_raw above and no
-            // other thread references it after the swap.
-            drop(unsafe { Box::from_raw(ptr) });
-        }
+        // Clean up the default runtime.
+        take_default_runtime_for_test();
     }
 
     #[test]
@@ -3886,8 +3993,11 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let rt_ptr = install_scheduler_for_test(sched);
+        // Stable borrow of the installed scheduler for this test's field reads;
+        // valid until `take_default_runtime_for_test` frees the runtime below.
+        // SAFETY: `rt_ptr` is live for the whole test (held under SCHED_TEST_MUTEX).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
 
         let release_worker = Arc::new(AtomicBool::new(false));
         let release_worker2 = Arc::clone(&release_worker);
@@ -3896,7 +4006,7 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
         });
-        // SAFETY: sched_ptr was just allocated above and remains valid until cleanup below.
+        // SAFETY: sched_ptr borrows the installed runtime, valid until cleanup below.
         unsafe { &*sched_ptr }
             .worker_handles
             .access(|handles| handles.push(Some(handle)));
@@ -3952,11 +4062,7 @@ mod tests {
             .worker_handles
             .access(|handles| assert!(handles.is_empty()));
 
-        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
-            drop(unsafe { Box::from_raw(ptr) });
-        }
+        take_default_runtime_for_test();
     }
 
     #[test]
@@ -3988,8 +4094,11 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let rt_ptr = install_scheduler_for_test(sched);
+        // Stable borrow of the installed scheduler; valid until hew_runtime_cleanup
+        // detaches and drops the runtime below.
+        // SAFETY: `rt_ptr` is live until cleanup (held under SCHED_TEST_MUTEX).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
 
         let release_worker = Arc::new(AtomicBool::new(false));
         let release_worker2 = Arc::clone(&release_worker);
@@ -4001,7 +4110,7 @@ mod tests {
             }
             joined2.store(true, Ordering::Release);
         });
-        // SAFETY: sched_ptr was just allocated above and remains valid until runtime cleanup.
+        // SAFETY: sched_ptr borrows the installed runtime, valid until runtime cleanup.
         unsafe { &*sched_ptr }
             .worker_handles
             .access(|handles| handles.push(Some(handle)));
@@ -4031,8 +4140,8 @@ mod tests {
             "runtime cleanup must join any remaining worker handles"
         );
         assert!(
-            SCHEDULER.load(Ordering::Acquire).is_null(),
-            "runtime cleanup must clear the global scheduler pointer"
+            runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+            "runtime cleanup must clear the default runtime pointer"
         );
     }
 
@@ -4056,8 +4165,10 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let rt_ptr = install_scheduler_for_test(sched);
+        // Stable borrow of the installed scheduler; valid until teardown below.
+        // SAFETY: `rt_ptr` is live for the whole test (held under SCHED_TEST_MUTEX).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
 
         ACTIVE_WORKERS.store(0, Ordering::Release);
         assert!(
@@ -4104,11 +4215,7 @@ mod tests {
             "scheduler should report drained after work clears"
         );
 
-        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
-            drop(unsafe { Box::from_raw(ptr) });
-        }
+        take_default_runtime_for_test();
         ACTIVE_WORKERS.store(0, Ordering::Release);
     }
 
@@ -4153,8 +4260,10 @@ mod tests {
             global_queue: unsafe { crate::deque::GlobalQueue::new() },
             shutdown: AtomicBool::new(false),
         };
-        let sched_ptr = Box::into_raw(Box::new(sched));
-        SCHEDULER.store(sched_ptr, Ordering::Release);
+        let rt_ptr = install_scheduler_for_test(sched);
+        // Stable borrow of the installed scheduler; valid until teardown below.
+        // SAFETY: `rt_ptr` is live for the whole test (held under SCHED_TEST_MUTEX).
+        let sched_ptr: *const Scheduler = unsafe { &raw const (*rt_ptr).scheduler };
 
         // SAFETY: mailbox is created for this test and freed before exit.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
@@ -4233,11 +4342,7 @@ mod tests {
         // SAFETY: mailbox is owned by this test and no longer referenced after activation.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
 
-        let ptr = SCHEDULER.swap(ptr::null_mut(), Ordering::AcqRel);
-        if !ptr.is_null() {
-            // SAFETY: ptr was allocated with Box::into_raw above and no references remain.
-            drop(unsafe { Box::from_raw(ptr) });
-        }
+        take_default_runtime_for_test();
         ACTIVE_WORKERS.store(0, Ordering::Release);
     }
 

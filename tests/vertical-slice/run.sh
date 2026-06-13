@@ -499,8 +499,9 @@ run_accept_expect_status "supervised_actor_init_block" 42
 # Before the fix: hew_supervisor_child_get returned a null pointer for Transient
 # children, causing SIGSEGV.  After the fix: MIR lower_supervisor_child_get traps
 # with code 206 on non-Live, and returns the handle safely on Live (tag=0).
-# This test crashes the child, sleeps 500 ms (500× margin over the immediate
-# first-crash restart), then accesses sup.w1 and expects a Live handle (exit 7).
+# This test crashes the child, waits on hew_supervisor_wait_restart until the
+# restart completion notification fires, then accesses sup.w1 and expects a
+# Live handle (exit 7).
 # A Transient result would fire SIGTRAP (exit 133) — a visible failure.
 # (No WASM check needed: same reason as above.)
 run_accept_expect_status "supervisor_child_after_restart" 7

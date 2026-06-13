@@ -9,7 +9,7 @@
 #   - Manual dispatch (workflow_dispatch)
 #
 # Coverage vs. ci.yml:
-#   - Builds ALL release artifacts (hew-cli, adze-cli, hew-lsp, hew-lib)
+#   - Builds ALL release artifacts (hew-cli, adze-cli, hew-lsp, hew-observe, hew-lib)
 #   - Runs full Rust workspace tests (matching ci.yml scope)
 #   - Smoke-tests the compile+run pipeline with a trivial .hew program
 #
@@ -138,7 +138,7 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --release
 
       - name: Build WASM runtime
@@ -151,6 +151,7 @@ jobs:
           target/release/hew --version
           target/release/adze --version
           target/release/hew-lsp --version
+          target/release/hew-observe --version
           test -f target/release/libhew.a && echo "✅ libhew.a exists"
 
       - name: Smoke test — compile and run a .hew program
@@ -253,7 +254,7 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --release
 
       - name: Build WASM runtime
@@ -266,6 +267,7 @@ jobs:
           target/release/hew --version
           target/release/adze --version
           target/release/hew-lsp --version
+          target/release/hew-observe --version
           test -f target/release/libhew.a && echo "✅ libhew.a exists"
 
       - name: Smoke test — compile and run a .hew program
@@ -336,7 +338,7 @@ jobs:
 
       - name: Build all release crates
         run: |
-          cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+          cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
           cargo build -p hew-lib --release
 
       - name: Verify release binaries
@@ -344,6 +346,7 @@ jobs:
           target/release/hew --version
           target/release/adze --version
           target/release/hew-lsp --version
+          target/release/hew-observe --version
           test -f target/release/libhew.a && echo "✅ libhew.a exists"
 
       - name: Smoke test — compile and run a .hew program
@@ -404,13 +407,14 @@ jobs:
 
       - name: Build release crates
         run: |
-          cargo build -p adze-cli -p hew-lsp -p hew-cli --release
+          cargo build -p adze-cli -p hew-lsp -p hew-observe -p hew-cli --release
 
       - name: Verify binaries
         shell: bash
         run: |
           target/release/adze.exe --version && echo "adze runs"
           target/release/hew-lsp.exe --version && echo "hew-lsp runs"
+          target/release/hew-observe.exe --version && echo "hew-observe runs"
 
       - name: Run Rust workspace tests
         run: >-

@@ -580,6 +580,7 @@ RUN apk add --no-cache \
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
+COPY --from=fetch /tmp/hew-install/hew/bin/hew-observe   /usr/local/bin/hew-observe
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 ENV HEW_STD=/usr/local/share/hew/std

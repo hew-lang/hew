@@ -13,5 +13,5 @@ Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: The Hew programming language compiler and package manager
  Hew is a statically-typed, actor-oriented programming language targeting
  concurrent and distributed systems. This package includes the hew compiler
- driver, the adze package manager, the hew-lsp language server, and the
- standard library.
+ driver, the adze package manager, the hew-lsp language server, the
+ hew-observe actor observer TUI, and the standard library.

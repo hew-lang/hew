@@ -174,6 +174,7 @@ validate_linux() {
         target/release/hew --version
         target/release/adze --version
         target/release/hew-lsp --version
+        target/release/hew-observe --version
         test -f target/release/libhew.a
 
         echo "==> Step 3: Smoke test — compile and run a Hew program"
@@ -219,7 +220,7 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp target/release/hew target/release/adze target/release/hew-lsp "${package_root}/bin/"
+        cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
         cp target/release/libhew.a "${package_root}/lib/"
         cp target/release/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
@@ -284,6 +285,7 @@ validate_macos() {
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -363,6 +365,7 @@ validate_linux_aarch64() {
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
             test -f target/release/libhew.a
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
@@ -435,6 +438,7 @@ validate_freebsd() {
             target/release/hew --version
             target/release/adze --version
             target/release/hew-lsp --version
+            target/release/hew-observe --version
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -512,6 +516,9 @@ Assert-NativeSuccess 'adze.exe --version'
 
 & .\\target\\release\\hew-lsp.exe --version
 Assert-NativeSuccess 'hew-lsp.exe --version'
+
+& .\\target\\release\\hew-observe.exe --version
+Assert-NativeSuccess 'hew-observe.exe --version'
 "
 
         echo "==> Smoke test on Windows"

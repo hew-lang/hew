@@ -81,5 +81,6 @@ class Hew < Formula
     system "#{bin}/hew", "version"
     system "#{bin}/adze", "--version"
     system "#{bin}/hew-lsp", "--version"
+    system "#{bin}/hew-observe", "--version"
   end
 end

@@ -33,6 +33,7 @@ This package provides:
   - hew          the compiler driver
   - adze         the package manager
   - hew-lsp      the language server
+  - hew-observe  the actor observer TUI
   - libhew.a     the combined runtime + stdlib static library
 
 %prep
@@ -89,6 +90,7 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_bindir}/hew
 %{_bindir}/adze
 %{_bindir}/hew-lsp
+%{_bindir}/hew-observe
 %{_libdir}/hew/
 %{_datadir}/hew/
 

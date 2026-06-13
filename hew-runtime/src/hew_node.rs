@@ -5010,6 +5010,32 @@ mod tests {
         assert!(ok, "TCP handshake did not complete in time");
     }
 
+    /// Poll node `observer`'s SWIM view of `subject` until it reaches at least
+    /// `min_state`, where membership states are ordered
+    /// `MEMBER_ALIVE` (0) < `MEMBER_SUSPECT` (1) < `MEMBER_DEAD` (2).
+    ///
+    /// This synchronises on an asynchronous SWIM transition instead of racing
+    /// it.  The bound (~4 s) is a generous load-immune ceiling on a transition
+    /// that normally lands in a few milliseconds; reaching it means the
+    /// transition never happened, which is a genuine failure, not flake.
+    unsafe fn wait_for_member_state_at_least(observer: *mut HewNode, subject: u16, min_state: i32) {
+        let ok = (0..200).any(|i| {
+            // SAFETY: observer's cluster is live for the duration of the test.
+            let state =
+                unsafe { crate::cluster::hew_cluster_member_state((*observer).cluster, subject) };
+            if state >= min_state {
+                return true;
+            }
+            let ms = if i < 40 { 10 } else { 25 };
+            thread::sleep(Duration::from_millis(ms));
+            false
+        });
+        assert!(
+            ok,
+            "node {subject} did not reach membership state >= {min_state} in time"
+        );
+    }
+
     // ── Test: fire-and-forget remote message delivery ─────────────────────
 
     /// Stores the `msg_type` of the most-recently received remote message.
@@ -7295,6 +7321,11 @@ mod tests {
     /// any node starts): the SWIM driver uses the sim clock, so the test is
     /// load-immune — wall time is irrelevant and `HEW_SWIM_TEST_TIME_SCALE`
     /// has no effect on these tests.
+    ///
+    /// The detector is driven through its two transitions in order — SUSPECT
+    /// first (synchronised on, not raced), then SUSPECT→DEAD — because a single
+    /// sim-time advance only fires one tick and each tick applies at most one
+    /// transition.  See the inline notes at the advance points.
     #[test]
     fn dead_node_is_detected_by_survivor_via_driven_swim() {
         use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};
@@ -7347,23 +7378,42 @@ mod tests {
         // SAFETY: node_b is valid.
         unsafe { assert_eq!(hew_node_stop(node_b.as_ptr()), 0) };
 
-        // The test controls sim time: advance past the suspect timeout so that
-        // A's driver observes elapsed > suspect_timeout_ms on its next tick.
-        // The driver loop's sim_sleep_ms yields without advancing time; it only
-        // fires a tick when SIMTIME_MS crosses next_period_ms.  Advancing by
-        // suspect_timeout + 2 * period guarantees at least one tick crosses the
-        // threshold.  After that, hew_cluster_tick escalates B to DEAD and
-        // on_member_dead fans out the PartitionDetected, unblocking recv.
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "SWIM test timing constants are small (< 1000 ms); value is always representable as i64"
-        )]
+        // Drive the failure detector deterministically through its TWO state
+        // transitions.  `compute_tick_transitions` applies at most one
+        // transition per member per tick (ALIVE→SUSPECT, then SUSPECT→DEAD),
+        // and one simulated-time advance lets the driver fire exactly one tick
+        // before the virtual clock freezes again — so ALIVE→DEAD cannot happen
+        // on a single advance.  B must already be SUSPECT before the advance
+        // that crosses the suspect timeout.
+        //
+        // Phase 1 — reach SUSPECT.  Stopping B drops the mesh connection, which
+        // moves A's view of B to SUSPECT via the connection-event path; that
+        // detection is asynchronous, so we WAIT for it rather than racing the
+        // driver's tick.  Advancing two protocol periods first also lets a
+        // driver tick perform ALIVE→SUSPECT (elapsed > ping_timeout) should the
+        // connection event not have landed yet, so SUSPECT is reached regardless
+        // of ordering — but B cannot yet reach DEAD (elapsed < suspect_timeout).
+        //
+        // Racing this — advancing straight past the suspect timeout while B was
+        // still ALIVE — is what hung this test on Linux under load: the single
+        // tick spent itself on ALIVE→SUSPECT, then the frozen sim clock starved
+        // the SUSPECT→DEAD tick (the driver busy-spins in `sim_sleep_ms` without
+        // advancing time), so `on_member_dead` never fired and `recv` blocked
+        // until the harness deadline.
+        crate::deterministic::hew_simtime_advance_ms((2 * SWIM_TEST_PERIOD_MS).cast_signed());
+        // SAFETY: A's cluster is live (node still running).
+        unsafe {
+            wait_for_member_state_at_least(node_a.as_ptr(), NODE_B, crate::cluster::MEMBER_SUSPECT);
+        }
+
+        // Phase 2 — escalate SUSPECT→DEAD.  Advance past the suspect timeout so
+        // the next tick observes elapsed (= now − last_seen) > suspect_timeout,
+        // declares B DEAD, and `on_member_dead` fans out PartitionDetected —
+        // unblocking the recv below.  No real-time deadline is needed: the
+        // driver fires as soon as it gets a scheduling turn after the advance.
         crate::deterministic::hew_simtime_advance_ms(
-            (SWIM_TEST_SUSPECT_TIMEOUT_MS + 2 * SWIM_TEST_PERIOD_MS) as i64,
+            (SWIM_TEST_SUSPECT_TIMEOUT_MS + 2 * SWIM_TEST_PERIOD_MS).cast_signed(),
         );
-        // recv_handle blocks until PartitionDetected arrives from on_member_dead.
-        // No real-time deadline is needed: the driver fires as soon as it gets
-        // a scheduling turn after the simtime advance (microseconds of real time).
         let result = recv_handle.join().expect("recv thread panicked");
         assert!(
             matches!(result, Err(RecvError::PartitionDetected)),

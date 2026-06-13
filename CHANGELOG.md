@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed — `hew eval`
+
+- **Runtime failures are no longer silent.** A child that died from a signal
+  (e.g. divide-by-zero) while producing no stderr now yields a synthesized
+  message naming the terminating signal and its likely cause, in both raw and
+  `--json` output (`stderr` and `diagnostics` are populated identically).
+- **`--jit auto` falls back to AOT.** `auto` now selects the best available
+  backend (today the AOT path) instead of failing; the explicit
+  `--jit inprocess` mode still fails closed with a named diagnostic because the
+  in-process LLJIT bridge is not implemented yet. (#1227, #1235)
+- **No whole-program lints against REPL fragments.** Defining and then using a
+  function, binding or import across separate inputs no longer raises
+  "never called", "unused variable", "unused import" or "unused mut" — these
+  completeness lints are suppressed for the synthetic single-fragment program
+  while `hew check`/`hew build` keep reporting them.
+
+### Changed — `hew eval`
+
+- `hew eval` is presented as a lightweight, one-shot evaluator — a single
+  expression, a piped snippet, or a `-f <file>` program, plus an interactive
+  session for exploration — rather than a stateful interpreter. The `--help`
+  and interactive `:help` say so and point at `-f <file>` or `hew run` for a
+  multi-statement program.
+- The startup notice about a prior session that ended without `:quit` is now a
+  calm, actionable note explaining that each input runs in its own subprocess,
+  rather than an alarming uncaught-signal warning.
+
 ## [0.5.0] — 2026-06-11
 
 v0.5.0 is the user-trust release: the language, runtime, and toolchain are

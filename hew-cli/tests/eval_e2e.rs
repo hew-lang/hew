@@ -3095,3 +3095,177 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
     );
     assert_eq!(strip_ansi(&String::from_utf8_lossy(&output.stdout)), "42\n");
 }
+
+// ---------------------------------------------------------------------------
+// `hew eval` reliability fixes, verified end-to-end:
+//   * whole-program completeness lints stay silent for REPL fragments
+//   * runtime failures surface a cause in both raw and `--json` output
+//   * `--jit auto` falls back to AOT; `--jit inprocess` fails closed
+// ---------------------------------------------------------------------------
+
+fn assert_repl_emits_line(output: &Output, expected: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "REPL run should exit 0;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.lines().any(|line| line.trim_end() == expected),
+        "expected a line equal to {expected:?};\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_never_called_warning() {
+    require_codegen();
+    // Defining then calling a function must not warn that it is "never called".
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn add(a: i64, b: i64) -> i64 { a + b }\nadd(20, 22)\n",
+    );
+    assert_repl_emits_line(&output, "42");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("never called"),
+        "REPL fragment must not warn 'never called'; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_unused_variable_warning() {
+    require_codegen();
+    // A binding read by a later input must not warn "unused variable".
+    let output = run_eval_with_stdin(&["eval"], "let x = 41;\nx + 1\n");
+    assert_repl_emits_line(&output, "42");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unused variable"),
+        "REPL fragment must not warn 'unused variable'; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
+    require_codegen();
+    // The multi-import stdlib dogfood chunk must evaluate without repeated
+    // "unused import"/"unused variable" noise on every line.
+    let input = concat!(
+        "import std::string;\n",
+        "import std::option;\n",
+        "import std::iter;\n",
+        "let s = string.from_int(42);\n",
+        "let opt = option.map_int(Some(20), |v: i64| v + 22);\n",
+        "let v: Vec<string> = [\"a\", \"bb\"];\n",
+        "let lens = iter.map_str(v, |x: string| string.from_int(x.len()));\n",
+        "f\"{s}:{option.unwrap_int(opt)}:{lens.get(0)},{lens.get(1)}\"\n",
+    );
+    let output = run_eval_with_stdin(&["eval"], input);
+    assert_repl_emits_line(&output, "42:42:1,2");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unused import"),
+        "stdlib chunk must not warn 'unused import'; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("unused variable"),
+        "stdlib chunk must not warn 'unused variable'; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn eval_divide_by_zero_surfaces_cause() {
+    require_codegen();
+    // Was exit 1 with empty stderr; now the terminating signal is named.
+    let output = Command::new(hew_binary())
+        .args(["eval", "1 / 0"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "divide-by-zero must exit non-zero; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.trim().is_empty(), "stderr must not be empty");
+    assert!(
+        stderr.contains("runtime error")
+            && (stderr.contains("divide-by-zero")
+                || stderr.contains("arithmetic")
+                || stderr.contains("signal")),
+        "stderr must name the arithmetic/divide-by-zero/signal cause; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn eval_divide_by_zero_json_surfaces_cause() {
+    require_codegen();
+    // `--json` must report a runtime_failure with a non-empty stderr AND
+    // diagnostics, even though the child produced no stderr of its own.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "1 / 0"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "--json must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert!(
+        !v["stderr"].as_str().unwrap_or("").is_empty(),
+        "JSON stderr must be non-empty: {v}"
+    );
+    assert!(
+        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
+        "JSON diagnostics must be non-empty for an empty-stderr runtime failure: {v}"
+    );
+}
+
+#[test]
+fn eval_jit_auto_falls_back_to_aot() {
+    require_codegen();
+    // `--jit auto` chooses the best available backend (today AOT) and runs.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--jit", "auto", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "--jit auto should fall back to AOT and exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "3", "stdout: {stdout}");
+}
+
+#[test]
+fn eval_jit_inprocess_fails_closed() {
+    require_codegen();
+    // `--jit inprocess` is intentionally fail-closed (#1227/#1235).
+    let output = Command::new(hew_binary())
+        .args(["eval", "--jit", "inprocess", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "--jit inprocess must fail closed; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("unavailable") && combined.contains("#1227"),
+        "fail-closed message should cite the unimplemented JIT bridge; output:\n{combined}"
+    );
+}

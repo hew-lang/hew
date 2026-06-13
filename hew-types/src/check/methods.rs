@@ -1120,9 +1120,47 @@ impl Checker {
     }
 
     fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
-        let dispatch = if matches!(self.subst.resolve(&reply_ty), Ty::Unit) {
+        let resolved_reply = self.subst.resolve(&reply_ty);
+        let dispatch = if matches!(resolved_reply, Ty::Unit) {
             ActorMethodKind::Fire(method_id)
         } else {
+            // Ask-shaped: the reply value crosses the actor boundary back to the
+            // caller, so `R` must be `Send` — the same obligation the lambda
+            // actor reply gate enforces (`E_DUPLEX_NON_SEND`, see
+            // `check_lambda_actor` in expressions.rs). Declared-actor asks
+            // previously gated only the message arguments
+            // (`enforce_actor_method_send_args`), so a non-Send reply type slipped
+            // past the checker and surfaced only later at codegen, where the
+            // #1739 reply-drop classifier fails closed on it with a far less
+            // actionable diagnostic. Gating it here — at the single
+            // dispatch-recording chokepoint shared by every declared-actor ask
+            // site — turns it into a clean type error at the call.
+            //
+            // The guard requires a fully resolved, error-free type: an
+            // inference-in-progress reply (`Var`) or a reply that already carries
+            // an error must not mis-fire a spurious Send rejection (the
+            // admissibility output-contract pruner applies the same
+            // `!has_inference_var() && !contains_error()` discipline). Every
+            // value that is constructible and returnable in safe Hew is Send
+            // (handles are `Send + Copy`; `Stream`/`Sink`/`Duplex` are `Send`
+            // iff their element is), so in practice this fires only on genuinely
+            // non-transferable replies (`Rc`, and any record/tuple/enum that
+            // transitively carries one).
+            if !resolved_reply.has_inference_var()
+                && !resolved_reply.contains_error()
+                && !self
+                    .registry
+                    .implements_marker(&resolved_reply, MarkerTrait::Send)
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidSend,
+                    span,
+                    format!(
+                        "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                        resolved_reply.user_facing()
+                    ),
+                );
+            }
             ActorMethodKind::Ask(method_id, reply_ty)
         };
         self.actor_method_dispatch

@@ -1,0 +1,37 @@
+// Reject fixture: E_DUPLEX_NON_SEND on a declared-actor ask reply type.
+//
+// An ask-shaped `receive fn` returns a value that crosses the actor boundary
+// back to the caller, so the reply type must be `Send`. The lambda-actor reply
+// gate already enforced this; declared actors previously gated only the message
+// arguments, letting a non-Send reply slip past the checker and surface only
+// later at codegen (where the #1739 reply-drop classifier fails closed on it
+// with a far less actionable diagnostic). `record_actor_method_dispatch` now
+// rejects it at the call with a clean type error.
+//
+// `Rc<i64>` is reference-counted and single-threaded — explicitly NOT Send.
+//
+// Harness verb: hew check
+// Expected: rejected with "E_DUPLEX_NON_SEND".
+
+actor Producer {
+    let n: i64;
+    receive fn make() -> Rc<i64> {
+        panic("unreachable")
+    }
+}
+
+actor Consumer {
+    let p: LocalPid<Producer>;
+    receive fn run(unused: i64) {
+        match await p.make() {
+            Ok(x) => {},
+            Err(e) => {},
+        }
+    }
+}
+
+fn main() {
+    let prod = spawn Producer(n: 0);
+    let cons = spawn Consumer(p: prod);
+    cons.run(0);
+}

@@ -761,6 +761,15 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${
 fi
 grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
 
+# Reject: non-Send ask reply type on a declared actor (E_DUPLEX_NON_SEND).
+# Companion to duplex_non_send.hew (which gates the message): an ask-shaped
+# reply crosses the actor boundary back to the caller, so it must be Send.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/ask_reply_non_send.hew" >"${reject_output}" 2>&1; then
+  echo "expected ask-reply-non-send fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
+
 # Reject: removed <- operator (E_OPERATOR_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_arrow_operator.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-arrow-operator fixture to fail" >&2

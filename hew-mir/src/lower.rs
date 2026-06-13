@@ -20996,6 +20996,21 @@ fn elaborate(
         });
     }
 
+    // Whole-value hand-off dedup (same fix the plain/closure-pair Vec sets
+    // apply below). The array-literal desugar (`let v: Vec<T> = []`) binds the
+    // fresh owned-element vec to a synthetic `__hew_array_N` let, then hands
+    // the SAME handle to the user binding through a chain of whole-value
+    // `Move`s. The dataflow does NOT mark the synthetic source consumed, so the
+    // `Consumed`/`MaybeConsumed` filter above leaves an intermediate admitted —
+    // two admitted bindings over one handle would fire two `hew_vec_free_owned`
+    // releases (a double free). Collapse the chain so exactly the final owner
+    // releases (`drop-allowset-from-value-flow`, `raii-null-after-move`).
+    dedup_whole_value_handoff(
+        &checked.blocks,
+        &builder.binding_locals,
+        &mut owned_vec_drop_allowed,
+    );
+
     // Local `HashMap` / `HashSet` handle scope-exit drop allow-set. A local
     // collection handle earns its `hew_hashmap_free_layout` /
     // `hew_hashset_free_layout` release UNLESS the fail-closed escape-scan proves

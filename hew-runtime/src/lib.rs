@@ -193,7 +193,7 @@ pub mod xnode_serial;
 /// `NoWorkerSchedulerForTest` composes correctly: the inner guard swaps its
 /// transient runtime in (saving this guard's as `previous`) and restores it on
 /// drop, before this guard removes its own on the outermost drop.
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) struct RuntimeTestGuard {
     /// Re-entrant scheduler-test lock, shared with `NoWorkerSchedulerForTest`
     /// so every runtime-installing test serializes on the single default-runtime
@@ -205,7 +205,7 @@ pub(crate) struct RuntimeTestGuard {
     installed_runtime: *mut crate::runtime::RuntimeInner,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 impl Drop for RuntimeTestGuard {
     fn drop(&mut self) {
         if !self.installed_runtime.is_null() {
@@ -249,7 +249,7 @@ impl Drop for RuntimeTestGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
     let outermost = !crate::scheduler::SchedTestLock::is_held();
     let lock_guard = crate::scheduler::SchedTestLock::acquire();
@@ -268,6 +268,28 @@ pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
     RuntimeTestGuard {
         _lock_guard: lock_guard,
         installed_runtime,
+    }
+}
+
+/// WASM test-only RAII guard: serializes `scheduler_wasm` and `bridge` tests
+/// that call `crate::runtime_test_guard()`.
+///
+/// On `wasm32` there is no process-global `RuntimeInner` to install — the
+/// cooperative scheduler manages its own state. This stub holds a
+/// process-global `Mutex` to give test-thread isolation equivalent to the
+/// native `SchedTestLock`, without referencing any `cfg(not(wasm32))` module.
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) struct RuntimeTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
+    use std::sync::Mutex;
+    static WASM_TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Unwrap: a poisoned lock in tests is a prior panic; let the test fail.
+    RuntimeTestGuard {
+        _lock: WASM_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
     }
 }
 

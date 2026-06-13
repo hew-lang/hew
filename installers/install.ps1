@@ -403,10 +403,12 @@ try {
         if (-not (Test-Path $hewBin)) { $hewBin = Join-Path $InstallDir "bin/hew" }
         if (-not (Test-Path $adzeBin)) { $adzeBin = Join-Path $InstallDir "bin/adze" }
         $compDir = Join-Path $InstallDir "completions"
-        foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
-            try { & $hewBin completions $shell | Out-File -Encoding utf8NoBOM (Join-Path $compDir "hew.$shell") } catch {}
-            try { & $adzeBin completions $shell | Out-File -Encoding utf8NoBOM (Join-Path $compDir "adze.$shell") } catch {}
+        foreach ($sh in @("bash", "zsh", "fish")) {
+            try { & $hewBin  completions $sh | Out-File -Encoding utf8NoBOM (Join-Path $compDir "hew.$sh")  } catch {}
+            try { & $adzeBin completions $sh | Out-File -Encoding utf8NoBOM (Join-Path $compDir "adze.$sh") } catch {}
         }
+        try { & $hewBin  completions powershell | Out-File -Encoding UTF8 (Join-Path $compDir "hew.ps1")  } catch {}
+        try { & $adzeBin completions powershell | Out-File -Encoding UTF8 (Join-Path $compDir "adze.ps1") } catch {}
 
         # Copy license and doc files
         foreach ($f in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
@@ -486,4 +488,11 @@ else {
     Write-Host " to verify the installation."
 }
 
+Write-Host ""
+Write-Host "  To activate PowerShell completions, add this to your " -NoNewline
+Write-Host '$PROFILE' -ForegroundColor Cyan -NoNewline
+Write-Host ":"
+Write-Host ""
+Write-Host "    . `"$(Join-Path $InstallDir 'completions\hew.ps1')`"" -ForegroundColor DarkGray
+Write-Host "    . `"$(Join-Path $InstallDir 'completions\adze.ps1')`"" -ForegroundColor DarkGray
 Write-Host ""

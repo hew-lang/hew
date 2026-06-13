@@ -5,16 +5,15 @@ Installation options for [Hew](https://hew.sh) and [Adze](https://hew.sh/adze).
 ## Quick Install (Linux / macOS)
 
 ```sh
-curl -fsSL https://hew.sh/install | bash
+curl -fsSL https://hew.sh/install | sh
 ```
 
 ## Quick Install (FreeBSD)
 
-FreeBSD base includes `fetch(1)` but not `curl` or `bash`. Install bash once, then:
+FreeBSD base includes `fetch(1)` — no extra packages needed:
 
 ```sh
-pkg install -y bash
-fetch -o - https://hew.sh/install | bash
+fetch -o - https://hew.sh/install | sh
 ```
 
 Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` on the
@@ -31,7 +30,7 @@ irm https://hew.sh/install.ps1 | iex
 | Platform                 | Command                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------- |
 | macOS / Linux (Homebrew) | `brew install hew-lang/tap/hew`                                                  |
-| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| bash` (requires `pkg install bash`)        |
+| FreeBSD (script)         | `fetch -o - https://hew.sh/install \| sh`                                         |
 | Arch Linux (AUR)         | `yay -S hew-bin`                                                                 |
 | Debian / Ubuntu          | `.deb` packages on the [releases page](https://github.com/hew-lang/hew/releases) |
 | Fedora / RHEL / openSUSE | See `rpm/hew.spec`                                                               |
@@ -56,7 +55,7 @@ docker run --rm -it --entrypoint sh -v $(pwd):/work r.hew.sh/hew
 
 | File / Directory    | Description                         |
 | ------------------- | ----------------------------------- |
-| `install.sh`        | Unix shell installer (curl \| bash) |
+| `install.sh`        | Unix shell installer — POSIX `/bin/sh`, Linux / macOS / FreeBSD (`curl \| sh` or `fetch \| sh`) |
 | `install.ps1`       | Windows PowerShell installer        |
 | `arch/PKGBUILD`     | Arch Linux AUR binary package       |
 | `debian/`           | Debian/Ubuntu `.deb` packaging      |

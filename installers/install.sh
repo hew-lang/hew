@@ -1,10 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Hew installer — https://hew.sh
-# Usage: curl -fsSL https://hew.sh/install | bash
-#        fetch -o - https://hew.sh/install | bash   (FreeBSD — bash from ports/pkg)
-#        irm https://hew.sh/install.ps1 | iex  (Windows PowerShell)
-#        bash install.sh [--version <ver>] [--prefix <dir>] [--help]
-set -euo pipefail
+# Usage: curl -fsSL https://hew.sh/install | sh       (Linux / macOS)
+#        fetch -o - https://hew.sh/install | sh        (FreeBSD — no extra packages needed)
+#        wget -qO- https://hew.sh/install | sh         (wget fallback)
+#        irm https://hew.sh/install.ps1 | iex          (Windows PowerShell)
+#        sh install.sh [--version <ver>] [--prefix <dir>] [--help]
+set -eu
 
 GITHUB_ORG="hew-lang"
 GITHUB_REPO="hew"
@@ -53,7 +54,7 @@ usage() {
 Hew installer
 
 USAGE:
-    install.sh [OPTIONS]
+sh install.sh [OPTIONS]
 
 OPTIONS:
     --version <ver>    Install a specific version (e.g. 0.1.3). Default: latest
@@ -96,18 +97,14 @@ parse_args() {
 # Platform detection
 # ---------------------------------------------------------------------------
 detect_platform() {
-    local uname_s uname_m
-    uname_s="$(uname -s)"
-    uname_m="$(uname -m)"
-
-    case "$uname_s" in
-    Linux*) OS="linux" ;;
-    Darwin*) OS="darwin" ;;
+    case "$(uname -s)" in
+    Linux*)   OS="linux" ;;
+    Darwin*)  OS="darwin" ;;
     FreeBSD*) OS="freebsd" ;;
-    *) err "unsupported operating system: $uname_s" ;;
+    *)        err "unsupported operating system: $(uname -s)" ;;
     esac
 
-    case "$uname_m" in
+    case "$(uname -m)" in
     x86_64 | amd64) ARCH="x86_64" ;;
     aarch64 | arm64)
         if [ "$OS" = "freebsd" ]; then
@@ -115,53 +112,36 @@ detect_platform() {
         fi
         ARCH="aarch64"
         ;;
-    *) err "unsupported architecture: $uname_m" ;;
+    *) err "unsupported architecture: $(uname -m)" ;;
     esac
 }
 
-# FreeBSD base ships fetch(1) but not curl/wget/bash. The script is bash; point
-# users at pkg once, then the fetch pipe works without curl.
-require_bash() {
-    if [ "$(uname -s)" != "FreeBSD" ]; then
-        return 0
-    fi
-    if has_cmd bash; then
-        return 0
-    fi
-    err "FreeBSD base does not include bash.
-
-  pkg install -y bash
-  fetch -o - https://hew.sh/install | bash"
-}
-
 # ---------------------------------------------------------------------------
-# HTTP helper (curl preferred, wget fallback)
+# HTTP helper — prefers fetch (FreeBSD base), then curl, then wget
 # ---------------------------------------------------------------------------
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 http_get() {
-    local url="$1"
-    if has_cmd curl; then
-        curl -fsSL "$url"
-    elif has_cmd fetch; then
-        fetch -o - "$url"
+    if has_cmd fetch; then
+        fetch -o - "$1"
+    elif has_cmd curl; then
+        curl -fsSL "$1"
     elif has_cmd wget; then
-        wget -qO- "$url"
+        wget -qO- "$1"
     else
-        err "curl, fetch, or wget is required"
+        err "need one of: fetch, curl, wget"
     fi
 }
 
 http_download() {
-    local url="$1" dest="$2"
-    if has_cmd curl; then
-        curl -fsSL -o "$dest" "$url"
-    elif has_cmd fetch; then
-        fetch -o "$dest" "$url"
+    if has_cmd fetch; then
+        fetch -o "$2" "$1"
+    elif has_cmd curl; then
+        curl -fsSL -o "$2" "$1"
     elif has_cmd wget; then
-        wget -q -O "$dest" "$url"
+        wget -q -O "$2" "$1"
     else
-        err "curl, fetch, or wget is required"
+        err "need one of: fetch, curl, wget"
     fi
 }
 
@@ -173,10 +153,10 @@ resolve_version() {
         # Strip leading 'v' if provided
         VERSION="${REQUESTED_VERSION#v}"
     else
-        local response
-        response="$(http_get "${GITHUB_API}/releases/latest")" ||
+        _rv_response="$(http_get "${GITHUB_API}/releases/latest")" ||
             err "failed to fetch latest release from GitHub API"
-        VERSION="$(printf '%s' "$response" | grep '"tag_name"' | sed -E 's/.*"tag_name":\s*"v?([^"]+)".*/\1/')"
+        _rv_raw="$(printf '%s' "$_rv_response" | grep '"tag_name"' | sed 's/.*"tag_name":[[:space:]]*"//;s/".*//')"
+        VERSION="${_rv_raw#v}"
         if [ -z "$VERSION" ]; then
             err "could not determine latest version"
         fi
@@ -187,13 +167,12 @@ resolve_version() {
 # SHA-256 helper
 # ---------------------------------------------------------------------------
 compute_sha256() {
-    local file="$1"
     if has_cmd sha256sum; then
-        sha256sum "$file" | awk '{print $1}'
+        sha256sum "$1" | awk '{print $1}'
     elif has_cmd sha256; then
-        sha256 -q "$file"
+        sha256 -q "$1"
     elif has_cmd shasum; then
-        shasum -a 256 "$file" | awk '{print $1}'
+        shasum -a 256 "$1" | awk '{print $1}'
     else
         err "sha256sum, sha256, or shasum is required to verify downloads"
     fi
@@ -228,7 +207,6 @@ step_skip() { printf " %bskipped%b\n" "${DIM}" "${RESET}"; }
 # ---------------------------------------------------------------------------
 main() {
     setup_colours
-    require_bash
     parse_args "$@"
     detect_platform
 
@@ -243,9 +221,8 @@ main() {
     printf "  %bInstalling Hew v%s (%s-%s)%b\n\n" "${BOLD}" "$VERSION" "$OS" "$ARCH" "${RESET}"
 
     # Check if same version is already installed
-    local version_file="$INSTALL_PREFIX/.hew-version"
+    version_file="$INSTALL_PREFIX/.hew-version"
     if [ -f "$version_file" ]; then
-        local installed
         installed="$(cat "$version_file")"
         if [ "$installed" = "$VERSION" ]; then
             printf "  Hew v%s is already installed at %s\n\n" "$VERSION" "$INSTALL_PREFIX"
@@ -257,9 +234,9 @@ main() {
     # Set up temp directory
     TMPDIR_INSTALL="$(mktemp -d)"
 
-    local archive_name="hew-v${VERSION}-${OS}-${ARCH}.tar.gz"
-    local checksums_name="hew-v${VERSION}-checksums.txt"
-    local base_url="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${VERSION}"
+    archive_name="hew-v${VERSION}-${OS}-${ARCH}.tar.gz"
+    checksums_name="hew-v${VERSION}-checksums.txt"
+    base_url="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${VERSION}"
 
     # Download archive
     step_start "Downloading"
@@ -269,7 +246,6 @@ main() {
     # Download and verify checksum
     step_start "Verifying"
     http_download "${base_url}/${checksums_name}" "${TMPDIR_INSTALL}/${checksums_name}"
-    local expected actual
     expected="$(grep "${archive_name}" "${TMPDIR_INSTALL}/${checksums_name}" | awk '{print $1}')"
     if [ -z "$expected" ]; then
         err "checksum not found for ${archive_name} in ${checksums_name}"
@@ -283,7 +259,7 @@ main() {
     # Extract
     step_start "Extracting"
     tar -xzf "${TMPDIR_INSTALL}/${archive_name}" -C "${TMPDIR_INSTALL}"
-    local extracted_dir="${TMPDIR_INSTALL}/hew-v${VERSION}-${OS}-${ARCH}"
+    extracted_dir="${TMPDIR_INSTALL}/hew-v${VERSION}-${OS}-${ARCH}"
     [ -d "$extracted_dir" ] || err "expected directory ${extracted_dir} not found after extraction"
 
     # Install files
@@ -326,22 +302,21 @@ main() {
     printf "  %bHew was installed to %b%s%b\n\n" "${GREEN}" "${BOLD}" "$INSTALL_PREFIX" "${RESET}"
 
     # Check if already on PATH
-    local bin_dir="${INSTALL_PREFIX}/bin"
+    bin_dir="${INSTALL_PREFIX}/bin"
     if echo "$PATH" | tr ':' '\n' | grep -qx "$bin_dir" 2>/dev/null; then
         printf "  Run %bhew version%b and %badze --version%b to verify the installation.\n\n" "${CYAN}" "${RESET}" "${CYAN}" "${RESET}"
         return
     fi
 
     # Detect shell and suggest PATH configuration
-    local user_shell
-    user_shell="$(basename "${SHELL:-/bin/bash}")"
+    user_shell="$(basename "${SHELL:-/bin/sh}")"
 
     printf "  To get started, add Hew to your PATH:\n\n"
     printf "    %bexport HEW_HOME=\"%s\"%b\n" "${CYAN}" "$INSTALL_PREFIX" "${RESET}"
     printf "    %bexport HEW_STD=\"\$HEW_HOME/std\"%b\n" "${CYAN}" "${RESET}"
     printf "    %bexport PATH=\"\$HEW_HOME/bin:\$PATH\"%b\n\n" "${CYAN}" "${RESET}"
 
-    local rc_file=""
+    rc_file=""
     case "$user_shell" in
     bash)
         if [ -f "$HOME/.bashrc" ]; then

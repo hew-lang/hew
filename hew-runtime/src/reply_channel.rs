@@ -721,6 +721,23 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
             return;
         }
         if !(*ch).value.is_null() {
+            // #1739: a non-null `value` at the final release is the
+            // delivered-but-never-consumed leg — `take_ready_reply` nulls
+            // `value` on consume, so reaching here with it set means no waiter
+            // ever took the buffer. Run the reply type's registered destructor
+            // on the byte-copied buffer to release any heap embedded in `R`
+            // (String/Vec/HashMap/Closure/owned-field struct) BEFORE freeing
+            // the buffer itself; without it that embedded heap leaks (and a
+            // Closure reply's captures are dropped). `refs` has reached 0, so
+            // no deliver/consume can race and the slot is read exactly once
+            // here: the destructor runs exactly once. A null slot (a bit-copy
+            // `R` with no embedded heap) keeps the prior behaviour — the buffer
+            // free alone suffices.
+            let drop_raw = (*ch).reply_drop_fn.load(Ordering::Acquire);
+            if !drop_raw.is_null() {
+                let drop_fn = std::mem::transmute::<*mut c_void, HewReplyDropFn>(drop_raw);
+                drop_fn((*ch).value);
+            }
             #[cfg(debug_assertions)]
             debug_untrack_libc_alloc((*ch).value.cast());
             libc::free((*ch).value);
@@ -1664,9 +1681,6 @@ mod tests {
     /// (ASan/LSan) and `REPLY_DTOR_CALLS` stays 0 (this assertion fails). The runtime
     /// destructor commit runs it exactly once on the non-null-`value` free leg.
     #[test]
-    #[ignore = "RED until the reply_drop_fn run-leg lands in hew_reply_channel_free \
-                (#1739 runtime-destructor commit); demonstrates the embedded-heap \
-                leak under ASan/LSan and the destructor-not-run counter==0"]
     fn delivered_owned_reply_never_consumed_runs_typed_destructor() {
         let _guard = crate::runtime_test_guard();
         REPLY_DTOR_CALLS.store(0, Ordering::Release);
@@ -1740,8 +1754,6 @@ mod tests {
     /// covers double-release idempotence: the sender ref is released inside
     /// `hew_reply`, the waiter ref here — the destructor runs exactly once.
     #[test]
-    #[ignore = "RED until the reply_drop_fn run-leg lands in hew_reply_channel_free \
-                (#1739 runtime-destructor commit)"]
     fn delivered_then_cancelled_reply_runs_destructor_once_on_free() {
         let _guard = crate::runtime_test_guard();
         REPLY_DTOR_CALLS.store(0, Ordering::Release);

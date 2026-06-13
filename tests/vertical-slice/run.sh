@@ -419,6 +419,21 @@ run_accept_expect_status "actor_multi_on_stop" 0
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# select{} with OWNED-string ask arms (#1739/#1735): FastWorker returns an owned
+# `string` and wins; SlowWorker sleeps 50 ms and loses, its owned reply released
+# on the loser teardown leg by the channel's registered destructor (no leak, no
+# double-free). Exit code == "WINNER-OWNED-REPLY".len() == 18 proves the winner
+# reply is consumed correctly while the abandoned owned reply is reclaimed.
+run_accept_expect_status "ask_reply_owned_select_loser" 18
+
+# Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
+# reply always arrives after the 10 ms deadline, so the after-arm wins and the
+# late owned reply lands on the cancelled channel (the hew_reply false leg),
+# reaped by the registered destructor on shutdown. Exit code 7 (the after-arm
+# value) proves the program completes past the abandoned-owned-reply teardown
+# without crashing or hanging.
+run_accept_expect_status "ask_reply_owned_timeout" 7
+
 # join{} wait-ALL with two actor-ask branches: Doubler.compute(10)/(11)
 # reply 20/22; the tuple binds (ra, rb) in declaration order. Exit code
 # ra + rb = 42 proves both replies are materialised into the correct

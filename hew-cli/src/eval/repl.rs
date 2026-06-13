@@ -159,6 +159,7 @@ enum ExpressionEvalPlan {
     Display(String),
 }
 
+#[derive(Debug)]
 enum CompiledEvalError {
     DiagnosticsRendered,
     Message(String),
@@ -1417,11 +1418,12 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the `ORCv2`
-/// gap guard — no temp dir, no subprocess, and no LLJIT invocation.
-/// `Worker` and `None` route through the AOT/WASM paths.
-/// When `target` resolves to a WASM target, routes through wasmtime.
-/// Otherwise falls through to the existing native `run_inprocess_compiled`
+/// Only `Some(Inprocess)` routes to the fail-closed `ORCv2` gap guard, because
+/// the user explicitly asked for the in-process LLJIT path that does not exist
+/// yet. `Auto` means "best available", which today is the AOT path — failing
+/// closed on it would be a category error — so it falls through alongside
+/// `Worker` and `None`. When `target` resolves to a WASM target, routes through
+/// wasmtime; otherwise falls through to the native `run_inprocess_compiled`
 /// AOT+spawn path.
 fn run_eval_compiled(
     program: hew_parser::ast::Program,
@@ -1432,13 +1434,9 @@ fn run_eval_compiled(
     target: Option<&str>,
     jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
-    // JIT in-process path — no temp dir, no subprocess. `Auto` resolves to the
-    // same fail-closed guard as `Inprocess`; `Worker` and `None` fall through to
-    // the AOT+spawn path below.
-    if matches!(
-        jit_mode,
-        Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
-    ) {
+    // Only an explicit `--jit=inprocess` reaches the fail-closed guard. `Auto`
+    // selects the best available backend (today: AOT) and must not fail closed.
+    if matches!(jit_mode, Some(crate::args::JitMode::Inprocess)) {
         return run_inprocess_jit(program, source, source_label, project_dir);
     }
 
@@ -2446,16 +2444,12 @@ mod tests {
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
 
-    /// `JitMode::Auto` routes to the same execution path as `JitMode::Inprocess`.
-    /// Both return an explicit fail-closed error from the retired JIT guard
-    /// rather than reaching actual execution, so we verify they produce the same
-    /// success/error shape.
-    ///
-    /// Kept unignored because it proves the unavailable path is deterministic
-    /// without restoring the user-facing `hew eval` command.
+    /// `--jit=auto` selects the best-available backend (today AOT) and runs the
+    /// program, while `--jit=inprocess` fails closed through the unavailable
+    /// LLJIT guard. They no longer share an error shape: `auto` is a working
+    /// alias for AOT, not a category error.
     #[test]
-    fn jit_auto_and_inprocess_produce_same_error_shape_without_backend() {
-        // A minimal valid Hew program: a function definition.
+    fn jit_auto_falls_back_to_aot_while_inprocess_fails_closed() {
         let source = "fn main() { println(\"hello\"); }";
         let parse_result = hew_parser::parse(source);
         assert!(
@@ -2464,20 +2458,10 @@ mod tests {
             parse_result.errors
         );
 
-        // The retired in-process JIT guard always returns an explicit error.
-        // Both Auto and Inprocess reach the same code path, so they produce
-        // identical error shapes.
-        let auto_result = run_eval_compiled(
-            parse_result.program.clone(),
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            Some(crate::args::JitMode::Auto),
-        );
+        // `inprocess` fails closed even without a toolchain — it never reaches
+        // codegen.
         let inprocess_result = run_eval_compiled(
-            parse_result.program,
+            parse_result.program.clone(),
             source,
             "<test>",
             DEFAULT_EVAL_TIMEOUT,
@@ -2485,21 +2469,29 @@ mod tests {
             None,
             Some(crate::args::JitMode::Inprocess),
         );
+        assert!(
+            inprocess_result.is_err(),
+            "Inprocess mode must fail closed while in-process JIT is unavailable"
+        );
 
-        // The retired in-process JIT path always fails closed.
+        // `auto` falls through to the AOT path, which needs the native
+        // toolchain to compile and run.
+        if !require_toolchain() {
+            return;
+        }
+        let auto_result = run_eval_compiled(
+            parse_result.program,
+            source,
+            "<test>",
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            Some(crate::args::JitMode::Auto),
+        );
         assert_eq!(
-            auto_result.is_err(),
-            inprocess_result.is_err(),
-            "Auto and Inprocess should produce the same success/error shape"
-        );
-
-        assert!(
-            auto_result.is_err(),
-            "Auto mode must return an error while in-process JIT is retired"
-        );
-        assert!(
-            inprocess_result.is_err(),
-            "Inprocess mode must return an error while in-process JIT is retired"
+            auto_result.expect("Auto mode must succeed via AOT fallback"),
+            "hello\n",
+            "Auto (AOT) should produce the program's stdout"
         );
     }
 

@@ -36,9 +36,9 @@ fn jit_inprocess_simple_expression_succeeds() {
 
 /// `hew eval --jit auto "1 + 1"` must print `2` and exit 0.
 ///
-/// `auto` used to select `inprocess`; both modes remain ignored until eval is
-/// backed by the Rust v0.5 `ORCv2` bridge (#1227/#1235).
-#[ignore = "in-process JIT awaits the Rust v0.5 `ORCv2` bridge (#1227/#1235)"]
+/// `auto` selects the best-available backend; with the in-process LLJIT bridge
+/// still unimplemented (#1227/#1235) it falls back to the AOT path rather than
+/// failing closed, so this scenario now works end to end.
 #[test]
 fn jit_auto_simple_expression_succeeds() {
     require_codegen();

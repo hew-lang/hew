@@ -81,20 +81,15 @@ fn resolve_eval_target(
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
     if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
-        if matches!(
-            jit,
-            Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
-        ) {
+        // Only `--jit=inprocess` is native-only: it asks for the in-process
+        // LLJIT path, which cannot target WASM. `--jit=auto` selects the
+        // best-available backend (AOT), which compiles WASM fine, so it is
+        // accepted here alongside `--jit=worker` and no `--jit`.
+        if matches!(jit, Some(crate::args::JitMode::Inprocess)) {
             return Err(format!(
-                "`--jit={}` is native-only and cannot be used with `--target {}`. \
-                 Omit `--jit` for AOT WASM eval, use `--jit=worker` to keep the AOT+spawn path, \
-                 or omit `--target` for native JIT.",
-                match jit {
-                    Some(crate::args::JitMode::Auto) => "auto",
-                    Some(crate::args::JitMode::Inprocess) => "inprocess",
-                    Some(crate::args::JitMode::Worker) | None =>
-                        unreachable!("guard above matches only auto/inprocess"),
-                },
+                "`--jit=inprocess` is native-only and cannot be used with `--target {}`. \
+                 Omit `--jit` for AOT WASM eval, use `--jit=auto`/`--jit=worker` to keep the \
+                 AOT path, or omit `--target` for native eval.",
                 target.normalized_triple()
             ));
         }
@@ -410,17 +405,13 @@ mod target_validation_tests {
     }
 
     #[test]
-    fn wasm32_wasip1_with_jit_auto_is_rejected() {
-        let err = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Auto))
-            .expect_err("--jit=auto with wasm32-wasip1 should be rejected");
-        assert!(
-            err.contains("native-only"),
-            "expected 'native-only' in error: {err}"
-        );
-        assert!(
-            err.contains("--jit=auto"),
-            "expected rejected mode in error: {err}"
-        );
+    fn wasm32_wasip1_with_jit_auto_is_accepted() {
+        // `--jit=auto` selects the best-available backend (AOT), which is
+        // compatible with wasm32-wasip1; only `--jit=inprocess` (LLJIT) is
+        // native-only.
+        let target = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Auto))
+            .expect("--jit=auto with wasm32-wasip1 should be accepted");
+        assert!(target.is_some(), "expected Some(target) for wasm32-wasip1");
     }
 
     #[test]

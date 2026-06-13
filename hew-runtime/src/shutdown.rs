@@ -21,7 +21,7 @@ use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crate::runtime::rt_current;
+use crate::runtime::{rt_current, rt_default};
 use crate::scheduler;
 
 // ---------------------------------------------------------------------------
@@ -43,12 +43,20 @@ const PHASE_FAILED: i32 = 5;
 
 /// Read the current shutdown phase off the installed runtime.
 ///
-/// Fails closed via [`rt_current`] when no runtime is installed: the shutdown
-/// phase is a runtime authority, so touching it before `hew_sched_init`
-/// (production) or without a runtime test guard (tests) is a hard logic error.
+/// When no runtime is installed this returns [`PHASE_RUNNING`] rather than
+/// trapping. A runtime that was never installed (a program that declares an
+/// actor type but never spawns one, so `hew_sched_init` is never reached) has,
+/// by definition, never entered any shutdown phase — it is logically
+/// `PHASE_RUNNING`. The shutdown-lifecycle *entry points* (`hew_shutdown_*`)
+/// are deliberately callable on a never-initialized runtime, exactly like the
+/// sibling lifecycle symbols `hew_sched_shutdown` (`scheduler.rs`: "Safe to call
+/// if the scheduler was never initialized") and `hew_runtime_cleanup` ("a no-op
+/// if the scheduler was never initialized"). This does NOT relax the fail-closed
+/// `rt_current()` boundary for genuine authority use elsewhere — it tolerates
+/// "nothing to shut down" only at the shutdown-phase read.
 #[inline]
 fn shutdown_phase_load(ordering: Ordering) -> i32 {
-    rt_current().shutdown_phase.load(ordering)
+    rt_default().map_or(PHASE_RUNNING, |rt| rt.shutdown_phase.load(ordering))
 }
 
 /// Store the current shutdown phase on the installed runtime.
@@ -201,6 +209,19 @@ pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::H
 /// Must only be called once. Subsequent calls are no-ops.
 #[no_mangle]
 pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
+    // No runtime installed → nothing to shut down. The implicit actor-drain
+    // epilogue (codegen) emits `hew_shutdown_initiate`/`hew_shutdown_wait` for
+    // every program that declares an actor type, but `hew_sched_init` only runs
+    // at an actual spawn site. A program that declares an actor type yet never
+    // spawns one therefore reaches this call with no `RuntimeInner` installed;
+    // there is no scheduler and no in-flight work to drain, so this is a no-op —
+    // matching `hew_sched_shutdown`/`hew_runtime_cleanup`, which are likewise
+    // safe to call on a never-initialized runtime. Guarding here (before
+    // `rt_current()`) keeps that resolver fail-closed for genuine authority use.
+    if rt_default().is_none() {
+        return;
+    }
+
     // Only transition from RUNNING to QUIESCE.
     if rt_current()
         .shutdown_phase

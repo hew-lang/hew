@@ -1325,7 +1325,18 @@ impl Checker {
     /// with the fully side-effected version.
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
-        if self.type_defs.contains_key(&td.name) {
+        // Idempotency guard, keyed per-module. Two non-root modules that each
+        // declare a type of the same bare name (`badpkg.Reply` and
+        // `goodpkg.Reply`) must BOTH register: the bare `type_defs` entry is
+        // last-write-wins across modules (the qualified alias is the authority),
+        // but each module's qualified marker set must be seeded so the ask-reply
+        // Send gate derives `Send` from the correct module's fields. Keying the
+        // guard on the bare name skipped the second module's `Reply` entirely,
+        // leaving the gate to read whichever module won the bare-key race.
+        let guard_key = self
+            .current_module_short()
+            .map_or_else(|| td.name.clone(), |m| format!("{m}.{}", td.name));
+        if self.type_defs.contains_key(&guard_key) {
             return;
         }
         let kind = match td.kind {
@@ -1447,6 +1458,43 @@ impl Checker {
             is_indirect: td.is_indirect,
         };
         self.register_rcfree_members_for_type(&td.name, &type_def);
+
+        // Seed the trait-registry structural member set for imported module
+        // types, mirroring `register_type_decl`. An imported actor whose `ask`
+        // replies with one of these types (e.g. a `pub type Result { ... }`)
+        // is gated on the reply being `Send` at the dispatch site
+        // (`record_actor_method_dispatch`, `E_DUPLEX_NON_SEND`). Send and the
+        // sibling structural markers derive from a named type's member set; if
+        // the importer's registry has no `type_fields` entry the derivation
+        // hits the "unknown type — conservatively fail" branch and rejects a
+        // plainly-Send imported record. Seeding it here resolves the marker
+        // through the imported record's actual fields. Enums register their
+        // variant-payload member set (an empty `fields` map would derive a
+        // spurious Copy/Frozen); the `Serializable` subset follows the same
+        // wire/enum condition as the full registration path.
+        let field_types: Vec<_> = if kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&type_def)
+        } else {
+            type_def.fields.values().cloned().collect()
+        };
+        self.registry.register_type(td.name.clone(), field_types);
+        if td.wire.is_some() || kind == TypeDefKind::Enum {
+            self.register_serializable_members_for_type(&td.name, &type_def);
+        }
+        // Mirror the markers under the module-qualified key so a same-bare-name
+        // reply from another package cannot clobber this type's Send derivation
+        // at the ask-reply gate.
+        self.seed_qualified_type_markers_for_current_module(&td.name);
+
+        // Insert the bare `type_defs` entry (last-write-wins across modules) and,
+        // for a non-root module, a per-module qualified alias. The qualified
+        // entry is the collision-free authority the per-module guard above keys
+        // on, and the field source that non-pub reply types (e.g. an actor's
+        // `receive fn` returning a module-private record) resolve through.
+        if let Some(module_short) = self.current_module_short() {
+            let qualified = format!("{module_short}.{}", td.name);
+            self.type_defs.insert(qualified, type_def.clone());
+        }
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
         self.handle_bearing_dirty = true;
@@ -1685,6 +1733,12 @@ impl Checker {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
         self.register_rcfree_members_for_type(&td.name, &type_def);
+        // Mirror the markers under the module-qualified key (when this type is
+        // declared in a non-root module) so a same-bare-name reply from another
+        // package cannot clobber this type's Send derivation at the ask-reply
+        // gate. `register_qualified_type_alias` repeats this for the pub import
+        // surface; this covers the registration call itself.
+        self.seed_qualified_type_markers_for_current_module(&td.name);
 
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
@@ -6623,6 +6677,30 @@ impl Checker {
         }
     }
 
+    /// Seed the module-qualified marker-derivation alias for a type declared
+    /// in a non-root module, immediately after its bare registration.
+    ///
+    /// The trait registry keys marker derivation by name; the bare key is
+    /// last-write-wins across modules. Two imported packages that each export a
+    /// type named `Reply` collide on the single bare `"Reply"` key, so a Send
+    /// lookup at the ask-reply gate can read the wrong module's fields. The
+    /// importer qualifies the dispatched actor's reply type as
+    /// `{module_short}.{name}` (matching `actor_identity`), so the qualified
+    /// registry alias gives the gate a collision-free identity to look up.
+    ///
+    /// Unlike `register_qualified_type_alias` (pub-only, import-surface), this
+    /// runs for EVERY type a non-root module declares — including the non-pub
+    /// records reachable only as an actor's `receive fn` reply type (the
+    /// `testffi` fixture's `type Result` is one such non-pub reply). Bare
+    /// lookups are unchanged; root / flat-file types (no `current_module`) are a
+    /// no-op.
+    fn seed_qualified_type_markers_for_current_module(&mut self, name: &str) {
+        if let Some(module_short) = self.current_module_short() {
+            let qualified = format!("{module_short}.{name}");
+            self.registry.alias_type_markers(name, &qualified);
+        }
+    }
+
     /// Insert a qualified alias (`module_short.Name`) for a type that has
     /// already been registered under its bare name.
     ///
@@ -6634,8 +6712,15 @@ impl Checker {
         if let Some(def) = self.type_defs.get(name).cloned() {
             self.type_defs.insert(qualified.clone(), def);
             if let Some(span) = self.type_def_spans.get(name).cloned() {
-                self.type_def_spans.insert(qualified, span);
+                self.type_def_spans.insert(qualified.clone(), span);
             }
+            // Mirror the marker-derivation tables under the qualified key. The
+            // bare `type_fields` (and sibling member maps) are last-write-wins
+            // across modules — two packages each exporting `Reply` collide on
+            // the single bare key, so a same-bare-name reply derives `Send`
+            // from whichever module won the race. The qualified alias gives the
+            // Send gate a collision-free identity to look up.
+            self.registry.alias_type_markers(name, &qualified);
             self.handle_bearing_dirty = true;
         }
     }

@@ -32,6 +32,19 @@ static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicUsize = AtomicUsize::new(0);
 
+/// Typed destructor for a delivered-but-never-consumed reply payload (WASM
+/// parity counterpart of [`crate::reply_channel::HewReplyDropFn`]). Defined
+/// locally because the native module is absent on a real `wasm32` build.
+///
+/// [`hew_reply`] byte-copies the reply value into the channel's `value` buffer,
+/// aliasing any heap embedded in the reply type `R` into it. On the consumed
+/// leg the cooperative ask loop takes the buffer and its scope-exit drop
+/// releases that heap; on the never-consumed leg (timeout/cancel/orphan-retire)
+/// the channel itself releases it via this destructor, run on the copied buffer
+/// before `libc::free`. Registered once by the ask caller via
+/// [`hew_reply_channel_set_reply_drop_fn`]; `None` for a bit-copy `R`.
+pub type HewReplyDropFn = unsafe extern "C" fn(*mut c_void);
+
 /// One-shot reply channel for the WASM ask pattern.
 ///
 /// On WASM, the ask pattern is cooperative: the caller sends a message,
@@ -46,6 +59,13 @@ pub struct WasmReplyChannel {
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
+    /// Optional typed destructor for the reply payload (`R`'s embedded heap),
+    /// run on the delivered-but-never-consumed leg in
+    /// [`hew_reply_channel_free`] before `value` is `libc::free`d. `None` (the
+    /// default) ⇒ bit-copy reply, buffer free alone suffices. Set once by the
+    /// ask caller before submit; single-threaded so a plain field suffices (no
+    /// atomic, mirroring the other WASM channel fields).
+    reply_drop_fn: Option<HewReplyDropFn>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: bool,
     /// Whether a reply has been deposited.
@@ -79,6 +99,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
         refs: 1,
         value: ptr::null_mut(),
         value_size: 0,
+        reply_drop_fn: None,
         allocation_failed: false,
         replied: false,
         cancelled: false,
@@ -112,6 +133,33 @@ pub unsafe extern "C" fn hew_reply_channel_set_parked_waiter(
     }
 }
 
+/// Register the typed destructor for this channel's reply payload (`R`).
+///
+/// WASM parity counterpart of the native
+/// [`crate::reply_channel::hew_reply_channel_set_reply_drop_fn`]. Set once by
+/// the ask caller before the ask is submitted; `f` is the drop thunk for `R`
+/// operating on the channel's copied reply buffer, `None` for a bit-copy `R`.
+/// The destructor runs on the delivered-but-never-consumed teardown leg in
+/// [`hew_reply_channel_free`].
+///
+/// # Safety
+///
+/// `ch` must be null or a live reply channel reference. `f`, when `Some`, must
+/// be a valid drop thunk for this channel's reply type that operates on the
+/// copied reply buffer passed to it.
+#[cfg_attr(target_arch = "wasm32", no_mangle)]
+pub unsafe extern "C" fn hew_reply_channel_set_reply_drop_fn(
+    ch: *mut WasmReplyChannel,
+    f: Option<HewReplyDropFn>,
+) {
+    cabi_guard!(ch.is_null());
+    // SAFETY: caller guarantees `ch` is a live reply-channel reference;
+    // single-threaded so a plain store is sufficient.
+    unsafe {
+        (*ch).reply_drop_fn = f;
+    }
+}
+
 unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
     #[cfg(test)]
     if FORCE_REPLY_ALLOC_FAILURE.swap(0, Ordering::AcqRel) == 1 {
@@ -136,6 +184,32 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
     }
 }
 
+/// Run the channel's registered reply destructor on a producer-side `value`
+/// the channel did NOT take (the cancel and OOM legs of [`hew_reply`]),
+/// reclaiming any heap embedded in `R` before the producer's slot is discarded.
+///
+/// #1739 (WASM parity): the registered `reply_drop_fn` is the single canonical
+/// release path for every non-consume edge — the cancel/OOM analog of the
+/// never-consumed leg in [`hew_reply_channel_free`]. No-op when `value` is null
+/// or no destructor is registered (a bit-copy `R`, or the legacy manual-reclaim
+/// contract where the `false` return tells the caller to free `value` itself).
+///
+/// # Safety
+///
+/// `ch` must be a live channel and, when non-null, `value` must point at a
+/// valid `R` the registered destructor was set for.
+unsafe fn run_registered_reply_drop_on_value(ch: *mut WasmReplyChannel, value: *mut c_void) {
+    if value.is_null() {
+        return;
+    }
+    // SAFETY: caller upholds the channel/value validity contract above.
+    unsafe {
+        if let Some(drop_fn) = (*ch).reply_drop_fn {
+            drop_fn(value);
+        }
+    }
+}
+
 /// Deposit a reply value (WASM version).
 ///
 /// The payload is deep-copied so the caller retains ownership of `value`.
@@ -143,8 +217,17 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
 /// Returns `true` if the channel took ownership of the `size` bytes at
 /// `value` (the waiter will receive them and own any heap pointers
 /// referenced). Returns `false` if the reply was not delivered (channel
-/// cancelled or per-reply allocation failed) — in that case the caller
-/// still owns any heap-allocated payload and must free it.
+/// cancelled or per-reply allocation failed).
+///
+/// #1739 single-reaper contract (WASM parity): when a typed reply destructor
+/// is registered on the channel (as codegen does at the ask-caller site for
+/// every owned `R`), the `false` legs run that destructor on `value` here, so
+/// the channel is the single canonical release path for every non-consume edge
+/// (cancel/OOM mirror the never-consumed leg in [`hew_reply_channel_free`]).
+/// The producer must NOT also free `value` then. When no destructor is
+/// registered (a bit-copy `R`, or the in-process unit-test manual-reclaim
+/// contract) the `false` return signals the caller still owns `value` and must
+/// free it with the matching type-specific destructor.
 ///
 /// # Safety
 ///
@@ -173,6 +256,11 @@ pub unsafe extern "C" fn hew_reply(
             "WASM reply channels must not be replied to more than once"
         );
         if (*ch).cancelled {
+            // #1739 (WASM parity) cancelled-before-delivery leg: nothing was
+            // published, so the producer's `value` is the only live copy of the
+            // reply. Reclaim its embedded heap via the registered destructor
+            // before releasing this reference.
+            run_registered_reply_drop_on_value(ch, value);
             hew_reply_channel_free(ch);
             return false;
         }
@@ -181,6 +269,10 @@ pub unsafe extern "C" fn hew_reply(
             let buf = alloc_reply_buffer(size);
             if buf.is_null() {
                 (*ch).allocation_failed = true;
+                // #1739 (WASM parity) OOM leg: the channel never took `value`,
+                // so reclaim its embedded heap via the registered destructor
+                // (the single-reaper contract, same as the cancel leg).
+                run_registered_reply_drop_on_value(ch, value);
                 delivered = false;
             } else {
                 ptr::copy_nonoverlapping(value.cast::<u8>(), buf.cast::<u8>(), size);
@@ -319,6 +411,17 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
             return;
         }
         if !(*ch).value.is_null() {
+            // #1739 (WASM parity): run the registered reply destructor on the
+            // delivered-but-never-consumed leg before freeing the buffer, so
+            // any heap embedded in the reply type R (String/Vec/HashMap/Closure
+            // /owned-field struct) is released rather than leaked. `reply_take`
+            // nulls `value` on consume, so a non-null `value` at the final
+            // release is exactly the never-consumed leg; the single-threaded
+            // refcount means no deliver or consume can race. None (a bit-copy R
+            // with no embedded heap) keeps the prior behaviour.
+            if let Some(drop_fn) = (*ch).reply_drop_fn {
+                drop_fn((*ch).value);
+            }
             libc::free((*ch).value);
         }
         #[cfg(test)]
@@ -968,6 +1071,233 @@ mod tests {
             hew_reply_channel_free(ch0);
             hew_reply_channel_cancel(ch1);
             hew_reply_channel_free(ch1);
+        }
+    }
+
+    // ── #1739: delivered-but-never-consumed owned-reply typed destructor ──────
+
+    /// WASM parity counter for [`wasm_test_reply_string_dtor`]. Serialised with
+    /// the crate via `runtime_test_guard` in each test, so reset-at-start is
+    /// race-free.
+    static WASM_REPLY_DTOR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// WASM mirror of the native `test_reply_string_dtor`: the channel buffer is
+    /// a byte-copy of the reply value, here a single embedded `*mut c_char`.
+    /// Release that embedded heap and count the call.
+    unsafe extern "C" fn wasm_test_reply_string_dtor(buf: *mut c_void) {
+        WASM_REPLY_DTOR_CALLS.fetch_add(1, Ordering::AcqRel);
+        if buf.is_null() {
+            return;
+        }
+        // SAFETY: `buf` is the copied reply buffer holding one `*mut c_char`.
+        unsafe {
+            let embedded = *(buf.cast::<*mut libc::c_char>());
+            if !embedded.is_null() {
+                libc::free(embedded.cast());
+            }
+        }
+    }
+
+    /// Deposit a heap "owned reply" flat pointer into `ch` via `hew_reply`
+    /// (byte-copied into the channel buffer), the way a WASM ask handler
+    /// returning `string` does.
+    unsafe fn wasm_deliver_owned_string_reply(ch: *mut WasmReplyChannel, payload: &str) {
+        // SAFETY: `ch` is a live, retained sender-side channel reference.
+        unsafe {
+            let original = std::ffi::CString::new(payload).unwrap();
+            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!embedded.is_null(), "strdup must succeed");
+            let mut reply_value: *mut libc::c_char = embedded;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                delivered,
+                "owned reply must be delivered into the channel buffer"
+            );
+        }
+    }
+
+    /// Regression (#1739), WASM parity: a delivered owned reply that is never
+    /// consumed must run its registered typed destructor on the channel teardown
+    /// leg. `reply_take` nulls `value` only on consume, so a non-null `value` at
+    /// final free is the never-consumed leg. Pre-fix the destructor is never
+    /// invoked (embedded strdup leaks under ASan/LSan; counter stays 0).
+    #[test]
+    fn delivered_owned_reply_never_consumed_runs_typed_destructor() {
+        let _guard = crate::runtime_test_guard();
+        WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; register the reply drop thunk, deliver, never
+        // consume, tear down.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(wasm_test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            wasm_deliver_owned_string_reply(ch, "owned-reply-payload");
+
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "a delivered-but-never-consumed owned reply must run its typed \
+                 destructor exactly once on the WASM channel teardown leg (#1739)"
+            );
+        }
+    }
+
+    /// Exactly-once boundary (WASM): the consumed leg must NOT run the channel
+    /// destructor — `reply_take` nulls `value`, transferring buffer ownership to
+    /// the cooperative ask loop. Green at every stage.
+    #[test]
+    fn consumed_owned_reply_does_not_run_channel_destructor() {
+        let _guard = crate::runtime_test_guard();
+        WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; deliver then consume via reply_take.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(wasm_test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            wasm_deliver_owned_string_reply(ch, "consumed-reply");
+
+            let buf = reply_take(ch);
+            assert!(!buf.is_null());
+            let embedded_back = *(buf.cast::<*mut libc::c_char>());
+            assert!(!embedded_back.is_null());
+            libc::free(embedded_back.cast()); // ask-loop scope-exit drop of `R`
+            libc::free(buf); // free the copied buffer (WASM uses plain libc)
+
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                0,
+                "consumed reply must NOT run the WASM channel destructor"
+            );
+        }
+    }
+
+    /// Teardown routing (WASM): a reply delivered and THEN cancelled still runs
+    /// its typed destructor on the free leg.
+    #[test]
+    fn delivered_then_cancelled_reply_runs_destructor_once_on_free() {
+        let _guard = crate::runtime_test_guard();
+        WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; deliver, then cancel after the reply landed.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(wasm_test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            wasm_deliver_owned_string_reply(ch, "delivered-then-cancelled");
+
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "a delivered-then-cancelled reply must still run its destructor \
+                 exactly once on the final release (WASM)"
+            );
+        }
+    }
+
+    /// Regression (#1739), WASM parity: a reply CANCELLED BEFORE DELIVERY must
+    /// run the registered destructor on the producer's `value` — the only live
+    /// copy, since nothing was published. With a destructor registered the
+    /// caller must NOT free `value` (double-free otherwise).
+    #[test]
+    fn cancelled_before_delivery_runs_registered_destructor_on_producer_value() {
+        let _guard = crate::runtime_test_guard();
+        WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; register the drop thunk and reply an owned heap
+        // value AFTER the waiter cancelled.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(wasm_test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+
+            let original = std::ffi::CString::new("cancel-before-delivery").unwrap();
+            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!embedded.is_null(), "strdup must succeed");
+
+            hew_reply_channel_cancel(ch); // waiter abandons BEFORE the reply
+
+            let mut reply_value: *mut libc::c_char = embedded;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                !delivered,
+                "cancelled-before-delivery reply must report not-delivered (WASM)"
+            );
+
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "cancelled-before-delivery owned reply must run its registered \
+                 destructor exactly once on the WASM cancel leg (#1739)"
+            );
+
+            // The cancel leg released the sender ref (refs 2→1); release the
+            // waiter ref to free the channel. Nothing was published, so `value`
+            // is null and the never-consumed leg must NOT re-run the destructor.
+            hew_reply_channel_free(ch);
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "the final channel free must not double-run the destructor (WASM)"
+            );
+        }
+    }
+
+    /// Regression (#1739), WASM parity: the OOM leg mirrors the cancel leg —
+    /// the registered destructor reclaims the producer's `value` embedded heap.
+    #[test]
+    fn alloc_failure_runs_registered_destructor_on_producer_value() {
+        let _guard = crate::runtime_test_guard();
+        WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; force the per-reply buffer alloc to fail so
+        // `hew_reply` takes the OOM leg with a destructor registered.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(wasm_test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+
+            let original = std::ffi::CString::new("oom-before-delivery").unwrap();
+            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!embedded.is_null(), "strdup must succeed");
+
+            FORCE_REPLY_ALLOC_FAILURE.store(1, Ordering::Release);
+
+            let mut reply_value: *mut libc::c_char = embedded;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                !delivered,
+                "alloc-fail reply must report not-delivered (WASM)"
+            );
+
+            assert_eq!(
+                WASM_REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "alloc-fail owned reply must run its registered destructor \
+                 exactly once on the WASM OOM leg (#1739)"
+            );
+
+            hew_reply_channel_free(ch);
         }
     }
 }

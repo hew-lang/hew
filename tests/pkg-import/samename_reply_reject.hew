@@ -1,0 +1,35 @@
+// Cross-package same-bare-name reply, reject side.
+//
+// Both imported packages export a type named `Reply`:
+//   hew::replysend.Reply    { handle: i64 }    — Send
+//   hew::replynonsend.Reply { field: Rc<i64> } — NOT Send
+//
+// The ask-reply Send gate derives Send from a named type's structural member
+// set. Keying that derivation on the bare name `Reply` collides across the two
+// packages (last-write-wins): a non-Send reply could read the Send package's
+// fields and slip the gate, reaching codegen where it trips the D10 named-Rc
+// fail-closed. The gate must derive Send through each reply's module-qualified
+// identity, so the non-Send `replynonsend.Reply` is rejected here regardless of
+// the import order, and the Send `replysend.Reply` ask is accepted.
+//
+// Harness verb: hew check
+// Expected: rejected; the only error is E_DUPLEX_NON_SEND on the non-Send ask.
+import hew::replysend;
+
+import hew::replynonsend;
+
+fn main() {
+    // Accepted: Send reply.
+    let ok = spawn replysend.Producer(seed: 1);
+    match await ok.make() {
+        Ok(r) => println("send ok"),
+        Err(e) => println("send err"),
+    }
+    // Rejected: non-Send reply, even though a same-bare-name Send `Reply` is
+    // also in scope.
+    let bad = spawn replynonsend.Producer(seed: 0);
+    match await bad.make() {
+        Ok(r) => println("nonsend ok"),
+        Err(e) => println("nonsend err"),
+    }
+}

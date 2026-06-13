@@ -1,0 +1,6 @@
+[package]
+name = "hew::replysend"
+version = "0.1.0"
+description = "Same-bare-name reply fixture: exports a Send `Reply` (i64 field)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

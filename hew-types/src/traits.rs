@@ -198,6 +198,68 @@ impl TraitRegistry {
         self.type_fields.insert(name, field_types);
     }
 
+    /// Mirror every name-keyed marker-derivation record from `bare` onto a
+    /// module-`qualified` alias so the qualified name derives the SAME markers
+    /// as the bare declaration.
+    ///
+    /// Marker derivation for a `Ty::Named` keys every name-indexed table on the
+    /// type's `name` string: `type_fields` (the structural Send/Copy/… member
+    /// set), `rc_free_members`, `serializable_members`, `negative_impls`, and
+    /// the `records` / `actors` / `handle_types` / `drop_types` membership sets.
+    /// The bare name is last-write-wins across modules: two imported packages
+    /// that each export a `Reply` collide on the single `"Reply"` key, so the
+    /// loser's fields are lost and a non-Send reply can derive `Send` from the
+    /// winner's fields (or a Send reply be rejected from the loser's). The
+    /// importer keeps a per-module-qualified `type_defs` alias (`badpkg.Reply`)
+    /// already; mirror the marker tables under the same qualified key so a
+    /// qualified lookup is collision-free. Bare lookups are unchanged.
+    ///
+    /// Called when the importer creates the qualified `type_defs` alias, at
+    /// which point the bare records still hold THIS type's freshly-registered
+    /// members (the alias runs in the same registration step). A bare name with
+    /// no record is a no-op for that table.
+    pub fn alias_type_markers(&mut self, bare: &str, qualified: &str) {
+        if qualified == bare {
+            return;
+        }
+        if let Some(fields) = self.type_fields.get(bare).cloned() {
+            self.type_fields.insert(qualified.to_string(), fields);
+        }
+        if let Some(members) = self.rc_free_members.get(bare).cloned() {
+            self.rc_free_members.insert(qualified.to_string(), members);
+        }
+        if let Some(members) = self.serializable_members.get(bare).cloned() {
+            self.serializable_members
+                .insert(qualified.to_string(), members);
+        }
+        if let Some(negatives) = self.negative_impls.get(bare).cloned() {
+            self.negative_impls.insert(qualified.to_string(), negatives);
+        }
+        if self.records.contains(bare) {
+            self.records.insert(qualified.to_string());
+        }
+        if self.actors.contains(bare) {
+            self.actors.insert(qualified.to_string());
+        }
+        if self.handle_types.contains(bare) {
+            self.handle_types.insert(qualified.to_string());
+        }
+        if self.drop_types.contains(bare) {
+            self.drop_types.insert(qualified.to_string());
+        }
+    }
+
+    /// Report whether marker derivation has a structural member set registered
+    /// for `name` (under `type_fields`). Used by the ask-reply Send gate to
+    /// confirm a module-qualified reply identity (`badpkg.Reply`) resolves to a
+    /// real member set before keying the lookup on it; otherwise the gate keeps
+    /// the bare type. A `name` with no entry would otherwise hit the
+    /// unknown-type fail-closed branch and spuriously reject.
+    #[must_use]
+    pub fn has_type_markers(&self, name: &str) -> bool {
+        self.type_fields.contains_key(name)
+    }
+
     /// Register a `record` declaration so the marker-derivation path knows to
     /// suppress `Resource` and apply field-driven derivation exhaustively.
     ///

@@ -580,6 +580,15 @@ impl Checker {
             }
             match dispatch {
                 ActorMethodKind::Fire(_) => true,
+                // Output-contract pruning ONLY: retain the dispatch entry when
+                // the reply type is fully resolved and error-free. This is NOT
+                // the reply-type admissibility gate — a non-Send reply (`Rc`,
+                // etc.) is rejected at record time by `record_actor_method_dispatch`
+                // (methods.rs, `E_DUPLEX_NON_SEND`), and any reply the codegen
+                // reply-drop classifier cannot prove safe to drop fails closed
+                // there (#1739). Do not add a Send/handle rejection here; this
+                // pass runs after type-checking and only graduates the
+                // side-table to a validated contract.
                 ActorMethodKind::Ask(_, reply_ty) => {
                     !reply_ty.has_inference_var() && !reply_ty.contains_error()
                 }

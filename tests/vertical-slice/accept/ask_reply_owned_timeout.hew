@@ -1,0 +1,31 @@
+// Acceptance fixture (#1739 / #1735): owned-string ask reply + `after` timeout.
+//
+// Design intent — exercise the cancel-before-delivery leg functionally:
+//   - SlowWorker.label() sleeps 50 ms before returning an owned `string`.
+//   - The select gives the ask arm a 10 ms deadline, so the `after` arm always
+//     wins and the worker's owned reply lands on the already-cancelled channel
+//     (the `hew_reply` false leg). The channel's registered destructor reaps
+//     that owned reply on shutdown — no leak, no double-free, no hang.
+//   - The ask arm body never runs (the worker never wins), so no owned reply
+//     is ever bound; the only owned heap is the abandoned reply itself.
+//
+// Exit-code contract: the `after` arm returns 7, so main exits 7 — proving the
+// program completes past the abandoned-owned-reply teardown rather than
+// crashing or hanging.
+actor SlowWorker {
+    receive fn label() -> string {
+
+        // Reply arrives well after the 10 ms deadline → cancel leg.
+        sleep_ms(50);
+        "late-owned-reply".to_uppercase()
+    }
+}
+
+fn main() -> i64 {
+    let slow = spawn SlowWorker;
+    let outcome = select {
+        reply from slow.label() => 1,
+        after 10ms => 7,
+    };
+    outcome
+}

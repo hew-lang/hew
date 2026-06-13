@@ -419,6 +419,21 @@ run_accept_expect_status "actor_multi_on_stop" 0
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# select{} with OWNED-string ask arms (#1739/#1735): FastWorker returns an owned
+# `string` and wins; SlowWorker sleeps 50 ms and loses, its owned reply released
+# on the loser teardown leg by the channel's registered destructor (no leak, no
+# double-free). Exit code == "WINNER-OWNED-REPLY".len() == 18 proves the winner
+# reply is consumed correctly while the abandoned owned reply is reclaimed.
+run_accept_expect_status "ask_reply_owned_select_loser" 18
+
+# Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
+# reply always arrives after the 10 ms deadline, so the after-arm wins and the
+# late owned reply lands on the cancelled channel (the hew_reply false leg),
+# reaped by the registered destructor on shutdown. Exit code 7 (the after-arm
+# value) proves the program completes past the abandoned-owned-reply teardown
+# without crashing or hanging.
+run_accept_expect_status "ask_reply_owned_timeout" 7
+
 # join{} wait-ALL with two actor-ask branches: Doubler.compute(10)/(11)
 # reply 20/22; the tuple binds (ra, rb) in declaration order. Exit code
 # ra + rb = 42 proves both replies are materialised into the correct
@@ -778,6 +793,15 @@ grep -qF 'actor ask `W::get` requires `await`' "${reject_output}"
 # Reject: non-Send message type (E_DUPLEX_NON_SEND).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/duplex_non_send.hew" >"${reject_output}" 2>&1; then
   echo "expected duplex-non-send fixture to fail" >&2
+  exit 1
+fi
+grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"
+
+# Reject: non-Send ask reply type on a declared actor (E_DUPLEX_NON_SEND).
+# Companion to duplex_non_send.hew (which gates the message): an ask-shaped
+# reply crosses the actor boundary back to the caller, so it must be Send.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/ask_reply_non_send.hew" >"${reject_output}" 2>&1; then
+  echo "expected ask-reply-non-send fixture to fail" >&2
   exit 1
 fi
 grep -q 'E_DUPLEX_NON_SEND' "${reject_output}"

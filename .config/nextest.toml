@@ -184,9 +184,23 @@ test-group = "real-timing"
 # rebuild across escalation; 0.21s isolated, but at the tail of a fully loaded
 # 16-core run it can exceed its 10s in-test budget (contention-flake, 50x
 # margin — classified 2026-06-10). Route it into the process-timing group so
-# the scheduler has headroom; no retry, the in-test assertions stay strict.
+# the scheduler has headroom.
+#
+# The `Code coverage` job runs under `cargo llvm-cov`, whose per-instruction
+# instrumentation slows the dispatch-count polling loop enough that even the
+# process-timing headroom occasionally misses the in-test budget. The sibling
+# timing-sensitive supervisor/process overrides above already pair their group
+# with `retries = 1` for exactly this jitter; match them here.
+# SHIM: retry absorbs instrumentation/scheduler jitter under coverage load.
+# WHEN obsolete: when the dispatch-count poll is replaced by a deterministic
+#   completion signal (the durable de-flake, tracked separately).
+# Correctness invariant: a real escalation-rebuild regression fails on both
+#   attempts — the nested subtree would never be recreated, so the poll times
+#   out on the first try and the retry alike; the retry only absorbs a slow
+#   rebuild under instrumentation, never a missing one.
 filter = "test(child_supervisor_recovery_recreates_nested_subtree)"
 test-group = "process-timing"
+retries = 1
 
 [profile.ci.junit]
 path = "junit.xml"

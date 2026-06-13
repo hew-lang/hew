@@ -448,6 +448,7 @@ stable = [
   "hew_reply_channel_new",
   "hew_reply_channel_retain",
   "hew_reply_channel_set_parked_waiter",
+  "hew_reply_channel_set_reply_drop_fn",
   "hew_reply_channel_signal_ready",
   "hew_reply_payload_free",
   "hew_reply_wait",

@@ -1,0 +1,43 @@
+// Acceptance fixture (#1739 / #1735): select{} with OWNED-string ask arms.
+//
+// Design intent (the owned-reply analog of actor_ask_race):
+//   - FastWorker.label() returns an owned `string` immediately; always wins.
+//   - SlowWorker.label() sleeps 50 ms, returning an owned `string`; always
+//     loses. Its reply is released on the loser teardown leg (delivered-but
+//     -never-consumed, or cancelled-before-delivery) by the channel's
+//     registered destructor — without leaking and without double-freeing what
+//     the winner owns.
+//   - after 100ms: safety-net arm, also an owned `string`; should never fire.
+//
+// Exit-code contract: main returns the winning reply's length. FastWorker's
+// "winner-owned-reply".to_uppercase() is "WINNER-OWNED-REPLY" = 18 chars, so
+// the process exits 18. A crash on the loser teardown leg (double-free / UAF)
+// or a hang would fail this fixture instead.
+actor FastWorker {
+    receive fn label() -> string {
+
+        // No sleep — reply immediately with an owned (heap) string.
+        "winner-owned-reply".to_uppercase()
+    }
+}
+
+actor SlowWorker {
+    receive fn label() -> string {
+
+        // Park 50 ms so FastWorker's reply wins; this owned reply is abandoned.
+        sleep_ms(50);
+        "loser-owned-reply".to_uppercase()
+    }
+}
+
+fn main() -> i64 {
+    let fast = spawn FastWorker;
+    let slow = spawn SlowWorker;
+    let winner = select {
+        reply from fast.label() => reply,
+        reply from slow.label() => reply,
+        after 100ms => "timeout-owned-reply".to_uppercase(),
+    };
+    // "WINNER-OWNED-REPLY" is 18 characters; exit code == 18.
+    winner.len()
+}

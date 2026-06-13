@@ -48,6 +48,33 @@ for fixture in "${fixtures[@]}"; do
   echo "PASS ${fixture}"
 done
 
+# Reject fixture: two imported packages (`hew::replysend`, `hew::replynonsend`)
+# both export a type named `Reply` — one Send (`i64`), one non-Send (`Rc<i64>`).
+# The ask-reply Send gate derives Send from a named type's member set; keying it
+# on the bare name `Reply` collides across the two packages (last-write-wins), so
+# a non-Send reply could read the Send package's fields and slip the gate,
+# reaching codegen where it trips the D10 named-`Rc` fail-closed. The gate must
+# derive Send through each reply's module-qualified identity: the non-Send ask is
+# rejected with E_DUPLEX_NON_SEND, the Send ask is accepted, regardless of import
+# order. Asserts the gate fires at type-check time, NOT a D10 codegen fall-through.
+reject_fixture="samename_reply_reject"
+reject_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${reject_fixture}.hew" 2>&1)" && {
+  echo "FAIL ${reject_fixture}: hew check unexpectedly succeeded (non-Send reply slipped the gate)" >&2
+  echo "${reject_out}" >&2
+  exit 1
+}
+if ! grep -q "E_DUPLEX_NON_SEND" <<<"${reject_out}"; then
+  echo "FAIL ${reject_fixture}: expected E_DUPLEX_NON_SEND on the non-Send ask" >&2
+  echo "${reject_out}" >&2
+  exit 1
+fi
+if grep -q "D10 violation" <<<"${reject_out}"; then
+  echo "FAIL ${reject_fixture}: non-Send reply fell through to the D10 codegen gate instead of E_DUPLEX_NON_SEND" >&2
+  echo "${reject_out}" >&2
+  exit 1
+fi
+echo "PASS ${reject_fixture}"
+
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).
 if [[ "$(uname -s)" == "Darwin" ]]; then

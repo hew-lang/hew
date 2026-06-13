@@ -17,9 +17,14 @@
 //   ⑥ Messages    — trace events: spawns and message sends
 //   ⑦ Timeline    — same events as a time-density view
 //
-// Note: Supervisors tab requires supervisor trees, which currently have
-// an init-time crash recovery bug in the runtime (#382). See
-// examples/supervisor_showcase.hew for the intended usage once fixed.
+// Note: this canonical showcase omits supervisors, so the Supervisors tab
+// stays empty when running it. The reason is a codegen gap: supervised
+// children with init() blocks are not yet started by the supervisor
+// bootstrap, so an init-style tree never boots and never reaches the
+// profiler. A supervisor whose children use default field values +
+// constructor args (no init()) DOES drive the tab. See
+// examples/observe_supervisor_showcase.hew for a live, restartable
+// supervision tree that populates the Supervisors tab.
 
 // ── Actor types ─────────────────────────────────────────────────────
 

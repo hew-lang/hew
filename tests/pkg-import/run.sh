@@ -33,6 +33,14 @@ fixtures=(
   imported_trait_method
   local_actor_ask_guard
   mixed_import_impl_collision
+  # Two packages export a divergent-layout `Widget` (i8 vs i64); each is
+  # constructed and read through its module-qualified identity. The MIR
+  # `RecordLayout` registry must key each layout by qualified name, not the
+  # bare `Widget`, or one field load reads the wrong slot width and trips the
+  # codegen fail-closed. Kept last: until qualified type identity lands this
+  # fixture is RED (hew run aborts), and a RED entry exits the loop before the
+  # reject fixture below.
+  samename_type_layout
 )
 
 for fixture in "${fixtures[@]}"; do

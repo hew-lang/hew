@@ -1,0 +1,10 @@
+//! Same-bare-name type fixture (wide layout). Exports a `Widget` record whose
+//! sole field is an `i64`. Its sibling `hew::widgeti8` exports a `Widget` of the
+//! same bare name with an `i8` field — a divergent layout. An importer that
+//! constructs and reads both `Widget`s must resolve each through its
+//! module-qualified identity; keying the MIR layout/field registry on the bare
+//! name `Widget` collides across the two packages (last-write-wins).
+
+type Widget {
+    v: i64;
+}

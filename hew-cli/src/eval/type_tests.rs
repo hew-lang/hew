@@ -13,11 +13,11 @@ fn eval_type_command_preserves_numeric_int_identity() {
 }
 
 #[test]
-fn eval_type_command_uses_session_bound_variables() {
+fn eval_type_command_uses_session_item() {
     let mut session = ReplSession::new();
-    session.add_binding_for_test("var x = 10;");
+    session.add_item_for_test("fn give_int() -> i64 { 42 }");
 
-    let result = session.eval(":type x");
+    let result = session.eval(":type give_int()");
 
     assert!(!result.had_errors, "errors: {:?}", result.errors);
     assert_eq!(result.output, "i64\n");

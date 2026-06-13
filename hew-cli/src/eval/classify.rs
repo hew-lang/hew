@@ -40,8 +40,6 @@ pub enum ReplCommand {
     Session,
     /// `:items` — list remembered top-level items.
     Items,
-    /// `:bindings` — list persistent bindings.
-    Bindings,
     /// `:clear` — reset session state.
     Clear,
     /// `:type <expr>` — show the inferred type of an expression.
@@ -103,7 +101,6 @@ fn parse_command(cmd: &str) -> ReplCommand {
         "quit" | "q" | "exit" => ReplCommand::Quit,
         "session" | "show" => ReplCommand::Session,
         "items" => ReplCommand::Items,
-        "bindings" => ReplCommand::Bindings,
         "clear" | "reset" => ReplCommand::Clear,
         "type" | "t" => ReplCommand::Type(arg.unwrap_or_default()),
         "load" | "l" => ReplCommand::Load(arg.unwrap_or_default()),
@@ -243,9 +240,10 @@ mod tests {
         );
         assert_eq!(classify(":show"), InputKind::Command(ReplCommand::Session));
         assert_eq!(classify(":items"), InputKind::Command(ReplCommand::Items));
+        // :bindings is no longer a command; routes through Unknown.
         assert_eq!(
             classify(":bindings"),
-            InputKind::Command(ReplCommand::Bindings)
+            InputKind::Command(ReplCommand::Unknown("bindings".to_string()))
         );
         assert_eq!(classify(":clear"), InputKind::Command(ReplCommand::Clear));
         assert_eq!(classify(":reset"), InputKind::Command(ReplCommand::Clear));

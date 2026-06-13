@@ -7,20 +7,22 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 const EVAL_AFTER_HELP: &str = "\
 `hew eval` is a lightweight, one-shot evaluator: it runs a single expression, a
 piped snippet, or a program from `-f <file>`, and offers an interactive session
-for quick exploration. It is not a stateful interpreter — top-level definitions
-and `let` bindings entered interactively are remembered for the session, but
-reassignments and in-place mutations are not carried across inputs. For a
-multi-statement program, evaluate a file with `-f <file>` or run it with
-`hew run`.
+for quick exploration.
+
+Persistence model: top-level definitions (fn/struct/enum/actor/impl/trait) are
+remembered across lines so you can define a function then call it on the next
+line. let/var bindings and bare expression-statements are evaluated fresh each
+line and do NOT carry over — their side effects (file writes, channel sends, …)
+execute exactly once and never replay. For a multi-statement program with
+persistent state, use `hew eval -f <file>` or `hew run`.
 
 REPL commands:
   :help, :h           Show command help
-  :session, :show     Summarize remembered session state
+  :session, :show     List remembered top-level definitions
   :items              List remembered top-level items
-  :bindings           List remembered let/var bindings
   :type <expr>        Show the inferred type of an expression
   :load <file>        Evaluate a file in the current session
-  :clear, :reset      Drop all remembered session state
+  :clear, :reset      Drop all remembered definitions
 ";
 
 /// The Hew programming language compiler.

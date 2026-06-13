@@ -1,36 +1,35 @@
-//! REPL session state — accumulates items and bindings across evaluations.
+//! REPL session state — accumulates top-level item definitions across evaluations.
+//!
+//! Only pure declarations (`fn`, `struct`, `enum`, `actor`, `impl`, `trait`, …) are
+//! persisted.  `let`/`var` bindings and bare statements are evaluated fresh on
+//! every line — replaying them would re-execute their side effects.
 
 use std::fmt::Write;
 use std::ops::Range;
 
-use hew_parser::ast::{Item, Pattern, Stmt, TypeDeclKind, WireDeclKind};
+use hew_parser::ast::{Item, TypeDeclKind, WireDeclKind};
 
 use super::classify::{self, InputKind};
 
 /// Persistent state for a REPL session.
+///
+/// Only top-level item definitions are remembered across lines.  `let`/`var`
+/// bindings and expression-statements are evaluated fresh on every input so
+/// that side effects (e.g. file writes, channel sends) never fire twice.
 #[derive(Debug, Clone)]
 pub struct Session {
     /// Prior top-level items (structs, fns, actors, enums, etc.).
     items: Vec<SessionItem>,
-    /// Prior let/var bindings from the main body.
-    bindings: Vec<SessionBinding>,
 }
 
 /// Counts of persistent state remembered by a REPL session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SessionCounts {
     pub items: usize,
-    pub bindings: usize,
 }
 
 #[derive(Debug, Clone)]
 struct SessionItem {
-    source: String,
-    summary: String,
-}
-
-#[derive(Debug, Clone)]
-struct SessionBinding {
     source: String,
     summary: String,
 }
@@ -45,16 +44,12 @@ impl Session {
     /// Create a new empty session.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            bindings: Vec::new(),
-        }
+        Self { items: Vec::new() }
     }
 
     /// Reset all accumulated state.
     pub fn clear(&mut self) {
         self.items.clear();
-        self.bindings.clear();
     }
 
     /// Record a successfully-evaluated item.
@@ -67,34 +62,11 @@ impl Session {
         }
     }
 
-    /// Record a successfully-evaluated binding (let/var).
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "alternate REPL session paths exercise this in tests"
-        )
-    )]
-    pub fn add_binding(&mut self, source: &str) {
-        let bindings = persistent_bindings(source);
-        if bindings.is_empty() {
-            self.bindings.push(SessionBinding::fallback(source));
-        } else {
-            self.bindings.extend(bindings);
-        }
-    }
-
-    /// Record any explicit bindings from a successfully-evaluated statement input.
-    pub fn add_persistent_bindings_from_statement(&mut self, input: &str) {
-        self.bindings.extend(persistent_bindings(input));
-    }
-
-    /// Count remembered items and bindings.
+    /// Count remembered items.
     #[must_use]
     pub fn counts(&self) -> SessionCounts {
         SessionCounts {
             items: self.items.len(),
-            bindings: self.bindings.len(),
         }
     }
 
@@ -105,15 +77,10 @@ impl Session {
         let mut out = String::new();
         let _ = writeln!(out, "Session state:");
         let _ = writeln!(out, "  {}", count_phrase(counts.items, "remembered item"));
-        let _ = writeln!(
-            out,
-            "  {}",
-            count_phrase(counts.bindings, "persistent binding")
-        );
-        if counts.items == 0 && counts.bindings == 0 {
-            out.push_str("  Use let/var bindings or top-level items to build up the session.\n");
+        if counts.items == 0 {
+            out.push_str("  Define a fn/struct/enum/actor to add items to the session.\n");
         } else {
-            out.push_str("  Use :items or :bindings to inspect remembered definitions.\n");
+            out.push_str("  Use :items to list remembered definitions.\n");
         }
         out
     }
@@ -128,22 +95,16 @@ impl Session {
         )
     }
 
-    /// Render the persistent binding list.
-    #[must_use]
-    pub fn render_bindings(&self) -> String {
-        render_entry_list(
-            "Persistent bindings",
-            "No persistent bindings.",
-            self.bindings.iter().map(|binding| binding.summary.as_str()),
-        )
-    }
-
     /// Build a complete Hew program from session state plus new input.
     ///
     /// The `input` is classified and placed appropriately:
     /// - Items go before `fn main()`.
-    /// - Bindings go inside `main()` before the new input.
+    /// - Statements and expressions are wrapped in `fn main()`.
     /// - Expressions are wrapped in `println()` for auto-printing.
+    ///
+    /// Only prior *item definitions* (fn/struct/enum/actor/…) are replayed —
+    /// never prior bindings.  Replaying bindings re-executes their RHS side
+    /// effects (file writes, channel sends, …) on every subsequent eval.
     #[must_use]
     #[cfg_attr(
         not(test),
@@ -172,7 +133,8 @@ impl Session {
         let mut source = String::new();
         let mut diagnostic_view = None;
 
-        // Emit prior items.
+        // Emit prior item definitions (fn/struct/enum/actor/…).
+        // Bindings are intentionally NOT replayed — their RHS may have side effects.
         for item in &self.items {
             source.push_str(&item.source);
             source.push('\n');
@@ -183,22 +145,10 @@ impl Session {
                 // The new item goes at the top level; we still need a main.
                 source.push_str(input);
                 source.push('\n');
-                source.push_str("fn main() {\n");
-                for binding in &self.bindings {
-                    source.push_str("    ");
-                    source.push_str(&binding.source);
-                    source.push('\n');
-                }
-                source.push_str("}\n");
+                source.push_str("fn main() {}\n");
             }
             InputKind::Statement => {
-                source.push_str("fn main() {\n");
-                for binding in &self.bindings {
-                    source.push_str("    ");
-                    source.push_str(&binding.source);
-                    source.push('\n');
-                }
-                source.push_str("    ");
+                source.push_str("fn main() {\n    ");
                 let trimmed = input.trim();
                 let input_start = source.len();
                 source.push_str(trimmed);
@@ -216,15 +166,9 @@ impl Session {
                 });
             }
             InputKind::Expression => {
-                source.push_str("fn main() {\n");
-                for binding in &self.bindings {
-                    source.push_str("    ");
-                    source.push_str(&binding.source);
-                    source.push('\n');
-                }
+                source.push_str("fn main() {\n    ");
                 let trimmed = input.trim();
                 let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-                source.push_str("    ");
                 if auto_print_expressions {
                     // Wrap the expression for auto-printing via the
                     // type-generic `println()` builtin.
@@ -287,11 +231,6 @@ impl Session {
             source.push('\n');
         }
         source.push_str("fn main() {\n");
-        for binding in &self.bindings {
-            source.push_str("    ");
-            source.push_str(&binding.source);
-            source.push('\n');
-        }
         let trimmed = expr.trim().strip_suffix(';').unwrap_or(expr.trim());
         source.push_str("    let __repl_type_query = ");
         let input_start = source.len();
@@ -319,22 +258,6 @@ impl SessionItem {
     }
 }
 
-impl SessionBinding {
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "fallback only applies when parsing cannot classify bindings"
-        )
-    )]
-    fn fallback(source: &str) -> Self {
-        Self {
-            source: ensure_trailing_semicolon(source),
-            summary: fallback_binding_summary(source),
-        }
-    }
-}
-
 fn session_items_from_source(source: &str) -> Vec<SessionItem> {
     let parse_result = hew_parser::parse(source);
     if !parse_result.errors.is_empty() {
@@ -356,59 +279,6 @@ fn session_items_from_source(source: &str) -> Vec<SessionItem> {
         .map(|(item, span)| SessionItem {
             source: slice_source(source, span),
             summary: summarize_item(item),
-        })
-        .collect()
-}
-
-fn persistent_bindings(input: &str) -> Vec<SessionBinding> {
-    const MAIN_PREFIX: &str = "fn main() {\n";
-
-    let source = format!("{MAIN_PREFIX}{input}\n}}\n");
-    let parse_result = hew_parser::parse(&source);
-    // Warning-severity parse diagnostics (e.g. "unnecessary semicolon") do
-    // not invalidate the statement; only hard errors do.
-    let has_fatal_errors = parse_result
-        .errors
-        .iter()
-        .any(|error| error.severity == hew_parser::Severity::Error);
-    if has_fatal_errors || parse_result.program.items.len() != 1 {
-        debug_assert!(
-            false,
-            "statement persistence expected parseable statement input: {input:?}"
-        );
-        return Vec::new();
-    }
-
-    let Some((Item::Function(function), _)) = parse_result.program.items.first() else {
-        debug_assert!(false, "statement persistence expected synthetic main");
-        return Vec::new();
-    };
-
-    let prefix_len = MAIN_PREFIX.len();
-    function
-        .body
-        .stmts
-        .iter()
-        .filter_map(|(stmt, span)| match stmt {
-            Stmt::Let { pattern, .. } => {
-                let start = span.start.checked_sub(prefix_len)?;
-                let end = span.end.checked_sub(prefix_len)?.min(input.len());
-                let binding = input.get(start..end)?.trim();
-                Some(SessionBinding {
-                    source: ensure_trailing_semicolon(binding),
-                    summary: summarize_let_binding(&pattern.0, binding),
-                })
-            }
-            Stmt::Var { name, .. } => {
-                let start = span.start.checked_sub(prefix_len)?;
-                let end = span.end.checked_sub(prefix_len)?.min(input.len());
-                let binding = input.get(start..end)?.trim();
-                Some(SessionBinding {
-                    source: ensure_trailing_semicolon(binding),
-                    summary: format!("var {name}"),
-                })
-            }
-            _ => None,
         })
         .collect()
 }
@@ -483,55 +353,6 @@ fn summarize_function(function: &hew_parser::ast::FnDecl) -> String {
     summary
 }
 
-fn summarize_let_binding(pattern: &Pattern, source: &str) -> String {
-    let mut names = Vec::new();
-    collect_pattern_identifiers(pattern, &mut names);
-    if names.is_empty() {
-        format!(
-            "let {}",
-            binding_head(source, "let").unwrap_or_else(|| "<pattern>".to_string())
-        )
-    } else {
-        format!("let {}", names.join(", "))
-    }
-}
-
-fn collect_pattern_identifiers(pattern: &Pattern, names: &mut Vec<String>) {
-    match pattern {
-        Pattern::Wildcard | Pattern::Literal(_) => {}
-        Pattern::Identifier(name) => push_unique(names, name),
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-            for (pattern, _) in patterns {
-                collect_pattern_identifiers(pattern, names);
-            }
-        }
-        Pattern::Struct { fields, .. } => {
-            for field in fields {
-                if let Some((pattern, _)) = &field.pattern {
-                    collect_pattern_identifiers(pattern, names);
-                } else {
-                    push_unique(names, &field.name);
-                }
-            }
-        }
-        Pattern::Or(left, right) => {
-            collect_pattern_identifiers(&left.0, names);
-            collect_pattern_identifiers(&right.0, names);
-        }
-        Pattern::Regex { captures, .. } => {
-            for capture_name in captures {
-                push_unique(names, capture_name);
-            }
-        }
-    }
-}
-
-fn push_unique(names: &mut Vec<String>, name: &str) {
-    if !names.iter().any(|existing| existing == name) {
-        names.push(name.to_string());
-    }
-}
-
 fn render_entry_list<'a, I>(title: &str, empty_message: &str, entries: I) -> String
 where
     I: IntoIterator<Item = &'a str>,
@@ -554,55 +375,6 @@ fn count_phrase(count: usize, singular: &str) -> String {
         format!("1 {singular}")
     } else {
         format!("{count} {singular}s")
-    }
-}
-
-fn ensure_trailing_semicolon(source: &str) -> String {
-    let trimmed = source.trim();
-    if trimmed.ends_with(';') {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed};")
-    }
-}
-
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "fallback summaries are only consumed in test-only paths"
-    )
-)]
-fn fallback_binding_summary(source: &str) -> String {
-    let trimmed = source.trim();
-    if trimmed.starts_with("let ") {
-        format!(
-            "let {}",
-            binding_head(trimmed, "let").unwrap_or_else(|| "<pattern>".to_string())
-        )
-    } else if trimmed.starts_with("var ") {
-        format!(
-            "var {}",
-            binding_head(trimmed, "var").unwrap_or_else(|| "<binding>".to_string())
-        )
-    } else {
-        source_preview(source)
-    }
-}
-
-fn binding_head(source: &str, keyword: &str) -> Option<String> {
-    let trimmed = source.trim();
-    let rest = trimmed.strip_prefix(keyword)?.trim_start();
-    let head = rest
-        .split_once('=')
-        .map_or(rest, |(before, _)| before)
-        .trim()
-        .trim_end_matches(';')
-        .trim();
-    if head.is_empty() {
-        None
-    } else {
-        Some(head.to_string())
     }
 }
 
@@ -670,43 +442,16 @@ mod tests {
         assert_eq!(session.counts().items, 1);
     }
 
+    /// Statements evaluate fresh — prior bindings must NOT be replayed.
     #[test]
-    fn session_accumulates_bindings() {
-        let mut session = Session::new();
-        session.add_binding("let x = 10;");
-        let prog = session.build_program("x + 5");
-        assert!(prog.source.contains("let x = 10;"));
-        assert!(prog.source.contains("println(x + 5)"));
-        assert_eq!(session.counts().bindings, 1);
-    }
-
-    #[test]
-    fn statement_replay_keeps_only_explicit_bindings() {
-        let mut session = Session::new();
-        session.add_persistent_bindings_from_statement("let x = 10;\nvar y = x + 1;");
-        let prog = session.build_program("x + y");
-        assert!(
-            prog.source.contains("let x = 10;"),
-            "source: {}",
-            prog.source
-        );
-        assert!(
-            prog.source.contains("var y = x + 1;"),
-            "source: {}",
-            prog.source
-        );
-    }
-
-    #[test]
-    fn statement_replay_ignores_one_shot_statement() {
-        let mut session = Session::new();
-        session.add_persistent_bindings_from_statement("println(\"once\");");
-        let prog = session.build_program("1 + 1");
-        assert!(
-            !prog.source.contains("println(\"once\")"),
-            "source: {}",
-            prog.source
-        );
+    fn statement_does_not_replay_bindings() {
+        let session = Session::new();
+        let prog = session.build_program("let x = 42;");
+        assert_eq!(prog.kind, InputKind::Statement);
+        // The statement itself is present…
+        assert!(prog.source.contains("let x = 42;"));
+        // …but there are no accumulated bindings to replay (no prior bindings).
+        assert_eq!(prog.source.matches("let x").count(), 1);
     }
 
     #[test]
@@ -716,6 +461,15 @@ mod tests {
         assert_eq!(prog.kind, InputKind::Item);
         assert!(prog.source.contains("fn foo() -> i32 { 42 }"));
         assert!(prog.source.contains("fn main()"));
+    }
+
+    #[test]
+    fn item_input_main_body_is_empty() {
+        // When a new item is defined, main() must have no replayed bindings.
+        let session = Session::new();
+        let prog = session.build_program("fn foo() -> i32 { 42 }");
+        assert_eq!(prog.kind, InputKind::Item);
+        assert!(prog.source.contains("fn main() {}\n"));
     }
 
     #[test]
@@ -746,29 +500,28 @@ mod tests {
     fn clear_resets() {
         let mut session = Session::new();
         session.add_item("fn foo() {}");
-        session.add_binding("let x = 1;");
         session.clear();
         let prog = session.build_program("42");
         assert!(!prog.source.contains("fn foo()"));
-        assert!(!prog.source.contains("let x = 1"));
     }
 
     #[test]
-    fn type_query() {
+    fn type_query_uses_items_not_bindings() {
         let mut session = Session::new();
-        session.add_binding("let x = 10;");
-        let source = session.build_type_query("x + 5");
-        assert!(source.contains("let __repl_type_query = x + 5;"));
-        assert!(source.contains("let x = 10;"));
+        session.add_item("fn give_int() -> i64 { 42 }");
+        let source = session.build_type_query("give_int()");
+        assert!(source.contains("let __repl_type_query = give_int();"));
+        assert!(source.contains("fn give_int()"));
     }
 
     #[test]
     fn render_overview_reports_empty_session() {
         let session = Session::new();
-        assert_eq!(
-            session.render_overview(),
-            "Session state:\n  0 remembered items\n  0 persistent bindings\n  Use let/var bindings or top-level items to build up the session.\n"
-        );
+        let overview = session.render_overview();
+        assert!(overview.contains("Session state:"));
+        assert!(overview.contains("0 remembered items"));
+        // Must NOT mention bindings.
+        assert!(!overview.contains("binding"), "overview: {overview}");
     }
 
     #[test]
@@ -781,19 +534,5 @@ mod tests {
         assert!(output.contains("Remembered items (2):"), "output: {output}");
         assert!(output.contains("fn compute"), "output: {output}");
         assert!(output.contains("const LIMIT"), "output: {output}");
-    }
-
-    #[test]
-    fn render_bindings_lists_destructured_names() {
-        let mut session = Session::new();
-        session.add_binding("let (left, right) = pair();\nvar total = 0;");
-
-        let output = session.render_bindings();
-        assert!(
-            output.contains("Persistent bindings (2):"),
-            "output: {output}"
-        );
-        assert!(output.contains("let left, right"), "output: {output}");
-        assert!(output.contains("var total"), "output: {output}");
     }
 }

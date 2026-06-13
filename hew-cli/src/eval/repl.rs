@@ -586,8 +586,8 @@ impl ReplSession {
     }
 
     #[cfg(test)]
-    pub(crate) fn add_binding_for_test(&mut self, source: &str) {
-        self.session.add_binding(source);
+    pub(crate) fn add_item_for_test(&mut self, source: &str) {
+        self.session.add_item(source);
     }
 
     fn is_wasm_target(&self) -> bool {
@@ -1086,11 +1086,6 @@ impl ReplSession {
                 had_errors: false,
                 errors: Vec::new(),
             },
-            ReplCommand::Bindings => EvalResult {
-                output: self.session.render_bindings(),
-                had_errors: false,
-                errors: Vec::new(),
-            },
             ReplCommand::Clear => {
                 let removed = self.session.counts();
                 self.clear();
@@ -1204,8 +1199,8 @@ impl ReplSession {
     fn record_success(&mut self, input: &str, kind: &InputKind) {
         match kind {
             InputKind::Item => self.session.add_item(input),
-            InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
-            InputKind::Expression | InputKind::Command(_) => {}
+            // Statements evaluate fresh — do not replay them.
+            InputKind::Statement | InputKind::Expression | InputKind::Command(_) => {}
         }
     }
 
@@ -1569,7 +1564,7 @@ pub fn run_interactive(
             if death_count == 1 { "" } else { "s" }
         );
     }
-    println!("Type :help for commands, :session to inspect state, :quit to exit.\n");
+    println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
 
     loop {
         let prompt = "hew> ";
@@ -1701,9 +1696,8 @@ fn help_text() -> &'static str {
     "\
 Commands:
   :help, :h         Show this help message
-  :session, :show   Summarize remembered session state
+  :session, :show   List remembered top-level definitions
   :items            List remembered top-level items
-  :bindings         List remembered let/var bindings
   :quit, :q         Exit the REPL
   :clear, :reset    Reset session (clear all definitions)
   :type <expr>      Show the inferred type of an expression
@@ -1711,32 +1705,34 @@ Commands:
 
 Input types:
   fn, struct, ...   Top-level items are remembered for the session
-  let x = ...;      let/var bindings are remembered for the session
-  <expression>      Bare expressions are evaluated and printed
+  let x = ...;      Evaluated fresh each line — does NOT carry over
+  <expression>      Evaluated fresh each line — does NOT carry over
 
-This is a lightweight evaluator, not a stateful interpreter: reassignments
-and in-place mutations are not carried across inputs. For a multi-statement
-program, use `hew eval -f <file>` or `hew run`.
+Top-level definitions (fn/struct/enum/actor/impl/trait) persist across
+lines so you can define a function then call it. let/var bindings and
+bare statements are evaluated fresh each line — they are NOT carried
+over to the next line, so side effects cannot fire twice.
+For a multi-statement program with shared state, use `hew eval -f <file>`
+or `hew run`.
 "
 }
 
 fn session_count_delta(before: SessionCounts, after: SessionCounts) -> SessionCounts {
     SessionCounts {
         items: after.items.saturating_sub(before.items),
-        bindings: after.bindings.saturating_sub(before.bindings),
     }
 }
 
 fn describe_load_result(added: SessionCounts) -> String {
-    if added.items == 0 && added.bindings == 0 {
-        "no persistent session changes".to_string()
+    if added.items == 0 {
+        "no new definitions".to_string()
     } else {
         format!("added {}", describe_session_entries(added))
     }
 }
 
 fn describe_clear_result(removed: SessionCounts) -> String {
-    if removed.items == 0 && removed.bindings == 0 {
+    if removed.items == 0 {
         "Session cleared.\n".to_string()
     } else {
         format!(
@@ -1747,18 +1743,10 @@ fn describe_clear_result(removed: SessionCounts) -> String {
 }
 
 fn describe_session_entries(counts: SessionCounts) -> String {
-    let mut parts = Vec::new();
     if counts.items > 0 {
-        parts.push(pluralize_session_entry(counts.items, "item"));
-    }
-    if counts.bindings > 0 {
-        parts.push(pluralize_session_entry(counts.bindings, "binding"));
-    }
-
-    if parts.is_empty() {
-        "no session entries".to_string()
+        pluralize_session_entry(counts.items, "item")
     } else {
-        parts.join(", ")
+        "no session entries".to_string()
     }
 }
 
@@ -1879,16 +1867,21 @@ mod tests {
     }
 
     #[test]
-    fn eval_binding_persists() {
+    fn eval_binding_does_not_carry_over() {
         if !require_toolchain() {
             return;
         }
+        // let bindings evaluate fresh — the value does NOT carry to the next line.
         let mut session = ReplSession::new();
         let r1 = session.eval("let x = 42;");
-        assert!(!r1.had_errors, "errors: {:?}", r1.errors);
+        assert!(
+            !r1.had_errors,
+            "binding eval should succeed: {:?}",
+            r1.errors
+        );
         let r2 = session.eval("x + 1");
-        assert!(!r2.had_errors, "errors: {:?}", r2.errors);
-        assert_eq!(r2.output, "43\n");
+        // x is not in scope for the next eval.
+        assert!(r2.had_errors, "x must not be visible in the next eval");
     }
 
     #[test]
@@ -1934,15 +1927,13 @@ mod tests {
 
     #[test]
     fn eval_clear_resets() {
-        if !require_toolchain() {
-            return;
-        }
         let mut session = ReplSession::new();
-        let _ = session.eval("let x = 10;");
+        // Add an item so there is something to clear.
+        session.add_item_for_test("fn foo() -> i64 { 1 }");
         let r = session.eval(":clear");
-        assert_eq!(r.output, "Session cleared.\nRemoved 1 binding.\n");
-        let r2 = session.eval("x + 1");
-        assert!(r2.had_errors);
+        assert_eq!(r.output, "Session cleared.\nRemoved 1 item.\n");
+        // After clear, the item is gone.
+        assert_eq!(session.session.counts().items, 0);
     }
 
     #[test]
@@ -1960,7 +1951,18 @@ mod tests {
         assert!(!result.had_errors);
         assert!(result.output.contains(":quit"));
         assert!(result.output.contains(":session"));
-        assert!(result.output.contains(":bindings"));
+        // :bindings must NOT appear in help — it was removed.
+        assert!(
+            !result.output.contains(":bindings"),
+            "help must not mention :bindings: {}",
+            result.output
+        );
+        // Help must be honest about what persists.
+        assert!(
+            result.output.contains("does NOT carry over") || result.output.contains("NOT carry"),
+            "help must state bindings do not persist: {}",
+            result.output
+        );
     }
 
     #[test]
@@ -2154,42 +2156,39 @@ mod tests {
             "output: {}",
             result.output
         );
+        // Must NOT mention bindings.
         assert!(
-            result.output.contains("0 persistent bindings"),
-            "output: {}",
+            !result.output.contains("binding"),
+            "session overview must not mention bindings: {}",
             result.output
         );
     }
 
     #[test]
-    fn eval_items_and_bindings_commands_list_entries() {
+    fn eval_items_command_lists_entries() {
         let mut session = ReplSession::new();
         session.session.add_item("fn answer() -> i64 { 42 }");
-        session
-            .session
-            .add_binding("let (left, right) = pair();\nvar total = 0;");
 
         let items = session.eval(":items");
         assert!(!items.had_errors);
         assert!(items.output.contains("Remembered items (1):"));
         assert!(items.output.contains("fn answer"));
-
-        let bindings = session.eval(":bindings");
-        assert!(!bindings.had_errors);
-        assert!(bindings.output.contains("Persistent bindings (2):"));
-        assert!(bindings.output.contains("let left, right"));
-        assert!(bindings.output.contains("var total"));
     }
 
     #[test]
     fn eval_reset_alias_clears_session() {
         let mut session = ReplSession::new();
-        session.session.add_binding("let value = 1;");
+        session.session.add_item("fn foo() -> i64 { 1 }");
 
         let cleared = session.eval(":reset");
-        assert_eq!(cleared.output, "Session cleared.\nRemoved 1 binding.\n");
+        assert_eq!(cleared.output, "Session cleared.\nRemoved 1 item.\n");
         let overview = session.eval(":session");
-        assert!(overview.output.contains("0 persistent bindings"));
+        assert!(overview.output.contains("0 remembered items"));
+        assert!(
+            !overview.output.contains("binding"),
+            "overview: {}",
+            overview.output
+        );
     }
 
     // -----------------------------------------------------------------------

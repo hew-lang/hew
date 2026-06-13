@@ -367,6 +367,17 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
             return;
         }
         if !(*ch).value.is_null() {
+            // #1739 (WASM parity): run the registered reply destructor on the
+            // delivered-but-never-consumed leg before freeing the buffer, so
+            // any heap embedded in the reply type R (String/Vec/HashMap/Closure
+            // /owned-field struct) is released rather than leaked. `reply_take`
+            // nulls `value` on consume, so a non-null `value` at the final
+            // release is exactly the never-consumed leg; the single-threaded
+            // refcount means no deliver or consume can race. None (a bit-copy R
+            // with no embedded heap) keeps the prior behaviour.
+            if let Some(drop_fn) = (*ch).reply_drop_fn {
+                drop_fn((*ch).value);
+            }
             libc::free((*ch).value);
         }
         #[cfg(test)]
@@ -1071,8 +1082,6 @@ mod tests {
     /// final free is the never-consumed leg. Pre-fix the destructor is never
     /// invoked (embedded strdup leaks under ASan/LSan; counter stays 0).
     #[test]
-    #[ignore = "RED until the reply_drop_fn run-leg lands in the WASM \
-                hew_reply_channel_free (#1739 WASM-parity commit)"]
     fn delivered_owned_reply_never_consumed_runs_typed_destructor() {
         let _guard = crate::runtime_test_guard();
         WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);
@@ -1131,8 +1140,6 @@ mod tests {
     /// Teardown routing (WASM): a reply delivered and THEN cancelled still runs
     /// its typed destructor on the free leg.
     #[test]
-    #[ignore = "RED until the reply_drop_fn run-leg lands in the WASM \
-                hew_reply_channel_free (#1739 WASM-parity commit)"]
     fn delivered_then_cancelled_reply_runs_destructor_once_on_free() {
         let _guard = crate::runtime_test_guard();
         WASM_REPLY_DTOR_CALLS.store(0, Ordering::Release);

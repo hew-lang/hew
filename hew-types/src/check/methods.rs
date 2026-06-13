@@ -4586,6 +4586,33 @@ impl Checker {
 
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
         let resolved = self.subst.resolve(&receiver_ty);
+        // If the receiver is still an unresolved inference variable that was
+        // created from a coercible integer-literal / const-integer range (both
+        // bounds were literals or let-/const-bound integer literals), eagerly
+        // bind it to i64 before method dispatch.  Coercible-bounds ranges
+        // produce a fresh TypeVar so that function-call use-sites can still
+        // narrow the element type via unification (e.g. `fib(i: i32)` narrows
+        // to i32 without going through a method call), but method dispatch
+        // cannot drive unification from the receiver type alone.  The i64
+        // default matches what `default_unconstrained_range_types` would apply
+        // at the end of the inference pass, moved forward so that methods such
+        // as `.to_f64()` resolve correctly inside the loop body.
+        let resolved = if let Ty::Var(v) = resolved {
+            let is_int_range_var = self
+                .deferred_range_bounds
+                .iter()
+                .any(|(_, dv, ..)| *dv == v);
+            if is_int_range_var {
+                self.subst
+                    .insert(v, &Ty::I64)
+                    .expect("binding integer range element var to i64 must stay acyclic");
+                Ty::I64
+            } else {
+                Ty::Var(v)
+            }
+        } else {
+            resolved
+        };
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Ty::Named { name, .. } = &resolved {

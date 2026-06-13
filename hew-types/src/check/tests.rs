@@ -3087,6 +3087,84 @@ fn for_range_negative_literal_bound_accepted_at_i32() {
     );
 }
 
+/// Regression for hew-lang/hew#1762: `for i in 0..8 { let x = i.to_f64() }`
+/// must resolve before method lookup.  Both bounds are integer literals so the
+/// range element type starts as a fresh inference variable; method dispatch
+/// must see a concrete i64, not an unresolved `?T<n>`.
+///
+/// Before the fix this produced: `no method 'to_f64' on '?T<n>'`.
+#[test]
+fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
+    let source = r"
+        fn main() -> f64 {
+            var acc: f64 = 0.0;
+            for i in 0..8 {
+                acc = acc + i.to_f64();
+            }
+            acc
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "literal-bound range loop variable must resolve before method lookup: {:#?}",
+        output.errors
+    );
+}
+
+/// Regression for hew-lang/hew#1762, const-bound variant:
+/// `const N: i64 = 8; for i in 0..N { let x = i.to_f64() }`.
+/// A const-integer bound is coercible (it is in `const_values`), so the range
+/// element type is also a fresh inference variable.  The loop variable must be
+/// resolved to i64 before method dispatch, not left as `?T<n>`.
+#[test]
+fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
+    let source = r"
+        const N: i64 = 8;
+        fn main() -> f64 {
+            var acc: f64 = 0.0;
+            for i in 0..N {
+                acc = acc + i.to_f64();
+            }
+            acc
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "const-bound range loop variable must resolve before method lookup: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed: when both range bounds are integer literals and the loop
+/// variable is only consumed via method calls (never passed to a function that
+/// would narrow the width), the checker must resolve the variable to a
+/// concrete integer type (i64) and never leave `Ty::Var` visible to the
+/// codegen boundary.
+#[test]
+fn for_range_literal_bounds_method_only_body_resolves_to_i64() {
+    // Both `.to_f64()` and `.to_f32()` are called; no function-call use-site
+    // to narrow the width.  The loop variable must default to i64.
+    let source = r"
+        fn main() -> f64 {
+            var sum: f64 = 0.0;
+            for i in 0..4 {
+                let f = i.to_f64();
+                let g = i.to_f32();
+                sum = sum + f + g.to_f64();
+            }
+            sum
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "literal-bound range: multiple method calls must all resolve to i64: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
 fn typecheck_rejects_implicit_signedness_change_in_call() {
     let source = concat!(

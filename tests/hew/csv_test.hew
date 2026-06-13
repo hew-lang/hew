@@ -134,6 +134,27 @@ fn test_parse_no_headers_three_rows_three_cols_data() {
 }
 
 #[test]
+fn test_parse_every_cell_distinct_no_row_aliasing() {
+    // #1722 regression on the real csv surface: csv builds each row by
+    // pushing a per-row cell Vec into the outer rows Vec. If that push were
+    // a shallow pointer store (alias) instead of copy-in, a reused/cleared
+    // row accumulator would make every stored row observe the LAST row's
+    // contents. Assert ALL six cells of a 3×2 parse with pairwise-distinct
+    // values so any cross-row aliasing shows up as a concrete mismatch,
+    // not just a diagonal coincidence.
+    let tbl = csv.parse_no_headers("r0a,r0b\nr1a,r1b\nr2a,r2b");
+    testing.assert_eq(tbl.rows(), 3);
+    testing.assert_eq(tbl.cols(), 2);
+    testing.assert_eq_str(tbl.get(0, 0), "r0a");
+    testing.assert_eq_str(tbl.get(0, 1), "r0b");
+    testing.assert_eq_str(tbl.get(1, 0), "r1a");
+    testing.assert_eq_str(tbl.get(1, 1), "r1b");
+    testing.assert_eq_str(tbl.get(2, 0), "r2a");
+    testing.assert_eq_str(tbl.get(2, 1), "r2b");
+    tbl.free();
+}
+
+#[test]
 fn test_parse_no_headers_three_cols_get_by_name() {
     // parse_no_headers generates col0, col1, col2 synthetic headers;
     // get_by_name must resolve all three for each data row.

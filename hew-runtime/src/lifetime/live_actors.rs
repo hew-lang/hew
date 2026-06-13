@@ -29,6 +29,7 @@ use std::collections::HashMap;
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::rt_current;
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
@@ -47,6 +48,11 @@ unsafe impl Send for ActorPtr {}
 /// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals; now a field of
 /// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
 /// any still-pending teardown join handles.
+///
+/// Native only: the WASM runtime is single-threaded and has no `RuntimeInner`,
+/// so it backs the registry with a module-private static (`LIVE_ACTORS_WASM`)
+/// instead — see the `with_live_actors` resolver below.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct LiveActors {
     /// Map of live actor id → pointer. Single shard (see module doc).
     map: PoisonSafe<Option<HashMap<u64, ActorPtr>>>,
@@ -58,6 +64,7 @@ pub(crate) struct LiveActors {
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl LiveActors {
     /// Construct an empty liveness registry for a new runtime.
     pub(crate) fn new() -> Self {
@@ -68,9 +75,26 @@ impl LiveActors {
     }
 }
 
+/// Module-private liveness map for the single-threaded WASM runtime.
+///
+/// The WASM runtime has no `RuntimeInner` to own the registry, so the map lives
+/// in a process-global static (as it did before the registry moved onto
+/// `RuntimeInner` for native). Single-threaded cooperative scheduling means
+/// there is no cross-thread contention; the `PoisonSafe` wrapper keeps the
+/// access path identical to native.
+#[cfg(target_arch = "wasm32")]
+static LIVE_ACTORS_WASM: PoisonSafe<Option<HashMap<u64, ActorPtr>>> = PoisonSafe::new(None);
+
 /// Run `f` with mutable access to the current runtime's live-actor map.
+#[cfg(not(target_arch = "wasm32"))]
 fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
     rt_current().live_actors.map.access(f)
+}
+
+/// Run `f` with mutable access to the WASM runtime's live-actor map.
+#[cfg(target_arch = "wasm32")]
+fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
+    LIVE_ACTORS_WASM.access(f)
 }
 
 /// Register an actor in the live tracking map.

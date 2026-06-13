@@ -1,0 +1,6 @@
+[package]
+name = "hew::replynonsend"
+version = "0.1.0"
+description = "Same-bare-name reply fixture: exports a non-Send `Reply` (Rc field)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

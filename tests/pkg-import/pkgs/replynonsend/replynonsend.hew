@@ -1,0 +1,18 @@
+//! Same-bare-name reply fixture (non-Send side). Exports a `Reply` record
+//! carrying an `Rc<i64>` — reference-counted and single-threaded, explicitly
+//! NOT Send. Its sibling `hew::replysend` exports a `Reply` of the same bare
+//! name with an `i64` field (Send). An ask returning this `Reply` must be
+//! rejected with E_DUPLEX_NON_SEND even when the Send `Reply` is also imported.
+
+/// Non-Send reply: an `Rc<i64>` field must not cross the actor boundary.
+type Reply {
+    field: Rc<i64>;
+}
+
+pub actor Producer {
+    let seed: i64;
+
+    receive fn make() -> Reply {
+        panic("unreachable: the ask is rejected at the Send gate")
+    }
+}

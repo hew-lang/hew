@@ -1119,6 +1119,53 @@ impl Checker {
             .insert(SpanKey::in_module(span, self.current_module_idx), rewrite);
     }
 
+    /// Resolve the reply type used for the ask-reply `Send` gate to the
+    /// module-qualified identity of the dispatched actor's defining module.
+    ///
+    /// The reply `Ty::Named` carries the bare type name (`Reply`) as written in
+    /// the imported actor's `receive fn` return annotation. The trait registry
+    /// keys marker derivation by name and the bare key is last-write-wins across
+    /// modules: two imported packages each exporting `Reply` collide, so a Send
+    /// lookup on the bare name can read the wrong module's fields and either
+    /// over-accept a non-Send reply (it reaches codegen and trips the D10 gate)
+    /// or over-reject a Send one. `method_id` is `{module}.{Actor}::{method}` for
+    /// a module actor, so the reply type is defined in `{module}`; if a
+    /// collision-free `{module}.{Name}` registry alias exists (seeded by
+    /// `register_qualified_type_alias` → `alias_type_markers`), derive `Send`
+    /// through that qualified identity. Root / flat-file actors (bare identity,
+    /// no `.`) and replies whose qualified form is not registered fall back to
+    /// the bare type unchanged.
+    fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Ty {
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = resolved_reply
+        else {
+            return resolved_reply.clone();
+        };
+        // Already qualified, or a builtin/generic — nothing to re-key.
+        if builtin.is_some() || name.contains('.') {
+            return resolved_reply.clone();
+        }
+        let Some((actor_identity, _method)) = method_id.rsplit_once("::") else {
+            return resolved_reply.clone();
+        };
+        let Some((module_short, _actor)) = actor_identity.rsplit_once('.') else {
+            return resolved_reply.clone();
+        };
+        let qualified = format!("{module_short}.{name}");
+        if self.registry.has_type_markers(&qualified) {
+            Ty::Named {
+                name: qualified,
+                args: args.clone(),
+                builtin: *builtin,
+            }
+        } else {
+            resolved_reply.clone()
+        }
+    }
+
     fn record_actor_method_dispatch(&mut self, span: &Span, method_id: String, reply_ty: Ty) {
         let resolved_reply = self.subst.resolve(&reply_ty);
         let dispatch = if matches!(resolved_reply, Ty::Unit) {
@@ -1146,11 +1193,18 @@ impl Checker {
             // iff their element is), so in practice this fires only on genuinely
             // non-transferable replies (`Rc`, and any record/tuple/enum that
             // transitively carries one).
-            if !resolved_reply.has_inference_var()
-                && !resolved_reply.contains_error()
+            // Derive `Send` through the reply type's module-qualified identity
+            // so two imported packages that both export a same-bare-named reply
+            // (`badpkg.Reply` vs `goodpkg.Reply`) do not collide on the bare
+            // registry key. The qualified form is used only for the marker
+            // lookup and diagnostic text; the dispatch table keeps the original
+            // bare `reply_ty` the rest of the pipeline expects.
+            let send_check_ty = self.send_gate_reply_ty(&method_id, &resolved_reply);
+            if !send_check_ty.has_inference_var()
+                && !send_check_ty.contains_error()
                 && !self
                     .registry
-                    .implements_marker(&resolved_reply, MarkerTrait::Send)
+                    .implements_marker(&send_check_ty, MarkerTrait::Send)
             {
                 self.report_error(
                     TypeErrorKind::InvalidSend,

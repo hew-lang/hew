@@ -1378,6 +1378,96 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
 }
 
 #[test]
+fn same_bare_name_imported_replies_derive_send_per_module() {
+    // Two imported packages each export a `pub type Reply`: one non-Send
+    // (`Rc<i64>`), one Send (`i64`). The ask-reply Send gate
+    // (`record_actor_method_dispatch`, `E_DUPLEX_NON_SEND`) derives Send from a
+    // named type's structural member set. Keying that derivation on the bare
+    // name `Reply` collides across the two modules — the trait registry's
+    // `type_fields` is last-write-wins — so a Send lookup on the bare name reads
+    // whichever module won the race: a non-Send reply could derive `Send` from
+    // the other module's fields and slip the gate, reaching codegen where it
+    // trips the D10 named-`Rc` fail-closed. The fix seeds the marker tables
+    // under each type's module-qualified key (`badpkg.Reply`, `goodpkg.Reply`)
+    // so the derivation is collision-free. Assert the registry derives the
+    // qualified identities correctly: non-Send for the `Rc` module, Send for the
+    // `i64` module — the load-bearing negative case the bare key cannot express.
+    let bad = hew_parser::parse(
+        r"
+        pub type Reply {
+            field: Rc<i64>
+        }",
+    );
+    assert!(
+        bad.errors.is_empty(),
+        "badpkg parse errors: {:?}",
+        bad.errors
+    );
+    let good = hew_parser::parse(
+        r"
+        pub type Reply {
+            handle: i64
+        }",
+    );
+    assert!(
+        good.errors.is_empty(),
+        "goodpkg parse errors: {:?}",
+        good.errors
+    );
+
+    let root_id = ModuleId::root();
+    let bad_id = ModuleId::new(vec!["badpkg".to_string()]);
+    let good_id = ModuleId::new(vec!["goodpkg".to_string()]);
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(Module {
+        id: bad_id.clone(),
+        items: bad.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.add_module(Module {
+        id: good_id.clone(),
+        items: good.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    })
+    .unwrap();
+    mg.topo_order = vec![bad_id, good_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let _ = checker.check_program(&program);
+
+    let qualified = |name: &str| Ty::Named {
+        builtin: None,
+        name: name.to_string(),
+        args: vec![],
+    };
+    assert!(
+        !checker
+            .registry
+            .implements_marker(&qualified("badpkg.Reply"), crate::traits::MarkerTrait::Send),
+        "`badpkg.Reply {{ field: Rc<i64> }}` must NOT derive Send — its qualified \
+         marker set must hold its OWN Rc field, not the sibling module's i64"
+    );
+    assert!(
+        checker.registry.implements_marker(
+            &qualified("goodpkg.Reply"),
+            crate::traits::MarkerTrait::Send
+        ),
+        "`goodpkg.Reply {{ handle: i64 }}` must derive Send — its qualified marker \
+         set must hold its OWN i64 field, immune to the bare-name collision"
+    );
+}
+
+#[test]
 fn actor_decl_registers_rcfree_members_for_collection_checks() {
     let parsed = hew_parser::parse(
         r"

@@ -1,0 +1,25 @@
+//! Same-bare-name reply fixture (Send side). Exports a `Reply` record whose
+//! sole field is an `i64` — plainly Send. A sibling package `hew::replynonsend`
+//! exports a `Reply` of the same bare name carrying an `Rc<i64>` (non-Send).
+//! Importing both exercises the cross-package bare-name collision in the
+//! ask-reply Send gate: the gate must derive Send through each reply's
+//! module-qualified identity, not the last-write-wins bare registry key.
+
+/// Send reply: a single `i64` field crosses the actor boundary freely.
+type Reply {
+    handle: i64;
+}
+
+pub actor Producer {
+    let seed: i64;
+
+    // The body does not construct `Reply` with a struct literal: in-source
+    // construction of a same-bare-name type when two such packages are imported
+    // resolves the bare name last-write-wins (a separate field-resolution gap),
+    // which would obscure the one behaviour under test here — that the ask-reply
+    // Send gate ACCEPTS this Send reply (no E_DUPLEX_NON_SEND) even with the
+    // sibling non-Send `Reply` in scope.
+    receive fn make() -> Reply {
+        panic("fixture: ask-reply Send gate is checked, not the body")
+    }
+}

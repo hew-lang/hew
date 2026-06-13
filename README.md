@@ -242,6 +242,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 
 Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 
+- Observability guide: [`docs/observe.md`](docs/observe.md)
 - Local troubleshooting guide: [`docs/troubleshooting.md`](docs/troubleshooting.md)
 - Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.sh)**
 

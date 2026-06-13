@@ -1488,6 +1488,17 @@ fn intern_runtime_decl<'ctx>(
         "hew_reply_channel_set_parked_waiter" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_reply_channel_set_reply_drop_fn(ch: *mut HewReplyChannel,
+        //   drop_fn: void(*)(void*) | null) -> void
+        // (`hew-runtime/src/reply_channel.rs`). Registers the reply type R's
+        // typed destructor on the channel; the free leg runs it on a
+        // delivered-but-never-consumed reply (await timeout / cancel) before
+        // freeing the byte-copied buffer, releasing any heap embedded in R
+        // instead of leaking it (#1739). A null thunk (bit-copy R) keeps the
+        // prior buffer-free-alone behaviour.
+        "hew_reply_channel_set_reply_drop_fn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // ── NEW-6b await-deadline wiring (hew-runtime/src/await_cancel.rs,
         // reply_channel.rs, timer_periodic.rs) ───────────────────────────────
         // hew_reply_channel_set_await_cancel(ch: *mut HewReplyChannel,
@@ -9084,6 +9095,182 @@ fn emit_aggregate_drop_inplace_body<'ctx>(
 
     builder.position_at_end(done_bb);
     builder.build_return(None).llvm_ctx("record drop ret")?;
+    Ok(())
+}
+
+/// Extract the reply type `R` of an actor `ask` from the receiver's handle
+/// type. The receiver is typed `Duplex<Msg, Reply>` at every ask site
+/// (`hew-mir/src/lower.rs` `lower_actor_ask`), so `args[1]` is `R`. Fails
+/// closed if the receiver is not a two-arg `Duplex` — without `R` the reply
+/// destructor cannot be synthesised and a timed-out/cancelled owned reply
+/// would leak (#1739).
+/// Resolve the reply type `R` of a suspending/await ask from its **raw reply
+/// slot** place (`Terminator::SuspendingAsk::reply_dest` and the analogous
+/// driver/select/join reply slots). That slot is codegen-bound to the unwrapped
+/// `R` read off the reply channel, so its resolved type *is* `R` — the receiver
+/// place is only a `LocalPid<Actor>` handle and does not name the reply type.
+///
+/// Fail-closed: a reply slot whose type cannot be resolved is a
+/// `CodegenError::FailClosed`, never a guessed type.
+fn ask_reply_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, reply_dest: Place) -> CodegenResult<&'a ResolvedTy> {
+    place_resolved_ty(fn_ctx, reply_dest)
+}
+
+/// Resolve the `void(*)(void*)` destructor for a reply type `R` as a function
+/// pointer (or a null `ptr` for a bit-copy `R`), to register on the reply
+/// channel via `hew_reply_channel_set_reply_drop_fn`. The channel's free leg
+/// runs it on a delivered-but-never-consumed reply (await timeout / cancel),
+/// releasing any heap embedded in `R` instead of leaking it (#1739, #1735).
+///
+/// Strategy mirrors the actor `state_drop_fn` thunk
+/// (`emit_actor_state_drop_body`) — a runtime-registered typed drop thunk —
+/// and reuses the canonical per-field drop machinery
+/// (`classify_state_field_with_enum_layouts` → `emit_field_drop_step`) so the
+/// reply drop and every other owned-value drop stay byte-for-byte consistent
+/// (`lifecycle-symmetry`):
+///   * **bit-copy / user-owned-handle `R`** → null: no embedded heap to
+///     release; the free leg's null check skips the destructor and frees the
+///     buffer alone (the prior behaviour).
+///   * **record / enum `R`** → the already-synthesised
+///     `__hew_{record,enum}_drop_inplace_<R>` thunk. Its body is seeded for
+///     every actor-handler return type by `collect_xnode_codec_drop_seeds`, so
+///     it is guaranteed defined; it is already the `void(void*)` in-place-drop
+///     shape the channel slot needs.
+///   * **leaf-owned `R`** (String/Bytes/Vec/HashMap/HashSet/Closure) → a thin
+///     synthesised `__hew_reply_drop_<R>(*mut buf)` that drops `R` in place by
+///     treating the byte-copied buffer as a single-field `{ R }` aggregate and
+///     running the canonical field-drop step over it. Idempotent: the same `R`
+///     reuses one thunk across every ask site.
+///
+/// Fail-closed: an owned `R` the classifier cannot map to a drop strategy is a
+/// `CodegenError::FailClosed`, never a silent null (which would reinstate the
+/// leak).
+fn ask_reply_drop_thunk_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    reply_ty: &ResolvedTy,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+
+    // Tuple reply: there is no `StateFieldCloneKind` arm for a tuple (the
+    // classifier below fails closed on it), and no registry seed pass emits a
+    // tuple drop body. Synthesise it via the SAME owned-tuple drop spine the
+    // waiter-side `ElabDrop::TupleInPlace` consume uses
+    // (`emit_tuple_drop_inplace_body_only` → `__hew_tuple_drop_inplace_<key>`),
+    // so a never-consumed tuple reply and a consumed one drop byte-for-byte
+    // identically (`lifecycle-symmetry`). A tuple carrying a nested owned tuple
+    // fails closed inside the spine — exactly as the consume side does — so this
+    // never silently under-drops.
+    if let ResolvedTy::Tuple(elems) = reply_ty {
+        let tuple_key = tuple_thunk_key(elems);
+        let tuple_llvm_ty = resolve_ty(ctx, reply_ty, fn_ctx.record_layouts)?;
+        emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
+        let helper = get_or_declare_tuple_drop_inplace(ctx, fn_ctx.llvm_mod, &tuple_key);
+        if helper.count_basic_blocks() == 0 {
+            return Err(CodegenError::FailClosed(format!(
+                "owned ask reply tuple `{reply_ty:?}` resolved \
+                 `__hew_tuple_drop_inplace_{tuple_key}` but it has no body after \
+                 synthesis; refusing to register a dangling reply destructor (#1739)"
+            )));
+        }
+        return Ok(helper.as_global_value().as_pointer_value());
+    }
+
+    // Classify R into the per-field drop kind the canonical drop emitter
+    // consumes. The classifier needs a record-layout slice; reconstruct it from
+    // the codegen resolved-field table exactly as `tuple_inplace_field_kinds`
+    // does, so the reply path and the tuple/record paths share one authority.
+    let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
+        .record_field_resolved_tys
+        .iter()
+        .map(|(name, tys)| hew_mir::RecordLayout {
+            name: name.clone(),
+            field_tys: tys.clone(),
+        })
+        .collect();
+    let mut visited = HashSet::new();
+    let kind = hew_mir::classify_state_field_with_enum_layouts(
+        reply_ty,
+        &record_layouts,
+        fn_ctx.enum_layouts,
+        &mut visited,
+    )
+    .map_err(|e| {
+        CodegenError::FailClosed(format!(
+            "owned ask reply type {reply_ty:?} is not drop-classifiable: {e}; a reply that \
+             times out or is cancelled before consumption would leak its embedded heap \
+             (#1739 reply-channel ownership)"
+        ))
+    })?;
+
+    match &kind {
+        // No embedded heap: the free leg frees the buffer alone (prior
+        // behaviour). Opaque handles are user-owned (`.free()` is explicit) and
+        // a borrowed `Connection` is not released by the reply path, so both are
+        // also null here — matching `emit_field_drop_step`'s no-op arms.
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Ok(ptr_ty.const_null()),
+        // Record / enum reply: register the already-seeded in-place drop thunk.
+        StateFieldCloneKind::UserRecord { name } => {
+            Ok(
+                get_or_declare_record_drop_inplace(ctx, fn_ctx.llvm_mod, name)
+                    .as_global_value()
+                    .as_pointer_value(),
+            )
+        }
+        StateFieldCloneKind::Enum { name } => {
+            Ok(get_or_declare_enum_drop_inplace(ctx, fn_ctx.llvm_mod, name)
+                .as_global_value()
+                .as_pointer_value())
+        }
+        // Leaf-owned reply: synthesise `__hew_reply_drop_<R>` over a `{ R }`
+        // wrapper whose field 0 is R's ABI representation in the buffer.
+        _ => {
+            let sym = format!("__hew_reply_drop_{}", hew_hir::mangle_resolved_ty(reply_ty));
+            if let Some(existing) = fn_ctx.llvm_mod.get_function(&sym) {
+                return Ok(existing.as_global_value().as_pointer_value());
+            }
+            let field_abi = primitive_to_llvm(ctx, reply_ty)?;
+            let wrapper = ctx.struct_type(&[field_abi], false);
+            let f = fn_ctx.llvm_mod.add_function(
+                &sym,
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::Internal),
+            );
+            emit_aggregate_drop_inplace_body(
+                ctx,
+                fn_ctx.llvm_mod,
+                f,
+                wrapper,
+                std::slice::from_ref(&kind),
+            )?;
+            Ok(f.as_global_value().as_pointer_value())
+        }
+    }
+}
+
+/// Emit `hew_reply_channel_set_reply_drop_fn(ch, <reply-drop thunk>)` at an ask
+/// caller site, so the channel runs `R`'s destructor on a never-consumed reply
+/// (#1739). `ch` is the channel just returned by `hew_reply_channel_new`.
+fn wire_reply_drop_fn<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    ch: PointerValue<'ctx>,
+    reply_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let thunk_ptr = ask_reply_drop_thunk_ptr(fn_ctx, reply_ty)?;
+    let setter = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_set_reply_drop_fn",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(setter, &[ch.into(), thunk_ptr.into()], "set_reply_drop_fn")
+        .llvm_ctx("hew_reply_channel_set_reply_drop_fn call")?;
     Ok(())
 }
 
@@ -28777,6 +28964,16 @@ fn emit_suspending_ask_terminator<'ctx>(
         )
         .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
 
+    // #1739: register the reply type R's destructor on the channel before the
+    // ask submits. This is THE timeout/cancel leak path — an `await … | after d`
+    // (or an actor-shutdown race) can deposit an owned reply that no waiter ever
+    // consumes; the channel free leg then runs this destructor on the
+    // never-consumed buffer instead of leaking R's embedded heap. `ch` is the
+    // channel just created above; the reply type comes from the receiver's
+    // `Duplex<Msg, Reply>` handle type.
+    let suspending_ask_reply_ty = ask_reply_ty(fn_ctx, term.reply_dest)?.clone();
+    wire_reply_drop_fn(fn_ctx, ch, &suspending_ask_reply_ty)?;
+
     // ── NEW-6b await-deadline registration. Attach a one-shot cancel/deadline
     // record to the reply channel BEFORE the ask submits so the reply-deposit
     // path (`hew_await_cancel_complete` on the channel's `await_cancel`) is the
@@ -29602,6 +29799,13 @@ fn emit_suspending_call_closure_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
         .into_pointer_value();
+    // #1739: register the return type's destructor on the channel before the
+    // child closure can deposit a reply. If this suspending call is abandoned
+    // (cancel / coro destroy / shutdown) after the child deposited but before
+    // the driver consumed, the channel free leg runs this destructor on the
+    // never-consumed buffer rather than leaking the reply's embedded heap. The
+    // reply type is the closure's return type.
+    wire_reply_drop_fn(fn_ctx, ch, term.ret_ty)?;
     // Ref accounting (mirrors the SuspendingAsk model): `new` gives the +1
     // wait-side (creator) ref this driver frees on the completion edge. We
     // UNCONDITIONALLY retain one sender ref here (Option B): for a non-unit
@@ -33442,6 +33646,22 @@ fn emit_select_terminator<'ctx>(
                 value,
                 ..
             } => {
+                // #1739: register R's destructor on this arm's channel BEFORE
+                // the ask issues. In a select, at most one arm wins; a reply
+                // delivered to a LOSING ask arm (another arm won, or the timer
+                // fired) is never consumed, and the loser-cleanup `cancel+free`
+                // below reaches the channel free leg with `value` still set.
+                // Without this the free leg would `libc::free` the buffer alone
+                // and leak the reply's embedded heap. R is the arm's reply
+                // binding type (the slot the winner edge loads the reply into).
+                let arm_reply_binding = arms[arm_idx].binding.ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "select{{}} ActorAsk arm {arm_idx} carries no binding Place \
+                         (the per-arm reply slot whose type is R)"
+                    ))
+                })?;
+                let arm_reply_ty = ask_reply_ty(fn_ctx, arm_reply_binding)?.clone();
+                wire_reply_drop_fn(fn_ctx, ch_val, &arm_reply_ty)?;
                 let actor_ptr = load_duplex_handle(fn_ctx, *actor, "select_actor_handle")?;
                 let (payload_ptr, payload_size) =
                     actor_payload_ptr_size(fn_ctx, *value, "select_ask_payload")?;
@@ -34465,6 +34685,15 @@ fn emit_join_terminator<'ctx>(
             .builder
             .build_store(slot, ch_val)
             .llvm_ctx("join ch slot store")?;
+
+        // #1739: register this branch's reply destructor on its channel BEFORE
+        // the ask issues. `join` awaits every branch, but if the join is
+        // abandoned (coro destroy / actor shutdown) after a branch deposited
+        // its reply yet before `hew_reply_wait` consumed it, the abandon/cancel
+        // teardown reaches this channel's free leg with `value` still set.
+        // Without the destructor the free leg would `libc::free` the buffer
+        // alone and leak R's embedded heap. R is the branch's reply type.
+        wire_reply_drop_fn(fn_ctx, ch_val, &branch.reply_ty)?;
 
         let actor_ptr = load_duplex_handle(fn_ctx, branch.actor, "join_actor_handle")?;
         let (payload_ptr, payload_size) =

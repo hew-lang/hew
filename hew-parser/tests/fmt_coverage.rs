@@ -2100,3 +2100,52 @@ fn fmt_actor_var_field_ast_equality_after_format() {
         "AST mismatch: var-field mutability lost after format+reparse.\nFormatted:\n{formatted}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Unicode brace escape round-trip
+// -----------------------------------------------------------------------
+
+/// Verify parse → format → parse is idempotent for `\u{...}` string literals.
+///
+/// The formatter normalises `\u{XXXX}` to the literal UTF-8 character; this
+/// test asserts that the resulting AST is identical to the one produced by the
+/// original source (i.e., `program_eq_ignoring_spans` holds).
+#[test]
+fn fmt_unicode_brace_escape_roundtrip() {
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+
+    for src in &[
+        // BMP: U+00E9 LATIN SMALL LETTER E WITH ACUTE
+        r#"fn main() { let s = "\u{00E9}"; }"#,
+        // Astral: U+1F600 GRINNING FACE
+        r#"fn main() { let s = "\u{1F600}"; }"#,
+    ] {
+        let p1 = parse(src);
+        assert!(
+            p1.errors.is_empty(),
+            "parse errors for {src:?}: {:?}",
+            p1.errors
+        );
+
+        let formatted = format_program(&p1.program);
+
+        let p2 = parse(&formatted);
+        assert!(
+            p2.errors.is_empty(),
+            "reparse errors for {src:?}: {:?}\nFormatted:\n{formatted}",
+            p2.errors
+        );
+
+        assert!(
+            program_eq_ignoring_spans(&p1.program, &p2.program),
+            "AST mismatch after format+reparse for {src:?}.\nFormatted:\n{formatted}"
+        );
+
+        // Also verify idempotency: a second format pass must be identical.
+        let formatted2 = format_program(&p2.program);
+        assert_eq!(
+            formatted, formatted2,
+            "format_program not idempotent for {src:?}.\nFirst:\n{formatted}\nSecond:\n{formatted2}"
+        );
+    }
+}

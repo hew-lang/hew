@@ -21,9 +21,17 @@ env:
 
 jobs:
   build-and-test:
-    name: Build & test (FreeBSD x86_64)
-    runs-on: ubuntu-24.04
+    name: Build & test (FreeBSD ${{ matrix.arch }})
+    runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-24.04
+          - arch: aarch64
+            runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
@@ -34,12 +42,13 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v3
+          key: llvm-22.1.0-freebsd15-${{ matrix.arch }}-v3
 
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
         with:
           release: "15.0"
+          arch: ${{ matrix.arch }}
           mem: 8192
           prepare: |
             pkg install -y rust cmake ninja git pkgconf libffi
@@ -91,7 +100,9 @@ jobs:
             fi
 
             # ── Rust builds ────────────────────────────────────────────────
-            export LLVM_PREFIX="${LLVM_PREFIX}"
+            # llvm-sys-221 discovers LLVM via this variable; the source-built
+            # prefix is not on PATH inside the VM.
+            export LLVM_SYS_221_PREFIX="${LLVM_PREFIX}"
             export CC=clang
             export CXX=clang++
             # Build runtime (release + debug for E2E tests)
@@ -137,4 +148,4 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: llvm-freebsd-install.tar.zst
-          key: llvm-22.1.0-freebsd15-amd64-v3
+          key: llvm-22.1.0-freebsd15-${{ matrix.arch }}-v3

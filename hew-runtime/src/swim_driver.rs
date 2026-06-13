@@ -430,6 +430,10 @@ mod tests {
     /// start/stop is idempotent and tears the registry entry down.
     #[test]
     fn start_then_stop_removes_registry_entry() {
+        // `hew_node_new`/`hew_node_free` touch the runtime-owned node slot
+        // (`remember_node`/`forget_node`), so a default runtime must be
+        // installed or `rt_current()` traps across the FFI boundary.
+        let _runtime_guard = crate::runtime_test_guard();
         // Use a fabricated-but-stable pointer; the loop reads it but a null
         // cluster makes run_one_period bail immediately, so it never UB-derefs.
         // We allocate a zeroed HewNode-sized box to back the pointer safely.

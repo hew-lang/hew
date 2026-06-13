@@ -40,6 +40,11 @@ struct TestNode(*mut hew_runtime::hew_node::HewNode);
 
 impl TestNode {
     fn new(node_id: u16) -> Self {
+        // `hew_node_new` records the node in the runtime-owned node slot, so a
+        // default runtime must be installed first or the slot resolver traps.
+        // `hew_sched_init` is idempotent: the first call installs the default
+        // runtime, later calls are no-ops.
+        hew_runtime::scheduler::hew_sched_init();
         let bind = CString::new("127.0.0.1:0").unwrap();
         // SAFETY: bind is a valid C string for the duration of this call.
         let node = unsafe { hew_node_new(node_id, bind.as_ptr()) };

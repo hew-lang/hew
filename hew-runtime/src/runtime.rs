@@ -36,6 +36,7 @@
 
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
+use crate::hew_node::NodeSlot;
 use crate::lifetime::live_actors::LiveActors;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::registry::ShardedRegistry;
@@ -87,6 +88,10 @@ pub(crate) struct RuntimeInner {
     /// shutdown and freed by `hew_runtime_cleanup`. Was the
     /// `TOP_LEVEL_SUPERVISORS` global.
     pub(crate) supervisor_roots: PoisonSafe<Vec<SupervisorPtr>>,
+    /// Distributed-node state: the active node, the known-node list, and the
+    /// remote-ask reply table. Was the `CURRENT_NODE` + `KNOWN_NODES` +
+    /// `REPLY_TABLE` globals.
+    pub(crate) node: NodeSlot,
 }
 
 impl RuntimeInner {
@@ -99,6 +104,7 @@ impl RuntimeInner {
             registry: ShardedRegistry::new(),
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
             supervisor_roots: PoisonSafe::new(Vec::new()),
+            node: NodeSlot::new(),
         }
     }
 

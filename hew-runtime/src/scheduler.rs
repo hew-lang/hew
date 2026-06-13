@@ -2137,9 +2137,22 @@ pub(crate) fn worker_less_runtime_box() -> *mut RuntimeInner {
 pub(crate) fn init_real_scheduler_for_test() {
     let is_placeholder = get_scheduler().is_none_or(|s| s.stealers.is_empty());
     if is_placeholder {
-        drop(runtime::take_default());
+        // Detach the placeholder (so `hew_sched_init` installs a fresh runtime
+        // rather than CAS-no-opping), install the worker-backed runtime, then
+        // move the placeholder's distributed-node state onto it before dropping
+        // it. Before de-globalization the active node / known-node list / reply
+        // table were process statics that survived this swap; the transfer
+        // preserves that so a test may start a node before calling this helper.
+        let placeholder = runtime::take_default();
+        assert_eq!(hew_sched_init(), 0, "scheduler init");
+        if let Some(placeholder) = placeholder {
+            runtime::rt_current()
+                .node
+                .test_transfer_from(&placeholder.node);
+        }
+    } else {
+        assert_eq!(hew_sched_init(), 0, "scheduler init");
     }
-    assert_eq!(hew_sched_init(), 0, "scheduler init");
 }
 
 /// Box `sched` inside a default `RuntimeInner` and install it in the runtime

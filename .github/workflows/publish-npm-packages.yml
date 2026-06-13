@@ -81,7 +81,7 @@ jobs:
       - name: Build all npm packages
         run: node scripts/build-npm-packages.mjs
         env:
-          # Release profile in CI (wasm-opt disabled per Cargo.toml metadata).
+          # Release profile in CI — wasm-opt enabled per Cargo.toml metadata.
           NPM_WASM_PROFILE: release
 
       - name: Dry-run pack (verify staging)

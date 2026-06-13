@@ -281,6 +281,18 @@ pub(crate) struct Scheduler {
     worker_count: usize,
 }
 
+#[cfg(test)]
+impl Scheduler {
+    /// Whether this scheduler owns real worker threads (non-empty `stealers`),
+    /// as opposed to a worker-less placeholder. The runtime test guard uses
+    /// this to refuse freeing a runtime that was upgraded to a real scheduler
+    /// under a reused box address (see `runtime::runtime_ptr_is_worker_backed`).
+    /// Mirrors the placeholder discriminator in `init_real_scheduler_for_test`.
+    pub(crate) fn is_worker_backed(&self) -> bool {
+        !self.stealers.is_empty()
+    }
+}
+
 /// Per-worker parking primitive.
 struct Parker {
     mutex: Mutex<()>,

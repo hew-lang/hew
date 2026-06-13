@@ -201,7 +201,7 @@ pub(crate) struct RuntimeTestGuard {
     _lock_guard: crate::scheduler::SchedTestLock,
     /// The default `RuntimeInner` this guard installed (only the outermost guard
     /// installs one); reclaimed on drop. Null for re-entrant guards or when a
-    /// runtime was already installed.
+    /// runtime was already installed. Always a **worker-less** placeholder.
     installed_runtime: *mut crate::runtime::RuntimeInner,
 }
 
@@ -209,15 +209,25 @@ pub(crate) struct RuntimeTestGuard {
 impl Drop for RuntimeTestGuard {
     fn drop(&mut self) {
         if !self.installed_runtime.is_null() {
-            // Reclaim our installed runtime — but only if the slot still holds
-            // exactly the pointer we installed. A test may legitimately have
-            // torn the runtime down itself (e.g. by calling
-            // `hew_runtime_cleanup`, which `take_default()`s and drops it); in
-            // that case the slot is null (or holds a different runtime the test
-            // installed) and the box is already freed, so we must NOT double
-            // free. We hold the lock, so no *other* test races this check.
+            // Reclaim our installed worker-less placeholder — but only if the
+            // slot still holds exactly that pointer AND that runtime is still
+            // worker-less. A test may legitimately have torn the runtime down
+            // itself (e.g. `hew_runtime_cleanup`, which `take_default()`s and
+            // drops it) or replaced it (`init_real_scheduler_for_test`, which
+            // frees our placeholder and installs a worker-backed runtime —
+            // possibly at the SAME address the allocator just freed). The
+            // worker-backed check defeats that ABA alias: a reused address now
+            // holds a worker-backed scheduler, so we must NOT free it — doing so
+            // would be a use-after-free against its running workers. A
+            // `NoWorkerSchedulerForTest` that swapped our placeholder out and
+            // back leaves it worker-less, so we still reclaim it (no leak). We
+            // hold the lock, so no *other* test races this check.
             let slot = crate::runtime::default_runtime_ptr(std::sync::atomic::Ordering::SeqCst);
-            if slot == self.installed_runtime {
+            // SAFETY: under the scheduler-test lock the slot is not concurrently
+            // freed; `runtime_ptr_is_worker_backed` reads it only if non-null.
+            let slot_is_worker_backed =
+                unsafe { crate::runtime::runtime_ptr_is_worker_backed(slot) };
+            if slot == self.installed_runtime && !slot_is_worker_backed {
                 // Join any background teardown threads this test left in flight
                 // (a deferred supervisor-stop or restart-free registered via
                 // `push_deferred_teardown_thread`) BEFORE detaching and freeing

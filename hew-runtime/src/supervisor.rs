@@ -4779,6 +4779,9 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_child_get_live_returns_pid_as_handle() {
+        // hew_supervisor_stop unregisters from the runtime-owned supervisor
+        // roots, so the test needs a runtime installed (explicit-install model).
+        let _rt = crate::runtime_test_guard();
         // Arrange: supervisor with one pool slot, two members.
         let sup = unsafe { make_sup() };
         assert!(!sup.is_null());
@@ -4808,6 +4811,7 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_child_get_out_of_range_index_returns_dead_unknown_slot() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         let name = std::ffi::CString::new("workers").unwrap();
         unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
@@ -4827,6 +4831,7 @@ mod pool_slot_tests {
     fn pool_child_get_after_member_removal_returns_dead_unknown_slot() {
         // Simulates "pool member dynamically scaled out": remove a member,
         // then look up by the (now-invalid) index → Dead(UnknownSlot).
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         let name = std::ffi::CString::new("workers").unwrap();
         unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
@@ -4850,6 +4855,7 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_child_get_unknown_pool_key_returns_dead() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         unsafe { mark_running(sup) };
 
@@ -4871,6 +4877,7 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_child_get_stopped_supervisor_returns_dead_shutdown() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         // Supervisor was never started (running == 0).
         let r = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
@@ -4882,6 +4889,7 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_len_tracks_member_add_and_remove() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         let name = std::ffi::CString::new("sizers").unwrap();
         let key = unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
@@ -4899,6 +4907,7 @@ mod pool_slot_tests {
 
     #[test]
     fn pool_len_invalid_key_returns_minus_one() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         assert_eq!(unsafe { hew_supervisor_pool_len(sup, 99) }, -1);
         unsafe { hew_supervisor_stop(sup) };
@@ -4906,6 +4915,7 @@ mod pool_slot_tests {
 
     #[test]
     fn multiple_pool_slots_have_disjoint_key_spaces() {
+        let _rt = crate::runtime_test_guard();
         let sup = unsafe { make_sup() };
         let n0 = std::ffi::CString::new("alpha").unwrap();
         let n1 = std::ffi::CString::new("beta").unwrap();

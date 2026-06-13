@@ -249,6 +249,35 @@ pub(crate) fn default_runtime_ptr(ordering: Ordering) -> *mut RuntimeInner {
 // `SCHEDULER` pointer directly; now they swap the `RuntimeInner` pointer. These
 // helpers keep that manipulation in one place and out of the production path.
 
+/// Report whether the runtime at `ptr` owns a worker-backed scheduler.
+///
+/// The runtime test guard installs only **worker-less** placeholder runtimes,
+/// and must reclaim its placeholder on drop only while it is still that
+/// placeholder. Pointer-equality alone is unsound: when a test upgrades to a
+/// real scheduler (`init_real_scheduler_for_test` frees the placeholder, then
+/// `hew_sched_init` installs a worker-backed runtime), the allocator may hand
+/// the freed box's address back for the new runtime (an ABA alias) — so a
+/// guard that frees on pointer-equality alone would free a *live* worker-backed
+/// runtime out from under its running workers. Checking that the slot's runtime
+/// is still worker-less defeats that alias: a reused address now holds a
+/// worker-backed scheduler, so the guard correctly declines to free it. A
+/// `NoWorkerSchedulerForTest` that swaps the placeholder out and back leaves it
+/// worker-less, so the guard still reclaims it (no leak).
+///
+/// # Safety
+///
+/// `ptr` must be null or a valid pointer to an installed `RuntimeInner` (the
+/// caller holds the scheduler-test lock, so the slot is not concurrently freed).
+#[cfg(test)]
+pub(crate) unsafe fn runtime_ptr_is_worker_backed(ptr: *mut RuntimeInner) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `ptr` is a live installed runtime.
+    let inner = unsafe { &*ptr };
+    inner.scheduler.is_worker_backed()
+}
+
 /// Install `inner` as the default runtime, returning the previously-installed
 /// pointer (null if none). Test-only unconditional swap (no compare-exchange):
 /// the caller restores `previous` on teardown.

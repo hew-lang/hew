@@ -6553,6 +6553,28 @@ impl Builder {
             ResolvedTy::Tuple(elems) => elems
                 .iter()
                 .any(|e| crate::model::ty_contains_heap_owning(e, &self.enum_layouts)),
+            // Nested collection elements (Vec<T> / HashMap / HashSet) are owned
+            // heap handles constructed through the owned descriptor ABI: their
+            // element loads route to `hew_vec_get_owned`, their pushes upgrade
+            // to `hew_vec_push_owned` (COPY-IN), and the outer Vec releases via
+            // `hew_vec_free_owned` running the per-element drop_fn (#1722). A
+            // closure-pair `Vec<fn>` / `Vec<closure>` element keeps its existing
+            // pointer/closure-pairs ABI (separate lane) — excluded here so it is
+            // NOT reclassified to owned (must mirror codegen's
+            // `resolved_ty_element_owns_heap_for_owned_vec` exactly, so the
+            // drop_fn the elaborator emits matches what codegen constructs —
+            // `dedup-semantic-boundary`).
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet),
+                ..
+            } => true,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Vec),
+                args,
+                ..
+            } => !args.first().is_some_and(|e| {
+                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+            }),
             ResolvedTy::Named { name, args, .. } => {
                 let short = short_name(name);
                 let key = if args.is_empty() {
@@ -24708,6 +24730,14 @@ fn derive_local_collection_drop_allowed(
             // not an escape. Scan only the by-value operand tail, mirroring
             // the terminator-side receiver-borrow rule below.
             if let Instr::CallRuntimeAbi(call) = instr {
+                // `hew_vec_push_owned` / `hew_vec_set_owned` DEEP-CLONE their
+                // element operand (COPY-IN): neither the borrowed receiver nor the
+                // cloned element source escapes the candidate, so the source keeps
+                // its own scope-exit release (#1722 — `container-ingress-ownership-
+                // is-per-container` COPY-IN retain). Skip the whole call.
+                if is_vec_copy_in_element_store_symbol(call.symbol()) {
+                    continue;
+                }
                 if is_vec_receiver_borrow_symbol(call.symbol()) {
                     for p in call.args().iter().skip(1) {
                         if let Some(l) = base_local(*p) {
@@ -24743,6 +24773,13 @@ fn derive_local_collection_drop_allowed(
         // handle to the `ReturnSlot`, …) is scanned in full: a member read there
         // is an escape.
         match &block.terminator {
+            // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`):
+            // the element operand is deep-cloned into the slot, so no operand
+            // escapes a collection candidate — the source retains sole ownership
+            // and keeps its own scope-exit drop (#1722 COPY-IN retain). Scan
+            // nothing (must precede the receiver-borrow arm, which would still
+            // scan the by-value element operand as an escape).
+            Terminator::Call { callee, .. } if is_vec_copy_in_element_store_symbol(callee) => {}
             Terminator::Call { callee, args, .. }
                 if is_collection_receiver_borrow_callee(callee)
                     || is_vec_receiver_borrow_symbol(callee) =>
@@ -28070,6 +28107,26 @@ fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
             | "hew_hashset_is_empty_layout"
             | "hew_hashset_clone_layout"
     )
+}
+
+/// True for the owned-element Vec STORES that take their element by COPY-IN —
+/// `hew_vec_push_owned` / `hew_vec_set_owned` memcpy the source handle into the
+/// slot and then run the descriptor `clone_fn` to DEEP-COPY the owned heap, so
+/// the slot ends up owning an independent clone and the SOURCE keeps sole
+/// ownership of its original buffer (`hew-runtime/src/vec.rs` —
+/// `alias-byte-copy-not-semantic-clone`). For the collection-local escape scan
+/// this means the element operand of these calls does NOT escape: it is a
+/// borrow-for-clone, not an ownership hand-off, so a candidate read there must
+/// stay on its own scope-exit drop spine (#1722 COPY-IN retain). This is the
+/// owned-Vec analogue of `is_vec_receiver_borrow_symbol`, but it additionally
+/// clears the BY-VALUE element operand, not just the borrowed receiver.
+///
+/// Map/set value ingress (`hew_hashmap_insert_layout` /
+/// `hew_hashset_insert_layout`) is deliberately NOT here: that container chose
+/// MOVE for its values, so its element operands genuinely escape and must keep
+/// excluding their source (`container-ingress-ownership-is-per-container`).
+fn is_vec_copy_in_element_store_symbol(callee: &str) -> bool {
+    matches!(callee, "hew_vec_push_owned" | "hew_vec_set_owned")
 }
 
 /// Build the elaborated block list + per-`ExitPath` drop plans for a

@@ -74,6 +74,13 @@ pub fn resolve_stream_method(
     clippy::implicit_hasher,
     reason = "uses the checker's concrete TypeDef table shape"
 )]
+#[allow(
+    clippy::match_same_arms,
+    reason = "the tuple and nested-collection arms intentionally stay separate: \
+              they document distinct ownership contracts and select different \
+              clone/drop thunk kinds in codegen (tuple-thunk vs collection-thunk), \
+              even though both resolve to the same `\"layout\"` suffix at this layer"
+)]
 pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
     ty: &crate::Ty,
     type_defs: &std::collections::HashMap<String, crate::check::TypeDef, S>,
@@ -99,21 +106,30 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::Named {
             builtin: Some(b), ..
         } if b.lowers_as_pointer_vec_element() => Some("ptr"),
-        // Function / closure elements ride the pointer convention: each
-        // element slot holds a heap-boxed copy of the 16-byte closure pair
-        // (the boxing/unboxing marshalling lives in codegen's vec-op
-        // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
-        // Same authority as `RuntimeCallingConvention::for_ty`'s
-        // Function/Closure → Pointer arm — keep the two in agreement.
-        // Nested collection builtins (Vec<T>, HashMap<K,V>, HashSet<T>) are
-        // heap-allocated and pointer-shaped at runtime. The lowerer in
-        // `hew-hir/src/lower.rs` (vec_push_symbol_for_elem) already routes
-        // these to `hew_vec_push_ptr`; the checker suffix must agree so the
-        // method_call_rewrite entry is recorded and HIR lowering doesn't fail
-        // with "no checker-produced rewrite entry".
-        crate::Ty::Function { .. }
-        | crate::Ty::Closure { .. }
-        | crate::Ty::Named {
+        // A closure-pair `Vec<fn>` / `Vec<closure>` ELEMENT keeps the pointer
+        // ABI: its clone/free is the closure-pairs family (boxing marshalling +
+        // `hew_vec_free_closure_pairs`), a separate lane (#1722 out-of-scope).
+        // Checked before the general collection arm so it is never deep-copied.
+        crate::Ty::Named {
+            builtin: Some(crate::builtin_type::BuiltinType::Vec),
+            args,
+            ..
+        } if args.first().is_some_and(|e| {
+            matches!(e, crate::Ty::Function { .. } | crate::Ty::Closure { .. })
+        }) =>
+        {
+            Some("ptr")
+        }
+        // Nested collection elements (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`)
+        // are heap-handle values that OWN their backing store. Route them
+        // through the owned layout-descriptor protocol so `Vec<collection>`
+        // deep-copies (COPY-IN) on push and releases each element via the
+        // per-element drop_fn — exactly like `Vec<OwnedRecord>` (whose value
+        // records also resolve to `"layout"` below). The checker's owned
+        // routing (`vec_owned_element_admissible`) upgrades the `_layout`
+        // push/get/set/pop symbols to the `_owned` ABI; clone/append/remove
+        // stay fail-closed for owned elements (parity with owned records).
+        crate::Ty::Named {
             builtin:
                 Some(
                     crate::builtin_type::BuiltinType::Vec
@@ -121,7 +137,14 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
                     | crate::builtin_type::BuiltinType::HashSet,
                 ),
             ..
-        } => Some("ptr"),
+        } => Some("layout"),
+        // Function / closure elements ride the pointer convention: each
+        // element slot holds a heap-boxed copy of the 16-byte closure pair
+        // (the boxing/unboxing marshalling lives in codegen's vec-op
+        // lowering; the scope-exit release is `hew_vec_free_closure_pairs`).
+        // Same authority as `RuntimeCallingConvention::for_ty`'s
+        // Function/Closure → Pointer arm — keep the two in agreement.
+        crate::Ty::Function { .. } | crate::Ty::Closure { .. } => Some("ptr"),
         // Named element types: heap-handle nominals (`is_indirect = true`)
         // share the pointer-shaped ABI; value-record nominals
         // (`is_indirect = false`) lower through the layout-descriptor

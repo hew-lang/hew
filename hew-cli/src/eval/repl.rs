@@ -56,6 +56,10 @@ pub enum CliEvalError {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        /// Terminating signal (e.g. `8` for `SIGFPE`) when the child was
+        /// killed by a signal rather than exiting normally. Used to synthesise
+        /// a message when the child produced no stderr of its own.
+        signal: Option<i32>,
     },
 }
 
@@ -79,6 +83,26 @@ impl fmt::Display for CliEvalError {
 
 impl std::error::Error for CliEvalError {}
 
+impl From<CompiledEvalError> for CliEvalError {
+    fn from(error: CompiledEvalError) -> Self {
+        match error {
+            CompiledEvalError::DiagnosticsRendered => Self::DiagnosticsRendered,
+            CompiledEvalError::Message(message) => Self::Message(message),
+            CompiledEvalError::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+                signal,
+            } => Self::RuntimeFailure {
+                stdout,
+                stderr,
+                exit_code,
+                signal,
+            },
+        }
+    }
+}
+
 impl fmt::Display for LoadFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -96,8 +120,9 @@ fn load_file_error_from_cli(error: CliEvalError) -> LoadFileError {
             stdout,
             stderr,
             exit_code,
+            signal,
         } => {
-            emit_runtime_failure_output(&stdout, &stderr);
+            emit_runtime_failure_output(&stdout, &stderr, exit_code, signal);
             LoadFileError::Message(format!("program exited with status {exit_code}"))
         }
     }
@@ -134,6 +159,7 @@ enum ExpressionEvalPlan {
     Display(String),
 }
 
+#[derive(Debug)]
 enum CompiledEvalError {
     DiagnosticsRendered,
     Message(String),
@@ -141,14 +167,86 @@ enum CompiledEvalError {
         stdout: String,
         stderr: String,
         exit_code: i32,
+        signal: Option<i32>,
     },
 }
 
-pub(crate) fn emit_runtime_failure_output(stdout: &str, stderr: &str) {
+/// Synthesise a user-facing message for a runtime failure whose child produced
+/// no stderr of its own.
+///
+/// A signal-killed child (e.g. `1 / 0` raising `SIGFPE`) reports no exit code
+/// and writes nothing to stderr, so without this the failure surfaces as a bare
+/// non-zero exit with no explanation. Naming the signal — and, for the common
+/// arithmetic trap, the divide-by-zero cause — turns a silent failure into an
+/// actionable one.
+///
+/// Windows has no signals: a hardware trap (e.g. `1 / 0`) is delivered as an
+/// NTSTATUS exit code rather than via [`terminating_signal`], which is `None`
+/// there. The exit-code path therefore also maps the common NTSTATUS exception
+/// codes to the same named causes so the failure is just as actionable as the
+/// Unix signal path. The codes are matched on their `u32` bit pattern because
+/// they arrive as a signed `i32` (e.g. `0xC000_0094` is `-1073741676`).
+pub(crate) fn describe_runtime_failure(exit_code: i32, signal: Option<i32>) -> String {
+    if let Some(sig) = signal {
+        let detail = match sig {
+            4 => "SIGILL (illegal instruction; for a Hew program usually a runtime safety trap such as divide-by-zero or integer overflow)",
+            5 => "SIGTRAP (runtime trap; for a Hew program usually divide-by-zero, integer overflow, or a bounds check)",
+            6 => "SIGABRT (abort)",
+            8 => "SIGFPE (arithmetic exception, e.g. divide-by-zero)",
+            10 => "SIGBUS (bus error)",
+            11 => "SIGSEGV (segmentation fault)",
+            _ => "",
+        };
+        if detail.is_empty() {
+            format!("runtime error: program terminated by signal {sig}")
+        } else {
+            format!("runtime error: program terminated by signal {sig} — {detail}")
+        }
+    } else if let Some(detail) = describe_ntstatus_exit(exit_code) {
+        format!("runtime error: program exited with status {exit_code} — {detail}")
+    } else {
+        format!("runtime error: program exited with status {exit_code}")
+    }
+}
+
+/// Map a Windows NTSTATUS exception code (delivered as a process exit code) to
+/// a named cause, mirroring the Unix signal wording.
+///
+/// Only the codes that a Hew program's runtime traps can produce are named:
+/// the integer arithmetic faults plus the two memory faults. The high nibble
+/// `0xC` (NTSTATUS severity ERROR) makes these bit patterns unambiguous against
+/// the small non-zero exit codes a process picks for ordinary failures, so the
+/// mapping is safe to apply on every platform.
+fn describe_ntstatus_exit(exit_code: i32) -> Option<&'static str> {
+    match exit_code.cast_unsigned() {
+        0xC000_0094 => Some("integer divide-by-zero (arithmetic trap)"),
+        0xC000_0095 => Some("integer overflow (arithmetic trap)"),
+        0xC000_0005 => Some("access violation (invalid memory access)"),
+        // A Hew safety trap (divide-by-zero, integer overflow) lowered through
+        // LLVM commonly surfaces on Windows as an illegal instruction (`ud2`),
+        // mirroring the Unix SIGILL arm: name the likely arithmetic cause.
+        0xC000_001D => Some(
+            "illegal instruction (for a Hew program usually a runtime safety trap \
+             such as divide-by-zero or integer overflow)",
+        ),
+        _ => None,
+    }
+}
+
+pub(crate) fn emit_runtime_failure_output(
+    stdout: &str,
+    stderr: &str,
+    exit_code: i32,
+    signal: Option<i32>,
+) {
     if !stdout.is_empty() {
         print!("{stdout}");
     }
-    if !stderr.is_empty() {
+    if stderr.is_empty() {
+        // The child died without saying why (e.g. a signal-killed arithmetic
+        // trap). Synthesise an explanation so the failure is not silent.
+        eprintln!("{}", describe_runtime_failure(exit_code, signal));
+    } else {
         eprint!("{stderr}");
     }
 }
@@ -521,8 +619,8 @@ impl ReplSession {
     }
 
     #[cfg(test)]
-    pub(crate) fn add_binding_for_test(&mut self, source: &str) {
-        self.session.add_binding(source);
+    pub(crate) fn add_item_for_test(&mut self, source: &str) {
+        self.session.add_item(source);
     }
 
     fn is_wasm_target(&self) -> bool {
@@ -635,14 +733,20 @@ impl ReplSession {
                 stdout,
                 stderr,
                 exit_code,
+                signal,
             }) => {
-                if !stderr.is_empty() {
+                let message = if stderr.is_empty() {
+                    let synth = describe_runtime_failure(exit_code, signal);
+                    eprintln!("{synth}");
+                    synth
+                } else {
                     eprint!("{stderr}");
-                }
+                    format!("program exited with status {exit_code}")
+                };
                 EvalResult {
                     output: stdout,
                     had_errors: true,
-                    errors: vec![format!("program exited with status {exit_code}")],
+                    errors: vec![message],
                 }
             }
         }
@@ -716,17 +820,7 @@ impl ReplSession {
                 self.record_success(trimmed, &checked_program.kind);
                 Ok(output)
             }
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -808,17 +902,7 @@ impl ReplSession {
                 self.record_success(trimmed, &kind);
                 Ok(output)
             }
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -871,6 +955,12 @@ impl ReplSession {
             let options = hew_compile::FrontendOptions {
                 enable_wasm_target: self.is_wasm_target(),
                 project_dir: self.project_dir.clone(),
+                // This probe type-checks the same accumulated REPL fragment, so
+                // it must suppress the completeness lints too; otherwise an
+                // unrelated eval failure would surface the probe's spurious
+                // `unused import`/`unused variable` warnings alongside the real
+                // error.
+                repl_fragment: true,
                 ..hew_compile::FrontendOptions::default()
             };
             let state = hew_compile::run_program_frontend_to_typecheck(
@@ -1029,11 +1119,6 @@ impl ReplSession {
                 had_errors: false,
                 errors: Vec::new(),
             },
-            ReplCommand::Bindings => EvalResult {
-                output: self.session.render_bindings(),
-                had_errors: false,
-                errors: Vec::new(),
-            },
             ReplCommand::Clear => {
                 let removed = self.session.counts();
                 self.clear();
@@ -1147,8 +1232,8 @@ impl ReplSession {
     fn record_success(&mut self, input: &str, kind: &InputKind) {
         match kind {
             InputKind::Item => self.session.add_item(input),
-            InputKind::Statement => self.session.add_persistent_bindings_from_statement(input),
-            InputKind::Expression | InputKind::Command(_) => {}
+            // Statements evaluate fresh — do not replay them.
+            InputKind::Statement | InputKind::Expression | InputKind::Command(_) => {}
         }
     }
 
@@ -1168,17 +1253,7 @@ impl ReplSession {
             self.jit_mode,
         ) {
             Ok(output) => Ok(output),
-            Err(CompiledEvalError::DiagnosticsRendered) => Err(CliEvalError::DiagnosticsRendered),
-            Err(CompiledEvalError::Message(error)) => Err(CliEvalError::Message(error)),
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }) => Err(CliEvalError::RuntimeFailure {
-                stdout,
-                stderr,
-                exit_code,
-            }),
+            Err(error) => Err(CliEvalError::from(error)),
         }
     }
 
@@ -1221,6 +1296,7 @@ impl ReplSession {
                     stdout,
                     stderr,
                     exit_code,
+                    signal,
                 }) => {
                     // Prepend output collected from successful earlier chunks so
                     // callers (non-JSON print path, JSON stdout field, :load) all
@@ -1232,12 +1308,14 @@ impl ReplSession {
                             stdout: collected,
                             stderr,
                             exit_code,
+                            signal,
                         });
                     }
                     return Err(CliEvalError::RuntimeFailure {
                         stdout,
                         stderr,
                         exit_code,
+                        signal,
                     });
                 }
                 Err(e) => return Err(e),
@@ -1253,6 +1331,7 @@ impl ReplSession {
                     stdout,
                     stderr,
                     exit_code,
+                    signal,
                 }) => {
                     if !collected.is_empty() {
                         collected.push_str(&stdout);
@@ -1260,12 +1339,14 @@ impl ReplSession {
                             stdout: collected,
                             stderr,
                             exit_code,
+                            signal,
                         });
                     }
                     return Err(CliEvalError::RuntimeFailure {
                         stdout,
                         stderr,
                         exit_code,
+                        signal,
                     });
                 }
                 Err(e) => return Err(e),
@@ -1302,8 +1383,9 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
             stdout,
             stderr,
             exit_code,
+            signal,
         }) => {
-            emit_runtime_failure_output(&stdout, &stderr);
+            emit_runtime_failure_output(&stdout, &stderr, exit_code, signal);
             InteractiveEvalOutcome::MessageError(format!("program exited with status {exit_code}"))
         }
     }
@@ -1338,6 +1420,7 @@ fn run_inprocess_compiled(
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
+            repl_fragment: true,
             ..crate::compile::CompileOptions::default()
         },
     )
@@ -1351,10 +1434,12 @@ fn run_inprocess_compiled(
             stdout,
             stderr,
             exit_code,
+            signal,
         }) => Err(CompiledEvalError::RuntimeFailure {
             stdout: normalize_captured_output(&stdout),
             stderr: normalize_captured_output(&stderr),
             exit_code,
+            signal,
         }),
         Ok(crate::process::BinaryRunOutcome::Timeout) => Err(CompiledEvalError::Message(format!(
             "evaluation timed out after {}",
@@ -1368,11 +1453,12 @@ fn run_inprocess_compiled(
 
 /// Dispatch to JIT, native, or WASM execution depending on mode and target.
 ///
-/// When `jit_mode` is `Some(Inprocess | Auto)`, fail closed through the `ORCv2`
-/// gap guard — no temp dir, no subprocess, and no LLJIT invocation.
-/// `Worker` and `None` route through the AOT/WASM paths.
-/// When `target` resolves to a WASM target, routes through wasmtime.
-/// Otherwise falls through to the existing native `run_inprocess_compiled`
+/// Only `Some(Inprocess)` routes to the fail-closed `ORCv2` gap guard, because
+/// the user explicitly asked for the in-process LLJIT path that does not exist
+/// yet. `Auto` means "best available", which today is the AOT path — failing
+/// closed on it would be a category error — so it falls through alongside
+/// `Worker` and `None`. When `target` resolves to a WASM target, routes through
+/// wasmtime; otherwise falls through to the native `run_inprocess_compiled`
 /// AOT+spawn path.
 fn run_eval_compiled(
     program: hew_parser::ast::Program,
@@ -1383,13 +1469,9 @@ fn run_eval_compiled(
     target: Option<&str>,
     jit_mode: Option<crate::args::JitMode>,
 ) -> Result<String, CompiledEvalError> {
-    // JIT in-process path — no temp dir, no subprocess. `Auto` resolves to the
-    // same fail-closed guard as `Inprocess`; `Worker` and `None` fall through to
-    // the AOT+spawn path below.
-    if matches!(
-        jit_mode,
-        Some(crate::args::JitMode::Inprocess | crate::args::JitMode::Auto)
-    ) {
+    // Only an explicit `--jit=inprocess` reaches the fail-closed guard. `Auto`
+    // selects the best available backend (today: AOT) and must not fail closed.
+    if matches!(jit_mode, Some(crate::args::JitMode::Inprocess)) {
         return run_inprocess_jit(program, source, source_label, project_dir);
     }
 
@@ -1426,6 +1508,7 @@ fn run_inprocess_jit(
                 stdout: String::new(),
                 stderr: msg,
                 exit_code: 1,
+                signal: None,
             })
         }
     }
@@ -1452,6 +1535,7 @@ fn run_wasm_eval_compiled(
         &crate::compile::CompileOptions {
             project_dir,
             target: target.map(str::to_owned),
+            repl_fragment: true,
             ..crate::compile::CompileOptions::default()
         },
     )
@@ -1467,6 +1551,9 @@ fn run_wasm_eval_compiled(
             stdout,
             stderr,
             exit_code,
+            // WASM traps surface as exit codes via wasi_runner, not host
+            // signals.
+            signal: None,
         }),
         Ok(crate::wasi_runner::WasiCapturedOutcome::Timeout) => {
             Err(CompiledEvalError::Message(format!(
@@ -1502,12 +1589,15 @@ pub fn run_interactive(
     println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
     if death_count > 0 {
         eprintln!(
-            "warning: last session ended in an uncaught signal \
-             ({death_count} such event{} in the last 7 days)",
+            "note: a previous session ended without a clean :quit \
+             ({death_count} time{} in the last 7 days) — usually from closing \
+             the terminal or stopping the process, not a defect. Each input is \
+             evaluated in its own subprocess, so a crash there cannot take this \
+             REPL down with it.",
             if death_count == 1 { "" } else { "s" }
         );
     }
-    println!("Type :help for commands, :session to inspect state, :quit to exit.\n");
+    println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
 
     loop {
         let prompt = "hew> ";
@@ -1639,38 +1729,43 @@ fn help_text() -> &'static str {
     "\
 Commands:
   :help, :h         Show this help message
-  :session, :show   Summarize remembered session state
+  :session, :show   List remembered top-level definitions
   :items            List remembered top-level items
-  :bindings         List persistent let/var bindings
   :quit, :q         Exit the REPL
   :clear, :reset    Reset session (clear all definitions)
   :type <expr>      Show the inferred type of an expression
   :load <file>      Load a .hew file into the session
 
 Input types:
-  fn, struct, ...   Top-level items are remembered across evaluations
-  let x = ...;      Bindings persist in the session
-  <expression>      Bare expressions are evaluated and printed
+  fn, struct, ...   Top-level items are remembered for the session
+  let x = ...;      Evaluated fresh each line — does NOT carry over
+  <expression>      Evaluated fresh each line — does NOT carry over
+
+Top-level definitions (fn/struct/enum/actor/impl/trait) persist across
+lines so you can define a function then call it. let/var bindings and
+bare statements are evaluated fresh each line — they are NOT carried
+over to the next line, so side effects cannot fire twice.
+For a multi-statement program with shared state, use `hew eval -f <file>`
+or `hew run`.
 "
 }
 
 fn session_count_delta(before: SessionCounts, after: SessionCounts) -> SessionCounts {
     SessionCounts {
         items: after.items.saturating_sub(before.items),
-        bindings: after.bindings.saturating_sub(before.bindings),
     }
 }
 
 fn describe_load_result(added: SessionCounts) -> String {
-    if added.items == 0 && added.bindings == 0 {
-        "no persistent session changes".to_string()
+    if added.items == 0 {
+        "no new definitions".to_string()
     } else {
         format!("added {}", describe_session_entries(added))
     }
 }
 
 fn describe_clear_result(removed: SessionCounts) -> String {
-    if removed.items == 0 && removed.bindings == 0 {
+    if removed.items == 0 {
         "Session cleared.\n".to_string()
     } else {
         format!(
@@ -1681,18 +1776,10 @@ fn describe_clear_result(removed: SessionCounts) -> String {
 }
 
 fn describe_session_entries(counts: SessionCounts) -> String {
-    let mut parts = Vec::new();
     if counts.items > 0 {
-        parts.push(pluralize_session_entry(counts.items, "item"));
-    }
-    if counts.bindings > 0 {
-        parts.push(pluralize_session_entry(counts.bindings, "binding"));
-    }
-
-    if parts.is_empty() {
-        "no session entries".to_string()
+        pluralize_session_entry(counts.items, "item")
     } else {
-        parts.join(", ")
+        "no session entries".to_string()
     }
 }
 
@@ -1707,6 +1794,89 @@ fn pluralize_session_entry(count: usize, singular: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_runtime_failure_names_arithmetic_signal() {
+        // SIGFPE (8) is x86's divide-by-zero trap.
+        let msg = describe_runtime_failure(1, Some(8));
+        assert!(msg.contains("signal 8"), "missing signal number: {msg}");
+        assert!(msg.contains("divide-by-zero"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_trap_signal() {
+        // SIGTRAP (5) is the ARM divide-by-zero / safety-trap path.
+        let msg = describe_runtime_failure(1, Some(5));
+        assert!(msg.contains("signal 5"), "missing signal number: {msg}");
+        assert!(msg.contains("divide-by-zero"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_falls_back_to_exit_code() {
+        let msg = describe_runtime_failure(42, None);
+        assert!(msg.contains("status 42"), "missing exit code: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_divide_by_zero_exit() {
+        // Windows delivers `1 / 0` as NTSTATUS 0xC0000094
+        // (STATUS_INTEGER_DIVIDE_BY_ZERO), surfaced as the signed exit code
+        // -1073741676 with no terminating signal. The cause must still be named.
+        let msg = describe_runtime_failure(0xC000_0094u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(
+            msg.contains("divide-by-zero") || msg.contains("arithmetic"),
+            "missing cause: {msg}"
+        );
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_integer_overflow_exit() {
+        // 0xC0000095 = STATUS_INTEGER_OVERFLOW.
+        let msg = describe_runtime_failure(0xC000_0095u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("arithmetic"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_access_violation_exit() {
+        // 0xC0000005 = STATUS_ACCESS_VIOLATION.
+        let msg = describe_runtime_failure(0xC000_0005u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("access violation"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_illegal_instruction_exit() {
+        // 0xC000001D = STATUS_ILLEGAL_INSTRUCTION (signed exit code -1073741795).
+        // This is what Windows actually reports for `eval "1 / 0"` because the
+        // safety trap lowers to `ud2`, so the message must satisfy the e2e
+        // assertion (runtime error + arithmetic/divide-by-zero/signal cause).
+        let msg = describe_runtime_failure(0xC000_001Du32.cast_signed(), None);
+        assert_eq!(
+            0xC000_001Du32.cast_signed(),
+            -1_073_741_795,
+            "code/decimal mismatch"
+        );
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("illegal instruction"), "missing cause: {msg}");
+        assert!(
+            msg.contains("divide-by-zero") || msg.contains("arithmetic") || msg.contains("signal"),
+            "must satisfy the e2e cause assertion: {msg}"
+        );
+    }
+
+    #[test]
+    fn describe_runtime_failure_ordinary_exit_code_is_not_misclassified() {
+        // A plain non-zero exit code must not pick up an NTSTATUS cause.
+        let msg = describe_runtime_failure(1, None);
+        assert!(msg.contains("status 1"), "missing exit code: {msg}");
+        assert!(!msg.contains("arithmetic"), "false positive cause: {msg}");
+        assert!(
+            !msg.contains("divide-by-zero"),
+            "false positive cause: {msg}"
+        );
+    }
 
     #[cfg(unix)]
     fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
@@ -1791,16 +1961,21 @@ mod tests {
     }
 
     #[test]
-    fn eval_binding_persists() {
+    fn eval_binding_does_not_carry_over() {
         if !require_toolchain() {
             return;
         }
+        // let bindings evaluate fresh — the value does NOT carry to the next line.
         let mut session = ReplSession::new();
         let r1 = session.eval("let x = 42;");
-        assert!(!r1.had_errors, "errors: {:?}", r1.errors);
+        assert!(
+            !r1.had_errors,
+            "binding eval should succeed: {:?}",
+            r1.errors
+        );
         let r2 = session.eval("x + 1");
-        assert!(!r2.had_errors, "errors: {:?}", r2.errors);
-        assert_eq!(r2.output, "43\n");
+        // x is not in scope for the next eval.
+        assert!(r2.had_errors, "x must not be visible in the next eval");
     }
 
     #[test]
@@ -1846,15 +2021,13 @@ mod tests {
 
     #[test]
     fn eval_clear_resets() {
-        if !require_toolchain() {
-            return;
-        }
         let mut session = ReplSession::new();
-        let _ = session.eval("let x = 10;");
+        // Add an item so there is something to clear.
+        session.add_item_for_test("fn foo() -> i64 { 1 }");
         let r = session.eval(":clear");
-        assert_eq!(r.output, "Session cleared.\nRemoved 1 binding.\n");
-        let r2 = session.eval("x + 1");
-        assert!(r2.had_errors);
+        assert_eq!(r.output, "Session cleared.\nRemoved 1 item.\n");
+        // After clear, the item is gone.
+        assert_eq!(session.session.counts().items, 0);
     }
 
     #[test]
@@ -1872,7 +2045,18 @@ mod tests {
         assert!(!result.had_errors);
         assert!(result.output.contains(":quit"));
         assert!(result.output.contains(":session"));
-        assert!(result.output.contains(":bindings"));
+        // :bindings must NOT appear in help — it was removed.
+        assert!(
+            !result.output.contains(":bindings"),
+            "help must not mention :bindings: {}",
+            result.output
+        );
+        // Help must be honest about what persists.
+        assert!(
+            result.output.contains("does NOT carry over") || result.output.contains("NOT carry"),
+            "help must state bindings do not persist: {}",
+            result.output
+        );
     }
 
     #[test]
@@ -2066,42 +2250,39 @@ mod tests {
             "output: {}",
             result.output
         );
+        // Must NOT mention bindings.
         assert!(
-            result.output.contains("0 persistent bindings"),
-            "output: {}",
+            !result.output.contains("binding"),
+            "session overview must not mention bindings: {}",
             result.output
         );
     }
 
     #[test]
-    fn eval_items_and_bindings_commands_list_entries() {
+    fn eval_items_command_lists_entries() {
         let mut session = ReplSession::new();
         session.session.add_item("fn answer() -> i64 { 42 }");
-        session
-            .session
-            .add_binding("let (left, right) = pair();\nvar total = 0;");
 
         let items = session.eval(":items");
         assert!(!items.had_errors);
         assert!(items.output.contains("Remembered items (1):"));
         assert!(items.output.contains("fn answer"));
-
-        let bindings = session.eval(":bindings");
-        assert!(!bindings.had_errors);
-        assert!(bindings.output.contains("Persistent bindings (2):"));
-        assert!(bindings.output.contains("let left, right"));
-        assert!(bindings.output.contains("var total"));
     }
 
     #[test]
     fn eval_reset_alias_clears_session() {
         let mut session = ReplSession::new();
-        session.session.add_binding("let value = 1;");
+        session.session.add_item("fn foo() -> i64 { 1 }");
 
         let cleared = session.eval(":reset");
-        assert_eq!(cleared.output, "Session cleared.\nRemoved 1 binding.\n");
+        assert_eq!(cleared.output, "Session cleared.\nRemoved 1 item.\n");
         let overview = session.eval(":session");
-        assert!(overview.output.contains("0 persistent bindings"));
+        assert!(overview.output.contains("0 remembered items"));
+        assert!(
+            !overview.output.contains("binding"),
+            "overview: {}",
+            overview.output
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2371,16 +2552,12 @@ mod tests {
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
     }
 
-    /// `JitMode::Auto` routes to the same execution path as `JitMode::Inprocess`.
-    /// Both return an explicit fail-closed error from the retired JIT guard
-    /// rather than reaching actual execution, so we verify they produce the same
-    /// success/error shape.
-    ///
-    /// Kept unignored because it proves the unavailable path is deterministic
-    /// without restoring the user-facing `hew eval` command.
+    /// `--jit=auto` selects the best-available backend (today AOT) and runs the
+    /// program, while `--jit=inprocess` fails closed through the unavailable
+    /// LLJIT guard. They no longer share an error shape: `auto` is a working
+    /// alias for AOT, not a category error.
     #[test]
-    fn jit_auto_and_inprocess_produce_same_error_shape_without_backend() {
-        // A minimal valid Hew program: a function definition.
+    fn jit_auto_falls_back_to_aot_while_inprocess_fails_closed() {
         let source = "fn main() { println(\"hello\"); }";
         let parse_result = hew_parser::parse(source);
         assert!(
@@ -2389,20 +2566,10 @@ mod tests {
             parse_result.errors
         );
 
-        // The retired in-process JIT guard always returns an explicit error.
-        // Both Auto and Inprocess reach the same code path, so they produce
-        // identical error shapes.
-        let auto_result = run_eval_compiled(
-            parse_result.program.clone(),
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            Some(crate::args::JitMode::Auto),
-        );
+        // `inprocess` fails closed even without a toolchain — it never reaches
+        // codegen.
         let inprocess_result = run_eval_compiled(
-            parse_result.program,
+            parse_result.program.clone(),
             source,
             "<test>",
             DEFAULT_EVAL_TIMEOUT,
@@ -2410,21 +2577,29 @@ mod tests {
             None,
             Some(crate::args::JitMode::Inprocess),
         );
+        assert!(
+            inprocess_result.is_err(),
+            "Inprocess mode must fail closed while in-process JIT is unavailable"
+        );
 
-        // The retired in-process JIT path always fails closed.
+        // `auto` falls through to the AOT path, which needs the native
+        // toolchain to compile and run.
+        if !require_toolchain() {
+            return;
+        }
+        let auto_result = run_eval_compiled(
+            parse_result.program,
+            source,
+            "<test>",
+            DEFAULT_EVAL_TIMEOUT,
+            None,
+            None,
+            Some(crate::args::JitMode::Auto),
+        );
         assert_eq!(
-            auto_result.is_err(),
-            inprocess_result.is_err(),
-            "Auto and Inprocess should produce the same success/error shape"
-        );
-
-        assert!(
-            auto_result.is_err(),
-            "Auto mode must return an error while in-process JIT is retired"
-        );
-        assert!(
-            inprocess_result.is_err(),
-            "Inprocess mode must return an error while in-process JIT is retired"
+            auto_result.expect("Auto mode must succeed via AOT fallback"),
+            "hello\n",
+            "Auto (AOT) should produce the program's stdout"
         );
     }
 

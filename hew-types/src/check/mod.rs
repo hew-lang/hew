@@ -313,18 +313,21 @@ impl Checker {
             .map(|(k, v)| (k.clone(), self.subst.resolve(v)))
             .collect();
 
-        // Emit unused import warnings
-        for (key, (import_span, stored_module)) in &self.import_spans {
-            if !self.used_modules.borrow().contains(key) {
-                self.warnings.push(TypeError {
-                    severity: crate::error::Severity::Warning,
-                    kind: TypeErrorKind::UnusedImport,
-                    span: import_span.clone(),
-                    message: format!("unused import: `{}`", key.short_name),
-                    notes: vec![],
-                    suggestions: vec!["remove this import".to_string()],
-                    source_module: stored_module.clone(),
-                });
+        // Emit unused import warnings. A REPL fragment imports modules it will
+        // reference on later inputs, so suppress this lint for eval fragments.
+        if !self.repl_fragment {
+            for (key, (import_span, stored_module)) in &self.import_spans {
+                if !self.used_modules.borrow().contains(key) {
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::UnusedImport,
+                        span: import_span.clone(),
+                        message: format!("unused import: `{}`", key.short_name),
+                        notes: vec![],
+                        suggestions: vec!["remove this import".to_string()],
+                        source_module: stored_module.clone(),
+                    });
+                }
             }
         }
 

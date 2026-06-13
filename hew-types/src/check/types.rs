@@ -2325,6 +2325,14 @@ pub struct Checker {
     pub(super) unsafe_functions: HashSet<String>,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
+    /// Whether the program under check is a synthetic `hew eval` REPL fragment.
+    ///
+    /// When `true`, the whole-program completeness lints (`DeadCode`,
+    /// `UnusedImport`, `UnusedVariable`, `UnusedMut`) are suppressed: a binding,
+    /// helper, or import that looks unused in one accumulated fragment is
+    /// routinely referenced by a later REPL input, so emitting those warnings
+    /// is noise rather than signal. Set only by the eval paths.
+    pub(super) repl_fragment: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -2603,6 +2611,7 @@ impl Checker {
             impl_assoc_type_bindings: HashMap::new(),
             unsafe_functions: HashSet::new(),
             wasm_target: false,
+            repl_fragment: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             unsupported_slice_spans: HashSet::new(),
@@ -2628,6 +2637,13 @@ impl Checker {
     /// Enable WASM32-specific validation and warnings.
     pub fn enable_wasm_target(&mut self) {
         self.wasm_target = true;
+    }
+
+    /// Mark the program under check as a synthetic `hew eval` REPL fragment,
+    /// suppressing the whole-program completeness lints. See
+    /// [`Checker::repl_fragment`].
+    pub fn set_repl_fragment(&mut self) {
+        self.repl_fragment = true;
     }
 
     /// Register a qualified `Trait::method` name as one whose dispatch

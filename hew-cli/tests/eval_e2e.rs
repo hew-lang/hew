@@ -295,13 +295,16 @@ actor Counter {
     }
 }
 
-let counter = spawn Counter(count: 0);
-counter.increment(1);
-counter.increment(2);
-let _total = await counter.total();
-let _barrier = observe.barrier();
-println(observe.series());
-observe.scrape()
+fn run_counter() {
+    let counter = spawn Counter(count: 0);
+    counter.increment(1);
+    counter.increment(2);
+    let _total = await counter.total();
+    let _barrier = observe.barrier();
+    println(observe.series());
+    println(observe.scrape());
+}
+run_counter();
 ",
     )
     .unwrap();
@@ -400,16 +403,12 @@ fn eval_file_in_repl_context_succeeds() {
 }
 
 #[test]
-fn eval_file_top_level_if_sees_earlier_session_binding() {
+fn eval_file_top_level_if_block_needs_no_spurious_semicolon() {
     require_codegen();
 
     let dir = support::tempdir();
     let path = dir.path().join("control_flow_binding.hew");
-    std::fs::write(
-        &path,
-        "let s = \"heap usage\";\nif s.contains(\"heap\") {\n    println(\"yes\");\n}\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "if true {\n    println(\"yes\");\n}\n").unwrap();
 
     let output = Command::new(hew_binary())
         .arg("eval")
@@ -429,31 +428,6 @@ fn eval_file_top_level_if_sees_earlier_session_binding() {
         !stderr.contains("unnecessary semicolon"),
         "spurious wrapper warning: {stderr}"
     );
-}
-
-#[test]
-fn eval_file_top_level_while_sees_earlier_session_binding() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let path = dir.path().join("while_binding.hew");
-    std::fs::write(
-        &path,
-        "var n = 2;\nwhile n > 0 {\n    println(\"tick\");\n    n = n - 1;\n}\n",
-    )
-    .unwrap();
-
-    let output = Command::new(hew_binary())
-        .arg("eval")
-        .arg("-f")
-        .arg(&path)
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stderr: {stderr}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "tick\ntick\n");
 }
 
 #[test]
@@ -599,20 +573,6 @@ fn statement_replay_stdin_does_not_repeat_one_shot_statement() {
 }
 
 #[test]
-fn statement_replay_stdin_keeps_explicit_binding() {
-    require_codegen();
-
-    let output = run_eval_with_stdin(&["eval", "-f", "-"], "let x = 41;\nx + 1\n");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
-}
-
-#[test]
 fn statement_replay_repl_does_not_repeat_one_shot_statement() {
     require_codegen();
 
@@ -675,10 +635,13 @@ fn repl_accepts_multiline_function_and_keeps_it_in_session() {
 }
 
 #[test]
-fn repl_type_command_reads_interactive_session_binding() {
+fn repl_type_command_reads_interactive_item() {
     require_codegen();
 
-    let output = run_eval_with_stdin(&["eval"], "var x = 10;\n:type x\n:quit\n");
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn give_int() -> i64 { 42 }\n:type give_int()\n:quit\n",
+    );
 
     assert!(
         output.status.success(),
@@ -1303,7 +1266,7 @@ fn eval_repl_session_commands_introspect_state() {
 
     let output = run_eval_with_stdin(
         &["eval"],
-        "let base = 41;\nfn answer(x: i64) -> i64 { x + 1 }\n:session\n:items\n:bindings\n:quit\n",
+        "fn answer(x: i64) -> i64 { x + 1 }\n:session\n:items\n:quit\n",
     );
 
     assert!(
@@ -1316,14 +1279,8 @@ fn eval_repl_session_commands_introspect_state() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Session state:"), "stdout: {stdout}");
     assert!(stdout.contains("1 remembered item"), "stdout: {stdout}");
-    assert!(stdout.contains("1 persistent binding"), "stdout: {stdout}");
     assert!(stdout.contains("Remembered items (1):"), "stdout: {stdout}");
     assert!(stdout.contains("fn answer"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("Persistent bindings (1):"),
-        "stdout: {stdout}"
-    );
-    assert!(stdout.contains("let base"), "stdout: {stdout}");
 }
 
 #[test]
@@ -1332,11 +1289,7 @@ fn eval_repl_load_reports_session_delta() {
 
     let dir = support::tempdir();
     let path = dir.path().join("load_session_delta.hew");
-    std::fs::write(
-        &path,
-        "let base = 41;\nfn answer(x: i64) -> i64 {\n    x + 1\n}\n",
-    )
-    .unwrap();
+    std::fs::write(&path, "fn answer(x: i64) -> i64 {\n    x + 1\n}\n").unwrap();
 
     let output = run_eval_with_stdin(&["eval"], &format!(":load {}\n:quit\n", path.display()));
 
@@ -1349,10 +1302,7 @@ fn eval_repl_load_reports_session_delta() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!(
-            "Loaded {} (added 1 item, 1 binding)",
-            path.display()
-        )),
+        stdout.contains(&format!("Loaded {} (added 1 item)", path.display())),
         "stdout: {stdout}"
     );
 }
@@ -1363,7 +1313,7 @@ fn eval_repl_clear_reports_removed_session_delta() {
 
     let output = run_eval_with_stdin(
         &["eval"],
-        "let base = 41;\nfn answer(x: i64) -> i64 { x + 1 }\n:clear\n:quit\n",
+        "fn answer(x: i64) -> i64 { x + 1 }\n:clear\n:quit\n",
     );
 
     assert!(
@@ -1375,10 +1325,7 @@ fn eval_repl_clear_reports_removed_session_delta() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Session cleared."), "stdout: {stdout}");
-    assert!(
-        stdout.contains("Removed 1 item, 1 binding."),
-        "stdout: {stdout}"
-    );
+    assert!(stdout.contains("Removed 1 item."), "stdout: {stdout}");
 }
 
 #[test]
@@ -3094,4 +3041,248 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert_eq!(strip_ansi(&String::from_utf8_lossy(&output.stdout)), "42\n");
+}
+
+// ---------------------------------------------------------------------------
+// `hew eval` reliability fixes, verified end-to-end:
+//   * whole-program completeness lints stay silent for REPL fragments
+//   * runtime failures surface a cause in both raw and `--json` output
+//   * `--jit auto` falls back to AOT; `--jit inprocess` fails closed
+// ---------------------------------------------------------------------------
+
+fn assert_repl_emits_line(output: &Output, expected: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "REPL run should exit 0;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.lines().any(|line| line.trim_end() == expected),
+        "expected a line equal to {expected:?};\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_never_called_warning() {
+    require_codegen();
+    // Defining then calling a function must not warn that it is "never called".
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn add(a: i64, b: i64) -> i64 { a + b }\nadd(20, 22)\n",
+    );
+    assert_repl_emits_line(&output, "42");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("never called"),
+        "REPL fragment must not warn 'never called'; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_unused_variable_warning() {
+    require_codegen();
+    // A let binding in REPL mode must not produce an "unused variable" warning
+    // even though the binding is not used in the same fragment.
+    // (Tests the repl_fragment lint-suppression from c67a9f4d.)
+    let output = run_eval_with_stdin(&["eval"], "let x = 41;\n:quit\n");
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unused variable"),
+        "REPL fragment must not warn 'unused variable'; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
+    require_codegen();
+    // A multi-import stdlib program evaluated via file mode: imports are
+    // registered as items, then the function that uses them is defined, then
+    // called as an expression.  All locals are used inside the function body,
+    // so no "unused variable" noise should appear.
+    let input = concat!(
+        "import std::string;\n",
+        "import std::option;\n",
+        "import std::iter;\n",
+        "fn stdlib_demo() -> string {\n",
+        "    let s = string.from_int(42);\n",
+        "    let opt = option.map_int(Some(20), |v: i64| v + 22);\n",
+        "    let v: Vec<string> = [\"a\", \"bb\"];\n",
+        "    let lens = iter.map_str(v, |x: string| string.from_int(x.len()));\n",
+        "    f\"{s}:{option.unwrap_int(opt)}:{lens.get(0)},{lens.get(1)}\"\n",
+        "}\n",
+        "stdlib_demo()\n",
+    );
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], input);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdlib chunk should succeed;\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("42:42:1,2"),
+        "expected output '42:42:1,2'; stdout:\n{stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unused variable"),
+        "stdlib chunk must not warn 'unused variable'; stderr:\n{stderr}"
+    );
+}
+
+/// Regression test: definition continuity — define a fn on one line, call it
+/// on the next.  Top-level items persist across evals; bindings do not.
+#[test]
+fn repl_definition_continuity() {
+    require_codegen();
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn double(x: i64) -> i64 { x * 2 }\ndouble(21)\n:quit\n",
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("42\n"), "stdout: {stdout}");
+}
+
+/// Regression test: side-effect deduplication — a statement with a side effect
+/// (file append) must fire EXACTLY ONCE regardless of how many subsequent evals
+/// happen.  Before the fix, replaying bindings into each new synthetic program
+/// caused the RHS to re-execute on every subsequent eval.
+#[test]
+fn repl_no_side_effect_duplication() {
+    require_codegen();
+
+    // Use a unique path under the project tmp area (never /tmp).
+    let dir = support::tempdir();
+    let file_path = dir.path().join("eval_dup_regression.txt");
+    let file_path_str = file_path.to_str().expect("path is valid UTF-8");
+
+    // Two evals: one that appends, one that doesn't.  If binding replay were
+    // still live the append would fire a second time during the `1 + 1` eval.
+    let input = format!(
+        "import std::fs;\nlet _rc = fs.append(\"{file_path_str}\", \"x\");\n1 + 1\n:quit\n"
+    );
+    let output = run_eval_with_stdin(&["eval"], &input);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let byte_count = std::fs::metadata(&file_path).map_or(0, |m| m.len());
+    assert_eq!(
+        byte_count, 1,
+        "fs.append must fire exactly once; file has {byte_count} bytes (expected 1)"
+    );
+}
+
+#[test]
+fn eval_divide_by_zero_surfaces_cause() {
+    require_codegen();
+    // Was exit 1 with empty stderr; now the terminating signal is named.
+    let output = Command::new(hew_binary())
+        .args(["eval", "1 / 0"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "divide-by-zero must exit non-zero; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.trim().is_empty(), "stderr must not be empty");
+    assert!(
+        stderr.contains("runtime error")
+            && (stderr.contains("divide-by-zero")
+                || stderr.contains("arithmetic")
+                || stderr.contains("signal")),
+        "stderr must name the arithmetic/divide-by-zero/signal cause; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn eval_divide_by_zero_json_surfaces_cause() {
+    require_codegen();
+    // `--json` must report a runtime_failure with a non-empty stderr AND
+    // diagnostics, even though the child produced no stderr of its own.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "1 / 0"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "--json must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
+    assert!(
+        !v["stderr"].as_str().unwrap_or("").is_empty(),
+        "JSON stderr must be non-empty: {v}"
+    );
+    assert!(
+        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
+        "JSON diagnostics must be non-empty for an empty-stderr runtime failure: {v}"
+    );
+}
+
+#[test]
+fn eval_jit_auto_falls_back_to_aot() {
+    require_codegen();
+    // `--jit auto` chooses the best available backend (today AOT) and runs.
+    let output = Command::new(hew_binary())
+        .args(["eval", "--jit", "auto", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "--jit auto should fall back to AOT and exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "3", "stdout: {stdout}");
+}
+
+#[test]
+fn eval_jit_inprocess_fails_closed() {
+    require_codegen();
+    // `--jit inprocess` is intentionally fail-closed (#1227/#1235).
+    let output = Command::new(hew_binary())
+        .args(["eval", "--jit", "inprocess", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "--jit inprocess must fail closed; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("unavailable") && combined.contains("#1227"),
+        "fail-closed message should cite the unimplemented JIT bridge; output:\n{combined}"
+    );
 }

@@ -164,9 +164,21 @@ fn run_verify(
 /// The format matches how `exit_eval_error` (via `emit_runtime_failure_output`)
 /// surfaces both stdout and stderr — both streams are included in the message
 /// when non-empty.
-fn format_runtime_failure_message(exit_code: i32, stdout: &str, stderr: &str) -> String {
+fn format_runtime_failure_message(
+    exit_code: i32,
+    signal: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    let header = if stderr.is_empty() {
+        // No child stderr to show — synthesise the cause (e.g. signal-killed
+        // arithmetic trap) so the failure is not reported as a bare status.
+        crate::eval::repl::describe_runtime_failure(exit_code, signal)
+    } else {
+        format!("program exited with status {exit_code}")
+    };
     format!(
-        "program exited with status {exit_code}{}{}",
+        "{header}{}{}",
         if stdout.is_empty() {
             String::new()
         } else {
@@ -217,9 +229,10 @@ fn verify_entry(entry: &ManifestEntry, manifest_dir: &Path, timeout: Duration) -
             stdout,
             stderr,
             exit_code,
+            signal,
         }) => {
             return EntryOutcome::Verified(VerifyOutcome::RunError(
-                format_runtime_failure_message(exit_code, &stdout, &stderr),
+                format_runtime_failure_message(exit_code, signal, &stdout, &stderr),
             ));
         }
     };
@@ -301,7 +314,7 @@ mod tests {
 
     #[test]
     fn runtime_failure_message_includes_stderr() {
-        let msg = format_runtime_failure_message(1, "", "fatal: segmentation fault\n");
+        let msg = format_runtime_failure_message(1, None, "", "fatal: segmentation fault\n");
         assert_eq!(
             msg,
             "program exited with status 1\nstderr:\nfatal: segmentation fault\n"
@@ -310,7 +323,7 @@ mod tests {
 
     #[test]
     fn runtime_failure_message_includes_stdout_and_stderr() {
-        let msg = format_runtime_failure_message(2, "partial output\n", "error: oops\n");
+        let msg = format_runtime_failure_message(2, None, "partial output\n", "error: oops\n");
         assert!(
             msg.contains("stdout:\npartial output\n"),
             "stdout missing from: {msg}"
@@ -323,8 +336,19 @@ mod tests {
 
     #[test]
     fn runtime_failure_message_omits_empty_streams() {
-        let msg = format_runtime_failure_message(1, "", "");
-        assert_eq!(msg, "program exited with status 1");
+        let msg = format_runtime_failure_message(1, None, "", "");
+        assert_eq!(msg, "runtime error: program exited with status 1");
+    }
+
+    #[test]
+    fn runtime_failure_message_synthesises_signal_cause() {
+        // A signal-killed child with no stderr of its own must still produce a
+        // message that names the terminating signal.
+        let msg = format_runtime_failure_message(1, Some(8), "", "");
+        assert!(
+            msg.contains("signal 8") && msg.contains("divide-by-zero"),
+            "expected synthesised SIGFPE cause, got: {msg}"
+        );
     }
 
     // --- ManifestEntry deserialization ---

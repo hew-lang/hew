@@ -5,14 +5,24 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 const EVAL_AFTER_HELP: &str = "\
+`hew eval` is a lightweight, one-shot evaluator: it runs a single expression, a
+piped snippet, or a program from `-f <file>`, and offers an interactive session
+for quick exploration.
+
+Persistence model: top-level definitions (fn/struct/enum/actor/impl/trait) are
+remembered across lines so you can define a function then call it on the next
+line. let/var bindings and bare expression-statements are evaluated fresh each
+line and do NOT carry over — their side effects (file writes, channel sends, …)
+execute exactly once and never replay. For a multi-statement program with
+persistent state, use `hew eval -f <file>` or `hew run`.
+
 REPL commands:
   :help, :h           Show command help
-  :session, :show     Summarize remembered session state
+  :session, :show     List remembered top-level definitions
   :items              List remembered top-level items
-  :bindings           List persistent let/var bindings
   :type <expr>        Show the inferred type of an expression
   :load <file>        Evaluate a file in the current session
-  :clear, :reset      Drop all remembered session state
+  :clear, :reset      Drop all remembered definitions
 ";
 
 /// The Hew programming language compiler.
@@ -380,18 +390,19 @@ pub struct DocArgs {
 /// JIT execution mode for `hew eval`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum JitMode {
-    /// Choose the execution mode automatically.
+    /// Choose the best available execution backend automatically.
     ///
-    /// Today this always selects `Inprocess` (the M1 LLJIT warm-path).
-    /// Future work (#1227 crash counter) may downgrade to `Worker` when
-    /// the host-death count exceeds a threshold.
+    /// Today this is the AOT compile-and-spawn path: the in-process LLJIT
+    /// backend (#1227/#1235) is not implemented yet, so `auto` falls back to
+    /// AOT rather than failing. A future LLJIT backend will be selected here
+    /// transparently.
     Auto,
 
-    /// Run the compiled module in-process via LLJIT (fast, no subprocess).
+    /// Run the compiled module in-process via LLJIT (no subprocess).
     ///
-    /// SHIM: stdout goes directly to the parent fd; no capture yet.
-    /// WHY: the M1 keystone (#1235) requires in-process execution.
-    /// WHEN obsolete: when #1228 introduces a long-lived JIT session.
+    /// Currently unavailable: the Rust v0.5 `ORCv2`/LLJIT bridge is not
+    /// implemented yet (#1227/#1235), so this mode fails closed with an
+    /// explanatory error. Use `auto` (or omit `--jit`) for the AOT path.
     Inprocess,
 
     /// AOT-compile and spawn a child process (current default behaviour).
@@ -415,10 +426,12 @@ pub struct EvalArgs {
     pub target: Option<String>,
     /// JIT execution mode.
     ///
-    /// `auto`      — choose automatically (today: selects `inprocess`).
-    /// `inprocess` — compile and run in-process via LLJIT (no subprocess).
-    /// `worker`    — AOT-compile and spawn a child process (default when
-    ///               this flag is absent).
+    /// `auto`      — choose the best available backend (today: AOT, since the
+    ///               in-process LLJIT backend is not implemented yet).
+    /// `inprocess` — in-process LLJIT; currently unavailable (#1227/#1235) and
+    ///               fails closed with an explanatory error.
+    /// `worker`    — AOT-compile and spawn a child process (default when this
+    ///               flag is absent).
     #[arg(long, value_name = "MODE")]
     pub jit: Option<JitMode>,
     /// Emit a machine-readable JSON run contract on stdout instead of raw program output.

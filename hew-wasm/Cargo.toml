@@ -18,7 +18,12 @@ crate-type = ["cdylib", "rlib"]
 workspace = true
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+# -O1 reduces raw, gzip-9, and brotli-11 transfer size vs the unoptimised
+# baseline.  Higher levels (-O2/-Os/-Oz) aggressively inline and restructure
+# code, breaking the LTO-laid-out locality the compressor exploits and
+# producing a net transfer-size regression.  --enable-bulk-memory is required
+# because the Rust/LLVM backend emits memory.copy/fill (bulk-memory proposal).
+wasm-opt = ["-O1", "--enable-bulk-memory"]
 
 [dependencies]
 hew-analysis = { path = "../hew-analysis" }

@@ -16,6 +16,15 @@ subprocess-intensive = { max-threads = 8 }
 # reap children; capping at 4 concurrent process-timing tests prevents the
 # scheduler saturation that caused bounded_child_timeout false-failures in S117.
 process-timing = { max-threads = 4 }
+# real-timing: tests whose assertions irreducibly measure real wall-clock / OS-level
+# timing — SIGKILL delivery to a process group, two-process loopback round-trips —
+# and therefore cannot be made deterministic via the simulated-time seam (simtime is
+# in-process).  They run ONE-AT-A-TIME (max-threads = 1) so no concurrent test steals
+# the scheduler headroom their delivery windows need, and they are excluded from the
+# lane/smoke fast tiers (see those profiles' default-filter) so they never gate fast
+# iteration.  This is a quarantine, not a parking lot: a timing test that CAN be made
+# deterministic is fixed at the root by the de-flake initiative, never parked here.
+real-timing = { max-threads = 1 }
 
 [profile.default]
 # Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
@@ -126,12 +135,14 @@ retries = 1
 # the OS scheduler can delay signal delivery past the adaptive window.
 #
 # Two-part mitigation:
-#   1. process-timing group (max-threads = 4): limits concurrent process-group
-#      tests so the scheduler has headroom for signal delivery.
+#   1. real-timing group (max-threads = 1): serializes the genuinely-real timing
+#      tests so the scheduler has full headroom for signal delivery, and keeps this
+#      test off the lane/smoke fast tiers — its assertion measures real OS behaviour.
 #   2. retries = 1: absorbs any remaining scheduler jitter that slips past the
-#      group cap, using the strict eventual-invariant assertion already in the test.
+#      serialization, using the strict eventual-invariant assertion already in the test.
 #
-# SHIM: retry absorbs OS scheduler jitter under concurrent load.
+# SHIM: retry absorbs OS scheduler jitter under concurrent load (now serialized in
+# the real-timing quarantine group).
 # WHEN obsolete: when the de-flake work replaces the adaptive-poll loop with a
 #   kernel-level handshake (e.g. a pipe from the grandchild that the test reads
 #   with a blocking call rather than a 25ms-tick poll), the scheduler jitter risk
@@ -145,7 +156,7 @@ retries = 1
 #   still be alive after the kill, causing the kill(pid, 0) == 0 assertion to
 #   fail on both the first try and the retry.
 filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
-test-group = "process-timing"
+test-group = "real-timing"
 retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
 
 [[profile.ci.overrides]]
@@ -155,7 +166,8 @@ retries = 1                                                           # SHIM: se
 # same tests pass deterministically on dedicated hardware (local macOS runs
 # and native arm64 container runs). Hosted arm Linux already proved this
 # family is runner-environment, not code.
-# SHIM: retry absorbs hosted-runner loopback jitter.
+# SHIM: retry absorbs hosted-runner loopback jitter (now serialized in the
+# real-timing quarantine group, which also keeps it off the fast tiers).
 # WHEN obsolete: when the remote-ask client helper gains a bounded
 #   connect-with-deadline (retry/backoff) instead of a one-shot connect.
 # WHAT the real solution looks like: the helper retries the initial node
@@ -165,7 +177,7 @@ retries = 1                                                           # SHIM: se
 #   node) fails on both attempts; the retry only absorbs setup-window misses.
 filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper)"
 retries = 1
-test-group = "process-timing"
+test-group = "real-timing"
 
 [[profile.ci.overrides]]
 # child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
@@ -200,7 +212,7 @@ path = "junit.xml"
 # Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
 # (test-rust / make test) still runs on smoke pass and provides full coverage.
 # The smoke tier does NOT replace the ci profile — it precedes it.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
@@ -242,7 +254,7 @@ test-group = "subprocess-intensive"
 # no binary name.  Substring exclusion therefore needs the contains matcher
 # `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
 # because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 

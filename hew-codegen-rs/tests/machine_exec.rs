@@ -166,6 +166,66 @@ fn compile_fixture(repo: &Path, fixture: &MachineFixture) -> String {
     })
 }
 
+/// Compile and link a fixture to a standalone native binary via `hew build`,
+/// returning the temp dir (the caller keeps it alive until after the run) and
+/// the binary path. The compile+link step uses `.output()` — unbounded here and
+/// backstopped by the nextest envelope, matching `compile_fixture` and
+/// `machine_lifecycle` — so the per-run exec deadline in `run_prebuilt` covers
+/// only native execution, which is contention-immune. Binding compile under a
+/// tight wall-clock is exactly the defect this harness removes.
+fn build_fixture_binary(repo: &Path, source: &Path, stem: &str) -> (tempfile::TempDir, PathBuf) {
+    ensure_hew_runtime_lib(repo);
+    let dir = tempfile::tempdir().expect("create machine-exec build dir");
+    let bin = dir
+        .path()
+        .join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
+
+    let output = hew_command(repo)
+        .arg("build")
+        .arg("-o")
+        .arg(&bin)
+        .arg(source)
+        .output()
+        .expect("spawn hew build");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "hew build {stem} exited non-zero (status={:?}); stderr:\n{stderr}",
+        output.status,
+    );
+    assert!(
+        !stderr.contains("cutover")
+            && !stderr.contains("E_NOT_YET_IMPLEMENTED")
+            && !stderr.contains("E_HIR")
+            && !stderr.contains("E_MIR"),
+        "machine fixture {stem} must build without cutover/HIR/MIR diagnostics; stderr:\n{stderr}",
+    );
+    (dir, bin)
+}
+
+/// Run a prebuilt fixture binary under the bounded-exec helper and assert it
+/// exits zero with stdout matching the oracle. The wall-clock deadline guards
+/// only native execution (compile+link already happened in
+/// `build_fixture_binary`), so runner contention cannot trip it; the bound stays
+/// in place to fail-fast on a genuinely hung or runaway fixture.
+fn run_prebuilt(bin: &Path, label: &str, expected: &str) {
+    let mut command = Command::new(bin);
+    let output = hew_testutil::run_command_bounded(
+        &mut command,
+        label.to_string(),
+        hew_testutil::DEFAULT_EXEC_TIMEOUT,
+    )
+    .unwrap_or_else(|err| panic!("{label}: {err}"));
+    assert!(
+        output.status.success(),
+        "{label} exited non-zero (status={:?}); stderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("fixture stdout is utf-8");
+    assert_eq!(stdout, expected, "{label} stdout mismatch");
+}
+
 fn step_function_body<'a>(ir: &'a str, machine: &str) -> &'a str {
     let marker = format!("define %{} @{}__step(", machine, machine);
     let start = ir
@@ -263,39 +323,49 @@ fn run_machine_fixtures_compile_to_step_dispatch_and_state_table() {
     }
 }
 
-#[test]
-fn run_machine_fixtures_execute_with_expected_stdout() {
+/// Build and run a single machine fixture by its `FIXTURES` stem, asserting the
+/// prebuilt binary's stdout matches the committed `.expected` oracle. Driving
+/// each per-fixture `#[test]` through this keeps `FIXTURES` the single source of
+/// truth and isolates a contention retry to the one unlucky fixture rather than
+/// the whole set.
+fn execute_fixture(stem: &str) {
     let repo = repo_root();
-    for fixture in FIXTURES {
-        let path = fixture_path(&repo, fixture.stem);
-        let expected_path = path.with_extension("expected");
-        let expected = std::fs::read_to_string(&expected_path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
+    let fixture = FIXTURES
+        .iter()
+        .find(|fixture| fixture.stem == stem)
+        .unwrap_or_else(|| panic!("no FIXTURES entry for stem `{stem}`"));
+    let path = fixture_path(&repo, fixture.stem);
+    let expected_path = path.with_extension("expected");
+    let expected = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", expected_path.display()));
 
-        let mut command = hew_command(&repo);
-        command.arg("run").arg(&path);
-        let output = hew_testutil::run_command_bounded(
-            &mut command,
-            format!("hew run {}", path.display()),
-            hew_testutil::DEFAULT_EXEC_TIMEOUT,
-        )
-        .expect("spawn hew run");
-        assert!(
-            output.status.success(),
-            "hew run {} exited non-zero (status={:?}); stderr:\n{}",
-            fixture.stem,
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8(output.stdout).expect("fixture stdout is utf-8");
-        assert_eq!(stdout, expected, "{} stdout mismatch", fixture.stem);
-    }
+    let (_build_dir, bin) = build_fixture_binary(&repo, &path, fixture.stem);
+    run_prebuilt(&bin, &format!("run {} fixture", fixture.stem), &expected);
+}
+
+#[test]
+fn traffic_light_executes_with_expected_stdout() {
+    execute_fixture("run_traffic_light");
+}
+
+#[test]
+fn tcp_handshake_executes_with_expected_stdout() {
+    execute_fixture("run_tcp_handshake");
+}
+
+#[test]
+fn default_stay_executes_with_expected_stdout() {
+    execute_fixture("run_default_stay");
+}
+
+#[test]
+fn connection_lifecycle_executes_with_expected_stdout() {
+    execute_fixture("run_connection_lifecycle");
 }
 
 #[test]
 fn counter_machine_example_executes_self_field_increment() {
     let repo = repo_root();
-    ensure_hew_runtime_lib(&repo);
 
     let machine_source = std::fs::read_to_string(
         repo.join("examples")
@@ -303,8 +373,8 @@ fn counter_machine_example_executes_self_field_increment() {
             .join("counter_machine.hew"),
     )
     .expect("read counter_machine example");
-    let dir = tempfile::tempdir().expect("create counter machine tempdir");
-    let path = dir.path().join("counter_machine_run.hew");
+    let src_dir = tempfile::tempdir().expect("create counter machine tempdir");
+    let path = src_dir.path().join("counter_machine_run.hew");
     std::fs::write(
         &path,
         format!(
@@ -324,20 +394,6 @@ fn counter_machine_example_executes_self_field_increment() {
     )
     .expect("write counter machine runner");
 
-    let mut command = hew_command(&repo);
-    command.arg("run").arg(&path);
-    let output = hew_testutil::run_command_bounded(
-        &mut command,
-        format!("hew run {}", path.display()),
-        hew_testutil::DEFAULT_EXEC_TIMEOUT,
-    )
-    .expect("spawn hew run");
-    assert!(
-        output.status.success(),
-        "hew run counter_machine exited non-zero (status={:?}); stderr:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8(output.stdout).expect("fixture stdout is utf-8");
-    assert_eq!(stdout, "NonZero\n2\n");
+    let (_build_dir, bin) = build_fixture_binary(&repo, &path, "counter_machine_run");
+    run_prebuilt(&bin, "run counter_machine fixture", "NonZero\n2\n");
 }

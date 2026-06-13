@@ -111,6 +111,47 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
     )
 }
 
+/// Recursively replace every `Named { name, .. }` in `ty` with its short
+/// (unqualified) name, stripping a leading `"module."` prefix.
+///
+/// Mirrors `hew-codegen-rs/src/llvm.rs::shorten_named_args` so the enum
+/// layout-registration key (`EnumLayoutRegistry::insert`) and the codegen
+/// layout-lookup key agree on the bare-named spine. C1 stamps an
+/// authoritative module-qualified name onto `ResolvedTy::Named` for imported
+/// type references; that qualifier is meaningful for the OUTER user-type
+/// identity (the struct-layout collision scan) but must not leak into the
+/// type-arg spine of a generic enum mangle, where codegen always normalises
+/// to bare. Only `Named` names are touched; all other leaf variants pass
+/// through unchanged.
+fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            is_opaque,
+        } => ResolvedTy::Named {
+            name: name
+                .rsplit_once('.')
+                .map_or(name.clone(), |(_, short)| short.to_string()),
+            args: args.into_iter().map(shorten_named_arg_qualifiers).collect(),
+            builtin,
+            is_opaque,
+        },
+        ResolvedTy::Tuple(items) => ResolvedTy::Tuple(
+            items
+                .into_iter()
+                .map(shorten_named_arg_qualifiers)
+                .collect(),
+        ),
+        ResolvedTy::Array(elem, n) => {
+            ResolvedTy::Array(Box::new(shorten_named_arg_qualifiers(*elem)), n)
+        }
+        ResolvedTy::Slice(elem) => ResolvedTy::Slice(Box::new(shorten_named_arg_qualifiers(*elem))),
+        other => other,
+    }
+}
+
 /// Render a single `ResolvedTy` as a mangled fragment.
 ///
 /// Uses `_` as the nested separator so a top-level `$`-separated mangle
@@ -579,11 +620,35 @@ impl EnumLayoutRegistry {
     /// Attempt to insert a new layout. Returns `Ok(true)` if a fresh entry
     /// landed, `Ok(false)` if the key was already present, and `Err(())` if
     /// the cap was exceeded (uniform with `RecordLayoutRegistry`).
+    ///
+    /// The dedup key and mangled name are computed from the type-arg spine
+    /// with module qualifiers stripped from every `Named` payload name. The
+    /// codegen enum-layout lookup (`hew-codegen-rs/src/llvm.rs` `resolve_ty`)
+    /// shortens its type-arg spine to bare names before mangling, so the
+    /// registration key MUST do the same or the keys diverge: a generic enum
+    /// instantiated through an import-use site (`Result<_, fs.IoError>`, with
+    /// C1's authoritative qualified `Named.name`) would register under
+    /// `Result$$_$fs.IoError` while the lookup probes `Result$$_$IoError`,
+    /// the miss falling through to the D10 fail-closed gate. Normalising here
+    /// also collapses the qualified and bare spellings of the same payload
+    /// type to one layout entry (they denote one type reached via two import
+    /// paths). The outer `origin_name` is kept verbatim — codegen keeps the
+    /// outer enum name and only shortens the args.
     pub(crate) fn insert(
         &mut self,
         key: EnumMonoKey,
         variants: Vec<EnumVariantLayout>,
     ) -> Result<bool, ()> {
+        let normalized_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
+        let key = EnumMonoKey {
+            type_args: normalized_args,
+            ..key
+        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }
@@ -873,6 +938,55 @@ mod tests {
         );
         let entries = reg.into_vec();
         assert_eq!(entries.len(), 2);
+    }
+
+    fn result_key(err_ty: ResolvedTy) -> EnumMonoKey {
+        EnumMonoKey {
+            origin: ItemId(11),
+            origin_name: "Result".into(),
+            type_args: vec![ResolvedTy::String, err_ty],
+        }
+    }
+
+    #[test]
+    fn enum_layout_registry_collapses_qualified_and_bare_payload() {
+        // C1 stamps an authoritative module qualifier onto imported type
+        // references, so the SAME generic enum instantiation reached through
+        // an import-use site (`Result<string, fs.IoError>`) and through the
+        // declaring module (`Result<string, IoError>`) arrive with divergent
+        // payload spellings of one type. The registry must normalise the
+        // type-arg spine to bare names — exactly as the codegen layout lookup
+        // does — so both collapse to one entry under one mangled key. Without
+        // this, the qualified spelling registers `Result$$string$fs.IoError`
+        // while codegen probes `Result$$string$IoError`, the miss falling
+        // through to the D10 fail-closed gate.
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        let bare_err = ResolvedTy::named_user("IoError", vec![]);
+        let qualified_err = ResolvedTy::named_user("fs.IoError", vec![]);
+        assert_eq!(
+            reg.insert(
+                result_key(qualified_err),
+                vec![some_variant(ResolvedTy::String), none_variant()],
+            ),
+            Ok(true)
+        );
+        // Second insert with the bare spelling is recognised as the same key.
+        assert_eq!(
+            reg.insert(
+                result_key(bare_err),
+                vec![some_variant(ResolvedTy::String), none_variant()],
+            ),
+            Ok(false)
+        );
+        let entries = reg.into_vec();
+        assert_eq!(entries.len(), 1);
+        // The surviving entry is keyed by the bare-normalised mangle, the same
+        // key the codegen enum-layout lookup produces.
+        assert_eq!(entries[0].mangled_name, "Result$$string$IoError");
+        assert_eq!(
+            entries[0].key.type_args[1],
+            ResolvedTy::named_user("IoError", vec![])
+        );
     }
 
     #[test]

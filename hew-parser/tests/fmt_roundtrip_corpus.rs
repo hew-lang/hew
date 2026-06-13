@@ -32,7 +32,7 @@ const CORPUS_ROOTS: &[&str] = &[
 
 /// Minimum corpus size. If the walk produces fewer than this many files, the
 /// test fails — catches accidental root deletion or misrouted relative paths.
-/// The threshold was lowered from 1000 to 400 when the C++ codegen subtree
+/// The threshold was lowered from 1000 to 400 when the legacy codegen subtree
 /// (which contributed ~600 example .hew files) was retired.
 const MIN_CORPUS_FILES: usize = 400;
 

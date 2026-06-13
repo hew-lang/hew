@@ -835,7 +835,7 @@ pub struct HewActor {
     /// Optional state-drop function that runs `impl Drop` callbacks on every
     /// owned field of the actor's live state immediately before
     /// `libc::free(a.state)`. Generated unconditionally for every actor by
-    /// `MLIRGenActor`, even when the body is empty (no owned fields). Wired
+    /// codegen, even when the body is empty (no owned fields). Wired
     /// at spawn time via [`hew_actor_set_state_drop`]. Distinct from
     /// `terminate_fn`: terminate runs the user's `#[on(stop)]` hooks while
     /// the actor is still RUNNING; state-drop runs unconditionally after
@@ -1421,8 +1421,8 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     //
     // `deep_copy_state` (see line 967) is `ptr::copy_nonoverlapping` — a
     // byte memcpy, not a semantic clone. At spawn time the runtime takes
-    // one wrapper buffer (already containing field-level deep copies, made
-    // by codegen's `deepCopyOwnedArgs`) and byte-copies it into two slots:
+    // one wrapper buffer (already containing field-level deep copies made
+    // by codegen) and byte-copies it into two slots:
     // `a.state` and `a.init_state`. Both wrappers therefore contain the
     // same field pointers (Vec.ptr, String.ptr, IO handle ptrs) for every
     // owned field of the actor's state struct.
@@ -3409,7 +3409,7 @@ pub unsafe extern "C" fn hew_actor_register_type(
 
 /// No-op stub for non-profiler native builds.
 ///
-/// The symbol must exist so that MLIR codegen can emit unconditional calls to
+/// The symbol must exist so that codegen can emit unconditional calls to
 /// `hew_actor_register_type` without needing to know whether the profiler
 /// feature is enabled.  In non-profiler builds this is a near-zero-cost no-op.
 ///
@@ -3584,9 +3584,9 @@ pub unsafe extern "C" fn hew_actor_set_terminate(
 ///   lifetime checks.
 /// - This setter has a null guard (unlike [`hew_actor_set_terminate`]).
 ///   Codegen wraps the `hew_actor_set_state_drop` call in an explicit null
-///   check (`scf::IfOp` in `ActorSpawnOpLowering`, `codegen.cpp`) so that an
-///   OOM spawn (which returns null) skips the FFI call entirely. This runtime
-///   guard is a second layer of defence-in-depth for the same OOM path.
+///   check so that an OOM spawn (which returns null) skips the FFI call
+///   entirely. This runtime guard is a second layer of defence-in-depth for
+///   the same OOM path.
 ///   `hew_actor_set_terminate` has no equivalent at either layer — its codegen
 ///   emit site is unconditional and this function has no runtime null check.
 #[no_mangle]
@@ -3595,11 +3595,11 @@ pub unsafe extern "C" fn hew_actor_set_state_drop(
     state_drop_fn: unsafe extern "C" fn(*mut c_void),
 ) {
     // Spawn paths return null on allocation failure (see hew_actor_spawn /
-    // hew_actor_spawn_opts). The codegen null-guard in ActorSpawnOpLowering
-    // (scf::IfOp before the hew_actor_set_state_drop call) already skips this
-    // function on OOM. This cabi_guard is defence-in-depth. The terminate path
-    // has neither guard: its codegen call is unconditional and
-    // hew_actor_set_terminate has no runtime null check.
+    // hew_actor_spawn_opts). The codegen null-guard (an explicit null check
+    // before the hew_actor_set_state_drop call) already skips this function on
+    // OOM. This cabi_guard is defence-in-depth. The terminate path has neither
+    // guard: its codegen call is unconditional and hew_actor_set_terminate has
+    // no runtime null check.
     cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &mut *actor };

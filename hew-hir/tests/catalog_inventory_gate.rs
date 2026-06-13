@@ -15,7 +15,7 @@
 //!   `hew_assert_eq_*` are in the catalog but not in M2. Using M2 would produce
 //!   false failures for legitimately classified symbols.
 //! - `CompilerIntrinsic` entries do not name a C-ABI symbol; they are handled
-//!   entirely inside the codegen backend (MLIR/LLVM ops). They always pass.
+//!   entirely inside the codegen backend (LLVM ops). They always pass.
 //!
 //! When a symbol is missing from `stable`, it either needs to be added to
 //! `scripts/jit-symbol-classification.toml` or the catalog row's linkage
@@ -80,7 +80,7 @@ fn catalog_runtime_symbols_are_classified() {
             | BuiltinLinkage::StringCloneShim { symbol } => symbol,
             BuiltinLinkage::PrintIntercept { runtime_symbol, .. } => runtime_symbol,
             // CompilerIntrinsic entries do not name a C-ABI symbol; they map to
-            // MLIR/LLVM backend ops. CalleeNameDispatchOnly entries are
+            // LLVM backend ops. CalleeNameDispatchOnly entries are
             // intercepted in codegen by callee name and never declare an LLVM
             // extern of their own. Always considered classified.
             // CompilerIntrinsic / CalleeNameDispatchOnly entries do not name a

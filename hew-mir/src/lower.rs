@@ -9596,8 +9596,7 @@ impl Builder {
                 // local (an opaque pointer at the LLVM level) and emit
                 // `Instr::StringLit` to fill it. The codegen emitter will
                 // produce an LLVM global constant for the bytes + a pointer
-                // store into the dest alloca — matching the C++ codegen's
-                // `hew.global_string` / `llvm.mlir.addressof` pattern.
+                // store into the dest alloca.
                 //
                 // Escape decoding: the parser's `unescape_string` already
                 // ran; `s` is a decoded Rust String and `as_bytes()` gives

@@ -79,7 +79,7 @@ pub struct ModuleInfo {
     /// Public / extern signatures that used unsupported slice annotations.
     ///
     /// The loader is used for registry-loaded modules (stdlib, ecosystem, and
-    /// module-path imports). MLIR still has no slice lowering, so these
+    /// module-path imports). The backend still has no slice lowering, so these
     /// signatures must be rejected before they are registered with the checker.
     pub unsupported_type_signatures: Vec<String>,
 }

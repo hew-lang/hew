@@ -4148,7 +4148,7 @@ fn rc_param_iflet_shadow_only_suppresses_inner_scope() {
 //
 // Regression tests for the fix that ensures Ty::Var and Ty::Error in HashMap
 // key/value positions fail closed at the checker boundary rather than leaking
-// into C++ codegen.
+// into codegen.
 
 #[test]
 fn hashmap_unresolved_key_type_fails_closed_at_boundary() {

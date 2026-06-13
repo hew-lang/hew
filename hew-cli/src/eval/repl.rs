@@ -179,6 +179,13 @@ enum CompiledEvalError {
 /// non-zero exit with no explanation. Naming the signal — and, for the common
 /// arithmetic trap, the divide-by-zero cause — turns a silent failure into an
 /// actionable one.
+///
+/// Windows has no signals: a hardware trap (e.g. `1 / 0`) is delivered as an
+/// NTSTATUS exit code rather than via [`terminating_signal`], which is `None`
+/// there. The exit-code path therefore also maps the common NTSTATUS exception
+/// codes to the same named causes so the failure is just as actionable as the
+/// Unix signal path. The codes are matched on their `u32` bit pattern because
+/// they arrive as a signed `i32` (e.g. `0xC000_0094` is `-1073741676`).
 pub(crate) fn describe_runtime_failure(exit_code: i32, signal: Option<i32>) -> String {
     if let Some(sig) = signal {
         let detail = match sig {
@@ -195,8 +202,34 @@ pub(crate) fn describe_runtime_failure(exit_code: i32, signal: Option<i32>) -> S
         } else {
             format!("runtime error: program terminated by signal {sig} — {detail}")
         }
+    } else if let Some(detail) = describe_ntstatus_exit(exit_code) {
+        format!("runtime error: program exited with status {exit_code} — {detail}")
     } else {
         format!("runtime error: program exited with status {exit_code}")
+    }
+}
+
+/// Map a Windows NTSTATUS exception code (delivered as a process exit code) to
+/// a named cause, mirroring the Unix signal wording.
+///
+/// Only the codes that a Hew program's runtime traps can produce are named:
+/// the integer arithmetic faults plus the two memory faults. The high nibble
+/// `0xC` (NTSTATUS severity ERROR) makes these bit patterns unambiguous against
+/// the small non-zero exit codes a process picks for ordinary failures, so the
+/// mapping is safe to apply on every platform.
+fn describe_ntstatus_exit(exit_code: i32) -> Option<&'static str> {
+    match exit_code.cast_unsigned() {
+        0xC000_0094 => Some("integer divide-by-zero (arithmetic trap)"),
+        0xC000_0095 => Some("integer overflow (arithmetic trap)"),
+        0xC000_0005 => Some("access violation (invalid memory access)"),
+        // A Hew safety trap (divide-by-zero, integer overflow) lowered through
+        // LLVM commonly surfaces on Windows as an illegal instruction (`ud2`),
+        // mirroring the Unix SIGILL arm: name the likely arithmetic cause.
+        0xC000_001D => Some(
+            "illegal instruction (for a Hew program usually a runtime safety trap \
+             such as divide-by-zero or integer overflow)",
+        ),
+        _ => None,
     }
 }
 
@@ -1782,6 +1815,67 @@ mod tests {
     fn describe_runtime_failure_falls_back_to_exit_code() {
         let msg = describe_runtime_failure(42, None);
         assert!(msg.contains("status 42"), "missing exit code: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_divide_by_zero_exit() {
+        // Windows delivers `1 / 0` as NTSTATUS 0xC0000094
+        // (STATUS_INTEGER_DIVIDE_BY_ZERO), surfaced as the signed exit code
+        // -1073741676 with no terminating signal. The cause must still be named.
+        let msg = describe_runtime_failure(0xC000_0094u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(
+            msg.contains("divide-by-zero") || msg.contains("arithmetic"),
+            "missing cause: {msg}"
+        );
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_integer_overflow_exit() {
+        // 0xC0000095 = STATUS_INTEGER_OVERFLOW.
+        let msg = describe_runtime_failure(0xC000_0095u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("arithmetic"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_access_violation_exit() {
+        // 0xC0000005 = STATUS_ACCESS_VIOLATION.
+        let msg = describe_runtime_failure(0xC000_0005u32.cast_signed(), None);
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("access violation"), "missing cause: {msg}");
+    }
+
+    #[test]
+    fn describe_runtime_failure_names_windows_illegal_instruction_exit() {
+        // 0xC000001D = STATUS_ILLEGAL_INSTRUCTION (signed exit code -1073741795).
+        // This is what Windows actually reports for `eval "1 / 0"` because the
+        // safety trap lowers to `ud2`, so the message must satisfy the e2e
+        // assertion (runtime error + arithmetic/divide-by-zero/signal cause).
+        let msg = describe_runtime_failure(0xC000_001Du32.cast_signed(), None);
+        assert_eq!(
+            0xC000_001Du32.cast_signed(),
+            -1_073_741_795,
+            "code/decimal mismatch"
+        );
+        assert!(msg.contains("runtime error"), "missing prefix: {msg}");
+        assert!(msg.contains("illegal instruction"), "missing cause: {msg}");
+        assert!(
+            msg.contains("divide-by-zero") || msg.contains("arithmetic") || msg.contains("signal"),
+            "must satisfy the e2e cause assertion: {msg}"
+        );
+    }
+
+    #[test]
+    fn describe_runtime_failure_ordinary_exit_code_is_not_misclassified() {
+        // A plain non-zero exit code must not pick up an NTSTATUS cause.
+        let msg = describe_runtime_failure(1, None);
+        assert!(msg.contains("status 1"), "missing exit code: {msg}");
+        assert!(!msg.contains("arithmetic"), "false positive cause: {msg}");
+        assert!(
+            !msg.contains("divide-by-zero"),
+            "false positive cause: {msg}"
+        );
     }
 
     #[cfg(unix)]

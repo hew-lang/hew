@@ -193,8 +193,8 @@ fn reject_unknown_hook_kind() {
 // ── E1: `#[on(crash)]` recognition / `#[on(upgrade)]` fail-closed ─────
 //
 // `#[on(crash)]` remains a live lifecycle hook. `#[on(upgrade)]` remains
-// parser-recognised but must fail closed until the runtime invocation
-// path lands, because accepting it today would create code that never runs.
+// parser-recognised but must fail closed: it is reserved and not supported,
+// because accepting it would create code that never runs.
 
 #[test]
 fn on_crash_still_works() {
@@ -248,10 +248,10 @@ fn on_upgrade_attribute_compile_errors() {
         "diagnostic should point at the `#[on(upgrade)]` attribute"
     );
     assert!(
-        error.message.contains("v0.6")
-            && error.message.contains("runtime invocation")
+        error.message.contains("reserved")
+            && error.message.contains("not supported")
             && error.message.contains("remove the attribute"),
-        "diagnostic should explain the pending runtime wiring and removal advice: {:?}",
+        "diagnostic should explain that the hook is reserved/unsupported and advise removal: {:?}",
         output.errors
     );
 }

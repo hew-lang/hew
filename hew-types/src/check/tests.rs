@@ -8370,7 +8370,7 @@ fn check_generic_lambda_removed_emits_typed_diagnostic() {
 /// 2. A direct call whose arguments make the type obvious resolves the
 ///    return type correctly.
 /// 3. `call_type_args` is populated for the call so the enricher can
-///    fill in explicit type arguments before serialisation to MLIR.
+///    fill in explicit type arguments before serialisation to codegen.
 // Generic lambda `<T>(params) => body` was removed in v0.5.
 // The tests below confirm the parser emits typed diagnostics instead.
 // Equivalent named-function generics continue to work (tested elsewhere).

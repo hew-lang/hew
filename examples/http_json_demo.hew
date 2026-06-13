@@ -73,7 +73,7 @@ fn main() {
                 },
                 Err(_) => {
                     // Err(ParseError::Invalid(msg)) is accepted by `hew check`
-                    // but fails at runtime with an MLIR undeclared-variable
+                    // but fails at runtime with an undeclared-variable
                     // error. Use `Err(_)` and a static message instead.
                     println("json parse failed");
                 },

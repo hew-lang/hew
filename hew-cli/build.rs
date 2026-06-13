@@ -5,7 +5,7 @@ const UNKNOWN_GIT_METADATA: &str = "unknown";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // The retired C++/MLIR codegen subtree is no longer a selectable build
+    // The retired legacy codegen subtree is no longer a selectable build
     // substrate.  Keep this build script focused on version metadata only; the
     // active compiler path is the Rust MIR/codegen-rs pipeline.
 

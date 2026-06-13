@@ -261,7 +261,7 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
     }
 }
 
-/// Returns the MLIR representation for a handle type.
+/// Returns the codegen representation for a handle type.
 ///
 /// Most handle types are opaque pointers (`"handle"`).
 /// File-descriptor types like `net.Listener` and `net.Connection` use `"i32"`.

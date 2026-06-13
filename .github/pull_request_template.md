@@ -8,7 +8,7 @@
 <!-- What the change does. For multi-layer compiler changes, use a bullet list:
      - **lexer**: added `frobnicate` keyword
      - **parser**: parse frobnicate expressions
-     - **codegen**: lower to MLIR FrobnicateOp
+     - **codegen**: lower frobnicate to LLVM IR
      For trivial PRs (typo, dep bump), delete this section — the title is enough. -->
 
 ## Test

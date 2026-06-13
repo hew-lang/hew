@@ -891,8 +891,8 @@ impl Checker {
 
         // Separate lifecycle-hook fns from regular methods. Hooks carry
         // one of `#[on(start)]`, `#[on(stop)]`, or `#[on(crash)]`.
-        // `#[on(upgrade)]` is parsed but rejected below until runtime
-        // invocation is wired. Regular methods carry no attributes and
+        // `#[on(upgrade)]` is parsed but rejected below: it is reserved and
+        // not supported. Regular methods carry no attributes and
         // are checked as ordinary actor methods.
         //
         // `#[on(start)]` is at most once per actor; `#[on(stop)]` may
@@ -1048,15 +1048,16 @@ impl Checker {
     }
 
     fn reject_upgrade_hook(&mut self, actor_name: &str, method_name: &str, attr_span: Span) {
-        // TODO(v0.6 upgrade-runtime invocation track): lift this diagnostic
-        // only when the runtime actually invokes `#[on(upgrade)]` hooks.
+        // `#[on(upgrade)]` is a reserved attribute with no runtime behaviour:
+        // the runtime never invokes it, so accepting it would create a hook
+        // that silently never runs. Reject it fail-closed.
         self.errors.push(TypeError::new(
             TypeErrorKind::OnUpgradeNotYetWired,
             attr_span,
             format!(
-                "`#[on(upgrade)]` on `{actor_name}::{method_name}` is reserved but not yet wired: \
-                 runtime invocation is pending on the v0.6 upgrade-runtime plan track, so this \
-                 hook would silently never run; remove the attribute until that slice lands"
+                "`#[on(upgrade)]` on `{actor_name}::{method_name}` is reserved and not supported: \
+                 the runtime never invokes this hook, so it would silently never run; \
+                 remove the attribute"
             ),
         ));
     }

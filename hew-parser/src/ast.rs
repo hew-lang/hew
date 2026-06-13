@@ -597,7 +597,7 @@ pub enum Literal {
 }
 
 // Custom Serialize/Deserialize for Literal so that Integer { value, radix }
-// serializes as just the plain i64 on the wire (backward-compatible with C++ codegen).
+// serializes as just the plain i64 on the wire (backward-compatible with the codegen wire contract).
 // The radix field is only used by the Rust-side formatter and is not sent over MessagePack.
 impl serde::Serialize for Literal {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

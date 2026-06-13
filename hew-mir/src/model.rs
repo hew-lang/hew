@@ -3661,9 +3661,7 @@ pub enum Instr {
     /// `*const c_char` ABI). No runtime call is made: the pointer refers to
     /// data in the compiled binary's read-only data segment, so
     /// `hew_string_drop` safely skips freeing it via its `is_static_string`
-    /// guard. This mirrors the C++ codegen's `hew.global_string` →
-    /// `llvm.mlir.global` + `llvm.mlir.addressof` pattern (codegen.cpp
-    /// `ConstantOpLowering` / `GlobalStringOpLowering`).
+    /// guard.
     ///
     /// Escape decoding: `bytes` carries the already-decoded UTF-8 byte
     /// sequence from `HirLiteral::String` — the parser's `unescape_string`

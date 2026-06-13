@@ -4602,8 +4602,7 @@ fn primitive_to_llvm<'ctx>(
         // in the alloca — the same representation used for Duplex/Vec/Task
         // handles. `Instr::StringLit` stores the address of an LLVM global
         // constant into this slot; C-string runtime ops (`hew_string_*`) load
-        // from it. Matches the C++ codegen's `hew.global_string` →
-        // `llvm.mlir.addressof` pattern (codegen.cpp ~line 264).
+        // from it.
         ResolvedTy::String => Ok(ctx.ptr_type(AddressSpace::default()).into()),
         // CancellationToken is an opaque runtime handle. Locals store the
         // handle pointer; observation borrows it and drop paths release it via
@@ -13255,9 +13254,7 @@ fn lower_instruction(
         Instr::StringLit { bytes, dest } => {
             // Emit an LLVM global constant for the string bytes (NUL-terminated,
             // internal linkage, read-only) and store its address into the `dest`
-            // alloca. Matches the C++ codegen's `hew.global_string` →
-            // `llvm.mlir.addressof` pattern (codegen.cpp `ConstantOpLowering` /
-            // `GlobalStringOpLowering`, ~lines 257-265).
+            // alloca.
             //
             // The `dest` local must have been allocated with `ResolvedTy::String`,
             // which `primitive_to_llvm` maps to an opaque `ptr`. The pointer to the

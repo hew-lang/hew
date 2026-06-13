@@ -25,7 +25,7 @@ cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
 
 ## C ABI
 
-All public functions use `#[no_mangle] pub extern "C"` calling convention so they can be called from LLVM-generated code. The runtime's C interface is the contract between the MLIR code generator and the Rust runtime.
+All public functions use `#[no_mangle] pub extern "C"` calling convention so they can be called from LLVM-generated code. The runtime's C interface is the contract between the Rust code generator and the Rust runtime.
 
 ## Distributed tracing
 

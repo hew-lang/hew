@@ -128,7 +128,7 @@ pub struct TypeCheckOutput {
     /// Checker-owned lowering metadata keyed by the lowering site's source span.
     ///
     /// Populated for erased runtime types whose lowering must not guess from
-    /// MLIR argument types. Missing entry means the checker could not produce a
+    /// codegen argument types. Missing entry means the checker could not produce a
     /// concrete lowering fact and downstream codegen must fail closed.
     pub lowering_facts: HashMap<SpanKey, LoweringFact>,
     /// Checker-owned actor receive-handler state guard policy keyed by the
@@ -187,7 +187,7 @@ pub struct TypeCheckOutput {
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     /// Checker-resolved assignment target type-shape metadata keyed by the
     /// target expression span.  Populated alongside `assign_target_kinds` for
-    /// every accepted assignment.  MLIR lowering consumes this fail-closed to
+    /// every accepted assignment.  LLVM lowering consumes this fail-closed to
     /// determine signedness of compound-assignment arithmetic instead of
     /// re-deriving it from the AST.
     pub assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
@@ -975,8 +975,7 @@ pub enum AllocationClass {
     HashSet,
     /// RHS resolves to `Rc<T>`.
     Rc,
-    /// RHS is a closure literal whose environment is heap-allocated today
-    /// (`MLIRGenExpr.cpp:6009`).
+    /// RHS is a closure literal whose environment is heap-allocated today.
     ClosureEnv,
     /// Already stack-shaped — no hint should be emitted.
     Stack,
@@ -1057,7 +1056,7 @@ pub enum ActorSendCopyReason {
 /// Checker-owned classification of an assignment target.
 ///
 /// Populated once during `check_stmt` for `Stmt::Assign` and threaded through
-/// the serialisation boundary so MLIR lowering can consume it fail-closed
+/// the serialisation boundary so LLVM lowering can consume it fail-closed
 /// instead of re-examining the AST expression kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignTargetKind {
@@ -1107,10 +1106,10 @@ pub(super) enum IndexContext {
 /// Checker-owned type-shape annotation for an assignment target.
 ///
 /// Populated alongside [`AssignTargetKind`] for every `Stmt::Assign` accepted
-/// by the checker.  Missing entry means the checker rejected the target; MLIR
+/// by the checker.  Missing entry means the checker rejected the target; LLVM
 /// lowering must fail closed on both maps.
 ///
-/// This captures the information MLIR needs for compound-assignment arithmetic
+/// This captures the information codegen needs for compound-assignment arithmetic
 /// signedness so it does not need to re-derive it from the AST or from the
 /// `expr_types` side-table (which may be absent when a resolved type is
 /// unavailable at lowering time).

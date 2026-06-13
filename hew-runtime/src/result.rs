@@ -1,7 +1,7 @@
 //! Hew runtime: `result` module.
 //!
 //! Tagged union for `Result<T, E>` — either `Ok(value)` (tag=0) or `Err(msg)` (tag=1).
-//! Layout-compatible with the C runtime representation used by MLIR codegen.
+//! Layout-compatible with the C runtime representation used by codegen.
 //! Error payloads carry both a numeric code and a heap-allocated message string.
 #![allow(
     unsafe_op_in_unsafe_fn,

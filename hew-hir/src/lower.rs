@@ -15456,8 +15456,8 @@ impl LowerCtx {
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
-    /// other rewrite variants are rejected as unsupported (they target the C++/MLIR
-    /// pipeline, not the Rust MIR pipeline).
+    /// other rewrite variants are rejected as unsupported (they targeted the legacy
+    /// codegen pipeline, not the Rust MIR pipeline).
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -16231,8 +16231,8 @@ impl LowerCtx {
                 )
             }
             Some(MethodCallRewrite::DeferToLowering) => {
-                // `DeferToLowering` targets the C++/MLIR pipeline and is not
-                // consumed by the Rust MIR pipeline.  Fail-closed.
+                // `DeferToLowering` belonged to the legacy codegen pipeline and is
+                // not consumed by the Rust MIR pipeline.  Fail-closed.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::NotYetImplemented {
                         construct: format!("method-call rewrite variant for `.{method}`"),

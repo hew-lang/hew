@@ -485,6 +485,27 @@ run_accept_expect_status "supervised_ingest_race" 42
 # the void-return (dest: None) MIR + codegen path.
 run_accept_expect_status "supervisor_stop_basic" 0
 
+# Regression guard (issue #382 Bug 1): supervised actor with init() block.
+# Before the fix: restart_child_from_spec → hew_actor_spawn_opts →
+# build_spawned_actor did not initialise the mailbox; supervised children with
+# an init() block SIGSEGVed at the first dispatch.  The init() block generates
+# Worker__init in codegen; the supervisor sets value=42 via HewChildSpec.init_state;
+# the actor replies with 42, proving the init dispatch ran without crashing.
+# (No WASM check needed: supervisor fixtures emit "Supervision tree operations are
+# not supported on WASM32", which is already exercised by the supervisor_basic block.)
+run_accept_expect_status "supervised_actor_init_block" 42
+
+# Regression guard (issue #382 Bug 2): supervisor child access after restart.
+# Before the fix: hew_supervisor_child_get returned a null pointer for Transient
+# children, causing SIGSEGV.  After the fix: MIR lower_supervisor_child_get traps
+# with code 206 on non-Live, and returns the handle safely on Live (tag=0).
+# This test crashes the child, waits on hew_supervisor_wait_restart until the
+# restart completion notification fires, then accesses sup.w1 and expects a
+# Live handle (exit 7).
+# A Transient result would fire SIGTRAP (exit 133) — a visible failure.
+# (No WASM check needed: same reason as above.)
+run_accept_expect_status "supervisor_child_after_restart" 7
+
 # Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0

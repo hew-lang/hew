@@ -56,6 +56,7 @@ RUN cargo build --release \
     -p hew-cli \
     -p adze-cli \
     -p hew-lsp \
+    -p hew-observe \
     -p hew-lib
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -77,6 +78,7 @@ RUN adduser -D -u 1000 hew
 COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
 COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
 COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
+COPY --from=rust-builder /src/target/release/hew-observe /usr/local/bin/hew-observe
 
 # Combined runtime + stdlib library
 COPY --from=rust-builder /src/target/release/libhew.a /usr/local/lib/hew/libhew.a

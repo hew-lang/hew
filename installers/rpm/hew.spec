@@ -42,6 +42,7 @@ This package provides:
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
 install -Dm755 bin/adze         %{buildroot}%{_bindir}/adze
 install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
+install -Dm755 bin/hew-observe  %{buildroot}%{_bindir}/hew-observe
 
 install -Dm644 lib/libhew.a %{buildroot}%{_libdir}/hew/libhew.a
 

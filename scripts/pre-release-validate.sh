@@ -167,7 +167,7 @@ validate_linux() {
         set -e
         echo "==> Step 1: Static-link release build"
         # This is the exact build that the release CI does
-        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp --release 2>&1
+        run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release 2>&1
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --release 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
@@ -278,7 +278,7 @@ validate_macos() {
             export PATH=\"/opt/homebrew/opt/llvm@22/bin:/opt/homebrew/bin:\$PATH\"
             export LLVM_PREFIX=\"\$(brew --prefix llvm@22 2>/dev/null || echo /opt/homebrew/opt/llvm)\"
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
             target/release/hew --version
@@ -355,7 +355,7 @@ validate_linux_aarch64() {
             export CC=clang-22
             export CXX=clang++-22
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
@@ -429,7 +429,7 @@ validate_freebsd() {
             export CC=clang
             export CXX=clang++
 
-            cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
             target/release/hew --version
@@ -498,7 +498,7 @@ if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
 \$env:CC = '${WINDOWS_CC}'
 \$env:CXX = '${WINDOWS_CXX}'
 
-cargo build -p hew-cli -p adze-cli -p hew-lsp --release
+cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
 Assert-NativeSuccess 'cargo build release binaries'
 
 cargo build -p hew-lib --release

@@ -1447,6 +1447,30 @@ impl Checker {
             is_indirect: td.is_indirect,
         };
         self.register_rcfree_members_for_type(&td.name, &type_def);
+
+        // Seed the trait-registry structural member set for imported module
+        // types, mirroring `register_type_decl`. An imported actor whose `ask`
+        // replies with one of these types (e.g. a `pub type Result { ... }`)
+        // is gated on the reply being `Send` at the dispatch site
+        // (`record_actor_method_dispatch`, `E_DUPLEX_NON_SEND`). Send and the
+        // sibling structural markers derive from a named type's member set; if
+        // the importer's registry has no `type_fields` entry the derivation
+        // hits the "unknown type — conservatively fail" branch and rejects a
+        // plainly-Send imported record. Seeding it here resolves the marker
+        // through the imported record's actual fields. Enums register their
+        // variant-payload member set (an empty `fields` map would derive a
+        // spurious Copy/Frozen); the `Serializable` subset follows the same
+        // wire/enum condition as the full registration path.
+        let field_types: Vec<_> = if kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&type_def)
+        } else {
+            type_def.fields.values().cloned().collect()
+        };
+        self.registry.register_type(td.name.clone(), field_types);
+        if td.wire.is_some() || kind == TypeDefKind::Enum {
+            self.register_serializable_members_for_type(&td.name, &type_def);
+        }
+
         self.type_defs.insert(td.name.clone(), type_def);
         self.record_type_def_inference_holes(&td.name, hole_vars);
         self.handle_bearing_dirty = true;

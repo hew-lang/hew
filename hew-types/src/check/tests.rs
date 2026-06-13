@@ -1315,6 +1315,69 @@ fn non_root_private_type_rcfree_is_registered_during_body_checking() {
 }
 
 #[test]
+fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
+    // An imported package actor whose `ask` replies with an imported `pub type`
+    // record is gated on the reply being `Send` at the dispatch site
+    // (`record_actor_method_dispatch`, `E_DUPLEX_NON_SEND`). Send derives from
+    // the named type's structural member set; imported module types are
+    // registered through `pre_register_type_decl`, which must seed the
+    // trait-registry member set so the derivation resolves through the
+    // imported record's fields instead of conservatively failing on an unknown
+    // name. The record is named `Result` to mirror the prelude-shadowing
+    // fixture (`tests/pkg-import/imported_actor_ask_record.hew`) that surfaced
+    // the over-rejection: a plainly-Send `i64`-field record was rejected
+    // because the importer's registry had no entry under the bare name.
+    let parsed = hew_parser::parse(
+        r"
+        pub type Result {
+            handle: i64
+        }
+
+        fn helper() {}",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "module parse errors: {:?}",
+        parsed.errors
+    );
+
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(vec!["testffi".to_string()]);
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module).unwrap();
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let _ = checker.check_program(&program);
+
+    let result_ty = Ty::Named {
+        builtin: None,
+        name: "Result".to_string(),
+        args: vec![],
+    };
+    assert!(
+        checker
+            .registry
+            .implements_marker(&result_ty, crate::traits::MarkerTrait::Send),
+        "imported record `Result {{ handle: i64 }}` must derive Send so an \
+         imported actor ask-reply is not spuriously rejected with \
+         E_DUPLEX_NON_SEND"
+    );
+}
+
+#[test]
 fn actor_decl_registers_rcfree_members_for_collection_checks() {
     let parsed = hew_parser::parse(
         r"

@@ -2384,6 +2384,9 @@ mod tests {
     /// `with_live_actor` membership miss returns `false` with no deref.
     #[test]
     fn actor_snapshot_alive_reports_freed_local_actor_dead_without_deref() {
+        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
+        // live-actor registry; install a runtime so the spawn/track resolves.
+        let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2438,6 +2441,9 @@ mod tests {
                   test body sets up and tears down; the lifecycle is described inline"
     )]
     fn handle_ready_fd_aborts_without_deref_when_local_actor_freed() {
+        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
+        // live-actor registry; install a runtime so the spawn/track resolves.
+        let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2538,6 +2544,9 @@ mod tests {
         use std::io::Write;
         const KEY: usize = 0x00F1_1761;
 
+        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
+        // live-actor registry; install a runtime so the spawn/track resolves.
+        let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3213,6 +3222,9 @@ mod tests {
     /// `deliver_close_once` (now using the guaranteed channel) still delivers it.
     #[test]
     fn close_delivered_to_full_mailbox_under_backpressure() {
+        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
+        // live-actor registry; install a runtime so the spawn/track resolves.
+        let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3294,6 +3306,9 @@ mod tests {
     /// guaranteed channel could physically admit one.
     #[test]
     fn close_is_exactly_once_even_when_guaranteed_under_backpressure() {
+        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
+        // live-actor registry; install a runtime so the spawn/track resolves.
+        let _rt = crate::runtime_test_guard();
         let _guard = REACTOR_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

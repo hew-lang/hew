@@ -36,6 +36,7 @@
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+use crate::lifetime::live_actors::LiveActors;
 use crate::scheduler::Scheduler;
 
 /// Process-wide runtime identity.
@@ -68,6 +69,9 @@ pub(crate) struct RuntimeInner {
     id: RuntimeId,
     /// M:N work-stealing scheduler. Was the `SCHEDULER` global pointer.
     pub(crate) scheduler: Scheduler,
+    /// Live-actor liveness registry + deferred-teardown join handles. Was the
+    /// `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals.
+    pub(crate) live_actors: LiveActors,
 }
 
 impl RuntimeInner {
@@ -76,6 +80,7 @@ impl RuntimeInner {
         Self {
             id: RuntimeId::DEFAULT,
             scheduler,
+            live_actors: LiveActors::new(),
         }
     }
 
@@ -137,6 +142,38 @@ pub(crate) fn rt_default() -> Option<&'static RuntimeInner> {
         // workers are joined.
         Some(unsafe { &*ptr })
     }
+}
+
+/// Resolve the runtime that owns the work on this thread — fail closed.
+///
+/// This is the resolver every de-globalized subsystem reads through (the
+/// live-actor registry, name registry, shutdown phase, supervisor roots,
+/// timers, node slot). It returns the installed default runtime, or **panics**
+/// when none is installed.
+///
+/// # Why fail-closed, not lazy-default
+///
+/// The explicit-install model (Q119/A119) requires a runtime to be installed
+/// before any runtime authority is touched: AOT and JIT programs install it via
+/// `hew_sched_init`; tests install it via the runtime test guard
+/// (`crate::runtime_test_guard`) or `NoWorkerSchedulerForTest`. There is no
+/// lazy auto-create and no silent `None` fallback — touching a runtime
+/// authority with no runtime installed is a hard logic error, so it traps loudly
+/// instead of fabricating state that would leak past the missing lifecycle call
+/// (`no-fail-open-fallback-after-authority`).
+///
+/// Single-runtime today means `rt_current()` always resolves to the one default
+/// runtime; the per-thread `CURRENT_RUNTIME` selection arrives with the TLS
+/// install (M2).
+#[inline]
+pub(crate) fn rt_current() -> &'static RuntimeInner {
+    rt_default().unwrap_or_else(|| {
+        panic!(
+            "hew-runtime: no runtime installed — a runtime authority was used \
+             before hew_sched_init (production) or without a runtime test guard \
+             (tests). Install a default RuntimeInner first."
+        )
+    })
 }
 
 /// Publish `inner` as the default runtime via compare-exchange.
@@ -212,4 +249,22 @@ pub(crate) fn test_swap_default(inner: *mut RuntimeInner) -> *mut RuntimeInner {
 #[cfg(test)]
 pub(crate) fn test_store_default(inner: *mut RuntimeInner) {
     DEFAULT_RUNTIME.store(inner, Ordering::Release);
+}
+
+/// Free a `RuntimeInner` raw pointer previously boxed for a test guard
+/// (test-only). No-op on null.
+///
+/// # Safety
+///
+/// `inner` must be a pointer obtained from `Box::into_raw` for a `RuntimeInner`
+/// that is no longer installed in the slot and is unreferenced by any thread
+/// (the caller — the runtime test guard — holds `SCHED_TEST_MUTEX` and frees on
+/// teardown, after any spawned worker has been joined).
+#[cfg(test)]
+pub(crate) unsafe fn free_runtime_for_test(inner: *mut RuntimeInner) {
+    if !inner.is_null() {
+        // SAFETY: see fn docs — the caller guarantees `inner` came from
+        // `Box::into_raw` and is now unreferenced.
+        drop(unsafe { Box::from_raw(inner) });
+    }
 }

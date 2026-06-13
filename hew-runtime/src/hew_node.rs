@@ -3004,6 +3004,13 @@ mod tests {
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
 
+    /// Initialise a real, worker-backed scheduler for a node test (delegates to
+    /// the scheduler-side helper, which sees the module-private `stealers` and
+    /// safely retires a `runtime_test_guard()` placeholder before init).
+    fn init_real_scheduler() {
+        crate::scheduler::init_real_scheduler_for_test();
+    }
+
     // ── Test-only u32 codec ──────────────────────────────────────────────
     //
     // The two-process remote-send/ask tests transmit a controlled `u32` rather
@@ -3419,7 +3426,7 @@ mod tests {
     fn run_registry_gossip_server_helper() {
         crate::registry::hew_registry_clear();
         reset_two_process_delivery();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
         crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
@@ -3458,7 +3465,7 @@ mod tests {
 
     fn run_registry_gossip_client_helper() {
         crate::registry::hew_registry_clear();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")
@@ -3529,7 +3536,7 @@ mod tests {
         // registered codec (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
         reset_two_process_ask_observed();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         let (node, port) = start_tcp_test_listener_node(node_id);
         crate::pid::hew_pid_set_local_node(node_id);
@@ -3642,7 +3649,7 @@ mod tests {
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")
@@ -5080,11 +5087,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(302); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5213,11 +5216,7 @@ mod tests {
         let (node2, node2_port) = start_quic_mesh_test_listener_node(402, tls_b);
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5453,11 +5452,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(314);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(314);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -5526,11 +5521,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 312 to assign a node-2 PID to the actor.
         crate::pid::hew_pid_set_local_node(312);
@@ -5620,11 +5611,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(322);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(322);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
@@ -5736,11 +5723,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -5808,11 +5791,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -5882,11 +5861,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(327);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(327);
         let opts = crate::actor::HewActorOpts {
@@ -5974,11 +5949,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(320);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(320);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6047,11 +6018,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(331);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(331);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6151,11 +6118,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6222,11 +6185,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(329);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(329);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6298,11 +6257,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6399,11 +6354,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(321);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6736,11 +6687,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(321);
@@ -6841,7 +6788,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(323);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         // Spawn a void-reply actor on node2.
         crate::pid::hew_pid_set_local_node(323);
@@ -6924,7 +6871,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(325);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(325);
@@ -7149,11 +7096,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(354);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(354);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.

@@ -175,51 +175,89 @@ pub mod envelope;
 /// survive a process hop without shipping in-memory heap pointers.
 pub mod xnode_serial;
 
+/// Test-only RAII guard that serializes runtime-touching tests AND installs a
+/// default `RuntimeInner` so the de-globalized authority resolvers
+/// (`crate::runtime::rt_current`) have a runtime to read.
+///
+/// Under the explicit-install model (Q119/A119) there is no lazy auto-create
+/// and no silent `None` fallback: any test that exercises a runtime authority
+/// (the live-actor registry, name registry, shutdown phase, timers, node slot)
+/// must have a runtime installed. This guard is that install point for the ~100
+/// shutdown/registry/actor test sites — acquiring it installs a worker-less
+/// default runtime at the outermost (depth-0) acquisition and tears it down
+/// when the outermost guard drops.
+///
+/// It shares `crate::scheduler::SCHED_TEST_MUTEX` with `NoWorkerSchedulerForTest`
+/// so every runtime-installing test is mutually serialized on the single
+/// process-global default-runtime slot. A test that nests this guard and then a
+/// `NoWorkerSchedulerForTest` composes correctly: the inner guard swaps its
+/// transient runtime in (saving this guard's as `previous`) and restores it on
+/// drop, before this guard removes its own on the outermost drop.
 #[cfg(test)]
 pub(crate) struct RuntimeTestGuard {
-    _lock_guard: Option<std::sync::MutexGuard<'static, ()>>,
-}
-
-#[cfg(test)]
-thread_local! {
-    static RUNTIME_TEST_LOCK_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// Re-entrant scheduler-test lock, shared with `NoWorkerSchedulerForTest`
+    /// so every runtime-installing test serializes on the single default-runtime
+    /// slot. The outermost guard on a thread holds the real lock.
+    _lock_guard: crate::scheduler::SchedTestLock,
+    /// The default `RuntimeInner` this guard installed (only the outermost guard
+    /// installs one); reclaimed on drop. Null for re-entrant guards or when a
+    /// runtime was already installed.
+    installed_runtime: *mut crate::runtime::RuntimeInner,
 }
 
 #[cfg(test)]
 impl Drop for RuntimeTestGuard {
     fn drop(&mut self) {
-        RUNTIME_TEST_LOCK_DEPTH.with(|depth| {
-            let current = depth.get();
-            depth.set(current.saturating_sub(1));
-        });
+        if !self.installed_runtime.is_null() {
+            // Reclaim our installed runtime — but only if the slot still holds
+            // exactly the pointer we installed. A test may legitimately have
+            // torn the runtime down itself (e.g. by calling
+            // `hew_runtime_cleanup`, which `take_default()`s and drops it); in
+            // that case the slot is null (or holds a different runtime the test
+            // installed) and the box is already freed, so we must NOT double
+            // free. We hold the lock, so no *other* test races this check.
+            let slot = crate::runtime::default_runtime_ptr(std::sync::atomic::Ordering::SeqCst);
+            if slot == self.installed_runtime {
+                // Join any background teardown threads this test left in flight
+                // (a deferred supervisor-stop or restart-free registered via
+                // `push_deferred_teardown_thread`) BEFORE detaching and freeing
+                // the runtime. Those threads dereference the runtime-owned
+                // live-actor registry; freeing the runtime out from under a
+                // still-running one would trap it in `rt_current()`. This
+                // mirrors production `hew_runtime_cleanup`'s join-before-free
+                // ordering, with the runtime still installed for the join.
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::lifetime::live_actors::drain_deferred_teardown_threads();
+                crate::runtime::test_store_default(std::ptr::null_mut());
+                // SAFETY: `installed_runtime` came from `worker_less_runtime_box`
+                // (Box::into_raw), is still the slot's pointer (just detached),
+                // and is unreferenced (the lock serializes installers; the drain
+                // above joined every background teardown that held a borrow).
+                unsafe { crate::runtime::free_runtime_for_test(self.installed_runtime) };
+            }
+        }
     }
 }
 
 #[cfg(test)]
 pub(crate) fn runtime_test_guard() -> RuntimeTestGuard {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let lock = LOCK.get_or_init(|| std::sync::Mutex::new(()));
+    let outermost = !crate::scheduler::SchedTestLock::is_held();
+    let lock_guard = crate::scheduler::SchedTestLock::acquire();
 
-    let held = RUNTIME_TEST_LOCK_DEPTH.with(|depth| {
-        let current = depth.get();
-        depth.set(current + 1);
-        current > 0
-    });
-
-    if held {
-        RuntimeTestGuard { _lock_guard: None }
+    // Only the outermost guard installs a runtime, and only if the slot is empty
+    // (a nested NoWorkerSchedulerForTest or a self-managing lifecycle test may
+    // own the slot). We reclaim on drop only what we install.
+    let installed_runtime = if outermost && crate::runtime::rt_default().is_none() {
+        let rt = crate::scheduler::worker_less_runtime_box();
+        crate::runtime::test_store_default(rt);
+        rt
     } else {
-        // Recover from poisoned lock (a previous test panicked while
-        // holding it). This matches the old per-module lock_or_recover()
-        // behaviour and prevents a cascade where every subsequent test
-        // on this thread skips lock acquisition due to a stuck depth
-        // counter.
-        let guard = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        RuntimeTestGuard {
-            _lock_guard: Some(guard),
-        }
+        std::ptr::null_mut()
+    };
+
+    RuntimeTestGuard {
+        _lock_guard: lock_guard,
+        installed_runtime,
     }
 }
 

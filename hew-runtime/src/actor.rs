@@ -5260,7 +5260,12 @@ mod tests {
 
     impl NativeSchedulerGuard {
         fn new() -> Self {
-            assert_eq!(crate::scheduler::hew_sched_init(), 0);
+            // Retire any `runtime_test_guard()` worker-less placeholder, then
+            // install a real worker-backed scheduler (see
+            // `init_real_scheduler_for_test`). This guard's `Drop` tears the
+            // real runtime down symmetrically (`hew_sched_shutdown` +
+            // `hew_runtime_cleanup`), so its workers are joined before free.
+            crate::scheduler::init_real_scheduler_for_test();
             Self
         }
     }

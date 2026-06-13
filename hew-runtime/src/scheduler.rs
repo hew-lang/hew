@@ -592,10 +592,12 @@ pub extern "C" fn hew_runtime_cleanup() {
     // SAFETY: shutdown_ticker joins the thread, so no concurrent ticks after this.
     unsafe { crate::timer_periodic::hew_periodic_shutdown() };
 
-    // Detach the default runtime from its slot and join any lingering workers
-    // before freeing actor/timer state they might still reference. Dropping the
-    // runtime (below) frees its scheduler.
-    let runtime = teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, true);
+    // Join lingering workers WITHOUT detaching the runtime yet (`take=false`).
+    // The supervisor/actor/registry sweep below reads runtime-owned state
+    // (the live-actor registry, deferred-teardown join handles), so the runtime
+    // must stay installed in its slot until the sweep completes. Detaching it
+    // here would make `rt_current()` trap mid-cleanup.
+    teardown_workers(get_scheduler().map(|s| s as *const Scheduler), None, false);
 
     // Free any registered top-level supervisors — this drops their child
     // specs (names + init_state) via the InternalChildSpec Drop impl.
@@ -618,9 +620,11 @@ pub extern "C" fn hew_runtime_cleanup() {
     //       and needs teardown alongside the other native registry state.
     // REAL: `handler_names.clear()` adjacent to `hew_registry_clear()` above.
 
-    // Free the runtime itself — dropping it frees the scheduler (deques,
-    // parkers, stealers, global queue) as the final teardown step.
-    drop(runtime);
+    // FINAL step: detach the runtime from its slot and drop it. Workers are
+    // already joined (above) and the runtime-owned sweep is complete, so nothing
+    // can still reference it. Dropping it frees the scheduler (deques, parkers,
+    // stealers, global queue) and the now-empty live-actor registry.
+    drop(runtime::take_default());
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
@@ -2014,6 +2018,118 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
 #[cfg(test)]
 pub(crate) static SCHED_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+thread_local! {
+    /// Re-entrancy depth for [`SCHED_TEST_MUTEX`]. The std `Mutex` is not
+    /// re-entrant, so a test that nests two runtime-installing guards on the
+    /// same thread (e.g. `runtime_test_guard()` then
+    /// `NoWorkerSchedulerForTest::install()`) must take the lock exactly once.
+    static SCHED_TEST_LOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Re-entrant lock guard over [`SCHED_TEST_MUTEX`].
+///
+/// Acquired by every runtime-installing test guard so they share one
+/// serialization point on the process-global default-runtime slot. The
+/// outermost acquisition on a thread holds the real `MutexGuard`; nested
+/// acquisitions hold `None` and only bump the depth counter, so re-acquiring on
+/// the same thread does not deadlock.
+#[cfg(test)]
+pub(crate) struct SchedTestLock {
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl SchedTestLock {
+    /// Acquire the re-entrant scheduler-test lock.
+    pub(crate) fn acquire() -> Self {
+        let held = SCHED_TEST_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            current > 0
+        });
+        if held {
+            Self { _guard: None }
+        } else {
+            let guard = SCHED_TEST_MUTEX
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self {
+                _guard: Some(guard),
+            }
+        }
+    }
+
+    /// True when this thread already holds the lock (a runtime is installed by
+    /// an outer guard).
+    pub(crate) fn is_held() -> bool {
+        SCHED_TEST_LOCK_DEPTH.with(|depth| depth.get() > 0)
+    }
+}
+
+#[cfg(test)]
+impl Drop for SchedTestLock {
+    fn drop(&mut self) {
+        SCHED_TEST_LOCK_DEPTH.with(|depth| {
+            depth.set(depth.get().saturating_sub(1));
+        });
+    }
+}
+
+/// Build a worker-less [`Scheduler`] (single global queue, no worker threads)
+/// for test fixtures that need a runtime installed but must not have anything
+/// drain the queue.
+///
+/// Shared by the in-module free-path tests, [`NoWorkerSchedulerForTest`], and
+/// the crate-wide runtime test guard (`crate::runtime_test_guard`), which
+/// installs a default `RuntimeInner` so every de-globalized authority resolver
+/// (`rt_current`) has a runtime to read.
+#[cfg(test)]
+pub(crate) fn worker_less_scheduler() -> Scheduler {
+    Scheduler {
+        worker_count: 1,
+        parkers: vec![Parker {
+            mutex: Mutex::new(()),
+            cond: Condvar::new(),
+        }],
+        stealers: Vec::new(),
+        worker_handles: PoisonSafe::new(Vec::new()),
+        // SAFETY: single-threaded test setup with scheduler-owned queue state.
+        global_queue: unsafe { crate::deque::GlobalQueue::new() },
+        shutdown: AtomicBool::new(false),
+    }
+}
+
+/// Box a fresh worker-less default `RuntimeInner` for the runtime test guard.
+///
+/// Returns the raw pointer; the caller owns it and frees it via
+/// [`crate::runtime::free_runtime_for_test`] on guard teardown.
+#[cfg(test)]
+pub(crate) fn worker_less_runtime_box() -> *mut RuntimeInner {
+    Box::into_raw(Box::new(RuntimeInner::new(worker_less_scheduler())))
+}
+
+/// Install a real, worker-backed scheduler for a test that needs worker threads
+/// (remote dispatch/ask, native crash recovery, drain).
+///
+/// A test holding `runtime_test_guard()` for serialization has a worker-less
+/// placeholder runtime installed so registry probes resolve `rt_current()`. A
+/// plain [`hew_sched_init`] would CAS-no-op against that placeholder and never
+/// spawn workers. Detach and free the placeholder first — it owns no worker
+/// threads, so this cannot strand a running worker — then init the real
+/// scheduler. A real, worker-backed scheduler already shared from an earlier
+/// test (non-empty `stealers`) is left installed so its running workers are
+/// never freed underneath them. `stealers` is module-private, so this helper
+/// (not the calling test) makes the placeholder-vs-real decision.
+#[cfg(test)]
+pub(crate) fn init_real_scheduler_for_test() {
+    let is_placeholder = get_scheduler().is_none_or(|s| s.stealers.is_empty());
+    if is_placeholder {
+        drop(runtime::take_default());
+    }
+    assert_eq!(hew_sched_init(), 0, "scheduler init");
+}
+
 /// Box `sched` inside a default `RuntimeInner` and install it in the runtime
 /// slot, returning the raw `RuntimeInner` pointer the test owns.
 ///
@@ -2064,8 +2180,10 @@ pub(crate) struct NoWorkerSchedulerForTest {
     previous: *mut RuntimeInner,
     // Held for the guard's lifetime so the installed runtime cannot race the
     // module-level scheduler tests (or another worker-less install) on the
-    // default-runtime pointer. Dropped after the runtime is restored.
-    _sched_lock: std::sync::MutexGuard<'static, ()>,
+    // default-runtime pointer. Re-entrant: if an outer runtime test guard
+    // already holds SCHED_TEST_MUTEX, this is a no-op depth bump (no deadlock).
+    // Dropped after the runtime is restored.
+    _sched_lock: SchedTestLock,
 }
 
 #[cfg(test)]
@@ -2073,24 +2191,10 @@ impl NoWorkerSchedulerForTest {
     /// Install a runtime whose scheduler has a single global queue and no
     /// worker threads.
     pub(crate) fn install() -> Self {
-        let sched_lock = SCHED_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sched_lock = SchedTestLock::acquire();
         // SAFETY: single-threaded test setup; the scheduler owns its queue state
         // and lives until this guard is dropped.
-        let sched = Scheduler {
-            worker_count: 1,
-            parkers: vec![Parker {
-                mutex: Mutex::new(()),
-                cond: Condvar::new(),
-            }],
-            stealers: Vec::new(),
-            worker_handles: PoisonSafe::new(Vec::new()),
-            // SAFETY: single-threaded test setup with scheduler-owned queue state.
-            global_queue: unsafe { crate::deque::GlobalQueue::new() },
-            shutdown: AtomicBool::new(false),
-        };
-        let rt_ptr = Box::into_raw(Box::new(RuntimeInner::new(sched)));
+        let rt_ptr = Box::into_raw(Box::new(RuntimeInner::new(worker_less_scheduler())));
         // Publish the transient pointer *before* the runtime swap so any worker
         // that subsequently observes the default runtime == rt_ptr also sees a
         // matching SCHED_TEST_DRAIN_PTR and registers in the drain counter.
@@ -3728,24 +3832,24 @@ mod tests {
         use crate::timer_periodic::{TICKER_RUNNING, TICKER_TEST_MUTEX};
 
         // Serialise against the actor/monitor/link test family (all of which hold
-        // `runtime_test_guard`): `hew_runtime_cleanup` → `cleanup_all_actors`
-        // frees EVERY registered actor, so it must not run while a parallel test
-        // still has a live actor (ASan heap-use-after-free). Acquired outermost,
-        // before the scheduler/ticker locks, to keep a single global lock order.
-        let _rt = crate::runtime_test_guard();
-
-        // Acquire SCHED_TEST_MUTEX first (consistent lock order: sched → ticker).
-        // hew_runtime_cleanup clears the global SCHEDULER pointer, so this test
-        // must be serialised relative to other scheduler tests.
-        let _sched_guard = SCHED_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // the shared scheduler-test lock via `runtime_test_guard`):
+        // `hew_runtime_cleanup` → `cleanup_all_actors` frees EVERY registered
+        // actor, so it must not run while a parallel test still has a live actor
+        // (ASan heap-use-after-free). This test manages its own runtime lifecycle
+        // (it calls `hew_runtime_cleanup` directly), so it takes the shared lock
+        // without installing a runtime, then drives the global wheel itself.
+        let _sched_guard = SchedTestLock::acquire();
 
         // Hold the shared ticker mutex for the duration of this test so it
         // cannot race with timer_periodic tests that poll the same globals.
         let _guard = TICKER_TEST_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Install a worker-less runtime so `hew_runtime_cleanup`'s runtime-owned
+        // sweep (cleanup_all_actors → drain via rt_current) has a runtime to
+        // read; cleanup detaches and drops it as its final step.
+        install_scheduler_for_test(worker_less_scheduler_for_test());
 
         // Start the global wheel so the ticker is running.
         let _tw = crate::timer_periodic::global_wheel();
@@ -3763,18 +3867,7 @@ mod tests {
 
     /// Build a worker-less scheduler suitable for deterministic lifecycle tests.
     fn worker_less_scheduler_for_test() -> Scheduler {
-        Scheduler {
-            worker_count: 1,
-            parkers: vec![Parker {
-                mutex: Mutex::new(()),
-                cond: Condvar::new(),
-            }],
-            stealers: Vec::new(),
-            worker_handles: PoisonSafe::new(Vec::new()),
-            // SAFETY: single-threaded test setup with scheduler-owned queue state.
-            global_queue: unsafe { crate::deque::GlobalQueue::new() },
-            shutdown: AtomicBool::new(false),
-        }
+        super::worker_less_scheduler()
     }
 
     /// Drop-order / release-count oracle for the M1 de-globalization: the
@@ -4071,30 +4164,15 @@ mod tests {
         use std::time::Instant;
 
         // Serialise against the actor/monitor/link test family (all of which hold
-        // `runtime_test_guard`): this test runs the process-global
-        // `hew_runtime_cleanup` → `cleanup_all_actors`, which frees EVERY actor in
-        // the registry. Without this guard it tears down an actor a parallel
-        // libtest thread is still using (ASan heap-use-after-free). Acquired
-        // outermost, before SCHED_TEST_MUTEX, for a single global lock order.
-        let _rt = crate::runtime_test_guard();
+        // the shared scheduler-test lock via `runtime_test_guard`): this test runs
+        // the process-global `hew_runtime_cleanup` → `cleanup_all_actors`, which
+        // frees EVERY actor in the registry. Without serialization it tears down
+        // an actor a parallel libtest thread is still using (ASan
+        // heap-use-after-free). This test installs and manages its own runtime, so
+        // it takes the shared lock directly (no guard-installed runtime).
+        let _sched_guard = SchedTestLock::acquire();
 
-        let _g = SCHED_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        let sched = Scheduler {
-            worker_count: 1,
-            parkers: vec![Parker {
-                mutex: Mutex::new(()),
-                cond: Condvar::new(),
-            }],
-            stealers: Vec::new(),
-            worker_handles: PoisonSafe::new(Vec::new()),
-            // SAFETY: single-threaded test setup with scheduler-owned queue state.
-            global_queue: unsafe { crate::deque::GlobalQueue::new() },
-            shutdown: AtomicBool::new(false),
-        };
-        let rt_ptr = install_scheduler_for_test(sched);
+        let rt_ptr = install_scheduler_for_test(worker_less_scheduler_for_test());
         // Stable borrow of the installed scheduler; valid until hew_runtime_cleanup
         // detaches and drops the runtime below.
         // SAFETY: `rt_ptr` is live until cleanup (held under SCHED_TEST_MUTEX).
@@ -4142,6 +4220,87 @@ mod tests {
         assert!(
             runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
             "runtime cleanup must clear the default runtime pointer"
+        );
+    }
+
+    /// Drop-order oracle for the live-actors-on-runtime cleanup restructure:
+    /// `hew_runtime_cleanup` must run the runtime-owned sweep (joining the
+    /// deferred-teardown reapers, which read `rt_current()`) WHILE the runtime
+    /// is still installed, and only THEN detach + drop it — exactly once.
+    ///
+    /// This is the load-bearing ordering: on the pre-restructure path the
+    /// runtime was detached up-front, so `cleanup_all_actors` →
+    /// `drain_deferred_teardown_threads` → `rt_current()` would trap on a
+    /// missing runtime mid-cleanup. A registered-but-not-yet-joined reaper that
+    /// the cleanup joins is the proof the sweep saw an installed runtime; the
+    /// exact `RUNTIME_INNER_DROPS` delta proves the drop is the single final
+    /// step, never doubled and never driven by detaching the slot.
+    #[test]
+    fn runtime_cleanup_sweeps_before_detach_and_drops_runtime_once() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        install_scheduler_for_test(worker_less_scheduler_for_test());
+
+        // Register a deferred-teardown reaper on the runtime-owned registry,
+        // gated open by `release`. `cleanup_all_actors` (inside cleanup) must
+        // JOIN it before sweeping — and must do so against an installed runtime,
+        // or the join's `rt_current()` would trap.
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let joined = std::sync::Arc::new(AtomicBool::new(false));
+        let release2 = std::sync::Arc::clone(&release);
+        let joined2 = std::sync::Arc::clone(&joined);
+        crate::lifetime::live_actors::push_deferred_teardown_thread(thread::spawn(move || {
+            while !release2.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            joined2.store(true, Ordering::Release);
+        }));
+
+        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+
+        let cleanup_done = std::sync::Arc::new(AtomicBool::new(false));
+        let cleanup_done2 = std::sync::Arc::clone(&cleanup_done);
+        let cleanup = thread::spawn(move || {
+            hew_runtime_cleanup();
+            cleanup_done2.store(true, Ordering::Release);
+        });
+
+        // Cleanup is blocked inside the runtime-owned sweep joining the gated
+        // reaper: the runtime must still be installed (not detached up-front),
+        // and it must not have been dropped yet.
+        thread::sleep(Duration::from_millis(40));
+        assert!(
+            !cleanup_done.load(Ordering::Acquire),
+            "cleanup must block in the runtime-owned sweep until the reaper is joined"
+        );
+        assert!(
+            !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "runtime must stay installed through the sweep — detach is the FINAL step"
+        );
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before,
+            "runtime must not be dropped before the sweep completes"
+        );
+
+        // Release the reaper; cleanup joins it, then detaches + drops last.
+        release.store(true, Ordering::Release);
+        cleanup.join().unwrap();
+
+        assert!(
+            joined.load(Ordering::Acquire),
+            "the runtime-owned sweep must have joined the deferred-teardown reaper"
+        );
+        assert!(
+            runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "cleanup must detach the runtime as its final step"
+        );
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "cleanup must drop the runtime exactly once as the final teardown step"
         );
     }
 

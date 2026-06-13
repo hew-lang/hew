@@ -2337,6 +2337,9 @@ mod tests {
 
     #[test]
     fn stop_supervisor_from_child_dispatch_is_deferred() {
+        // Install a runtime so the live-actor registry resolves; held for the
+        // whole test (it serializes actor-freeing tests on the shared lock).
+        let _rt = crate::runtime_test_guard();
         // SAFETY: this test owns the supervisor tree and only mutates the
         // current actor context within the test thread.
         unsafe {
@@ -2389,6 +2392,7 @@ mod tests {
 
     #[test]
     fn stop_supervisor_from_child_terminate_is_deferred() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: this test owns the supervisor tree and simulates a reentrant
         // terminate callback by controlling the child actor state directly.
         unsafe {
@@ -2448,6 +2452,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_teardown_joins_in_flight_supervisor_stop() {
+        let _rt = crate::runtime_test_guard();
         let _serial = TEARDOWN_DRAIN_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2512,6 +2517,7 @@ mod tests {
 
     #[test]
     fn drain_deferred_teardown_joins_in_flight_restart_free() {
+        let _rt = crate::runtime_test_guard();
         let _serial = TEARDOWN_DRAIN_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2576,6 +2582,7 @@ mod tests {
 
     #[test]
     fn concurrent_second_stop_returns_while_deferred_owner_waits() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: this test owns the supervisor tree, injects a synthetic
         // current actor for the owner-thread path, and only mutates actor
         // states through test-controlled atomics.
@@ -2665,6 +2672,7 @@ mod tests {
 
     #[test]
     fn failed_deferred_spawn_keeps_supervisor_registered() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: this test owns the supervisor tree, injects the current actor
         // to exercise the owner-thread path, and then performs synchronous
         // cleanup once the injected spawn failure has been asserted.
@@ -2704,6 +2712,7 @@ mod tests {
     /// A running child returns Live with its actor pointer.
     #[test]
     fn child_get_live_returns_handle() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree; cleans up after assertions.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
@@ -2720,6 +2729,7 @@ mod tests {
     /// An out-of-range key returns Dead(UnknownSlot).
     #[test]
     fn child_get_unknown_key_returns_dead_unknown_slot() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree.
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
@@ -2749,6 +2759,7 @@ mod tests {
     /// subsequent lookups return Dead(SupervisorShutdown).
     #[test]
     fn child_get_stopped_supervisor_returns_dead_supervisor_shutdown() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree; stop is called before the
         // pointer is last used.
         unsafe {
@@ -2772,6 +2783,7 @@ mod tests {
     /// Transient(Restarting).
     #[test]
     fn child_get_null_slot_returns_transient_restarting() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree; we manually null the slot to
         // simulate the restart-in-progress window, then restore it.
         unsafe {
@@ -2795,6 +2807,7 @@ mod tests {
     /// Transient(CircuitOpen).
     #[test]
     fn child_get_circuit_open_null_slot_returns_transient_circuit_open() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree; we manually set state fields.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
@@ -2819,6 +2832,7 @@ mod tests {
     /// a null slot returns Transient(BackoffDelay).
     #[test]
     fn child_get_backoff_active_null_slot_returns_transient_backoff_delay() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree; we manually set next_restart_time_ns.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
@@ -2860,6 +2874,7 @@ mod tests {
     /// A non-null child supervisor returns Live with the bit-cast pointer.
     #[test]
     fn nested_get_live_returns_handle() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns both supervisor trees; cleans up after assertions.
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
@@ -2880,6 +2895,7 @@ mod tests {
     /// A key beyond `child_supervisors.len()` returns `Dead(UnknownSlot)`.
     #[test]
     fn nested_get_unknown_key_returns_dead_unknown_slot() {
+        let _rt = crate::runtime_test_guard();
         // SAFETY: test owns the supervisor tree.
         unsafe {
             let (sup, _child, _self_actor) = make_supervisor_with_child();
@@ -3028,6 +3044,7 @@ mod tests {
 
     #[test]
     fn state_clone_fn_basic_round_trip() {
+        let _rt = crate::runtime_test_guard();
         // Registers a clone fn that deep-clones HeapState, drives a restart
         // via restart_child_from_spec, verifies clone_fn was invoked and the
         // new actor's state is a distinct allocation.
@@ -3086,6 +3103,7 @@ mod tests {
 
     #[test]
     fn state_clone_fn_failure_blocks_restart() {
+        let _rt = crate::runtime_test_guard();
         // clone_fn returns null. Verify: restart returns null, child slot
         // is null, circuit-breaker success counter is NOT advanced.
         let _serial = CLONE_TEST_SERIAL
@@ -3133,6 +3151,7 @@ mod tests {
 
     #[test]
     fn state_clone_fn_null_falls_back_to_bytecopy() {
+        let _rt = crate::runtime_test_guard();
         // No state_clone_fn registered: restart must still succeed via the
         // legacy `hew_actor_spawn_opts` byte-copy path. This preserves
         // backward compatibility for children whose codegen has not yet
@@ -3174,6 +3193,7 @@ mod tests {
 
     #[test]
     fn state_clone_fn_alias_freedom_under_mutation() {
+        let _rt = crate::runtime_test_guard();
         // C1 regression: with clone_fn registered, mutating actor.state's
         // owned heap fields must NOT dangle spec.init_state's pointers.
         // Verifies that registration breaks the initial byte-alias and that
@@ -3251,6 +3271,9 @@ mod tests {
     }
 
     unsafe fn run_forced_bytecopy_freed_spec_payload_probe() -> ! {
+        // Install a runtime so spawn/track resolve; this subprocess faults
+        // intentionally (GuardMalloc SIGSEGV) before the guard would drop.
+        let _rt = crate::runtime_test_guard();
         let (sup, _template) = make_supervisor_with_heap_child(false);
         let dangling_payload = free_spec_template_payload(sup);
 
@@ -3306,6 +3329,7 @@ mod tests {
             unsafe { run_forced_bytecopy_freed_spec_payload_probe() };
         }
 
+        let _rt = crate::runtime_test_guard();
         let _serial = CLONE_TEST_SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3361,6 +3385,7 @@ mod tests {
 
     #[test]
     fn hew_supervisor_set_child_state_clone_back_fills() {
+        let _rt = crate::runtime_test_guard();
         // Setting the clone fn after add_child_spec must back-fill it onto
         // the already-spawned actor so future direct-spawn restart consumers
         // see the same callback. Mirror of the state_drop_fn back-fill test.

@@ -34,10 +34,12 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::lifetime::live_actors::LiveActors;
+use crate::lifetime::poison_safe::PoisonSafe;
 use crate::scheduler::Scheduler;
+use crate::shutdown::SupervisorPtr;
 
 /// Process-wide runtime identity.
 ///
@@ -72,6 +74,14 @@ pub(crate) struct RuntimeInner {
     /// Live-actor liveness registry + deferred-teardown join handles. Was the
     /// `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals.
     pub(crate) live_actors: LiveActors,
+    /// Current graceful-shutdown phase (running/quiesce/drain/terminate/done/
+    /// failed). Was the `SHUTDOWN_PHASE` global. `PHASE_RUNNING == 0`, so a
+    /// freshly-constructed runtime starts running.
+    pub(crate) shutdown_phase: AtomicI32,
+    /// Registered top-level supervisors stopped (bottom-up) during graceful
+    /// shutdown and freed by `hew_runtime_cleanup`. Was the
+    /// `TOP_LEVEL_SUPERVISORS` global.
+    pub(crate) supervisor_roots: PoisonSafe<Vec<SupervisorPtr>>,
 }
 
 impl RuntimeInner {
@@ -81,6 +91,8 @@ impl RuntimeInner {
             id: RuntimeId::DEFAULT,
             scheduler,
             live_actors: LiveActors::new(),
+            shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
+            supervisor_roots: PoisonSafe::new(Vec::new()),
         }
     }
 

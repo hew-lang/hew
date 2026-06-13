@@ -17,11 +17,11 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::lifetime::poison_safe::PoisonSafe;
 use std::ffi::c_int;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::runtime::rt_current;
 use crate::scheduler;
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ use crate::scheduler;
 // ---------------------------------------------------------------------------
 
 /// Not shutting down.
-const PHASE_RUNNING: i32 = 0;
+pub(crate) const PHASE_RUNNING: i32 = 0;
 /// Phase 1: No new spawns or messages accepted.
 const PHASE_QUIESCE: i32 = 1;
 /// Phase 2: Draining remaining messages with deadline.
@@ -41,8 +41,21 @@ const PHASE_DONE: i32 = 4;
 /// Shutdown failed before completion.
 const PHASE_FAILED: i32 = 5;
 
-/// Current shutdown phase (global atomic).
-static SHUTDOWN_PHASE: AtomicI32 = AtomicI32::new(PHASE_RUNNING);
+/// Read the current shutdown phase off the installed runtime.
+///
+/// Fails closed via [`rt_current`] when no runtime is installed: the shutdown
+/// phase is a runtime authority, so touching it before `hew_sched_init`
+/// (production) or without a runtime test guard (tests) is a hard logic error.
+#[inline]
+fn shutdown_phase_load(ordering: Ordering) -> i32 {
+    rt_current().shutdown_phase.load(ordering)
+}
+
+/// Store the current shutdown phase on the installed runtime.
+#[inline]
+fn shutdown_phase_store(value: i32, ordering: Ordering) {
+    rt_current().shutdown_phase.store(value, ordering);
+}
 
 /// Default drain timeout in milliseconds.
 const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 5_000;
@@ -55,15 +68,22 @@ const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 ///
 /// Supervisor pointers are only accessed during shutdown while the
 /// runtime is in a controlled wind-down state.
-struct SupervisorPtr(*mut crate::supervisor::HewSupervisor);
+pub(crate) struct SupervisorPtr(pub(crate) *mut crate::supervisor::HewSupervisor);
 
 // SAFETY: Supervisor pointers are only accessed during shutdown while
 // the runtime is in a controlled wind-down state.
 unsafe impl Send for SupervisorPtr {}
 
-// native-only: supervisor shutdown assumes multi-threaded runtime; unreachable on WASM
-/// Registered top-level supervisors to stop during shutdown.
-static TOP_LEVEL_SUPERVISORS: PoisonSafe<Vec<SupervisorPtr>> = PoisonSafe::new(Vec::new());
+/// Operate on the installed runtime's registered top-level supervisors.
+///
+/// The supervisor-roots list was the `TOP_LEVEL_SUPERVISORS` global; it now
+/// lives in `RuntimeInner::supervisor_roots`. Fails closed via [`rt_current`]
+/// when no runtime is installed — registering a supervisor root before a
+/// runtime exists is a lifecycle error, not a silent no-op.
+#[inline]
+fn with_supervisor_roots<R>(f: impl FnOnce(&mut Vec<SupervisorPtr>) -> R) -> R {
+    rt_current().supervisor_roots.access(f)
+}
 
 // ---------------------------------------------------------------------------
 // C ABI — Phase queries
@@ -79,13 +99,13 @@ static TOP_LEVEL_SUPERVISORS: PoisonSafe<Vec<SupervisorPtr>> = PoisonSafe::new(V
 /// - 5 = failed
 #[no_mangle]
 pub extern "C" fn hew_shutdown_phase() -> c_int {
-    SHUTDOWN_PHASE.load(Ordering::Acquire)
+    shutdown_phase_load(Ordering::Acquire)
 }
 
 /// Return 1 if the runtime is in any shutdown phase (not running), else 0.
 #[no_mangle]
 pub extern "C" fn hew_is_shutting_down() -> c_int {
-    i32::from(SHUTDOWN_PHASE.load(Ordering::Acquire) != PHASE_RUNNING)
+    i32::from(shutdown_phase_load(Ordering::Acquire) != PHASE_RUNNING)
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +129,7 @@ pub unsafe extern "C" fn hew_shutdown_register_supervisor(
     if sup.is_null() {
         return;
     }
-    TOP_LEVEL_SUPERVISORS.access(|sups| {
+    with_supervisor_roots(|sups| {
         if !sups.iter().any(|s| s.0 == sup) {
             sups.push(SupervisorPtr(sup));
         }
@@ -129,14 +149,14 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(
     if sup.is_null() {
         return;
     }
-    TOP_LEVEL_SUPERVISORS.access(|sups| sups.retain(|s| s.0 != sup));
+    with_supervisor_roots(|sups| sups.retain(|s| s.0 != sup));
 }
 
 #[cfg(test)]
 pub(crate) fn is_supervisor_registered_for_test(
     sup: *mut crate::supervisor::HewSupervisor,
 ) -> bool {
-    TOP_LEVEL_SUPERVISORS.access(|sups| sups.iter().any(|candidate| candidate.0 == sup))
+    with_supervisor_roots(|sups| sups.iter().any(|candidate| candidate.0 == sup))
 }
 
 /// Free all registered top-level supervisors without waiting for actors.
@@ -147,7 +167,7 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
 pub(crate) unsafe fn free_registered_supervisors() {
-    let to_free = TOP_LEVEL_SUPERVISORS.access(std::mem::take);
+    let to_free = with_supervisor_roots(std::mem::take);
     for s in to_free {
         if !s.0.is_null() {
             // SAFETY: supervisor was registered and pointer is valid.
@@ -158,7 +178,7 @@ pub(crate) unsafe fn free_registered_supervisors() {
 
 #[cfg(feature = "profiler")]
 pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::HewSupervisor> {
-    TOP_LEVEL_SUPERVISORS.access(|sups| sups.iter().map(|sup| sup.0).collect())
+    with_supervisor_roots(|sups| sups.iter().map(|sup| sup.0).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +202,8 @@ pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::H
 #[no_mangle]
 pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
     // Only transition from RUNNING to QUIESCE.
-    if SHUTDOWN_PHASE
+    if rt_current()
+        .shutdown_phase
         .compare_exchange(
             PHASE_RUNNING,
             PHASE_QUIESCE,
@@ -230,7 +251,7 @@ pub extern "C" fn hew_shutdown_initiate(drain_timeout_ms: i64) {
 #[no_mangle]
 pub extern "C" fn hew_shutdown_wait() -> c_int {
     loop {
-        match SHUTDOWN_PHASE.load(Ordering::Acquire) {
+        match shutdown_phase_load(Ordering::Acquire) {
             PHASE_RUNNING => return -1,
             PHASE_DONE => return 0,
             PHASE_FAILED => return -2,
@@ -347,7 +368,7 @@ where
         Ok(()) => Ok(()),
         Err(panic_payload) => {
             report_shutdown_panic(panic_payload.as_ref());
-            SHUTDOWN_PHASE.store(PHASE_FAILED, Ordering::Release);
+            shutdown_phase_store(PHASE_FAILED, Ordering::Release);
             Err(panic_payload)
         }
     }
@@ -369,7 +390,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // callers can check before spawning new actors.
 
     // Phase 2: Drain — let workers process remaining messages.
-    SHUTDOWN_PHASE.store(PHASE_DRAIN, Ordering::Release);
+    shutdown_phase_store(PHASE_DRAIN, Ordering::Release);
 
     // Track whether the drain loop reached idle before the deadline.
     // WHY: Phase 3 join safety depends on this.  If the drain converged
@@ -407,7 +428,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     }
 
     // Phase 3: Terminate.
-    SHUTDOWN_PHASE.store(PHASE_TERMINATE, Ordering::Release);
+    shutdown_phase_store(PHASE_TERMINATE, Ordering::Release);
 
     if !drain_converged {
         // A worker is still executing a handler and will not return to its
@@ -420,7 +441,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
         // from hew_shutdown_wait(), returns, and the OS reaps the stuck
         // worker thread.  No heap memory is freed on this path — the process
         // is exiting so the OS reclaims it all.
-        SHUTDOWN_PHASE.store(PHASE_DONE, Ordering::Release);
+        shutdown_phase_store(PHASE_DONE, Ordering::Release);
         return;
     }
 
@@ -429,7 +450,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Stop registered supervisors in reverse order (bottom-up).
     // Extract the supervisor list to avoid holding the mutex while stopping them.
     // This prevents deadlock when hew_supervisor_stop calls hew_shutdown_unregister_supervisor.
-    let supervisors_to_stop = TOP_LEVEL_SUPERVISORS.access(|sups| {
+    let supervisors_to_stop = with_supervisor_roots(|sups| {
         // Reverse: last registered (innermost) first.
         sups.reverse();
         std::mem::take(sups) // Extract all supervisors, leaving empty vec
@@ -448,7 +469,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     // Shut down the scheduler (joins worker threads — instant since drain converged).
     scheduler::hew_sched_shutdown();
 
-    SHUTDOWN_PHASE.store(PHASE_DONE, Ordering::Release);
+    shutdown_phase_store(PHASE_DONE, Ordering::Release);
 }
 
 // ---------------------------------------------------------------------------
@@ -458,19 +479,27 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
-    fn shutdown_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("shutdown test mutex poisoned")
+    /// Serialize a shutdown test AND install a default `RuntimeInner`.
+    ///
+    /// Under the explicit-install model the shutdown phase and supervisor-root
+    /// list are runtime authorities, so every shutdown test must have a runtime
+    /// installed before it touches them. `crate::runtime_test_guard()` installs
+    /// a fresh worker-less default runtime (phase starts at `PHASE_RUNNING`,
+    /// supervisor roots empty) and serializes on the shared scheduler-test lock;
+    /// the install is reclaimed when the guard drops.
+    fn shutdown_test_guard() -> crate::RuntimeTestGuard {
+        crate::runtime_test_guard()
     }
 
+    /// Reset the installed runtime's shutdown state back to a clean running
+    /// baseline mid-test (e.g. after a prior phase transition). The guard
+    /// already starts each test from this baseline; this is for tests that
+    /// transition the phase and then want to re-assert from running.
     fn reset_shutdown_state() {
-        SHUTDOWN_PHASE.store(PHASE_RUNNING, Ordering::Release);
+        shutdown_phase_store(PHASE_RUNNING, Ordering::Release);
 
-        let to_stop = TOP_LEVEL_SUPERVISORS.access(std::mem::take);
+        let to_stop = with_supervisor_roots(std::mem::take);
         for supervisor in to_stop {
             if !supervisor.0.is_null() {
                 // SAFETY: tests only store pointers returned by hew_supervisor_new
@@ -484,7 +513,7 @@ mod tests {
     fn initial_phase_is_running() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_RUNNING);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_RUNNING);
     }
 
     #[test]
@@ -533,7 +562,7 @@ mod tests {
     fn shutdown_wait_returns_error_if_shutdown_worker_panics() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         let handle = std::thread::Builder::new()
             .name("panic-shutdown-worker".into())
@@ -559,7 +588,7 @@ mod tests {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
         // Just test the accessor against the atomic.
-        let prev = SHUTDOWN_PHASE.load(Ordering::Acquire);
+        let prev = shutdown_phase_load(Ordering::Acquire);
         assert_eq!(hew_shutdown_phase(), prev);
     }
 
@@ -582,7 +611,7 @@ mod tests {
         unsafe { hew_shutdown_register_supervisor(mock_supervisor) };
 
         // Put us in QUIESCE phase as if shutdown was initiated.
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Run shutdown_orchestrate on a helper thread with 2-second timeout.
         let handle = std::thread::spawn(|| {
@@ -596,7 +625,7 @@ mod tests {
         );
 
         // Verify shutdown reached DONE phase.
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         // Clean up.
         reset_shutdown_state();
@@ -635,16 +664,16 @@ mod tests {
         // In a real runtime, this would be done by the scheduler.
 
         // Start in RUNNING phase
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_RUNNING);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_RUNNING);
 
         // Transition to QUIESCE (simulate initiation)
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Run orchestration directly with short timeout.
         shutdown_orchestrate(Duration::from_millis(10));
 
         // Verify we reached DONE.
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();
     }
@@ -661,13 +690,13 @@ mod tests {
         // We'll test the synchronous fallback path by calling shutdown_orchestrate directly.
 
         // Set to QUIESCE phase manually.
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Call shutdown_orchestrate directly (simulating the fallback case).
         shutdown_orchestrate(Duration::from_millis(10));
 
         // Verify it completed.
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();
     }
@@ -721,7 +750,7 @@ mod tests {
         unsafe { hew_shutdown_register_supervisor(mock_supervisor) };
 
         // Put us in QUIESCE phase.
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // This would deadlock with the old code (before the fix).
         // If you revert the fix and run this test, it should timeout.
@@ -733,7 +762,7 @@ mod tests {
         // If you've reverted the fix, this will panic after timing out.
         let result = handle.join();
         assert!(result.is_ok(), "Shutdown should complete without deadlock");
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();
     }
@@ -750,7 +779,7 @@ mod tests {
         // In the old code (without fallback), if spawn failed, nothing would
         // set PHASE_DONE and hew_shutdown_wait would loop forever.
 
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // If you remove the spawn fallback and only have:
         //   std::thread::spawn(...).ok();
@@ -758,7 +787,7 @@ mod tests {
 
         // This simulates the fallback working:
         shutdown_orchestrate(Duration::from_millis(10));
-        assert_eq!(SHUTDOWN_PHASE.load(Ordering::Acquire), PHASE_DONE);
+        assert_eq!(shutdown_phase_load(Ordering::Acquire), PHASE_DONE);
 
         reset_shutdown_state();
     }
@@ -771,7 +800,7 @@ mod tests {
     fn shutdown_fallback_skips_self_join() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Capture the phase inside the thread before another test
         // calls reset_shutdown_state().
@@ -779,7 +808,7 @@ mod tests {
             .name("fallback-worker".into())
             .spawn(|| {
                 shutdown_orchestrate(Duration::from_millis(10));
-                SHUTDOWN_PHASE.load(Ordering::Acquire)
+                shutdown_phase_load(Ordering::Acquire)
             })
             .expect("test thread spawn");
 
@@ -795,8 +824,8 @@ mod tests {
     // Mutex poison-recovery tests
     // ---------------------------------------------------------------------------
 
-    /// `hew_shutdown_register_supervisor` must proceed even when
-    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    /// `hew_shutdown_register_supervisor` must proceed even when the runtime's
+    /// `supervisor_roots` lock was previously poisoned.
     #[test]
     fn register_supervisor_recovers_from_poisoned_mutex() {
         let _guard = shutdown_test_guard();
@@ -804,10 +833,10 @@ mod tests {
 
         // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
+            with_supervisor_roots(|_| panic!("intentional poison"));
         });
         assert!(
-            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            rt_current().supervisor_roots.is_poisoned_for_test(),
             "mutex must be poisoned"
         );
 
@@ -825,7 +854,7 @@ mod tests {
 
         // Must stop `sup` before reset_shutdown_state() to avoid re-entrant
         // lock deadlock: hew_supervisor_stop calls hew_shutdown_unregister_supervisor
-        // which also acquires TOP_LEVEL_SUPERVISORS; reset_shutdown_state holds
+        // which also acquires supervisor_roots; reset_shutdown_state holds
         // that lock while calling hew_supervisor_stop.
         // SAFETY: sup is a valid pointer we own.
         unsafe { crate::supervisor::hew_supervisor_stop(sup) };
@@ -833,8 +862,8 @@ mod tests {
         reset_shutdown_state();
     }
 
-    /// `hew_shutdown_unregister_supervisor` must proceed even when
-    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    /// `hew_shutdown_unregister_supervisor` must proceed even when the runtime's
+    /// `supervisor_roots` lock was previously poisoned.
     #[test]
     fn unregister_supervisor_recovers_from_poisoned_mutex() {
         let _guard = shutdown_test_guard();
@@ -849,10 +878,10 @@ mod tests {
 
         // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
+            with_supervisor_roots(|_| panic!("intentional poison"));
         });
         assert!(
-            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            rt_current().supervisor_roots.is_poisoned_for_test(),
             "mutex must be poisoned"
         );
 
@@ -872,8 +901,8 @@ mod tests {
         reset_shutdown_state();
     }
 
-    /// `free_registered_supervisors` must drain all supervisors even when
-    /// `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    /// `free_registered_supervisors` must drain all supervisors even when the
+    /// runtime's `supervisor_roots` lock was previously poisoned.
     #[test]
     fn free_registered_supervisors_recovers_from_poisoned_mutex() {
         let _guard = shutdown_test_guard();
@@ -886,10 +915,10 @@ mod tests {
 
         // Poison the mutex by panicking inside the closure.
         let _ = std::panic::catch_unwind(|| {
-            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
+            with_supervisor_roots(|_| panic!("intentional poison"));
         });
         assert!(
-            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            rt_current().supervisor_roots.is_poisoned_for_test(),
             "mutex must be poisoned"
         );
 
@@ -908,7 +937,7 @@ mod tests {
 
     /// The graceful-shutdown supervisor drain path (`lock_or_recover` +
     /// `std::mem::take` in `shutdown_orchestrate`) must extract supervisors
-    /// even when `TOP_LEVEL_SUPERVISORS` was previously poisoned.
+    /// even when the runtime's `supervisor_roots` lock was previously poisoned.
     ///
     /// This test exercises the real `shutdown_orchestrate` production path —
     /// not an isolated helper — to verify the fix end-to-end.
@@ -924,15 +953,15 @@ mod tests {
 
         // Poison the mutex before the drain.
         let _ = std::panic::catch_unwind(|| {
-            TOP_LEVEL_SUPERVISORS.access(|_| panic!("intentional poison"));
+            with_supervisor_roots(|_| panic!("intentional poison"));
         });
         assert!(
-            TOP_LEVEL_SUPERVISORS.is_poisoned_for_test(),
+            rt_current().supervisor_roots.is_poisoned_for_test(),
             "mutex must be poisoned"
         );
 
         // Enter QUIESCE phase as if shutdown was initiated.
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Call the real production path on a helper thread.
         // `shutdown_orchestrate` must recover from the poisoned mutex via
@@ -948,7 +977,7 @@ mod tests {
         );
 
         assert_eq!(
-            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            shutdown_phase_load(Ordering::Acquire),
             PHASE_DONE,
             "shutdown_orchestrate must reach DONE even after mutex poison"
         );
@@ -966,7 +995,7 @@ mod tests {
     fn shutdown_orchestrate_returns_early_when_drain_is_already_idle() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         let timeout = Duration::from_millis(250);
         let started = Instant::now();
@@ -974,7 +1003,7 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert_eq!(
-            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            shutdown_phase_load(Ordering::Acquire),
             PHASE_DONE,
             "shutdown_orchestrate must still complete the shutdown sequence"
         );
@@ -998,7 +1027,7 @@ mod tests {
     fn shutdown_orchestrate_sets_done_on_drain_timeout() {
         let _guard = shutdown_test_guard();
         reset_shutdown_state();
-        SHUTDOWN_PHASE.store(PHASE_QUIESCE, Ordering::Release);
+        shutdown_phase_store(PHASE_QUIESCE, Ordering::Release);
 
         // Keep the drain loop from ever converging.
         scheduler::ACTIVE_WORKERS.fetch_add(1, Ordering::Release);
@@ -1012,7 +1041,7 @@ mod tests {
         scheduler::ACTIVE_WORKERS.fetch_sub(1, Ordering::Release);
 
         assert_eq!(
-            SHUTDOWN_PHASE.load(Ordering::Acquire),
+            shutdown_phase_load(Ordering::Acquire),
             PHASE_DONE,
             "shutdown_orchestrate must reach DONE even when drain times out"
         );

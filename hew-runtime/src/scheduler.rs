@@ -4304,6 +4304,88 @@ mod tests {
         );
     }
 
+    /// Drop-order oracle for the supervisor-roots de-globalization: a registered
+    /// top-level supervisor root lives in the runtime-owned `supervisor_roots`
+    /// list, and `hew_runtime_cleanup` frees it via `free_registered_supervisors`
+    /// **while the runtime is still installed** — before the runtime is detached
+    /// and dropped.
+    ///
+    /// The proof is the ordering, not a leak count: `free_registered_supervisors`
+    /// (which reads `rt_current().supervisor_roots`) runs strictly before the
+    /// live-actor sweep inside cleanup. We gate cleanup mid-sweep on a deferred
+    /// reaper join (which happens during the *later* `cleanup_all_actors` step)
+    /// and observe that, at that point, the supervisor root has already been
+    /// swept out of the runtime-owned list while the runtime is still installed
+    /// and not yet dropped. If the sweep instead read a detached runtime,
+    /// `rt_current()` would trap and cleanup would never reach the join.
+    #[test]
+    fn runtime_cleanup_frees_supervisor_root_before_detach() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        install_scheduler_for_test(worker_less_scheduler_for_test());
+
+        // Register a top-level supervisor root on the runtime-owned list.
+        // SAFETY: hew_supervisor_new returns a valid owned supervisor pointer.
+        let sup = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: sup is a valid pointer returned by hew_supervisor_new.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        assert!(
+            crate::shutdown::is_supervisor_registered_for_test(sup),
+            "supervisor root must be registered on the runtime-owned list before cleanup"
+        );
+
+        // Gate cleanup inside the LATER live-actor sweep (the deferred-teardown
+        // join), so when it blocks here `free_registered_supervisors` has already
+        // run. The reaper dereferences the runtime-owned live-actor registry, so
+        // the runtime must still be installed for cleanup to reach the join.
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let release2 = std::sync::Arc::clone(&release);
+        crate::lifetime::live_actors::push_deferred_teardown_thread(thread::spawn(move || {
+            while !release2.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }));
+
+        let before = runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst);
+
+        let cleanup = thread::spawn(|| hew_runtime_cleanup());
+
+        // Cleanup is now blocked in the actor-sweep join — which is AFTER the
+        // supervisor-roots sweep. While blocked, the runtime is still installed
+        // and not yet dropped, and the supervisor root has already been freed.
+        thread::sleep(Duration::from_millis(40));
+        assert!(
+            !runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "runtime must stay installed through the supervisor-roots sweep"
+        );
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before,
+            "runtime must not be dropped before the supervisor-roots sweep completes"
+        );
+        assert!(
+            !crate::shutdown::is_supervisor_registered_for_test(sup),
+            "free_registered_supervisors must empty the runtime-owned supervisor \
+             roots while the runtime is still installed, before detach/drop"
+        );
+
+        // Let cleanup finish: it joins the reaper, then detaches + drops last.
+        release.store(true, Ordering::Release);
+        cleanup.join().unwrap();
+
+        assert!(
+            runtime::default_runtime_ptr(Ordering::SeqCst).is_null(),
+            "cleanup must detach the runtime as its final step"
+        );
+        assert_eq!(
+            runtime::RUNTIME_INNER_DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "cleanup must drop the runtime exactly once after sweeping supervisor roots"
+        );
+    }
+
     #[test]
     fn drain_is_idle_requires_empty_scheduler() {
         let _g = SCHED_TEST_MUTEX

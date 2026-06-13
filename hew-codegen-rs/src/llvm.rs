@@ -35828,6 +35828,27 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
     validate_context_markers(func)
 }
 
+/// Does the module reach a distributed-node authority (`Node::*` builtin)?
+///
+/// The de-globalized node state (`CURRENT_NODE`/`KNOWN_NODES`/`REPLY_TABLE`,
+/// owned by `RuntimeInner::node`) is touched the moment a program calls
+/// `Node::set_transport`/`start`/`connect`/`register`/`lookup`/`shutdown`.
+/// Those builtins lower to `Terminator::Call` with a `Node::`-prefixed callee.
+/// A program can touch the node authority WITHOUT declaring any actor (e.g. a
+/// bare `Node::start` smoke), so node presence is an independent reason to
+/// install the runtime at program entry — actor/supervisor presence does not
+/// imply it. Scans every function body's terminators for a `Node::` callee.
+fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
+    raw_mir.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            matches!(
+                &block.terminator,
+                Terminator::Call { callee, .. } if callee.starts_with("Node::")
+            )
+        })
+    })
+}
+
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
 /// to emit LIFO close calls before every exit terminator.
 ///
@@ -35842,6 +35863,18 @@ fn validate_context_markers_for_codegen(func: &RawMirFunction) -> Vec<hew_mir::M
 /// dataflow pass. Empty/missing checked MIR means no cooperate injection
 /// for legacy hand-built codegen tests; full lowered pipelines always carry
 /// a matching checked function.
+///
+/// `module_uses_runtime` is true when the module declares an actor, declares a
+/// supervisor, or reaches a `Node::*` authority. When true, the native `main`
+/// entry installs the default `RuntimeInner` (via `hew_sched_init`) in its
+/// prologue, BEFORE any user code runs. This guarantees a runtime authority
+/// (node setup, the live-actor registry, the shutdown phase) is never touched
+/// before the runtime is installed — the de-globalized `rt_current()` fails
+/// closed (`hew-runtime/src/runtime.rs`) rather than lazily fabricating one, so
+/// a program that calls `Node::start` or `pid.tell(..)` before its first
+/// `spawn` site (which also calls `hew_sched_init`) would otherwise trap.
+/// `hew_sched_init` is idempotent (a second call CAS-fails to a no-op), so the
+/// spawn-site and supervisor-bootstrap calls remain harmless.
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -35864,6 +35897,7 @@ fn lower_function<'ctx>(
     const_globals: &ConstGlobalMap<'ctx>,
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
+    module_uses_runtime: bool,
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -36518,6 +36552,24 @@ fn lower_function<'ctx>(
         && !has_supervisors
         && emit_wasm_entry_alias;
 
+    // Install the default `RuntimeInner` at the native `main` entry for any
+    // runtime-using program. The de-globalized runtime (#1228 M1) makes
+    // `rt_current()` fail closed when no runtime is installed: a program that
+    // touches a runtime authority — `Node::start`, `pid.tell(..)` via
+    // `hew_actor_send_by_id`, the implicit drain epilogue — BEFORE its first
+    // `spawn` site (the other place that calls `hew_sched_init`) would trap.
+    // Installing once in the prologue removes that ordering hazard. The runtime
+    // is freed at exit by `hew_runtime_cleanup` exactly as before.
+    //
+    // `hew_sched_init` is idempotent (a second call CAS-fails to a harmless
+    // no-op), so the spawn-site and supervisor-bootstrap calls still run and
+    // still cost nothing extra. WASM is excluded (the host owns the cooperative
+    // scheduler's lifecycle). Pure-computation programs (no actors, no
+    // supervisors, no node) never reach `module_uses_runtime`, so they pay
+    // nothing.
+    let install_runtime_at_entry =
+        func.name == "main" && !emit_wasm_entry_alias && module_uses_runtime;
+
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -36684,6 +36736,25 @@ fn lower_function<'ctx>(
             .build_unreachable()
             .llvm_ctx("borrow-escape trap unreachable")?;
         fn_ctx.builder.position_at_end(cont_bb);
+    }
+    // Runtime install at native `main` entry (#1228 M1). Emitted in the
+    // prologue — after any borrow-escape trap, before control reaches the
+    // first user block — so the default `RuntimeInner` is installed before any
+    // runtime authority (node setup, the live-actor registry, the shutdown
+    // phase) is touched. `hew_sched_init` is idempotent, so later spawn-site /
+    // supervisor-bootstrap calls are harmless no-ops. LESSONS:
+    // boundary-fail-closed, lifecycle-symmetry.
+    if install_runtime_at_entry {
+        let sched_init = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_sched_init",
+        )?;
+        fn_ctx
+            .builder
+            .build_call(sched_init, &[], "hew_sched_init_entry_call")
+            .llvm_ctx("hew_sched_init call in main prologue")?;
     }
     fn_ctx
         .builder
@@ -37832,6 +37903,15 @@ fn build_module_for_target<'ctx>(
         .iter()
         .map(|s| s.bootstrap_symbol.clone())
         .collect();
+    // Whether the module reaches any runtime authority — an actor, a
+    // supervisor, or a `Node::*` builtin. Drives the native `main`-entry
+    // runtime install (#1228 M1): when true, `main` calls `hew_sched_init` in
+    // its prologue so the de-globalized `RuntimeInner` is installed before any
+    // authority is touched (node setup before the first spawn, a remote
+    // `pid.tell` with no spawn site at all, the implicit drain epilogue).
+    let module_uses_runtime = !pipeline.actor_layouts.is_empty()
+        || !pipeline.supervisor_layouts.is_empty()
+        || module_uses_node_authority(&pipeline.raw_mir);
     for sup in &pipeline.supervisor_layouts {
         emit_supervisor_bootstrap_body(
             ctx,
@@ -37889,6 +37969,7 @@ fn build_module_for_target<'ctx>(
             &const_globals,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
+            module_uses_runtime,
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.

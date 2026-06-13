@@ -1,0 +1,100 @@
+// Regression guard: supervisor child access after restart (issue #382 Bug 2).
+//
+// Before the fix: hew_supervisor_child_get (supervisor.rs) returned a raw
+// null pointer when the child slot was Transient (mid-restart) or Dead.
+// Downstream code that dereferenced the null handle caused SIGSEGV.
+//
+// After the fix: MIR lower_supervisor_child_get (hew-mir/src/lower.rs)
+// reads the ChildLookupResult.tag field; tag != 0 branches to
+// hew_trap_with_code(206) + llvm.trap instead of yielding a null handle.
+// Tag == 0 (Live) yields the actor handle safely.
+//
+// This test drives a crash-and-restart cycle and verifies the happy path
+// deterministically using hew_supervisor_wait_restart — a C ABI barrier
+// that blocks until the supervisor's restart counter reaches a target.
+// The barrier fires from notify_restart(), which is called only AFTER
+// restart_child_from_spec + store_child_slot completes; therefore
+// sup.w1 is guaranteed Live when hew_supervisor_wait_restart returns.
+//
+//   1. Supervisor spawns Worker(value: 7); sup.w1 is Live immediately.
+//   2. w.crash_me() panics inside the actor; the supervisor processes
+//      the crash notification and restarts the child (first crash:
+//      restart_delay_ms starts at 0, so restart is immediate).
+//   3. hew_supervisor_wait_restart(sup, 1, 5000) blocks until the restart
+//      counter reaches 1 (one completed restart cycle) or 5 s elapses.
+//      Returns > 0 on success; 0 on timeout (which exits 0 = test fail).
+//   4. sup.w1 returns a Live handle — tag == 0 is guaranteed by step 3.
+//      If the child were still Transient, hew_trap_with_code(206) would
+//      fire and the process would exit 133 (SIGTRAP) — a visible failure.
+//   5. await w2.get_value() returns 7: HewChildSpec.init_state carries the
+//      original value = 7 through the deep-clone restart path.
+//
+// No sleep_ms is used; the ordering is provided by the wait barrier.
+//
+// Exit code 7 proves:
+//   - hew_supervisor_wait_restart returned > 0 (restart observed).
+//   - sup.w1 returned Live (not Transient) after the restart.
+//   - The restarted actor's state was deep-cloned correctly.
+actor Worker {
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("test crash — supervisor should restart this child");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: Worker(value: 7);
+}
+
+// hew_supervisor_wait_restart is a C ABI function in hew-runtime that blocks
+// until the supervisor's restart counter reaches `target` or `timeout_ms`
+// milliseconds elapse.  The counter is incremented by notify_restart() inside
+// restart_with_budget_and_strategy(), which runs after restart_child_from_spec
+// + store_child_slot — guaranteeing the child slot is populated on return.
+// Declared here to bridge the restart barrier into the Hew test surface
+// without a language-level API.  Production code should use supervisor
+// lifecycle hooks; tests may use this C ABI barrier for determinism.
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w1;
+    // Confirm initial value before crash (proves init_state was applied).
+    match await w.get_value() {
+        Err(_) => {
+            return 0;
+        },
+        Ok(v) => {
+            if v != 7 {
+                return 0;
+            }
+        },
+    }
+    // Crash the worker (fire-and-forget tell).
+    w.crash_me();
+    // Wait for the supervisor to complete exactly one restart cycle.
+    // Returns the restart count (>= 1) on success, 0 on timeout.
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        // Timed out — supervisor did not complete a restart within 5 s.
+        return 0;
+    }
+    // Access the restarted child via the supervisor — tag must be 0 (Live).
+    // A Transient result would emit hew_trap_with_code(206) and SIGTRAP.
+    let w2 = sup.w1;
+    // Restarted child has the original init value from HewChildSpec.
+    match await w2.get_value() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

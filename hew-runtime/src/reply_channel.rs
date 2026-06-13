@@ -54,6 +54,21 @@ use crate::alloc_tracker::{
     debug_is_libc_tracked, debug_track_libc_alloc, debug_untrack_libc_alloc,
 };
 
+/// Typed destructor for a delivered-but-never-consumed reply payload.
+///
+/// [`hew_reply`] byte-copies the reply value into the channel's `value`
+/// buffer, aliasing any heap pointers embedded in the reply type `R`
+/// (`String`/`Vec`/`HashMap`/`Closure`/struct-with-owned-fields) into that
+/// buffer. On the consumed leg the waiter takes the buffer and its scope-exit
+/// drop releases that heap; on the never-consumed leg (timeout/cancel/
+/// await-cancel/orphan-retire/shutdown) the channel itself must release it.
+/// This is that release: the semantic counterpart to the buffer's `libc::free`
+/// (`alias-byte-copy-not-semantic-clone`). It receives the copied buffer
+/// (`value`) and drops `R` in place. Registered once by the ask caller (which
+/// knows `R` statically) via [`hew_reply_channel_set_reply_drop_fn`], before
+/// the ask is submitted; `None`/null for a bit-copy `R` with no embedded heap.
+pub type HewReplyDropFn = unsafe extern "C" fn(*mut c_void);
+
 /// One-shot reply channel for the actor ask pattern.
 ///
 /// Thread-safety contract: exactly one thread calls [`hew_reply`],
@@ -74,6 +89,14 @@ pub struct HewReplyChannel {
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
+    /// Optional typed destructor for the reply payload (`R`'s embedded heap),
+    /// run on the delivered-but-never-consumed leg in
+    /// [`hew_reply_channel_free`] before `value` is `libc::free`d. Null (the
+    /// default) ⇒ the reply type is bit-copy (no embedded heap) and the buffer
+    /// free alone suffices — current behaviour. Stored type-erased as the bits
+    /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
+    /// race with any reply), read once at final free (after `refs` hits 0).
+    reply_drop_fn: AtomicPtr<c_void>,
     /// Distinguishes allocator failure from a legitimate null reply.
     allocation_failed: AtomicBool,
     /// The waiter-kind discriminator (W6.010). When non-null, the waiter is a
@@ -128,6 +151,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         orphaned: AtomicBool::new(false),
         value: ptr::null_mut(),
         value_size: 0,
+        reply_drop_fn: AtomicPtr::new(ptr::null_mut()),
         allocation_failed: AtomicBool::new(false),
         caller_actor: AtomicPtr::new(ptr::null_mut()),
         lock: Mutex::new(()),
@@ -190,6 +214,38 @@ pub unsafe extern "C" fn hew_reply_channel_set_await_cancel(
     if !old.is_null() {
         // SAFETY: releases the channel's previous retained registration.
         unsafe { hew_await_cancel_free(old) };
+    }
+}
+
+/// Register the typed destructor for this channel's reply payload (`R`).
+///
+/// Set once by the ask caller, BEFORE the ask is submitted: the caller knows
+/// the reply type `R` statically, and submitting-before-setting would race the
+/// reply. `f` is the drop thunk for `R`, operating on the channel's copied
+/// reply buffer; pass `None` for a bit-copy `R` with no embedded heap (the
+/// default — equivalent to never calling this). The destructor runs on the
+/// delivered-but-never-consumed teardown leg in [`hew_reply_channel_free`].
+///
+/// # Safety
+///
+/// `ch` must be null or a live reply channel reference. `f`, when `Some`, must
+/// be a valid drop thunk for this channel's reply type that operates on the
+/// copied reply buffer passed to it (`value`).
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_set_reply_drop_fn(
+    ch: *mut HewReplyChannel,
+    f: Option<HewReplyDropFn>,
+) {
+    if ch.is_null() {
+        return;
+    }
+    // Type-erase the fn pointer into the AtomicPtr slot (round-tripped back via
+    // transmute in `hew_reply_channel_free`). None ⇒ null ⇒ no-op free leg.
+    let raw = f.map_or(ptr::null_mut(), |f| f as *mut c_void);
+    // SAFETY: caller guarantees `ch` is a live reply channel reference; the
+    // Release store pairs with the Acquire load at final free.
+    unsafe {
+        (*ch).reply_drop_fn.store(raw, Ordering::Release);
     }
 }
 
@@ -1540,6 +1596,173 @@ mod tests {
             let result = hew_reply_wait(ch);
             assert!(result.is_null());
             hew_reply_channel_free(ch);
+        }
+    }
+
+    // ── #1739: delivered-but-never-consumed owned-reply typed destructor ──────
+
+    /// Counts invocations of [`test_reply_string_dtor`] so the exactly-once
+    /// contract is observable without a sanitizer (the ASan/LSan leak is the
+    /// second barrel). Serialised with the rest of the module by
+    /// `runtime_test_guard`, so a plain reset-at-start is race-free.
+    static REPLY_DTOR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Test reply-type drop thunk modelling codegen's destructor for a `string`
+    /// reply: the channel buffer is a byte-copy of the reply value — here a
+    /// single embedded `*mut c_char` (a Hew `string` is a flat heap pointer).
+    /// Release that embedded heap (mirroring `hew_string_drop`) and count the
+    /// call. This is the `void(*)(void*)` shape `hew_reply_channel_set_reply_drop_fn`
+    /// registers.
+    unsafe extern "C" fn test_reply_string_dtor(buf: *mut c_void) {
+        REPLY_DTOR_CALLS.fetch_add(1, Ordering::AcqRel);
+        if buf.is_null() {
+            return;
+        }
+        // SAFETY: `buf` is the channel's copied reply buffer holding one
+        // `*mut c_char` (the delivered reply value). Load and free the embedded
+        // heap the byte-copy aliased into the buffer.
+        unsafe {
+            let embedded = *(buf.cast::<*mut libc::c_char>());
+            if !embedded.is_null() {
+                libc::free(embedded.cast());
+            }
+        }
+    }
+
+    /// Allocate a heap "owned reply" and deposit its flat pointer value into
+    /// `ch` via `hew_reply` (byte-copied into the channel buffer, aliasing the
+    /// embedded heap into `value`), the way an ask handler returning `string`
+    /// does. Returns once delivered. The channel keeps the only live alias to
+    /// the embedded heap.
+    unsafe fn deliver_owned_string_reply(ch: *mut HewReplyChannel, payload: &str) {
+        // SAFETY: `ch` is a live, retained sender-side channel reference.
+        unsafe {
+            let original = std::ffi::CString::new(payload).unwrap();
+            let embedded: *mut libc::c_char = libc::strdup(original.as_ptr());
+            assert!(!embedded.is_null(), "strdup must succeed");
+            let mut reply_value: *mut libc::c_char = embedded;
+            let delivered = hew_reply(
+                ch,
+                (&raw mut reply_value).cast(),
+                std::mem::size_of::<*mut libc::c_char>(),
+            );
+            assert!(
+                delivered,
+                "owned reply must be delivered into the channel buffer"
+            );
+        }
+    }
+
+    /// Regression (#1739): a delivered owned reply that is NEVER consumed (the
+    /// waiter timed out / cancelled / shut down before reaching
+    /// `hew_reply_wait`) must run its registered typed destructor on the channel
+    /// teardown leg, reclaiming the embedded heap the byte-copy aliased into
+    /// `value`. `take_ready_reply` nulls `value` only on consume, so a non-null
+    /// `value` at the final `refs` 1→0 free is exactly the never-consumed leg.
+    ///
+    /// Pre-fix the destructor is never invoked: the embedded strdup leaks
+    /// (ASan/LSan) and `REPLY_DTOR_CALLS` stays 0 (this assertion fails). The runtime
+    /// destructor commit runs it exactly once on the non-null-`value` free leg.
+    #[test]
+    #[ignore = "RED until the reply_drop_fn run-leg lands in hew_reply_channel_free \
+                (#1739 runtime-destructor commit); demonstrates the embedded-heap \
+                leak under ASan/LSan and the destructor-not-run counter==0"]
+    fn delivered_owned_reply_never_consumed_runs_typed_destructor() {
+        let _guard = crate::runtime_test_guard();
+        REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: `ch` is live; we model the codegen ask-caller setup (register
+        // the reply-type drop thunk before submit) and a handler delivering a
+        // heap reply the waiter never consumes.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            deliver_owned_string_reply(ch, "owned-reply-payload");
+
+            // Never consume: no hew_reply_wait. Tear the channel down directly —
+            // the timeout/cancel/shutdown leg. `value` is still non-null.
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "a delivered-but-never-consumed owned reply must run its typed \
+                 destructor exactly once on the channel teardown leg (#1739)"
+            );
+        }
+    }
+
+    /// Exactly-once boundary: the CONSUMED leg must NOT run the channel
+    /// destructor. `hew_reply_wait` (`take_ready_reply`) nulls `value`,
+    /// transferring buffer ownership to the waiter, whose scope-exit drop
+    /// releases the embedded heap; running the channel destructor too would
+    /// double-free. Green at every stage (the run-leg is gated on non-null
+    /// `value`). Pairs with the never-consumed test to pin the XOR.
+    #[test]
+    fn consumed_owned_reply_does_not_run_channel_destructor() {
+        let _guard = crate::runtime_test_guard();
+        REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; deliver then consume normally.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            deliver_owned_string_reply(ch, "consumed-reply");
+
+            // Waiter consumes: take the buffer (value nulled), then — as the
+            // waiter scope-exit drop does — release the embedded heap and free
+            // the copied buffer.
+            let buf = hew_reply_wait(ch);
+            assert!(!buf.is_null());
+            let embedded_back = *(buf.cast::<*mut libc::c_char>());
+            assert!(!embedded_back.is_null());
+            libc::free(embedded_back.cast()); // waiter's scope-exit drop of `R`
+            hew_reply_payload_free(buf.cast(), 0); // free the copied buffer
+
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                0,
+                "consumed reply must NOT run the channel destructor — the waiter \
+                 owns the buffer once take_ready_reply nulls value"
+            );
+        }
+    }
+
+    /// Teardown routing: a reply delivered and THEN cancelled (the select-loser
+    /// / timeout race where the reply lands just before the waiter abandons the
+    /// channel) still runs its typed destructor on the free leg.
+    /// `hew_reply_channel_cancel` only sets the flag; the non-null `value`
+    /// reaches the final free, which is the single site that reclaims it. Also
+    /// covers double-release idempotence: the sender ref is released inside
+    /// `hew_reply`, the waiter ref here — the destructor runs exactly once.
+    #[test]
+    #[ignore = "RED until the reply_drop_fn run-leg lands in hew_reply_channel_free \
+                (#1739 runtime-destructor commit)"]
+    fn delivered_then_cancelled_reply_runs_destructor_once_on_free() {
+        let _guard = crate::runtime_test_guard();
+        REPLY_DTOR_CALLS.store(0, Ordering::Release);
+        let ch = hew_reply_channel_new();
+
+        // SAFETY: live channel; deliver, then cancel after the reply landed.
+        unsafe {
+            hew_reply_channel_set_reply_drop_fn(ch, Some(test_reply_string_dtor));
+            hew_reply_channel_retain(ch); // sender's reference
+            deliver_owned_string_reply(ch, "delivered-then-cancelled");
+
+            // Waiter abandons the channel AFTER the reply already landed.
+            hew_reply_channel_cancel(ch);
+            hew_reply_channel_free(ch);
+
+            assert_eq!(
+                REPLY_DTOR_CALLS.load(Ordering::Acquire),
+                1,
+                "a delivered-then-cancelled reply must still run its destructor \
+                 exactly once on the final release"
+            );
         }
     }
 

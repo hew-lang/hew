@@ -5810,7 +5810,14 @@ impl Checker {
                 // File imports register top-level names without a module namespace.
                 self.register_file_import_items(resolved_items);
             } else {
-                let short = decl.path.last().expect("import path is non-empty").clone();
+                // The qualifier a bare reference reaches this module's names
+                // through. A whole-module alias (`import path as m;`) overrides
+                // the default last-segment qualifier, so the module's qualified
+                // keys, exports, and importer bindings are all keyed on `m`.
+                let short = decl
+                    .module_alias
+                    .clone()
+                    .unwrap_or_else(|| decl.path.last().expect("import path is non-empty").clone());
                 self.modules.insert(short.clone());
                 self.user_modules.insert(short.clone());
                 if let Some(span) = import_span {
@@ -6427,10 +6434,26 @@ impl Checker {
                     if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
+                    // Qualified authority is always published: the source
+                    // module's own bare def (read by the alias copy), the
+                    // qualified alias, and the module-export record that drives
+                    // use-time ambiguity candidate naming.
                     self.register_type_decl(td);
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
-                    self.known_types.insert(td.name.clone());
+                    // The importer-scope bare binding is opt-in: a plain
+                    // `import m;` publishes only the qualified name, mirroring
+                    // the function/trait arms. Named (`::{ T }`) and glob
+                    // imports publish the bare (or aliased) binding.
+                    if Self::should_import_name(&td.name, spec) {
+                        let binding_name = Self::resolve_import_name(spec, &td.name)
+                            .unwrap_or_else(|| td.name.clone());
+                        self.known_types.insert(binding_name.clone());
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding_name),
+                            module_short.to_string(),
+                        );
+                    }
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
@@ -6443,11 +6466,33 @@ impl Checker {
                     ) {
                         continue;
                     }
+                    let event_name = format!("{}Event", md.name);
+                    // Qualified authority is always published for the machine
+                    // and its companion event enum.
                     self.register_machine_decl(md, span);
                     self.register_qualified_type_alias(module_short, &md.name);
-                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
-                    self.known_types.insert(md.name.clone());
-                    self.known_types.insert(format!("{}Event", md.name));
+                    self.register_qualified_type_alias(module_short, &event_name);
+                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, &event_name);
+                    // Bare publication of the machine and its event enum is
+                    // opt-in, gated together so a named/glob import exposes both
+                    // or neither.
+                    if Self::should_import_name(&md.name, spec) {
+                        let machine_binding = Self::resolve_import_name(spec, &md.name)
+                            .unwrap_or_else(|| md.name.clone());
+                        let event_binding = Self::resolve_import_name(spec, &event_name)
+                            .unwrap_or_else(|| event_name.clone());
+                        self.known_types.insert(machine_binding.clone());
+                        self.known_types.insert(event_binding.clone());
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), machine_binding),
+                            module_short.to_string(),
+                        );
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), event_binding),
+                            module_short.to_string(),
+                        );
+                    }
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {

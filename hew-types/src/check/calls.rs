@@ -981,7 +981,16 @@ impl Checker {
                     accepts_kwargs: sig.accepts_kwargs,
                     module_qualified: false,
                 },
-                type_args.is_none(),
+                // Record the resolved type arguments at every generic call
+                // site — whether the args were inferred or supplied via
+                // explicit turbofish (`id<i64>(5)`). Turbofish args resolve
+                // to fully-concrete `Ty` through `instantiate_fn_sig_for_call`,
+                // and `record_concrete_call_type_args` stays fail-closed on any
+                // residual inference var, so recording is always safe. HIR and
+                // MIR consume this side-table to emit and dispatch the
+                // monomorphised symbol; skipping turbofish sites starved that
+                // pipeline and tripped the NYI function-call lowering arm.
+                true,
             );
 
             if resolved_fn_name == "Rc::new" {
@@ -1031,7 +1040,11 @@ impl Checker {
                             accepts_kwargs: sig.call_sig.accepts_kwargs,
                             module_qualified: false,
                         },
-                        type_args.is_none(),
+                        // Record at every generic call site, turbofish or
+                        // inferred — see the resolved-fn path above. The
+                        // `record_concrete_call_type_args` inference-var guard
+                        // keeps the boundary fail-closed.
+                        true,
                     )
                     .return_type;
             }

@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PLAYGROUND_DIR = ROOT / "examples" / "playground"
 OUTPUT_FILE = PLAYGROUND_DIR / "manifest.json"
 HEADER_PATTERN = re.compile(r"^//!\s*@(?P<key>name|description)\s+(?P<value>.+?)\s*$")
-CATEGORY_ORDER = ("basics", "concurrency", "machines", "types")
+CATEGORY_ORDER = ("basics", "concurrency", "language", "machines", "types")
 # Keep the checked-in manifest aligned with the current curated snippet order.
 EXAMPLE_ORDER = {
     "basics": (
@@ -54,6 +54,16 @@ EXAMPLE_ORDER = {
         "async_await",
         "counter_actor",
         "supervisor",
+    ),
+    # Construct-coverage snippets backing the sandbox parity ratchet: each
+    # exercises a profile-admitted language construct end-to-end so it cannot
+    # be admitted-but-unparited (the G7 hole). See hew-sandbox-wasm/tests.
+    "language": (
+        "arithmetic_operators",
+        "array_indexing",
+        "string_slicing",
+        "while_loop",
+        "wildcard_match",
     ),
     "machines": ("traffic_light",),
     "types": (
@@ -129,6 +139,13 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
     # to plain record types with conditional dispatch.
     "types/structural_bounds": "runnable",
+    # language/*: construct-coverage snippets that back the sandbox parity
+    # ratchet — each runs at native↔sandbox parity (verified by tests/parity.rs).
+    "language/arithmetic_operators": "runnable",
+    "language/array_indexing": "runnable",
+    "language/string_slicing": "runnable",
+    "language/while_loop": "runnable",
+    "language/wildcard_match": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
@@ -142,6 +159,10 @@ WASI_CAPABILITY: dict[str, str] = {
     # traffic_light now has fn main() but the machine runtime is not yet wired
     # into the WASI/LLVM path; remains unsupported in WASI until that lands.
     "machines/traffic_light": "unsupported",
+    # language/string_slicing: `hew_string_slice` aborts under wasm32-wasi with a
+    # wasm-ld function-signature mismatch ((i32,i64,i64)->i32); the example runs
+    # at native↔sandbox parity but is not WASI-runnable until that ABI gap closes.
+    "language/string_slicing": "unsupported",
 }
 
 

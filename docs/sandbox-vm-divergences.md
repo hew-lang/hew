@@ -16,6 +16,7 @@ The sandbox VM is deterministic by design. It admits programs whose observable b
 - [Windows parity enforcement](#windows-parity-enforcement)
 - [Profile admission diagnostics](#profile-admission-diagnostics)
 - [v0.5 substrate surface admission](#v05-substrate-surface-admission)
+- [Admitted-but-not-yet-runnable constructs](#admitted-but-not-yet-runnable-constructs)
 - [Out-of-scope native surfaces](#out-of-scope-native-surfaces)
 
 ## Scheduler determinism vs native preemption
@@ -83,6 +84,25 @@ The current sandbox profile is explicit allowlist first. Native v0.5 surfaces th
 | Machine generics | Rejected with the rest of machine runtime declarations. | `reserved_runtime_feature`; covered by sandbox profile tests. |
 | Record construction / auto-derived record layout | Admitted for deterministic value records. | `record.new` and `record.get` bytecode tests. |
 | `is` identity operator | Rejected until sandbox heap identity semantics are admitted. | `reserved_runtime_feature`; covered by sandbox profile tests. |
+
+## Admitted-but-not-yet-runnable constructs
+
+Some constructs pass the profile admission gate (they compile to bytecode with no diagnostic) but the emitter or interpreter cannot yet run them correctly: they trap at run time, or the emitter fails closed mid-lowering. These are **not** parity-proven and must not be treated as runnable. They are the most dangerous class of gap — an admitted construct with no parity case can silently diverge from native (the float-as-i64 bug was exactly this).
+
+The sandbox parity ratchet catalogues every one of these and verifies, on each run, that it genuinely does not run at parity (`tests/parity_ratchet.rs`, `not_yet_runnable_constructs_do_not_run_at_parity`). The moment a graduation lane makes one of these runnable, that test fails until the lane adds a required parity case — so a construct cannot become runnable without joining the ratchet. A construct is "runnable in the sandbox" if and only if it is in `REQUIRED_PARITY_TEST_NAMES` with a green stdout+exit parity case under `HEW_SEED=42`.
+
+| Construct | Observed sandbox failure today | Root cause |
+| --- | --- | --- |
+| Scalar-literal `match` (`i64` / `string` / `bool` scrutinee) | `invalid_enum_tag` trap | The match lowering dispatches every scrutinee through `enum.tag`; a non-enum scrutinee has no enum tag. Enum/constructor matches work; scalar-literal matches do not. |
+| Tuple value + tuple-`let` destructure | `unsupported_instruction` trap | No tuple lowering in the emitter. |
+| Expression-position `if let` | `unsupported_instruction` trap | No `if let` expression lowering in the emitter (statement position is profile-rejected separately). |
+| Numeric cast (`as`) | `unsupported_instruction` trap | No cast lowering in the emitter. |
+| Postfix-try (`?`) | `unsupported_instruction` trap | No try-propagation lowering in the emitter. |
+| `Option` `Some`/`None` construction | `unsupported_instruction` trap | `Some`/`None` are not registered as enum constructors for the emitter (unlike `Ok`/`Err`, which are). |
+| Struct pattern in a `match` arm | `unsupported_instruction` trap | The match lowering rejects struct/tuple arm patterns. |
+| `const` item reference | `unsupported_instruction` trap (renders unit) | Top-level `const` values are not bound for the emitter; references lower to unit. |
+
+These graduate one at a time through the staged sandbox roadmap; each graduation lands the profile admission, the emitter lowering, the interpreter handler, and the parity case together (the lockstep rule), at which point the construct moves from this table into the parity ratchet.
 
 ## Out-of-scope native surfaces
 

@@ -1,0 +1,12 @@
+//! @name While Loop
+//! @description Counting with a while loop and a running total
+
+fn main() {
+    var i = 0;
+    var sum = 0;
+    while i < 5 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    println(f"sum 0..5 = {sum}");
+}

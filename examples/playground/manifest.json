@@ -208,6 +208,71 @@
     }
   },
   {
+    "id": "language/arithmetic_operators",
+    "category": "language",
+    "name": "Arithmetic Operators",
+    "description": "Integer arithmetic, comparison, and unary negation",
+    "source_path": "language/arithmetic_operators.hew",
+    "expected_path": "language/arithmetic_operators.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/array_indexing",
+    "category": "language",
+    "name": "Array Indexing",
+    "description": "Array literals, element indexing, and length",
+    "source_path": "language/array_indexing.hew",
+    "expected_path": "language/array_indexing.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/string_slicing",
+    "category": "language",
+    "name": "String Slicing",
+    "description": "String length and substring slicing",
+    "source_path": "language/string_slicing.hew",
+    "expected_path": "language/string_slicing.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "unsupported"
+    }
+  },
+  {
+    "id": "language/while_loop",
+    "category": "language",
+    "name": "While Loop",
+    "description": "Counting with a while loop and a running total",
+    "source_path": "language/while_loop.hew",
+    "expected_path": "language/while_loop.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/wildcard_match",
+    "category": "language",
+    "name": "Wildcard Match",
+    "description": "Enum dispatch with a catch-all wildcard arm",
+    "source_path": "language/wildcard_match.hew",
+    "expected_path": "language/wildcard_match.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "machines/traffic_light",
     "category": "machines",
     "name": "Traffic Light",

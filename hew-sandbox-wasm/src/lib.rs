@@ -13,6 +13,45 @@ use serde::{Deserialize, Serialize};
 pub use bytecode::SandboxBytecodePackage;
 pub use profile::{canonical_profile, DEFAULT_PROFILE_ALIAS, DEFAULT_PROFILE_CANONICAL};
 
+/// The required native↔sandbox parity-case names — the teeth of the parity
+/// ratchet (see `tests/parity.rs` and `tests/parity_ratchet.rs`).
+///
+/// A construct is "runnable in the sandbox" iff it is pinned to a name in this
+/// set with a green stdout+exit parity case under `HEW_SEED=42`. This is the
+/// single source of truth so the parity harness and the allowlist-coverage
+/// ratchet cannot drift: both test binaries reference this `const`.
+///
+/// The set only grows. Every graduation lane that admits a new construct adds
+/// its name here in the same commit as its parity case.
+pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
+    "hello_world",
+    "fibonacci",
+    "function_composition",
+    "pattern_matching",
+    "collections",
+    "record_types",
+    "structural_records",
+    "counter_actor",
+    "actor_pipeline",
+    "supervisor",
+    "traffic_light",
+    "arithmetic_operators",
+    "array_indexing",
+    "string_slicing",
+    "while_loop",
+    "wildcard_match",
+    // Float arithmetic now runs through the type-directed f64.* opcode family;
+    // statement-position if/match/if-let now lower and run. Each name is backed
+    // by a `parity.rs` case asserting full stdout+exit parity under HEW_SEED=42.
+    "float_arithmetic",
+    "float_division",
+    "float_nonfinite_compare",
+    "mixed_numeric",
+    "stmt_if",
+    "stmt_match",
+    "stmt_if_let",
+];
+
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
 const SANDBOX_STDIN_SYMBOL: &str = "sym:core.stdin.read_line";
 const SANDBOX_STDIN_CAPABILITY: &str = "core.stdin";

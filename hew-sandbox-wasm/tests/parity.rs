@@ -4,31 +4,10 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic};
+use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
-
-const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
-    "hello_world",
-    "fibonacci",
-    "float_arithmetic",
-    "float_division",
-    "float_nonfinite_compare",
-    "mixed_numeric",
-    "function_composition",
-    "pattern_matching",
-    "collections",
-    "record_types",
-    "structural_records",
-    "counter_actor",
-    "actor_pipeline",
-    "supervisor",
-    "traffic_light",
-    "stmt_if",
-    "stmt_match",
-    "stmt_if_let",
-];
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
@@ -132,6 +111,36 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "stmt_if_let",
         source_rel: "examples/playground/basics/stmt_if_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "arithmetic_operators",
+        source_rel: "examples/playground/language/arithmetic_operators.hew",
+        // Integer +,-,*,/,%, unary negate, and all six comparisons.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "array_indexing",
+        source_rel: "examples/playground/language/array_indexing.hew",
+        // Array literal, index read, `.len()`, and range-for over the length.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "string_slicing",
+        source_rel: "examples/playground/language/string_slicing.hew",
+        // String `.len()` and `.slice(start, end)`.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "while_loop",
+        source_rel: "examples/playground/language/while_loop.hew",
+        // `while` loop with a mutable accumulator.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "wildcard_match",
+        source_rel: "examples/playground/language/wildcard_match.hew",
+        // Enum dispatch with a catch-all `_` arm.
         accepted_divergences: &[],
     },
 ];

@@ -7549,6 +7549,205 @@ fn bare_import_registers_qualified_name() {
     );
 }
 
+// -- C2 qualified-by-default import surface (types + machines) --
+//
+// These mirror the function-arm gate (`bare_import_registers_qualified_name`)
+// for the type/machine arms. A plain `import m;` publishes only the qualified
+// binding; bare publication is opt-in via `::{ Name }` or glob. The source
+// module's own bare `type_defs` entry is always kept (the qualified alias copy
+// reads it) — what the gate controls is the *importer-scope* binding recorded
+// in `unqualified_to_module` / `known_types`.
+
+/// Helper: build a single-field public struct `TypeDecl`.
+fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: field.to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: Vec::new(),
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+/// P1 — a bare `import m;` of a `pub type` publishes only the qualified
+/// binding; the importer-scope bare binding is NOT recorded.
+#[test]
+fn bare_import_type_registers_qualified_only() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        None, // bare import
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    // Qualified authority is always published.
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "bare import should register the qualified type `mod_a.Reply`"
+    );
+    // The source module's own bare def stays (the alias copy reads it); the
+    // importer-scope binding does NOT.
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "bare import must NOT publish the importer-scope bare binding for `Reply`"
+    );
+    assert!(
+        !checker.known_types.contains("Reply"),
+        "bare import must NOT publish bare `Reply` into the importer's known types"
+    );
+}
+
+/// P3 — an explicit `import m::{ Reply };` restores the bare binding.
+#[test]
+fn named_import_type_publishes_bare_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: None,
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "named import should still register the qualified type"
+    );
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "named import must publish the importer-scope bare binding for `Reply`"
+    );
+    assert!(
+        checker.known_types.contains("Reply"),
+        "named import must publish bare `Reply` into the importer's known types"
+    );
+}
+
+/// P3-alias — a named import alias publishes under the aliased name only.
+#[test]
+fn named_import_type_alias_publishes_alias_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("R".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "R".to_string())),
+        "aliased named import must publish the alias binding `R`"
+    );
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "aliased named import must NOT publish the source name `Reply`"
+    );
+}
+
+/// P7 — a glob import publishes every exported type bare (intentional opt-in).
+#[test]
+fn glob_import_type_publishes_bare_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Glob),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "glob import should still register the qualified type"
+    );
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "glob import must publish the importer-scope bare binding for `Reply`"
+    );
+}
+
+/// P2 — the qualified type alias is published for a bare import, and its
+/// definition mirrors the source module's bare def (the alias-copy ordering
+/// canary). If the source module's bare `register_type_decl` is ever dropped,
+/// the qualified def goes empty and this test catches it.
+#[test]
+fn bare_import_type_qualified_alias_has_fields() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        None,
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let output = check_items(vec![(Item::Import(import), 0..0)]);
+
+    let qualified = output
+        .type_defs
+        .get("mod_a.Reply")
+        .expect("qualified type `mod_a.Reply` must be registered");
+    assert!(
+        qualified.fields.contains_key("code"),
+        "qualified alias must carry the source def's fields (alias-copy ordering)"
+    );
+}
+
+// (The machine arm is structurally identical to the type arm; its gate is
+// proven end-to-end by the `import-qual-c2` probe corpus and the examples
+// cutover ratchet rather than a hand-built `MachineDecl` literal.)
+
 // -- Glob import: everything unqualified --
 
 #[test]

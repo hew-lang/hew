@@ -1376,6 +1376,17 @@ pub unsafe extern "C" fn hew_stream_poll(
     // thread touches `inner` while this is in flight.
     let stream_addr = stream as usize;
     let userdata_addr = userdata as usize;
+    // Clone the park-exit latch up front, while `stream` is guaranteed live.
+    // The park thread must not dereference `stream` after it fires the
+    // callback: the callback signals read-completion, after which the
+    // consumer is free to drop the stream (see §5.7). Owning a clone of the
+    // Arc keeps the latch's heap state alive independently of the HewStream
+    // allocation, closing a teardown use-after-free where the post-callback
+    // generation bump raced `hew_stream_close`.
+    #[cfg(test)]
+    // SAFETY: stream is non-null (checked above) and still live here; the
+    // park thread has not been spawned yet, so no concurrent free is possible.
+    let park_exit_gen = unsafe { (*stream).park_exit_gen.clone() };
     std::thread::spawn(move || {
         // SAFETY: Provenance — stream_addr was cast from a valid *mut HewStream
         // returned by a hew_stream_* constructor; the cast back is the inverse.
@@ -1472,9 +1483,9 @@ pub unsafe extern "C" fn hew_stream_poll(
         // rather than sleeping (§5.7). Only compiled in test builds.
         #[cfg(test)]
         {
-            // SAFETY: stream_addr was cast from a valid *mut HewStream;
-            // caller guarantees stream outlives the park thread.
-            let (lock, cvar) = &*unsafe { (*stream).park_exit_gen.clone() };
+            // Bump the generation via the Arc clone captured before spawn —
+            // never through `stream`, which may already be freed here.
+            let (lock, cvar) = &*park_exit_gen;
             *lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;

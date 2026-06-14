@@ -119,10 +119,20 @@ mod tests {
         COUNTER.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Use the pub(crate) reset helper — this ensures cross-module tests that
-    // also call reset_hooks_for_test() serialise correctly with these tests.
-    fn drain_hooks() -> std::sync::MutexGuard<'static, ()> {
-        super::reset_hooks_for_test()
+    // Hold the runtime test guard first, then the session lock. The runtime
+    // guard serialises these tests against every scheduler/bridge/node test
+    // whose `hew_sched_shutdown` / teardown fires production `session_reset()`
+    // over the shared `RESET_HOOKS` list — without it, a concurrent teardown
+    // re-fires `hook_a`/`hook_b`/`hook_c` mid-assertion and corrupts the
+    // observed call order. This mirrors the lock pair (and order) already used
+    // by `tracing::tests::session_reset_clears_trace_state_via_hook` and
+    // `bridge::tests::session_reset_clears_handler_name_side_table_via_hook`.
+    // Returned as `(session, runtime)` so the session lock releases first
+    // (reverse of acquisition).
+    fn drain_hooks() -> (std::sync::MutexGuard<'static, ()>, crate::RuntimeTestGuard) {
+        let runtime = crate::runtime_test_guard();
+        let session = super::reset_hooks_for_test();
+        (session, runtime)
     }
 
     #[test]

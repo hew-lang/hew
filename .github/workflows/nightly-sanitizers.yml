@@ -50,24 +50,42 @@ jobs:
       - name: Run hew-runtime ASan tests
         env:
           CARGO_TARGET_DIR: target/sanitizer-runtime-asan
-          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
+          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           ASAN_OPTIONS: detect_leaks=1
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-runtime/lsan.supp
           ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
-          # Nightly Rust supports ASan for this target.
-          cargo +nightly test --target x86_64-unknown-linux-gnu -p hew-runtime --lib
+          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
+          # error between the sanitizer-instrumented hew-runtime crates and the
+          # prebuilt (uninstrumented) sysroot std.  The prebuilt std stays
+          # uninstrumented — acceptable because these jobs detect data races and
+          # leaks in hew-runtime's own code, not in std.
+          cargo +nightly test \
+            --target x86_64-unknown-linux-gnu \
+            -p hew-runtime \
+            --lib
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime
   #
   # Scope: core concurrency primitives (reply-channel, mailbox, scheduler).
   # Optional features (tokio, quinn, profiler) are excluded to avoid async-
-  # runtime instrumentation noise and keep the job focused and fast.
+  # runtime noise and keep the run focused and fast.
   #
-  # continue-on-error: upstream Rust/Cargo build-std + TSan link failures
-  # have no clean repo-side fix as of 2026-04 (duplicate lang items, panic-
-  # strategy mismatch).  Kept for signal; does not gate releases.
+  # continue-on-error / advisory only — and it MUST stay that way until std can
+  # be instrumented.  -Cunsafe-allow-abi-mismatch lets the instrumented runtime
+  # link against the prebuilt, UNINSTRUMENTED sysroot std.  TSan models
+  # happens-before from instrumented atomics/locks only, so it cannot see the
+  # release/acquire edges inside std::sync::{Mutex,Condvar,mpsc} (futex-based,
+  # uninstrumented).  The result is a flood of false positives on code that is
+  # in fact correctly locked — e.g. ReplyRoutingTable::complete_pending writes
+  # and hew_node_api_ask reads both happen under the same `PendingReply.outcome`
+  # Mutex, yet TSan reports them as a race; the global allocator's dealloc path
+  # races itself for the same reason.  Trustworthy signal needs an instrumented
+  # std via -Zbuild-std, which currently fails with E0152 (duplicate lang item
+  # `sized`) when building std for the host triple — tracked, out of scope here.
+  # Until then this job is a build/run liveness check; any finding must be
+  # hand-verified for missing synchronisation before it is believed.
   # ─────────────────────────────────────────────────────────────────────────
   rust-runtime-tsan:
     name: Rust runtime TSan (advisory)
@@ -93,11 +111,17 @@ jobs:
       - name: Run hew-runtime TSan tests
         env:
           CARGO_TARGET_DIR: target/sanitizer-runtime-tsan
-          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes
+          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           # halt_on_error=1 surfaces races immediately rather than summarising
           # them at process exit, which makes CI output easier to triage.
           TSAN_OPTIONS: halt_on_error=1
         run: |
+          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
+          # error between the sanitizer-instrumented hew-runtime crates and the
+          # prebuilt (uninstrumented) sysroot std.  Because std stays
+          # uninstrumented, TSan cannot see std::sync happens-before edges and
+          # this job is advisory only (see the job header comment above).
+          #
           # --no-default-features excludes the tokio/quinn/profiler optional
           # features; the core runtime concurrency primitives (reply-channel,
           # mailbox, scheduler) are exercised by the lib tests without them.

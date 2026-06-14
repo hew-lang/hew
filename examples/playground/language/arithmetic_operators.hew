@@ -10,6 +10,7 @@ fn main() {
     println(f"quot: {a / b}");
     println(f"rem: {a % b}");
     println(f"neg: {0 - a}");
+    println(f"unary_neg: {-a}");
     println(f"a < b: {a < b}");
     println(f"a > b: {a > b}");
     println(f"a == b: {a == b}");

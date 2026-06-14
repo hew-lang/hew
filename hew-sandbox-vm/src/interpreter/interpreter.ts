@@ -351,6 +351,31 @@ class Interpreter {
       case "i64.checked_mul":
         this.writeDst(frame, instruction, this.checkedI64(this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span), instruction.span));
         return;
+      // f64 arithmetic follows IEEE-754 exactly (matching native LLVM
+      // fadd/fsub/fmul/fdiv/frem/fneg). JS `number` is an IEEE-754 double, so
+      // the host operators reproduce native results bit-for-bit. Unlike the
+      // checked i64 ops these never trap: float divide-by-zero yields
+      // ±Infinity/NaN, never `divide_by_zero`.
+      case "f64.add":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) + this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.sub":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) - this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.mul":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) * this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.div":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) / this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.rem":
+        // JS `%` on doubles is C `fmod` / LLVM `frem`: truncated remainder
+        // carrying the sign of the dividend — identical to native.
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) % this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.neg":
+        this.writeDst(frame, instruction, this.f64(-this.f64Arg(frame, instruction.args[0], instruction.span)));
+        return;
       case "cmp.eq":
       case "cmp.ne":
       case "cmp.lt":
@@ -1411,6 +1436,14 @@ class Interpreter {
     return value.value;
   }
 
+  private f64Arg(frame: Frame, operand: Operand | undefined, span: string | null): number {
+    const value = this.resolve(frame, operand, span);
+    if (value.kind !== "f64") {
+      this.trap("invalid_local", "expected f64 operand", span);
+    }
+    return value.value;
+  }
+
   private indexArg(frame: Frame, operand: Operand | undefined, span: string | null): number {
     const value = this.i64Arg(frame, operand, span);
     if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -1507,6 +1540,10 @@ class Interpreter {
 
   private i64(value: bigint): VmValue {
     return { kind: "i64", value };
+  }
+
+  private f64(value: number): VmValue {
+    return { kind: "f64", value };
   }
 
   private checkedI64(value: bigint, span: string | null): VmValue {

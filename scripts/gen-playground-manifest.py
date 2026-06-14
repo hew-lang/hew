@@ -38,7 +38,10 @@ EXAMPLE_ORDER = {
     "basics": (
         "hello_world",
         "fibonacci",
+        "float_arithmetic",
+        "float_division",
         "higher_order_functions",
+        "mixed_numeric",
         "string_interpolation",
     ),
     "concurrency": (
@@ -76,6 +79,11 @@ EXAMPLE_ORDER = {
 SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/hello_world": "runnable",
     "basics/fibonacci": "runnable",
+    # Float and mixed numeric arithmetic lower to the type-directed i64/f64
+    # opcode families; the sandbox VM executes them at native parity.
+    "basics/float_arithmetic": "runnable",
+    "basics/float_division": "runnable",
+    "basics/mixed_numeric": "runnable",
     "basics/string_interpolation": "runnable",
     "types/pattern_matching": "runnable",
     # Actor/supervisor/machine support was added in the sandbox VM; these now compile

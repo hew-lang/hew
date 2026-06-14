@@ -1547,9 +1547,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 let value = self.lower_expr(operand)?;
                 if *op == hew_parser::ast::UnaryOp::Negate {
                     let ty = self.ty_for_expr(expr);
+                    // Type-directed negation: float negation is IEEE-754
+                    // (`f64.neg`, never traps), integer negation is checked
+                    // (`i64.neg`, traps on `I64_MIN` overflow). See G1.
+                    let opcode = if ty.is_float() { "f64.neg" } else { "i64.neg" };
                     let dst = self.temp_local(&ty, Some(span.clone()));
                     self.emit_instruction(
-                        "i64.neg",
+                        opcode,
                         Some(dst.clone()),
                         vec![Operand::local(value)],
                         Some(span.clone()),
@@ -1919,7 +1923,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     ) -> Result<String, CompileError> {
         let left_local = self.lower_expr(left)?;
         let right_local = self.lower_expr(right)?;
+        // Arithmetic opcodes are type-directed: the native semantics of
+        // `+ - * / %` differ between integers (checked, traps on overflow /
+        // divide-by-zero) and floats (IEEE-754, never traps). Dispatch the
+        // opcode family on the resolved operand type rather than `BinaryOp`
+        // alone. The result type of an arithmetic op equals its operand type,
+        // but comparisons yield `bool`, so we read the operand type from the
+        // left-hand expression (both operands share a numeric type by the
+        // time the type checker accepts the expression).
+        let operand_is_float = self.ty_for_expr(left).is_float();
         let opcode = match op {
+            BinaryOp::Add if operand_is_float => "f64.add",
+            BinaryOp::Subtract if operand_is_float => "f64.sub",
+            BinaryOp::Multiply if operand_is_float => "f64.mul",
+            BinaryOp::Divide if operand_is_float => "f64.div",
+            BinaryOp::Modulo if operand_is_float => "f64.rem",
+            // WrappingAdd/Sub/Mul are integer-only operators; they cannot type
+            // a float operand, so they remain i64.* regardless.
             BinaryOp::Add => "i64.checked_add",
             BinaryOp::Subtract => "i64.checked_sub",
             BinaryOp::Multiply => "i64.checked_mul",
@@ -1928,6 +1948,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             BinaryOp::WrappingAdd => "i64.add",
             BinaryOp::WrappingSub => "i64.sub",
             BinaryOp::WrappingMul => "i64.mul",
+            // Comparisons are already type-polymorphic in the interpreter
+            // (`compareScalar` dispatches on the runtime value kind), so a
+            // single `cmp.*` opcode covers both i64 and f64 operands.
             BinaryOp::Equal => "cmp.eq",
             BinaryOp::NotEqual => "cmp.ne",
             BinaryOp::Less => "cmp.lt",

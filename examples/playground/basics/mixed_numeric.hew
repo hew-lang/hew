@@ -1,0 +1,28 @@
+//! @name Mixed Numeric Types
+//! @description Integer and floating-point arithmetic side by side
+
+fn int_area(side: i64) -> i64 {
+    side * side
+}
+
+fn float_area(side: f64) -> f64 {
+    side * side
+}
+
+fn main() {
+    // Integer arithmetic stays on the checked i64 path.
+    let rows: i64 = 7;
+    let cols: i64 = 3;
+    println(f"int product {rows * cols}");
+    println(f"int square {int_area(rows)}");
+
+    // Float arithmetic takes the IEEE-754 f64 path.
+    let width: f64 = 2.5;
+    let height: f64 = 4.0;
+    println(f"float product {width * height}");
+    println(f"float square {float_area(width)}");
+
+    // Both kinds compared with their own type.
+    println(f"int compare {rows > cols}");
+    println(f"float compare {width < height}");
+}

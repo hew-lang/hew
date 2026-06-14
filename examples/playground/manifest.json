@@ -26,12 +26,51 @@
     }
   },
   {
+    "id": "basics/float_arithmetic",
+    "category": "basics",
+    "name": "Float Arithmetic",
+    "description": "Add, subtract, multiply, and negate floating-point numbers",
+    "source_path": "basics/float_arithmetic.hew",
+    "expected_path": "basics/float_arithmetic.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/float_division",
+    "category": "basics",
+    "name": "Float Division",
+    "description": "Divide and take the remainder of floating-point numbers",
+    "source_path": "basics/float_division.hew",
+    "expected_path": "basics/float_division.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "basics/higher_order_functions",
     "category": "basics",
     "name": "Function Composition",
     "description": "Named functions and enum dispatch for composable behaviour",
     "source_path": "basics/higher_order_functions.hew",
     "expected_path": "basics/higher_order_functions.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/mixed_numeric",
+    "category": "basics",
+    "name": "Mixed Numeric Types",
+    "description": "Integer and floating-point arithmetic side by side",
+    "source_path": "basics/mixed_numeric.hew",
+    "expected_path": "basics/mixed_numeric.expected",
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",

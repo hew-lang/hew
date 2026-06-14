@@ -12,6 +12,9 @@ const HEW_SEED: &str = "42";
 const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "hello_world",
     "fibonacci",
+    "float_arithmetic",
+    "float_division",
+    "mixed_numeric",
     "function_composition",
     "pattern_matching",
     "collections",
@@ -32,6 +35,25 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "fibonacci",
         source_rel: "examples/playground/basics/fibonacci.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Float add/sub/mul/neg through the type-directed f64.* opcode family.
+        test_name: "float_arithmetic",
+        source_rel: "examples/playground/basics/float_arithmetic.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Float division and remainder (IEEE-754, never trap-on-zero).
+        test_name: "float_division",
+        source_rel: "examples/playground/basics/float_division.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Integer (checked i64.*) and float (f64.*) arithmetic in one program,
+        // proving the emitter dispatches the opcode family per operand type.
+        test_name: "mixed_numeric",
+        source_rel: "examples/playground/basics/mixed_numeric.hew",
         accepted_divergences: &[],
     },
     ParityCase {

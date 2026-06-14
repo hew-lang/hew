@@ -1,6 +1,6 @@
-# hew-std-net-quic
+# std::net::quic
 
-Hew `std::net::quic` — QUIC transport for internode messaging.
+`std::net::quic` — QUIC transport for internode messaging.
 
 Part of the [Hew](https://hew.sh) standard library. See the [std overview](../../README.md) for all modules.
 

@@ -204,12 +204,12 @@ pub fn link_executable(
 
     cmd.arg(object_path).arg(&hew_lib);
 
-    // ── Stdlib staticlibs the user may reference via `extern "rt"` ────
-    // Pull in sibling stdlib crate archives (e.g. hew-std-time)
-    // so direct extern declarations naming `hew_datetime_*` and similar
-    // stable-stdlib symbols resolve at link time. Missing archives are
-    // ignored (best-effort) so users who never reach for stdlib FFI from
-    // a source build that skipped those crates still link plain programs.
+    // ── Stdlib staticlib the user may reference via `extern "rt"` ────
+    // Pull in the consolidated stdlib archive (libhew_std.a) so direct extern
+    // declarations naming `hew_datetime_*` and similar stable-stdlib symbols
+    // resolve at link time. A missing archive is ignored (best-effort) so users
+    // who never reach for stdlib FFI from a source build that skipped the stdlib
+    // crate still link plain programs.
     if let Ok(exe) = std::env::current_exe() {
         let exe_dir = exe.parent().expect("exe should have a parent directory");
         let triple = target.normalized_triple();
@@ -560,18 +560,16 @@ fn link_wasm(object_path: &str, output_path: &str, target: &str) -> Result<(), S
     Ok(())
 }
 
-const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 3] = [
-    "libhew_std_encoding_json.a",
-    "libhew_std_encoding_yaml.a",
-    "libhew_std_encoding_toml.a",
-];
+// The whole Rust-backed stdlib lives in one `libhew_std.a`; the linker's
+// per-function dead-strip pulls only the modules a program references.
+const WASM_OPTIONAL_LINK_ARCHIVES: [&str; 1] = ["libhew_std.a"];
 const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 
-/// Sibling stdlib staticlibs the native linker pulls in (best-effort) so
+/// Sibling stdlib staticlib the native linker pulls in (best-effort) so
 /// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
 /// Keep in sync with the `stable-stdlib` block in
 /// `scripts/jit-symbol-classification.toml`.
-const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std_time.a"];
+const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std.a"];
 
 fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
@@ -1749,15 +1747,8 @@ mod tests {
     }
 
     #[test]
-    fn wasm_link_archives_keep_wire_support_libs_before_runtime() {
-        assert_eq!(
-            WASM_OPTIONAL_LINK_ARCHIVES,
-            [
-                "libhew_std_encoding_json.a",
-                "libhew_std_encoding_yaml.a",
-                "libhew_std_encoding_toml.a"
-            ]
-        );
+    fn wasm_link_archives_keep_stdlib_before_runtime() {
+        assert_eq!(WASM_OPTIONAL_LINK_ARCHIVES, ["libhew_std.a"]);
         assert_eq!(WASM_RUNTIME_ARCHIVE, "libhew_runtime.a");
     }
 

@@ -1673,41 +1673,7 @@ name = "hew-lib"
 version = "0.5.1"
 dependencies = [
  "hew-runtime",
- "hew-std-crypto-crypto",
- "hew-std-crypto-encrypt",
- "hew-std-crypto-jwt",
- "hew-std-crypto-password",
- "hew-std-crypto-sign",
- "hew-std-encoding-base64",
- "hew-std-encoding-compress",
- "hew-std-encoding-csv",
- "hew-std-encoding-hex",
- "hew-std-encoding-json",
- "hew-std-encoding-markdown",
- "hew-std-encoding-msgpack",
- "hew-std-encoding-protobuf",
- "hew-std-encoding-toml",
- "hew-std-encoding-xml",
- "hew-std-encoding-yaml",
- "hew-std-math",
- "hew-std-mem",
- "hew-std-misc-log",
- "hew-std-misc-uuid",
- "hew-std-net-dns",
- "hew-std-net-http",
- "hew-std-net-ipnet",
- "hew-std-net-mime",
- "hew-std-net-quic",
- "hew-std-net-smtp",
- "hew-std-net-tls",
- "hew-std-net-url",
- "hew-std-net-websocket",
- "hew-std-random",
- "hew-std-sort",
- "hew-std-text-regex",
- "hew-std-text-semver",
- "hew-std-text-unicode",
- "hew-std-time",
+ "hew-std",
 ]
 
 [[package]]
@@ -1823,308 +1789,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "hew-std-crypto-crypto"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "ring",
-]
-
-[[package]]
-name = "hew-std-crypto-encrypt"
-version = "0.5.1"
-dependencies = [
- "base64",
- "hew-cabi",
- "hew-runtime",
- "libc",
- "ring",
-]
-
-[[package]]
-name = "hew-std-crypto-jwt"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "jsonwebtoken",
- "libc",
- "serde_json",
-]
-
-[[package]]
-name = "hew-std-crypto-password"
+name = "hew-std"
 version = "0.5.1"
 dependencies = [
  "argon2",
+ "base64",
+ "chrono",
+ "cron",
+ "flate2",
  "hew-cabi",
  "hew-runtime",
+ "ipnet",
+ "jsonwebtoken",
+ "lettre",
  "libc",
-]
-
-[[package]]
-name = "hew-std-crypto-sign"
-version = "0.5.1"
-dependencies = [
- "hew-runtime",
- "libc",
+ "parking_lot",
+ "pulldown-cmark",
+ "quick-xml",
+ "quinn",
+ "rcgen",
+ "regex",
  "ring",
+ "rmp-serde",
+ "rustls",
+ "serde_json",
+ "serde_yaml",
+ "tiny_http",
+ "tokio",
+ "toml",
+ "tungstenite",
+ "ureq",
+ "url",
+ "uuid",
+ "webpki-roots",
 ]
-
-[[package]]
-name = "hew-std-encoding-base64"
-version = "0.5.1"
 
 [[package]]
 name = "hew-std-encoding-binary"
 version = "0.5.1"
 
 [[package]]
-name = "hew-std-encoding-compress"
-version = "0.5.1"
-dependencies = [
- "flate2",
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
-
-[[package]]
-name = "hew-std-encoding-csv"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-encoding-hex"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-encoding-json"
-version = "0.5.1"
-dependencies = [
- "base64",
- "hew-cabi",
- "hew-runtime",
- "libc",
- "serde_json",
-]
-
-[[package]]
-name = "hew-std-encoding-markdown"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "pulldown-cmark",
-]
-
-[[package]]
-name = "hew-std-encoding-msgpack"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "rmp-serde",
- "serde_json",
-]
-
-[[package]]
-name = "hew-std-encoding-protobuf"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
-
-[[package]]
-name = "hew-std-encoding-toml"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "toml",
-]
-
-[[package]]
-name = "hew-std-encoding-xml"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "quick-xml",
-]
-
-[[package]]
-name = "hew-std-encoding-yaml"
-version = "0.5.1"
-dependencies = [
- "base64",
- "hew-cabi",
- "hew-runtime",
- "libc",
- "serde_yaml",
-]
-
-[[package]]
-name = "hew-std-math"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-mem"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-misc-log"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-misc-uuid"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "uuid",
-]
-
-[[package]]
-name = "hew-std-net-dns"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
-
-[[package]]
-name = "hew-std-net-http"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "tiny_http",
- "ureq",
-]
-
-[[package]]
-name = "hew-std-net-ipnet"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "ipnet",
- "libc",
-]
-
-[[package]]
-name = "hew-std-net-mime"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-net-quic"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "quinn",
- "rcgen",
- "rustls",
- "tokio",
-]
-
-[[package]]
-name = "hew-std-net-smtp"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "lettre",
- "libc",
-]
-
-[[package]]
-name = "hew-std-net-tls"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "rustls",
- "webpki-roots",
-]
-
-[[package]]
-name = "hew-std-net-url"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "url",
-]
-
-[[package]]
-name = "hew-std-net-websocket"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "parking_lot",
- "tungstenite",
-]
-
-[[package]]
-name = "hew-std-random"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-sort"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
-]
-
-[[package]]
-name = "hew-std-text-regex"
-version = "0.5.1"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "regex",
-]
-
-[[package]]
-name = "hew-std-text-semver"
-version = "0.5.1"
-
-[[package]]
 name = "hew-std-text-template"
 version = "0.5.1"
-
-[[package]]
-name = "hew-std-text-unicode"
-version = "0.5.1"
-
-[[package]]
-name = "hew-std-time"
-version = "0.5.1"
-dependencies = [
- "chrono",
- "cron",
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
 
 [[package]]
 name = "hew-testutil"

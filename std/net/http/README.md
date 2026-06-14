@@ -1,6 +1,6 @@
-# hew-std-net-http
+# std::net::http
 
-Hew hew-std-net-http — HTTP client and server
+std::net::http — HTTP client and server
 
 The package contains the inbound server surface at `std::net::http` and the
 bounded outbound client surface at `std::net::http::http_client`.

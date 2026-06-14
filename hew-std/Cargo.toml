@@ -1,0 +1,76 @@
+[package]
+name = "hew-std"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew standard library — Rust-backed FFI for every std module in one staticlib"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+# Wasm + native deps. The wasm32 build (browser playground wire codecs)
+# compiles only the json/yaml/toml/pure modules, so only their crates may
+# appear here. Every native-only crate lives in the cfg(not(wasm)) block below
+# — many of them (ring, socket2, flate2, getrandom, …) hard-`compile_error!`
+# on wasm32, so listing them unconditionally would break the wasm build.
+[dependencies]
+# Shared ABI + runtime (path deps).
+hew-cabi = { path = "../hew-cabi" }
+hew-runtime = { path = "../hew-runtime" }
+
+# Wire-codec + pure-module deps (wasm-safe).
+base64.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+toml.workspace = true
+
+# Native-only module deps (union of the former per-module crates). Gated off the
+# wasm build, where their crates do not compile.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = [
+  "clock",
+  "std",
+] }
+cron = "0.16"
+flate2 = "1"
+ipnet = "2"
+jsonwebtoken = { version = "10", default-features = false, features = [
+  "aws_lc_rs",
+] }
+lettre = { version = "0.11", default-features = false, features = [
+  "builder",
+  "smtp-transport",
+  "rustls-tls",
+] }
+parking_lot = "0.12"
+pulldown-cmark = "0.13"
+quick-xml = "0.39"
+quinn = "0.11"
+rcgen = "0.14"
+regex = "1"
+ring = "0.17"
+rmp-serde.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tiny_http = "0.12"
+tokio = { version = "1", default-features = false, features = [
+  "rt",
+  "rt-multi-thread",
+  "time",
+  "net",
+  "sync",
+  "macros",
+] }
+tungstenite = "0.29"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "v7"] }
+webpki-roots = "1"
+
+[lints]
+workspace = true

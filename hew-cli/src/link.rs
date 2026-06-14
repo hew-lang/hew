@@ -205,7 +205,7 @@ pub fn link_executable(
     cmd.arg(object_path).arg(&hew_lib);
 
     // ── Stdlib staticlibs the user may reference via `extern "rt"` ────
-    // Pull in sibling stdlib crate archives (e.g. hew-std-time-datetime)
+    // Pull in sibling stdlib crate archives (e.g. hew-std-time)
     // so direct extern declarations naming `hew_datetime_*` and similar
     // stable-stdlib symbols resolve at link time. Missing archives are
     // ignored (best-effort) so users who never reach for stdlib FFI from
@@ -562,7 +562,7 @@ const WASM_RUNTIME_ARCHIVE: &str = "libhew_runtime.a";
 /// `extern "rt"` declarations naming `stable-stdlib` symbols resolve.
 /// Keep in sync with the `stable-stdlib` block in
 /// `scripts/jit-symbol-classification.toml`.
-const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std_time_datetime.a"];
+const NATIVE_STDLIB_ARCHIVES: &[&str] = &["libhew_std_time.a"];
 
 fn find_wasm_link_libs(target: &str) -> Result<Vec<String>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;

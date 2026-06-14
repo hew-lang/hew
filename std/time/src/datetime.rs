@@ -5,11 +5,6 @@
 //! allocated with `libc::malloc` so callers can free them with `libc::free`;
 //! [`hew_datetime_last_error`] returns null when no error has been recorded.
 
-// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
-// referenced by hew-cabi's object code, and to access the shared
-// parse-error slot.
-extern crate hew_runtime;
-
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::c_char;
 

@@ -36,5 +36,4 @@ extern crate hew_std_random;
 extern crate hew_std_sort;
 extern crate hew_std_text_regex;
 extern crate hew_std_text_semver;
-extern crate hew_std_time_cron;
-extern crate hew_std_time_datetime;
+extern crate hew_std_time;

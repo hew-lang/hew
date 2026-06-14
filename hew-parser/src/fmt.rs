@@ -335,6 +335,13 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
+            // Whole-module alias (`import path as alias;`). The parser only
+            // accepts this for the whole-module form, so it never coexists
+            // with a `::{ }` / `::*` spec.
+            if let Some(alias) = &decl.module_alias {
+                self.write(" as ");
+                self.write(alias);
+            }
         }
         self.write(";\n");
     }

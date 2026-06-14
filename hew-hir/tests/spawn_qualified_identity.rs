@@ -39,6 +39,7 @@ fn build_program(root_src: &str) -> Program {
         Item::Import(ImportDecl {
             path: vec!["hew".to_string(), "bank".to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(imported.program.items.clone()),
             resolved_item_source_paths: Vec::new(),

@@ -60,6 +60,7 @@ fn make_user_import(
     ImportDecl {
         path: path.iter().map(std::string::ToString::to_string).collect(),
         spec,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(items),
         resolved_item_source_paths: Vec::new(),
@@ -1264,6 +1265,7 @@ fn test_unresolved_import_fail_closed() {
     let import = ImportDecl {
         path: vec!["no_such_pkg".to_string(), "missing".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),

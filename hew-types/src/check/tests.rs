@@ -7466,6 +7466,7 @@ fn make_user_import(
     ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
         spec,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(items),
         resolved_item_source_paths: Vec::new(),
@@ -8186,6 +8187,7 @@ fn stdlib_not_in_user_modules() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8303,6 +8305,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec!["unknown".to_string(), "pkg".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8341,6 +8344,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8349,6 +8353,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let fs_import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8382,6 +8387,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("missing.hew".to_string()),
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8420,6 +8426,7 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![
             (Item::Function(shared_decl.clone()), 0..5),
@@ -8458,6 +8465,7 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![(
             Item::Function(make_pub_fn(
@@ -8507,6 +8515,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(parsed.program.items),
         resolved_item_source_paths: Vec::new(),
@@ -8877,6 +8886,7 @@ fn test_file_import_private_items_not_visible() {
     let import_decl = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
         resolved_items: Some(resolved),
         resolved_item_source_paths: Vec::new(),
@@ -16148,6 +16158,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
             resolved_item_source_paths: vec![],
@@ -16427,6 +16438,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec![short_name.to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
             resolved_item_source_paths: vec![],
@@ -16598,6 +16610,7 @@ mod warning_source_attribution {
         let import_a_with_items = ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
             resolved_item_source_paths: vec![],

@@ -1452,8 +1452,18 @@ fn wasm_trap_exit_code_mapping_exhaustiveness_fallthrough_is_allowlisted_as_208(
 }
 
 #[test]
+fn wasm_trap_exit_code_mapping_module_init_regex_failed_is_allowlisted_as_209() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+        crate::internal::types::ExitReason::ModuleInitRegexFailed,
+    );
+}
+
+#[test]
 fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
-    for unknown in [-1, 1, 101, 199, 209, i32::MAX] {
+    // 209 (HEW_TRAP_MODULE_INIT_REGEX_FAILED) is now a Hew-owned discriminator
+    // and is allowlisted; 210 takes its place as the first unused code.
+    for unknown in [-1, 1, 101, 199, 210, i32::MAX] {
         assert_eq!(
             crate::internal::types::canonical_trap_wasi_exit_code(unknown),
             None,

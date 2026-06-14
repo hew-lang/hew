@@ -397,6 +397,19 @@ pub const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: i32 = 207;
 /// reach the dispatch chain.
 pub const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: i32 = 208;
 
+/// Error code recorded when a synthesised codegen helper hits an internal
+/// compiler-invariant violation that is dead code in correctly-compiled
+/// programs: a module-init regex literal that failed to compile (patterns are
+/// validated by the type-checker) or an enum-clone helper synthesised for an
+/// opaque-handle-bearing variant whose clone direction was never meant to be
+/// reachable. Both codegen sites emit `hew_trap_with_code(209)` as the
+/// fail-closed sink so the path traps loudly rather than aliasing a handle or
+/// proceeding past a malformed pattern.
+///
+/// The single source of truth for the codegen literal: `hew-codegen-rs`
+/// imports this constant so a renumber here fails the codegen build closed.
+pub const HEW_TRAP_MODULE_INIT_REGEX_FAILED: i32 = 209;
+
 /// Convert a canonical Hew trap discriminator into the WASI process exit code
 /// used when a trap escapes outside actor dispatch.
 ///
@@ -414,7 +427,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_INDEX_OUT_OF_BOUNDS
         | HEW_TRAP_ACTOR_SEND_FAILED
         | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE
-        | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => Some(code),
+        | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
+        | HEW_TRAP_MODULE_INIT_REGEX_FAILED => Some(code),
         _ => None,
     }
 }
@@ -449,6 +463,12 @@ pub enum ExitReason {
     /// exhaustiveness errors; reaching this trap indicates a producer-side
     /// regression in match-arm lowering.
     ExhaustivenessFallthrough,
+    /// Actor crashed because a synthesised codegen helper hit an internal
+    /// compiler-invariant violation (error code 209): a module-init regex
+    /// literal that failed to compile, or an enum-clone helper reached on an
+    /// opaque-handle-bearing variant. Dead in correctly-compiled programs;
+    /// reaching this trap indicates a producer-side regression.
+    ModuleInitRegexFailed,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -476,6 +496,7 @@ impl ExitReason {
             ExitReason::ActorSendFailed => "ActorSendFailed",
             ExitReason::MachineDispatchUnreachable => "MachineDispatchUnreachable",
             ExitReason::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
+            ExitReason::ModuleInitRegexFailed => "ModuleInitRegexFailed",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -496,6 +517,7 @@ impl ExitReason {
             HEW_TRAP_ACTOR_SEND_FAILED => ExitReason::ActorSendFailed,
             HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => ExitReason::MachineDispatchUnreachable,
             HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => ExitReason::ExhaustivenessFallthrough,
+            HEW_TRAP_MODULE_INIT_REGEX_FAILED => ExitReason::ModuleInitRegexFailed,
             sig => ExitReason::Signal(sig),
         }
     }

@@ -276,3 +276,72 @@ fn multiple_traps_share_one_declaration() {
         "expected at least two `hew_trap_with_code(i32 201)` call sites, got {call_count}:\n{ll}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// G2 — trap-code cross-crate parity (codegen literal ↔ runtime constant)
+//
+// The codegen-emitted code MUST equal the runtime `HEW_TRAP_*` constant. The
+// production code already single-sources these via `use
+// hew_runtime::internal::types::HEW_TRAP_*`, so a renumber on either side is a
+// build error. This test is the behavioural backstop: it pins the *emitted IR*
+// to the runtime constant (not to a hand-copied literal), so the proof lives in
+// the compiled artefact, not a convention. A runtime renumber that somehow
+// compiled would still go red here. Closes TRAP-1 (`codegen-offset-mirror-drift`
+// family extended from offsets to discriminant codes).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn emitted_trap_codes_equal_runtime_constants() {
+    use hew_runtime::internal::types::{
+        HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_INDEX_OUT_OF_BOUNDS,
+        HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    };
+
+    // Each TrapKind whose lowering routes through the `Terminator::Trap` arm,
+    // paired with the runtime constant it must emit. Derived from the runtime
+    // side — NOT a literal copy — so a renumber moves the expectation in lock
+    // step with the producer.
+    let cases = [
+        (
+            TrapKind::SignedMinDivNegOne,
+            HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+        ),
+        (TrapKind::IndexOutOfBounds, HEW_TRAP_INDEX_OUT_OF_BOUNDS),
+        (
+            TrapKind::SupervisorChildUnavailable,
+            HEW_TRAP_ACTOR_SEND_FAILED,
+        ),
+    ];
+    for (kind, runtime_code) in cases {
+        let module = format!("g2_parity_{}", runtime_code);
+        let ll = emit_trap_kind_ll(kind, &module);
+        assert_trap_with_code(&ll, runtime_code);
+    }
+
+    // Source-driven kinds (the producer fires these from real expressions).
+    assert_trap_with_code(
+        &emit_ll("fn main() -> i64 { 1 + 2 }", "g2_parity_overflow"),
+        HEW_TRAP_INTEGER_OVERFLOW,
+    );
+    assert_trap_with_code(
+        &emit_ll(
+            "fn main() -> i64 { let a: i64 = 10; let b: i64 = 2; a / b }",
+            "g2_parity_divzero",
+        ),
+        HEW_TRAP_DIVIDE_BY_ZERO,
+    );
+    assert_trap_with_code(
+        &emit_ll(
+            "fn main() -> i64 { let a: i64 = 1; let b: i64 = 3; a << b }",
+            "g2_parity_shift",
+        ),
+        HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    );
+    // `MachineDispatchUnreachable` (207) and `ExhaustivenessFallthrough` (208)
+    // are intentionally not asserted here: the standalone `Terminator::Trap`
+    // fixture lowers `MachineDispatchUnreachable` to a bare `unreachable` (the
+    // synthesised `<Name>__step` dispatch is the real producer), and 208 only
+    // fires inside the enum-tag-OOB / match-fallthrough synthesised helpers.
+    // Both still single-source their code from the runtime constant at the
+    // emit site (the build-level G2 guard covers them).
+}

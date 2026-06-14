@@ -63,6 +63,17 @@ use hew_mir::{
     SupervisorLayout, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy};
+// Single source of truth for the trap discriminants codegen emits. Importing
+// these from the runtime makes a renumber on either side a build error rather
+// than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
+// family, extended to discriminant codes). The runtime constants are `i32`;
+// `emit_trap_with_code` takes `u64`, so each use site casts `as u64`.
+use hew_runtime::internal::types::{
+    HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
+    HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
+    HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+};
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -6417,8 +6428,11 @@ fn emit_periodic_handler_arming(
             .build_conditional_branch(arm_failed, fail_bb, ok_bb)
             .llvm_ctx("periodic arm branch")?;
         fn_ctx.builder.position_at_end(fail_bb);
-        const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
-        emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED, "periodic_arm_fail")?;
+        emit_trap_with_code(
+            fn_ctx,
+            HEW_TRAP_ACTOR_SEND_FAILED as u64,
+            "periodic_arm_fail",
+        )?;
         fn_ctx.builder.position_at_end(ok_bb);
     }
     Ok(())
@@ -10003,11 +10017,19 @@ fn emit_enum_clone_inplace_body<'ctx>(
     });
     if has_nested_opaque {
         // Emit a single trap-on-entry body so the symbol is defined but any
-        // call site (which should never be reached) fails explicitly.
+        // call site (which should never be reached) fails explicitly. Code
+        // single-sourced from the runtime (shares 209 with the module-init
+        // regex trap: both are internal-invariant synthetic-helper sinks).
         let builder = ctx.create_builder();
         let entry_bb = ctx.append_basic_block(f, "entry");
         builder.position_at_end(entry_bb);
-        emit_trap_with_code_raw(ctx, llvm_mod, &builder, 209, "enum_clone_opaque_trap")?;
+        emit_trap_with_code_raw(
+            ctx,
+            llvm_mod,
+            &builder,
+            HEW_TRAP_MODULE_INIT_REGEX_FAILED as u64,
+            "enum_clone_opaque_trap",
+        )?;
         return Ok(());
     }
     let i32_ty = ctx.i32_type();
@@ -10049,7 +10071,13 @@ fn emit_enum_clone_inplace_body<'ctx>(
         .llvm_ctx("enum clone tag switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, &builder, 208, "enum_clone_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "enum_clone_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -10216,7 +10244,13 @@ fn emit_enum_drop_inplace_body<'ctx>(
         .llvm_ctx("enum drop tag switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, &builder, 208, "enum_drop_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "enum_drop_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -10587,7 +10621,13 @@ fn emit_overwrite_collect_enum<'ctx>(
         .build_switch(tag, trap_bb, &cases)
         .llvm_ctx("overwrite collect enum tag switch")?;
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_collect_tag_oob")?;
+    emit_trap_with_code_raw(
+        cx.ctx,
+        cx.llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ow_collect_tag_oob",
+    )?;
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
         let payload = builder
@@ -10878,7 +10918,13 @@ fn emit_overwrite_neutralize_enum<'ctx>(
         .build_switch(tag, trap_bb, &cases)
         .llvm_ctx("overwrite neutralize enum tag switch")?;
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_neutralize_tag_oob")?;
+    emit_trap_with_code_raw(
+        cx.ctx,
+        cx.llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ow_neutralize_tag_oob",
+    )?;
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
         let payload = builder
@@ -17316,12 +17362,11 @@ fn emit_eq_thunk_enum<'ctx>(
     // corruption or a producer-gate bypass. Trap fail-closed rather than
     // compare indeterminate payload bytes. Code mirrors
     // `TrapKind::ExhaustivenessFallthrough` lowering (see the `Terminator::Trap`
-    // arm) — kept as a local literal per the established codegen pattern.
+    // arm) — single-sourced from the runtime constant.
     fn_ctx.builder.position_at_end(trap_bb);
-    const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: u64 = 208;
     emit_trap_with_code(
         fn_ctx,
-        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
         "eq_enum_tag_oob",
     )?;
 
@@ -19391,7 +19436,11 @@ fn lower_layout_vec_direct_call(
                 .build_conditional_branch(nonzero, next_bb, trap_bb)
                 .llvm_ctx("hew_vec_pop_layout branch")?;
             fn_ctx.builder.position_at_end(trap_bb);
-            emit_trap_with_code(fn_ctx, 205, "hew_vec_pop_layout_empty_trap")?;
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_INDEX_OUT_OF_BOUNDS as u64,
+                "hew_vec_pop_layout_empty_trap",
+            )?;
             return Ok(());
         }
         "hew_vec_contains_thunk" => {
@@ -20833,7 +20882,7 @@ fn lower_call_runtime_abi(
                 //   3=EncodeFailed, 4=SendFailed, 5=Timeout,
                 //   6=ConnectionDropped, 7=PayloadSizeMismatch,
                 //   8=WorkerAtCapacity, 9=ActorStopped, 10=MailboxFull,
-                //   11=OrphanedAsk, 12=NoRunnableWork.
+                //   11=OrphanedAsk, 12=NoRunnableWork, 13=DecodeFailure.
                 // SendError discriminants (`hew-runtime/src/duplex.rs`):
                 //   1=Closed, 2=Full, 3=ActorStopped, 4=DoubleClose,
                 //   5=OrphanedAsk.
@@ -32369,27 +32418,22 @@ fn lower_terminator<'ctx>(
                     .llvm_ctx("machine dispatch unreachable")?;
                 return Ok(());
             }
-            // The exit-code constants here MUST stay in lock-step
-            // with canonical `HEW_TRAP_*` in
-            // `hew-runtime/src/internal/types.rs`; the native supervisor
-            // module re-exports those constants for native callers.
-            const HEW_TRAP_INTEGER_OVERFLOW: u64 = 201;
-            const HEW_TRAP_DIVIDE_BY_ZERO: u64 = 202;
-            const HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE: u64 = 203;
-            const HEW_TRAP_SHIFT_OUT_OF_RANGE: u64 = 204;
-            const HEW_TRAP_INDEX_OUT_OF_BOUNDS: u64 = 205;
-            const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
-            const HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE: u64 = 207;
-            const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: u64 = 208;
+            // The exit-code constants here are single-sourced from the runtime
+            // (`hew-runtime/src/internal/types.rs`) via the module-level
+            // `HEW_TRAP_*` import, so a renumber on either side is a build
+            // error rather than a silently-desynced literal. The runtime
+            // constants are `i32`; `emit_trap_with_code` takes `u64`.
             let code: u64 = match *kind {
-                TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW,
-                TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO,
-                TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
-                TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE,
-                TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS,
-                TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED,
-                TrapKind::MachineDispatchUnreachable => HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
-                TrapKind::ExhaustivenessFallthrough => HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
+                TrapKind::IntegerOverflow => HEW_TRAP_INTEGER_OVERFLOW as u64,
+                TrapKind::DivideByZero => HEW_TRAP_DIVIDE_BY_ZERO as u64,
+                TrapKind::SignedMinDivNegOne => HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE as u64,
+                TrapKind::ShiftOutOfRange => HEW_TRAP_SHIFT_OUT_OF_RANGE as u64,
+                TrapKind::IndexOutOfBounds => HEW_TRAP_INDEX_OUT_OF_BOUNDS as u64,
+                TrapKind::SupervisorChildUnavailable => HEW_TRAP_ACTOR_SEND_FAILED as u64,
+                TrapKind::MachineDispatchUnreachable => {
+                    HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE as u64
+                }
+                TrapKind::ExhaustivenessFallthrough => HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
             };
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
@@ -33093,7 +33137,7 @@ fn lower_terminator<'ctx>(
                 .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
-            emit_trap_with_code(fn_ctx, 206, "actor_send_fail")?;
+            emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
         Terminator::Ask {
             actor,
@@ -35251,9 +35295,12 @@ fn emit_join_terminator<'ctx>(
 fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
     // Delegate to the single-sourced emit_trap_with_code helper so the
     // hew_trap_with_code declaration, llvm.trap, and unreachable are
-    // emitted in one place.
-    const HEW_TRAP_ACTOR_SEND_FAILED: u64 = 206;
-    emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED, "select_setup_fail_trap")
+    // emitted in one place. The trap code is single-sourced from the runtime.
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        "select_setup_fail_trap",
+    )
 }
 
 /// Emit a fail-closed trap for the unreachable "no winner" arm of the
@@ -39396,7 +39443,13 @@ fn emit_ser_enum<'ctx>(
         .llvm_ctx("ser enum switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "ser_enum_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ser_enum_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -39831,7 +39884,13 @@ fn emit_de_enum<'ctx>(
         .llvm_ctx("de enum switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "de_enum_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "de_enum_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -40629,10 +40688,10 @@ fn emit_regex_module_init<'ctx>(
         builder.position_at_end(null_check_bb);
         // Trap code 209 — module-init regex compile failure (internal invariant
         // violation; patterns are validated by the type-checker so this branch
-        // is dead code in correctly-compiled programs). 209 is the next unused
-        // code after 208 (ExhaustivenessFallthrough). WHEN-OBSOLETE: when
-        // TrapKind gains a dedicated InvalidRegex variant, add it at code 209
-        // and update the constant table in lower_call_runtime_abi.
+        // is dead code in correctly-compiled programs). The code is now
+        // single-sourced from the runtime (`HEW_TRAP_MODULE_INIT_REGEX_FAILED`),
+        // which carries the matching `ExitReason::ModuleInitRegexFailed` decoder
+        // arm — a renumber on either side is a build error.
         // WHY not 206: 206 is HEW_TRAP_ACTOR_SEND_FAILED; reusing it would
         // make diagnostics misleading.
         //
@@ -40641,12 +40700,11 @@ fn emit_regex_module_init<'ctx>(
         // (supervisor.rs:364). The old inline declaration used fn(i32, i32)
         // which would produce an arity-mismatch IR if no prior declaration
         // of the correct shape existed in the module.
-        const HEW_TRAP_MODULE_INIT_REGEX_FAILED: u64 = 209;
         emit_trap_with_code_raw(
             ctx,
             llvm_mod,
             &builder,
-            HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+            HEW_TRAP_MODULE_INIT_REGEX_FAILED as u64,
             &format!("regex_init_null_trap_{i}"),
         )?;
 

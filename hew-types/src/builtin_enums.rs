@@ -157,6 +157,9 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
                 BuiltinMonomorphicEnumVariant {
                     name: "NoRunnableWork",
                 },
+                BuiltinMonomorphicEnumVariant {
+                    name: "DecodeFailure",
+                },
             ],
             suppress_from_sandbox_emit: false,
         },

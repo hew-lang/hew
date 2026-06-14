@@ -88,6 +88,9 @@ pub enum AskError {
     OrphanedAsk;
     /// The runtime had no runnable work while waiting for the reply.
     NoRunnableWork;
+    /// The inbound request payload could not be decoded into a value in the
+    /// receiving node's address space; the handler was never dispatched.
+    DecodeFailure;
 }
 
 /// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.

@@ -40,13 +40,20 @@ pub const HEW_CONN_INVALID: c_int = -1;
 /// Maximum number of connections stored per transport.
 const MAX_CONNS: usize = 64;
 /// Maximum accepted framed payload size (16 MiB).
-const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+///
+/// `pub(crate)` so `sim_transport` can pin its mirrored copy to this value via
+/// a `const _: () = assert!(...)` (the NW-1 native↔WASM parity guard) instead
+/// of holding the two in sync by comment.
+pub(crate) const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 // Error codes matching the C header.
 const HEW_OK: c_int = 0;
 const HEW_ERR_ACTOR_STOPPED: c_int = -2;
 const HEW_ERR_SERIALIZE: c_int = -12;
-const HEW_ERR_TRANSPORT: c_int = -14;
+/// Generic transport error returned across the `c_int` channel.
+///
+/// `pub(crate)` so `sim_transport`'s mirrored copy can be pinned to it (NW-1).
+pub(crate) const HEW_ERR_TRANSPORT: c_int = -14;
 
 // ---------------------------------------------------------------------------
 // Transport vtable

@@ -18,6 +18,12 @@ hew-types = { path = "../hew-types" }
 # (e.g. `"60s"`). Codegen interprets the unit via `hew_parser::parse_duration_ns`
 # so duration parsing stays centralised in one place (no second parser).
 hew-parser = { path = "../hew-parser" }
+# Single source of truth for the trap-code discriminants codegen emits. Codegen
+# imports `hew_runtime::internal::types::HEW_TRAP_*` so a runtime renumber fails
+# the codegen build closed instead of silently desyncing a hand-copied literal.
+# `default-features = false` keeps the heavy quic/profiler runtime features off
+# the compiler build (only the leaf `internal::types` constants are needed).
+hew-runtime = { path = "../hew-runtime", default-features = false }
 # Inkwell wraps LLVM. Pinned to llvm22-1 because the v0.5 backend probe
 # (.claude/worktrees/c1-backend-probe @ e6c83faa) established this version
 # empirically against Homebrew llvm@22, and the release/tooling surface keeps
@@ -31,7 +37,6 @@ inkwell = { version = "0.9", default-features = false, features = [
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
-hew-runtime = { path = "../hew-runtime", default-features = false }
 # Required by jit_trap_bridge.rs: libc::c_int for the sigsetjmp/siglongjmp FFI
 # declarations used in the trap recorder (same pattern as hew-runtime/src/signal.rs).
 libc.workspace = true

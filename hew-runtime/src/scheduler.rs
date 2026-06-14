@@ -2656,6 +2656,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         }
     }
 
@@ -3451,6 +3452,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -4628,6 +4630,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

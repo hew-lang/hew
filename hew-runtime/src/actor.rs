@@ -986,6 +986,30 @@ pub struct HewActor {
     /// suspended continuation. The resume edge installs it into the temporary
     /// `HewExecutionContext`, then clears/releases it when the await frame exits.
     pub suspended_cancel_token: AtomicPtr<c_void>,
+
+    // ── Runtime identity (appended to preserve C ABI layout) ────────────────
+    //
+    // Stamped at spawn with the spawning runtime's id (`build_spawned_actor`
+    // reads `rt_current().runtime_id()`). Like `prof_*`, `arena`, and the
+    // Slice-4 suspend fields, this is appended at the very end of the struct
+    // and is NOT codegen-mirrored: only `id` (offset 8) and `state` (offset
+    // 16) have offset literals in `hew-codegen-rs/src/llvm.rs`, and both
+    // precede this append point, so adding this field keeps every mirrored
+    // offset fixed (verified by `abi_offset_parity`).
+    //
+    // It is the discriminant the cross-runtime send/ask/by-id check compares
+    // against the calling runtime's id, so a held actor pointer from a foreign
+    // runtime fails closed without dereferencing a foreign handle. In a
+    // single-runtime program every actor carries `RuntimeId::DEFAULT` and the
+    // check never fires. A bare `RuntimeId` (a `u64` discriminant) — not an
+    // `Arc`/handle — is stamped here on purpose: single-runtime actors never
+    // outlive their one runtime, and a strong handle field would form a
+    // runtime→workers→actors→runtime ownership cycle (`ownership-over-locks`).
+    //
+    // Typed through `crate::runtime_id` (not `crate::runtime`) so it resolves
+    // on wasm too, where the native-only `runtime` module is configured out
+    // but this struct is still compiled.
+    pub runtime_id: crate::runtime_id::RuntimeId,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1999,6 +2023,15 @@ fn build_spawned_actor(
         pending_wake: AtomicBool::new(false),
         suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+        // Stamp the spawning runtime's id. Native resolves the runtime this
+        // spawn runs under (TLS-first via `rt_current`); single-runtime
+        // programs always resolve `RuntimeId::DEFAULT`. The wasm cooperative
+        // runtime is single-runtime by construction and has no `rt_current`,
+        // so it stamps `DEFAULT` directly.
+        #[cfg(not(target_arch = "wasm32"))]
+        runtime_id: crate::runtime::rt_current().runtime_id(),
+        #[cfg(target_arch = "wasm32")]
+        runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
     })
 }
 
@@ -5573,6 +5606,7 @@ mod tests {
                 pending_wake: AtomicBool::new(false),
                 suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
                 suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+                runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             }));
             (actor, mailbox)
         }
@@ -5613,6 +5647,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -8496,6 +8531,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

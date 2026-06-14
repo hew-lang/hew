@@ -577,6 +577,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         })
     }
 
@@ -1008,6 +1009,7 @@ mod forced_ordering_probe {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         })
     }
 

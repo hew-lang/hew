@@ -44,35 +44,11 @@ use crate::registry::ShardedRegistry;
 use crate::scheduler::Scheduler;
 use crate::shutdown::SupervisorPtr;
 
-/// Process-wide runtime identity.
-///
-/// Distinct from a PID's `node_id`: a `RuntimeId` tags the runtime instance
-/// that owns an actor/timer/capability, so that — once more than one runtime
-/// can exist — cross-runtime routing can fail closed on an id mismatch without
-/// dereferencing any handle. In single-runtime AOT/JIT programs there is
-/// exactly one runtime, always [`RuntimeId::DEFAULT`].
-///
-/// `#[repr(transparent)]` over `u64` makes this FFI-safe: the host handle ABI
-/// (`hew_runtime_id` / the `*_with_runtime` resolution forms) passes a runtime
-/// id across the C boundary as a plain `u64` with no layout surprise. The
-/// discriminant — never a borrowed pointer — is what crosses, so a stale or
-/// foreign id can be compared and rejected without dereferencing any handle.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(transparent)]
-pub struct RuntimeId(pub u64);
-
-impl RuntimeId {
-    /// The id of the single default runtime used by AOT and JIT programs.
-    pub const DEFAULT: RuntimeId = RuntimeId(0);
-
-    /// The raw `u64` discriminant, for the C-ABI handle forms that pass a
-    /// runtime id across the boundary as a plain integer.
-    #[inline]
-    #[must_use]
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-}
+// `RuntimeId` is defined in the always-compiled `runtime_id` module (it must
+// exist on wasm too, where this native `runtime` module is configured out, so
+// `HewActor` and its wasm mirror can stamp the same type). Re-exported here so
+// native callers keep using `crate::runtime::RuntimeId`.
+pub use crate::runtime_id::RuntimeId;
 
 /// The owned state of one Hew runtime instance.
 ///

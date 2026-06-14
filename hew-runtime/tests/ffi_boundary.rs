@@ -767,9 +767,15 @@ unsafe extern "C-unwind" fn test_dispatch(
 #[test]
 fn actor_spawn_and_free_no_scheduler() {
     let _guard = DISPATCH_LOCK.lock().unwrap();
+    // Spawning records the actor in the runtime-owned live-actor registry
+    // (`rt_current().live_actors`), so a default runtime must be installed even
+    // though this test never dispatches a message. `ensure_scheduler` installs
+    // the idempotent process-wide default runtime; the test still exercises the
+    // spawn-allocates / free-deallocates path in isolation from dispatch.
+    ensure_scheduler();
     unsafe {
-        // Spawn an actor without starting the scheduler — tests the
-        // allocation path in isolation.
+        // Spawn an actor and free it without driving any dispatch — exercises
+        // the allocation/deallocation path in isolation.
         let mut state: i32 = 42;
         let actor = hew_actor_spawn(
             (&raw mut state).cast(),
@@ -793,6 +799,10 @@ fn actor_spawn_and_free_no_scheduler() {
 
 #[test]
 fn actor_spawn_null_state() {
+    // Spawn/free record + clear the actor in the runtime-owned live-actor
+    // registry, so a default runtime must be installed; `ensure_scheduler` does
+    // so idempotently.
+    ensure_scheduler();
     unsafe {
         let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(test_dispatch));
         assert!(!actor.is_null());
@@ -2944,8 +2954,17 @@ mod supervisor_nesting_tests {
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const STRATEGY_ONE_FOR_ALL: i32 = 1;
 
+    /// Supervisor allocation/start/stop records the supervisor's self-actor in
+    /// the runtime-owned live-actor registry, which resolves through
+    /// `rt_current()` and fails closed when no runtime is installed.
+    /// `hew_sched_init` installs the idempotent process-wide default runtime.
+    fn ensure_runtime() {
+        hew_runtime::scheduler::hew_sched_init();
+    }
+
     #[test]
     fn supervisor_nesting_add_and_count() {
+        ensure_runtime();
         unsafe {
             let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             let child = hew_supervisor_new(STRATEGY_ONE_FOR_ALL, 3, 30);
@@ -2968,6 +2987,7 @@ mod supervisor_nesting_tests {
 
     #[test]
     fn supervisor_nesting_null_checks() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
 
@@ -2993,6 +3013,7 @@ mod supervisor_nesting_tests {
 
     #[test]
     fn supervisor_nesting_started_parent_stops_child() {
+        ensure_runtime();
         unsafe {
             let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             let child = hew_supervisor_new(STRATEGY_ONE_FOR_ALL, 3, 30);
@@ -3426,14 +3447,21 @@ mod registry_tests {
         hew_registry_clear, hew_registry_count, hew_registry_lookup, hew_registry_register,
         hew_registry_unregister,
     };
+    use hew_runtime::scheduler::hew_sched_init;
 
-    /// All registry tests share a global `REGISTRY` and call `hew_registry_clear`,
-    /// so they must not run in parallel.
+    /// The name registry lives on the default `RuntimeInner`; every registry FFI
+    /// call resolves it through `rt_current()`, which fails closed when no
+    /// runtime is installed. `hew_sched_init` installs the process-wide default
+    /// runtime and is idempotent (a second call is a no-op), so each test calls
+    /// it before touching the registry. The runtime is intentionally never torn
+    /// down — it persists for the whole test binary, shared across tests, which
+    /// is why `LOCK` serializes them.
     static LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn register_and_lookup() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_lookup_actor").unwrap();
@@ -3450,6 +3478,7 @@ mod registry_tests {
     #[test]
     fn register_duplicate_returns_error() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_dup_actor").unwrap();
@@ -3468,6 +3497,7 @@ mod registry_tests {
     #[test]
     fn unregister_then_lookup_returns_null() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let name = CString::new("reg_unreg_actor").unwrap();
@@ -3485,6 +3515,7 @@ mod registry_tests {
     #[test]
     fn clear_resets_count_to_zero() {
         let _guard = LOCK.lock().unwrap();
+        hew_sched_init();
         unsafe {
             hew_registry_clear();
             let a = CString::new("reg_clear_a").unwrap();
@@ -4185,8 +4216,17 @@ mod dynamic_supervision_tests {
         std::ptr::null_mut()
     }
 
+    /// Supervisor allocation/stop records its self-actor in the runtime-owned
+    /// live-actor registry, which resolves through `rt_current()` and fails
+    /// closed when no runtime is installed. `hew_sched_init` installs the
+    /// idempotent process-wide default runtime.
+    fn ensure_runtime() {
+        hew_runtime::scheduler::hew_sched_init();
+    }
+
     #[test]
     fn add_child_dynamic_returns_index() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             assert!(!sup.is_null());
@@ -4218,6 +4258,7 @@ mod dynamic_supervision_tests {
 
     #[test]
     fn remove_child_shrinks_count() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             assert!(!sup.is_null());
@@ -4249,6 +4290,7 @@ mod dynamic_supervision_tests {
 
     #[test]
     fn remove_child_invalid_index_returns_error() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             assert!(!sup.is_null());
@@ -4263,6 +4305,7 @@ mod dynamic_supervision_tests {
 
     #[test]
     fn no_fixed_child_limit() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             assert!(!sup.is_null());
@@ -4293,6 +4336,7 @@ mod dynamic_supervision_tests {
 
     #[test]
     fn get_child_after_remove() {
+        ensure_runtime();
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60);
             assert!(!sup.is_null());

@@ -153,6 +153,11 @@ impl TestActor {
     /// # Panics
     /// Panics if the runtime returns a null pointer (allocation failure).
     pub fn spawn(dispatch: DispatchFn) -> Self {
+        // Spawning records the actor in the runtime-owned live-actor registry
+        // (`rt_current().live_actors`), which fails closed when no runtime is
+        // installed. Install the default runtime first so every `TestActor`
+        // caller satisfies that precondition without repeating the call.
+        ensure_scheduler();
         // SAFETY:
         // - validity: state pointer is null with size 0 (documented as legal).
         // - aliasing: no caller holds a reference to the runtime's internal
@@ -176,6 +181,10 @@ impl TestActor {
     /// # Panics
     /// Panics if the runtime returns a null pointer.
     pub fn spawn_with_state<T: Copy>(state: &mut T, dispatch: DispatchFn) -> Self {
+        // Install the default runtime first — `hew_actor_spawn` tracks the actor
+        // in the runtime-owned live-actor registry, which fails closed without a
+        // runtime installed (see `spawn`).
+        ensure_scheduler();
         // SAFETY:
         // - validity: `state` is a live `&mut T`, so `(state as *mut T)` is
         //   valid for read of size_of::<T>().

@@ -630,6 +630,8 @@ mod tests {
 
     #[test]
     fn late_link_to_terminal_actor_skips_stale_entries_and_cleans_tombstone() {
+        // `propagate_exit_to_links` probes the runtime-owned live-actor registry.
+        let _rt = crate::runtime_test_guard();
         let mut survivor = create_test_actor(30_400);
         let mut terminal = create_test_actor(30_401);
         let survivor_ptr = &raw mut survivor;

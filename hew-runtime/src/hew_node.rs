@@ -127,22 +127,114 @@ fn transport_selection_from_env() -> Result<TransportSelection, String> {
     }
 }
 
-/// Global reference to the active node for remote message routing.
-///
-/// Only one `HewNode` may be active per process. Starting a second node
-/// while one is running is undefined behaviour.
-static CURRENT_NODE: PoisonSafeRw<usize> = PoisonSafeRw::new(0);
-
 #[derive(Clone, Copy)]
 struct KnownNodePtr(*mut HewNode);
 
-// SAFETY: Node pointers are owned by the runtime and removed from KNOWN_NODES
-// before the node allocation is freed.
+// SAFETY: Node pointers are owned by the runtime and removed from the node
+// slot's known-node list before the node allocation is freed.
 unsafe impl Send for KnownNodePtr {}
 
-/// Tracks node allocations so actor teardown can unregister distributed names
-/// before the owning node is freed.
-static KNOWN_NODES: PoisonSafe<Vec<KnownNodePtr>> = PoisonSafe::new(Vec::new());
+/// Runtime-owned distributed-node state.
+///
+/// Was the `CURRENT_NODE` + `KNOWN_NODES` + `REPLY_TABLE` globals; now a field
+/// of `RuntimeInner`, resolved through [`crate::runtime::rt_current`]. A runtime
+/// owns at most one active node ([`NodeSlot::current`]), the list of node
+/// allocations it knows about so actor teardown can unregister distributed
+/// names ([`NodeSlot::known_nodes`]), and the table correlating its outbound
+/// remote asks with their replies ([`NodeSlot::reply_table`]). Dropping it drops
+/// the (normally empty after teardown) reply table and known-node list.
+///
+/// `reply_table` was a process-`LazyLock`; it is now eagerly constructed per
+/// runtime so each runtime's pending remote asks are isolated. Construction is
+/// cheap (an atomic counter and an empty map).
+pub(crate) struct NodeSlot {
+    /// Pointer to the active node for remote message routing, or `0` when no
+    /// node is running. Only one `HewNode` may be active per runtime; the write
+    /// lock serializes start/stop against in-flight reply sends (the lifetime
+    /// barrier in `hew_node_stop`).
+    current: PoisonSafeRw<usize>,
+    /// Node allocations this runtime knows about, so actor teardown can
+    /// unregister distributed names before the owning node is freed.
+    known_nodes: PoisonSafe<Vec<KnownNodePtr>>,
+    /// Reply routing table correlating this runtime's outbound remote asks with
+    /// their replies.
+    reply_table: ReplyRoutingTable,
+}
+
+impl NodeSlot {
+    /// Construct an empty node slot for a new runtime: no active node, no known
+    /// nodes, and an empty reply table.
+    pub(crate) fn new() -> Self {
+        Self {
+            current: PoisonSafeRw::new(0),
+            known_nodes: PoisonSafe::new(Vec::new()),
+            reply_table: ReplyRoutingTable::new(),
+        }
+    }
+
+    /// Move `other`'s node state (active node, known-node list, pending replies,
+    /// and the request-id counter) into `self`, leaving `other` empty.
+    ///
+    /// Test-only. Before de-globalization the active-node pointer, the
+    /// known-node list, and the reply table were process statics that *survived*
+    /// a test scheduler swap (`init_real_scheduler_for_test`). Now that they live
+    /// in `RuntimeInner`, the swap would otherwise discard a node already started
+    /// on the placeholder runtime; this transfer preserves the prior survival
+    /// semantics so node-startup ordering in tests is unchanged. Production never
+    /// swaps the installed runtime, so this has no production counterpart.
+    #[cfg(test)]
+    pub(crate) fn test_transfer_from(&self, other: &NodeSlot) {
+        let current = other.current.access(|guard| std::mem::replace(guard, 0));
+        self.current.access(|guard| *guard = current);
+
+        let known = other.known_nodes.access(std::mem::take);
+        self.known_nodes.access(|dst| *dst = known);
+
+        let pending = {
+            let mut map = other
+                .reply_table
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *map)
+        };
+        let next_id = other
+            .reply_table
+            .next_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        self.reply_table
+            .next_id
+            .store(next_id, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut map = self
+                .reply_table
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *map = pending;
+        }
+    }
+}
+
+/// Run `f` with read access to the current runtime's active-node slot.
+fn with_current_node_read<R>(f: impl FnOnce(&usize) -> R) -> R {
+    crate::runtime::rt_current().node.current.read_access(f)
+}
+
+/// Run `f` with write access to the current runtime's active-node slot.
+fn with_current_node<R>(f: impl FnOnce(&mut usize) -> R) -> R {
+    crate::runtime::rt_current().node.current.access(f)
+}
+
+/// Run `f` with mutable access to the current runtime's known-node list.
+fn with_known_nodes<R>(f: impl FnOnce(&mut Vec<KnownNodePtr>) -> R) -> R {
+    crate::runtime::rt_current().node.known_nodes.access(f)
+}
+
+/// The current runtime's reply routing table.
+fn reply_table() -> &'static ReplyRoutingTable {
+    &crate::runtime::rt_current().node.reply_table
+}
 
 // ---------------------------------------------------------------------------
 // Inbound ask worker bound
@@ -375,11 +467,12 @@ struct PendingReply {
     parked_caller: AtomicPtr<crate::actor::HewActor>,
 }
 
-/// Process-global reply routing table for correlating remote ask/reply pairs.
+/// Per-runtime reply routing table for correlating remote ask/reply pairs.
 ///
 /// Each outbound remote ask registers a `PendingReply` keyed by a unique
 /// request ID. When the reply envelope arrives, the reader thread deposits
-/// the payload and signals the condvar to wake the blocked caller.
+/// the payload and signals the condvar to wake the blocked caller. Owned by
+/// the runtime's [`NodeSlot`]; resolved through [`reply_table`].
 struct ReplyRoutingTable {
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, Arc<PendingReply>>>,
@@ -572,8 +665,6 @@ impl ReplyRoutingTable {
     }
 }
 
-static REPLY_TABLE: std::sync::LazyLock<ReplyRoutingTable> =
-    std::sync::LazyLock::new(ReplyRoutingTable::new);
 static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 
 /// Deposit a reply payload for a pending remote ask.
@@ -581,7 +672,7 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 /// Called by the reader thread when a reply envelope arrives. Returns
 /// `true` if the request ID was matched.
 pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
-    REPLY_TABLE.complete(request_id, payload.to_vec())
+    reply_table().complete(request_id, payload.to_vec())
 }
 
 fn ask_error_from_code(code: i32) -> Option<AskError> {
@@ -664,13 +755,13 @@ pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool 
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
     match decode_rejection_reason(reason_payload) {
-        Ok(reason) => REPLY_TABLE.fail(request_id, reason),
+        Ok(reason) => reply_table().fail(request_id, reason),
         Err(_) => false,
     }
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
-    REPLY_TABLE.fail_connection(ConnectionKey::new(conn_mgr, conn_id));
+    reply_table().fail_connection(ConnectionKey::new(conn_mgr, conn_id));
 }
 
 fn remote_void_reply_sentinel() -> *mut c_void {
@@ -721,7 +812,7 @@ pub(crate) unsafe fn try_remote_send(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         if *guard == 0 {
             return -1;
         }
@@ -787,7 +878,7 @@ impl std::fmt::Debug for HewNode {
 }
 
 fn remember_node(node: *mut HewNode) {
-    KNOWN_NODES.access(|known| {
+    with_known_nodes(|known| {
         if !known.iter().any(|entry| entry.0 == node) {
             known.push(KnownNodePtr(node));
         }
@@ -795,7 +886,7 @@ fn remember_node(node: *mut HewNode) {
 }
 
 fn forget_node(node: *mut HewNode) {
-    KNOWN_NODES.access(|known| {
+    with_known_nodes(|known| {
         known.retain(|entry| entry.0 != node);
     });
 }
@@ -855,7 +946,7 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
 /// local names after a named actor is freed or restarted.
 pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
     let owner_node_id = crate::pid::hew_pid_node(actor_id);
-    KNOWN_NODES.access(|known| {
+    with_known_nodes(|known| {
         for entry in known.iter().copied() {
             if entry.0.is_null() {
                 continue;
@@ -1223,7 +1314,7 @@ fn send_rejection_reply(
         return;
     }
 
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         if *guard == 0 {
             return;
         }
@@ -1294,7 +1385,7 @@ fn send_reply_envelope(
     //
     // The read lock is held for the entire duration of `conn_mgr` access via
     // the `read_access` closure.
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         if *guard == 0 {
             return;
         }
@@ -1731,7 +1822,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
     // Atomically check-and-set CURRENT_NODE under write lock to avoid
     // the TOCTOU race where two threads both read 0 and both try to set.
-    CURRENT_NODE.access(|guard| {
+    with_current_node(|guard| {
         if *guard == 0 {
             *guard = ptr::from_mut(node) as usize;
             crate::pid::hew_pid_set_local_node(node.node_id);
@@ -1775,7 +1866,7 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     // entire teardown body; `unregister_actor_names` (called from actor-free
     // paths) also acquires KNOWN_NODES and will block here until teardown
     // completes.
-    KNOWN_NODES.access(|_known_nodes| {
+    with_known_nodes(|_known_nodes| {
         if node.state.load(Ordering::Acquire) == NODE_STATE_STOPPED {
             return 0;
         }
@@ -1789,14 +1880,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
             // blocks until every concurrent read-lock-holder (i.e. every
             // in-flight reply send) has completed, so `conn_mgr` cannot be freed
             // while any such thread is still running for the current node.
-            CURRENT_NODE.access(|guard| {
+            with_current_node(|guard| {
                 if !node.conn_mgr.is_null() {
                     // SAFETY: node owns this connection manager until teardown completes.
                     unsafe { connection::hew_connmgr_mark_stopping(node.conn_mgr) };
                 }
                 if *guard == ptr::from_mut(node) as usize {
                     *guard = 0;
-                    REPLY_TABLE.fail_all();
+                    reply_table().fail_all();
                 }
             });
         }
@@ -2411,13 +2502,13 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     // Claim CURRENT_NODE under the write lock so exactly one caller owns the
     // stop/free sequence.
-    let Some(ptr) = CURRENT_NODE.access(|guard| {
+    let Some(ptr) = with_current_node(|guard| {
         let ptr = *guard as *mut HewNode;
         if ptr.is_null() {
             return None;
         }
         *guard = 0;
-        REPLY_TABLE.fail_all();
+        reply_table().fail_all();
         Some(ptr)
     }) else {
         return -1;
@@ -2439,7 +2530,7 @@ pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
     if addr.is_null() {
         return -1;
     }
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
             set_last_error("Node::connect: no active node");
@@ -2466,7 +2557,7 @@ pub unsafe extern "C" fn hew_node_api_register(
     }
     // SAFETY: actor was null-checked above and is a valid HewActor pointer.
     let actor_id = unsafe { (*actor).id };
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
             set_last_error("Node::register: no active node");
@@ -2517,7 +2608,7 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
         ));
         return -1;
     }
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
             set_last_error("Node::register: no active node (call Node::start first)");
@@ -2539,7 +2630,7 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     if name.is_null() {
         return 0;
     }
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         let node = *guard as *mut HewNode;
         if node.is_null() {
             return 0;
@@ -2639,7 +2730,7 @@ fn setup_remote_ask(
     size: usize,
     parked_caller: *mut crate::actor::HewActor,
 ) -> RemoteAskSetupResult {
-    CURRENT_NODE.read_access(|guard| {
+    with_current_node_read(|guard| {
         let node_ptr = *guard as *mut HewNode;
         if node_ptr.is_null() {
             return RemoteAskSetupResult::Error(AskError::NodeNotRunning);
@@ -2685,9 +2776,9 @@ fn setup_remote_ask(
         // signalling the condvar.
         let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
         let (request_id, pending) = if parked_caller.is_null() {
-            REPLY_TABLE.register(connection)
+            reply_table().register(connection)
         } else {
-            REPLY_TABLE.register_parked(connection, parked_caller)
+            reply_table().register_parked(connection, parked_caller)
         };
 
         // Encode the ask envelope with request_id and source_node_id over the
@@ -2707,7 +2798,7 @@ fn setup_remote_ask(
             Ok(bytes) => bytes,
             Err(err) => {
                 set_last_error(format!("hew_node_api_ask: {err}"));
-                REPLY_TABLE.remove(request_id);
+                reply_table().remove(request_id);
                 if let Some((b, _)) = serialized_req {
                     // SAFETY: b came from encode_payload (libc::malloc).
                     unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
@@ -2734,7 +2825,7 @@ fn setup_remote_ask(
         };
 
         if !send_ok {
-            REPLY_TABLE.remove(request_id);
+            reply_table().remove(request_id);
             return RemoteAskSetupResult::Error(AskError::SendFailed);
         }
 
@@ -2752,7 +2843,7 @@ fn spawn_remote_ask_timeout(request_id: u64, timeout_ms: u64) -> Result<(), AskE
         .name("hew-remote-ask-timeout".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(timeout_ms));
-            REPLY_TABLE.fail(request_id, AskError::Timeout);
+            reply_table().fail(request_id, AskError::Timeout);
         })
         .map(|_| ())
         .map_err(|_| AskError::SendFailed)
@@ -2866,7 +2957,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             // Timeout — remove the pending entry and return the null failure sentinel.
-            REPLY_TABLE.remove(request_id);
+            reply_table().remove(request_id);
             return ask_null(AskError::Timeout);
         }
         let (new_guard, wait_result) = pending
@@ -2874,7 +2965,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
             .wait_timeout_or_recover(outcome_guard, remaining);
         outcome_guard = new_guard;
         if wait_result.timed_out() && outcome_guard.is_none() {
-            REPLY_TABLE.remove(request_id);
+            reply_table().remove(request_id);
             return ask_null(AskError::Timeout);
         }
     }
@@ -2931,7 +3022,7 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
     };
 
     if let Err(e) = spawn_remote_ask_timeout(request_id, timeout_ms) {
-        REPLY_TABLE.remove(request_id);
+        reply_table().remove(request_id);
         return ask_null(e);
     }
 
@@ -2993,7 +3084,7 @@ pub unsafe extern "C" fn hew_node_api_ask_cancel(pending_handle: *mut c_void) {
     // SAFETY: caller transfers back the creator reference returned by
     // `hew_node_api_ask_async`; this consumes it exactly once.
     let pending = unsafe { Arc::from_raw(pending_handle.cast::<PendingReply>()) };
-    REPLY_TABLE.remove(pending.request_id);
+    reply_table().remove(pending.request_id);
 }
 
 #[cfg(test)]
@@ -3003,6 +3094,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const TEST_REMOTE_ASK_TIMEOUT_MS: u64 = 250;
+
+    /// Initialise a real, worker-backed scheduler for a node test (delegates to
+    /// the scheduler-side helper, which sees the module-private `stealers` and
+    /// safely retires a `runtime_test_guard()` placeholder before init).
+    fn init_real_scheduler() {
+        crate::scheduler::init_real_scheduler_for_test();
+    }
 
     // ── Test-only u32 codec ──────────────────────────────────────────────
     //
@@ -3113,7 +3211,7 @@ mod tests {
 
     impl Drop for ResetCurrentNode {
         fn drop(&mut self) {
-            CURRENT_NODE.access(|current| {
+            with_current_node(|current| {
                 *current = self.0;
             });
         }
@@ -3417,9 +3515,12 @@ mod tests {
     }
 
     fn run_registry_gossip_server_helper() {
-        crate::registry::hew_registry_clear();
         reset_two_process_delivery();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        // Install the runtime before touching the name registry: in this helper
+        // subprocess no `runtime_test_guard` is held, so the registry's
+        // `rt_current()` resolver has nothing to read until init runs.
+        init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
         crate::pid::hew_pid_set_local_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
@@ -3457,8 +3558,10 @@ mod tests {
     }
 
     fn run_registry_gossip_client_helper() {
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
+        init_real_scheduler();
         crate::registry::hew_registry_clear();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")
@@ -3524,12 +3627,14 @@ mod tests {
         ) -> *mut c_void,
         hold_after_observed: Duration,
     ) {
-        crate::registry::hew_registry_clear();
         // The inbound-ask path decodes the request and encodes the reply via the
         // registered codec (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
         reset_two_process_ask_observed();
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
+        init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(node_id);
         crate::pid::hew_pid_set_local_node(node_id);
@@ -3638,11 +3743,13 @@ mod tests {
         server_node_id: u16,
         registry_name: &str,
     ) -> (TestNode, u64) {
-        crate::registry::hew_registry_clear();
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
         register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        // Install the runtime before touching the name registry (helper
+        // subprocess holds no `runtime_test_guard`).
+        init_real_scheduler();
+        crate::registry::hew_registry_clear();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
             .expect("server port env")
@@ -3961,7 +4068,7 @@ mod tests {
             1,
             "the losing shutdown caller must observe that no node remains"
         );
-        CURRENT_NODE.read_access(|current| {
+        with_current_node_read(|current| {
             assert_eq!(*current, 0);
         });
     }
@@ -4177,6 +4284,11 @@ mod tests {
 
     #[test]
     fn test_node_unregister() {
+        // `hew_node_new` records the node in the runtime-owned node slot, which
+        // resolves through `rt_current()` and fails closed when no runtime is
+        // installed; the guard installs the worker-less default runtime.
+        let _guard = crate::runtime_test_guard();
+
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(50, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
@@ -4218,6 +4330,11 @@ mod tests {
     /// string for the second actor succeeds (the refusal is per-name).
     #[test]
     fn register_same_name_different_actor_fails_closed_with_diagnostic() {
+        // `hew_node_new` records the node in the runtime-owned node slot, which
+        // resolves through `rt_current()` and fails closed when no runtime is
+        // installed; the guard installs the worker-less default runtime.
+        let _guard = crate::runtime_test_guard();
+
         // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(51, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
@@ -4319,7 +4436,7 @@ mod tests {
     fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
         let _guard = crate::runtime_test_guard();
 
-        let saved_current_node = CURRENT_NODE.access(|current| {
+        let saved_current_node = with_current_node(|current| {
             let saved = *current;
             *current = 0;
             saved
@@ -4370,14 +4487,14 @@ mod tests {
         // cleared by the local path (it goes through a different function).
         // What we check here is that a successful remote reply clears the slot.
         // Build a fake ReplyOutcome with Success and non-empty data and inject
-        // it directly through REPLY_TABLE to exercise the success path without
+        // it directly through the reply table to exercise the success path without
         // needing a live network.
         let key = ConnectionKey {
             conn_mgr: 99,
             conn_id: 42,
         };
-        let (id, pending) = REPLY_TABLE.register(key);
-        REPLY_TABLE.complete(id, vec![0xAAu8, 0xBBu8, 0xCCu8, 0xDDu8]);
+        let (id, pending) = reply_table().register(key);
+        reply_table().complete(id, vec![0xAAu8, 0xBBu8, 0xCCu8, 0xDDu8]);
         // Drain the outcome directly as the success branch of hew_node_api_ask would.
         let mut g = pending
             .outcome
@@ -4422,10 +4539,10 @@ mod tests {
             conn_mgr: 77,
             conn_id: 11,
         };
-        let (id, pending) = REPLY_TABLE.register(key);
+        let (id, pending) = reply_table().register(key);
 
         // Simulate a connection drop.
-        REPLY_TABLE.fail_connection(key);
+        reply_table().fail_connection(key);
 
         let guard = pending
             .outcome
@@ -4442,7 +4559,7 @@ mod tests {
         drop(guard);
 
         // Verify the entry was removed from the pending table.
-        let map = REPLY_TABLE
+        let map = reply_table()
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4465,10 +4582,10 @@ mod tests {
             conn_mgr: 55,
             conn_id: 2,
         };
-        let (id_a, pending_a) = REPLY_TABLE.register(key_a);
-        let (id_b, pending_b) = REPLY_TABLE.register(key_b);
+        let (id_a, pending_a) = reply_table().register(key_a);
+        let (id_b, pending_b) = reply_table().register(key_b);
 
-        REPLY_TABLE.fail_all();
+        reply_table().fail_all();
 
         for (id, pending) in [(id_a, &pending_a), (id_b, &pending_b)] {
             let guard = pending
@@ -4480,7 +4597,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("entry {id} not woken"));
             assert_eq!(outcome.status, ReplyStatus::Failed);
         }
-        let map = REPLY_TABLE
+        let map = reply_table()
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4525,11 +4642,11 @@ mod tests {
         // live registry and drops the wake for an untracked pointer, so the
         // completion still deposits the outcome the finish path drains.
         let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
-        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let (id, pending) = reply_table().register_parked(key, parked_actor);
         assert_eq!(pending.parked_caller.load(Ordering::Acquire), parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
-        assert!(REPLY_TABLE.complete(id, Vec::new()));
+        assert!(reply_table().complete(id, Vec::new()));
         // SAFETY: `handle` is the live creator ref from register_parked.
         let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
 
@@ -4545,10 +4662,10 @@ mod tests {
             conn_id: 22,
         };
         let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
-        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let (id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
-        assert!(REPLY_TABLE.fail(id, AskError::Timeout));
+        assert!(reply_table().fail(id, AskError::Timeout));
         // SAFETY: `handle` is the live creator ref from register_parked.
         let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
 
@@ -4564,10 +4681,10 @@ mod tests {
             conn_id: 23,
         };
         let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
-        let (_id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let (_id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
-        REPLY_TABLE.fail_connection(key);
+        reply_table().fail_connection(key);
         // SAFETY: `handle` is the live creator ref from register_parked.
         let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
 
@@ -4586,13 +4703,13 @@ mod tests {
             conn_id: 24,
         };
         let parked_actor = std::ptr::dangling_mut::<crate::actor::HewActor>();
-        let (id, pending) = REPLY_TABLE.register_parked(key, parked_actor);
+        let (id, pending) = reply_table().register_parked(key, parked_actor);
         let handle = Arc::into_raw(pending).cast::<c_void>().cast_mut();
 
         // SAFETY: `handle` is the live creator ref from register_parked.
         unsafe { hew_node_api_ask_cancel(handle) };
         // The entry is gone: a late reply finds nothing to complete.
-        assert!(!REPLY_TABLE.complete(id, Vec::new()));
+        assert!(!reply_table().complete(id, Vec::new()));
     }
 
     #[test]
@@ -4681,11 +4798,11 @@ mod tests {
     fn reply_table_fail_with_reason_propagates_correct_ask_error() {
         let _guard = crate::runtime_test_guard();
 
-        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+        let (id, pending) = reply_table().register(ConnectionKey {
             conn_mgr: 90,
             conn_id: 13,
         });
-        assert!(REPLY_TABLE.fail(id, AskError::OrphanedAsk));
+        assert!(reply_table().fail(id, AskError::OrphanedAsk));
 
         let guard = pending
             .outcome
@@ -4701,7 +4818,7 @@ mod tests {
     fn fail_remote_reply_empty_payload_defaults_to_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
 
-        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+        let (id, pending) = reply_table().register(ConnectionKey {
             conn_mgr: 91,
             conn_id: 14,
         });
@@ -4788,7 +4905,7 @@ mod tests {
     fn fail_remote_reply_unknown_code_returns_false_and_leaves_ask_unresolved() {
         let _guard = crate::runtime_test_guard();
 
-        let (id, pending) = REPLY_TABLE.register(ConnectionKey {
+        let (id, pending) = reply_table().register(ConnectionKey {
             conn_mgr: 92,
             conn_id: 15,
         });
@@ -5080,11 +5197,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(302); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5213,11 +5326,7 @@ mod tests {
         let (node2, node2_port) = start_quic_mesh_test_listener_node(402, tls_b);
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5453,11 +5562,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(314);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(314);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -5526,11 +5631,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 312 to assign a node-2 PID to the actor.
         crate::pid::hew_pid_set_local_node(312);
@@ -5620,11 +5721,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(322);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(322);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
@@ -5736,11 +5833,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -5808,11 +5901,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -5882,11 +5971,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(327);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(327);
         let opts = crate::actor::HewActorOpts {
@@ -5974,11 +6059,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(320);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(320);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6047,11 +6128,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(331);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(331);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6151,11 +6228,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6222,11 +6295,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(329);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(329);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6298,11 +6367,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6336,7 +6401,7 @@ mod tests {
         });
 
         let pending_seen = (0..100).any(|_| {
-            let guard = REPLY_TABLE
+            let guard = reply_table()
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6399,11 +6464,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(321);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6457,7 +6518,7 @@ mod tests {
         });
 
         let pending_seen = (0..100).any(|_| {
-            let guard = REPLY_TABLE
+            let guard = reply_table()
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6526,7 +6587,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, _node2_port) = start_tcp_test_listener_node(319);
 
-        let (request_id, pending) = REPLY_TABLE.register(ConnectionKey {
+        let (request_id, pending) = reply_table().register(ConnectionKey {
             conn_mgr: 1,
             conn_id: 0,
         });
@@ -6545,7 +6606,7 @@ mod tests {
             "secondary node stop must not fail pending asks owned by CURRENT_NODE"
         );
         drop(guard);
-        REPLY_TABLE.remove(request_id);
+        reply_table().remove(request_id);
 
         // SAFETY: node1 remains valid until the end of the test.
         unsafe {
@@ -6736,11 +6797,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(321);
@@ -6841,7 +6898,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(323);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         // Spawn a void-reply actor on node2.
         crate::pid::hew_pid_set_local_node(323);
@@ -6924,7 +6981,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(325);
-        assert_eq!(crate::scheduler::hew_sched_init(), 0, "scheduler init");
+        init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(325);
@@ -7149,11 +7206,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(354);
 
-        assert_eq!(
-            crate::scheduler::hew_sched_init(),
-            0,
-            "scheduler init failed"
-        );
+        init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(354);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.

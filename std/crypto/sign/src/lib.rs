@@ -139,6 +139,35 @@ unsafe fn bytes_from_triple(triple: *const BytesTriple) -> Option<Vec<u8>> {
     Some(unsafe { std::slice::from_raw_parts(t.ptr.add(offset), len) }.to_vec())
 }
 
+/// Copy `src` into the fixed-size buffer `out` only when `src.len() == N`.
+///
+/// This is the single checked seam in front of every fixed-buffer
+/// `copy_nonoverlapping` in this module.  `out` is a caller-owned buffer valid
+/// for exactly `N` bytes; the length equality is the guard that keeps a copy
+/// from running past it if ring's encoded length ever diverges from the
+/// documented constant.
+///
+/// Returns `1` and writes all `N` bytes on a length match; returns `0` and
+/// writes **nothing** on a mismatch.  The check is an ordinary `if` so it holds
+/// in every build profile — a `debug_assert!` here would be stripped in release
+/// and reintroduce the overflow risk this seam exists to remove.
+///
+/// # Safety
+///
+/// `out` must be valid for writing `N` bytes.  `src` must be a valid slice.
+unsafe fn fill_fixed<const N: usize>(out: *mut u8, src: &[u8]) -> i32 {
+    // Fail closed: refuse to write when the source length does not match the
+    // fixed buffer.  Not a release-stripped `debug_assert!` — this is the guard
+    // that prevents a fixed-buffer overflow in all profiles.
+    if src.len() != N {
+        return 0;
+    }
+    // SAFETY: out is valid for N bytes per caller contract, and src.len() is
+    // verified to equal N above.
+    unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), out, N) };
+    1
+}
+
 // ---------------------------------------------------------------------------
 // Raw C-ABI layer (no BytesTriple; usable from native callers)
 // ---------------------------------------------------------------------------
@@ -160,17 +189,11 @@ pub unsafe extern "C" fn hew_ed25519_generate_pkcs8(out: *mut u8) -> i32 {
         return 0;
     };
     let bytes = pkcs8_doc.as_ref();
-    // Fail closed: `out` is only valid for ED25519_PKCS8_LEN bytes. A hard
-    // length check (not a release-stripped `debug_assert!`) guarantees we never
-    // `copy_nonoverlapping` more bytes than the caller's fixed-size buffer holds
-    // if ring's PKCS#8 encoding ever changes length.
-    if bytes.len() != ED25519_PKCS8_LEN {
-        return 0;
-    }
-    // SAFETY: out is valid for ED25519_PKCS8_LEN bytes per caller contract, and
-    // bytes.len() is verified to equal ED25519_PKCS8_LEN above.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
-    1
+    // Fail closed via the checked seam: copy only if ring's PKCS#8 document is
+    // exactly ED25519_PKCS8_LEN bytes, never overflowing `out` if the encoded
+    // length ever changes.  Returns 0 without writing on a mismatch.
+    // SAFETY: out is valid for ED25519_PKCS8_LEN bytes per caller contract.
+    unsafe { fill_fixed::<ED25519_PKCS8_LEN>(out, bytes) }
 }
 
 /// Extract the 32-byte public key from an Ed25519 PKCS#8 document.
@@ -196,16 +219,11 @@ pub unsafe extern "C" fn hew_ed25519_public_key_from_pkcs8(
         return 0;
     };
     let pub_bytes = key_pair.public_key().as_ref();
-    // Fail closed: `out` is only valid for ED25519_PUBLIC_LEN bytes. A hard
-    // length check (not a release-stripped `debug_assert!`) prevents a
-    // buffer overflow if the public-key length ever diverges from 32.
-    if pub_bytes.len() != ED25519_PUBLIC_LEN {
-        return 0;
-    }
-    // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes per caller contract, and
-    // pub_bytes.len() is verified to equal ED25519_PUBLIC_LEN above.
-    unsafe { std::ptr::copy_nonoverlapping(pub_bytes.as_ptr(), out, pub_bytes.len()) };
-    1
+    // Fail closed via the checked seam: copy only if the public key is exactly
+    // ED25519_PUBLIC_LEN bytes, preventing an overflow if the length ever
+    // diverges from 32.  Returns 0 without writing on a mismatch.
+    // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes per caller contract.
+    unsafe { fill_fixed::<ED25519_PUBLIC_LEN>(out, pub_bytes) }
 }
 
 /// Sign `msg` (`msg_len` bytes) with the PKCS#8 private key (`key`, `key_len`
@@ -247,16 +265,11 @@ pub unsafe extern "C" fn hew_ed25519_sign(
 
     let sig = key_pair.sign(msg_bytes);
     let sig_bytes = sig.as_ref();
-    // Fail closed: `sig_out` is only valid for ED25519_SIG_LEN bytes. A hard
-    // length check (not a release-stripped `debug_assert!`) prevents a
-    // buffer overflow if the signature length ever diverges from 64.
-    if sig_bytes.len() != ED25519_SIG_LEN {
-        return 0;
-    }
-    // SAFETY: sig_out is valid for ED25519_SIG_LEN bytes per caller contract, and
-    // sig_bytes.len() is verified to equal ED25519_SIG_LEN above.
-    unsafe { std::ptr::copy_nonoverlapping(sig_bytes.as_ptr(), sig_out, sig_bytes.len()) };
-    1
+    // Fail closed via the checked seam: copy only if the signature is exactly
+    // ED25519_SIG_LEN bytes, preventing an overflow if the length ever diverges
+    // from 64.  Returns 0 without writing on a mismatch.
+    // SAFETY: sig_out is valid for ED25519_SIG_LEN bytes per caller contract.
+    unsafe { fill_fixed::<ED25519_SIG_LEN>(sig_out, sig_bytes) }
 }
 
 /// Verify that `sig` (`sig_len` bytes) is a valid Ed25519 signature over `msg`
@@ -951,6 +964,78 @@ mod tests {
             sig, [0xCDu8; ED25519_SIG_LEN],
             "signature buffer must be untouched on a rejected key"
         );
+    }
+
+    // --- SIGN-1: the output-copy seam guards the fixed buffer in ALL profiles ---
+    //
+    // The public `hew_ed25519_*` functions reject malformed *input* inside ring's
+    // `from_pkcs8` before the output-length guard is ever reached, so an
+    // input-only test cannot prove the guard that stands in front of the fixed
+    // stack buffer.  These tests exercise `fill_fixed` — the single checked seam
+    // every `copy_nonoverlapping` routes through — directly with a wrong-length
+    // source.  They run identically under debug and `--release`; the release run
+    // is the point: a `debug_assert!` here would be stripped and let an
+    // over-length source overflow the buffer.  If the seam regressed to a
+    // debug-only assertion, the release run of these tests would write past the
+    // sentinel buffer (UB / corruption) instead of returning 0.
+
+    /// A source shorter than `N` must be refused with a `0` return and no write.
+    #[test]
+    fn fill_fixed_rejects_short_source_without_writing_out() {
+        let mut out = [0xCDu8; ED25519_PUBLIC_LEN]; // sentinel fill
+        let short = [0xAAu8; ED25519_PUBLIC_LEN - 1]; // one byte too short
+                                                      // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes; short is a valid slice.
+        let ok = unsafe { fill_fixed::<ED25519_PUBLIC_LEN>(out.as_mut_ptr(), &short) };
+        assert_eq!(ok, 0, "short source must fail closed");
+        assert_eq!(
+            out, [0xCDu8; ED25519_PUBLIC_LEN],
+            "output buffer must be untouched when the source is too short"
+        );
+    }
+
+    /// A source longer than `N` must be refused *before* any copy — proving the
+    /// guard is a real runtime check, not a release-stripped `debug_assert!`.
+    /// An over-length copy is the exact overflow this seam prevents.
+    #[test]
+    fn fill_fixed_rejects_long_source_without_writing_out() {
+        let mut out = [0xCDu8; ED25519_SIG_LEN]; // sentinel fill
+        let long = [0xAAu8; ED25519_SIG_LEN + 32]; // longer than the buffer
+                                                   // SAFETY: out is valid for ED25519_SIG_LEN bytes; long is a valid slice.
+        let ok = unsafe { fill_fixed::<ED25519_SIG_LEN>(out.as_mut_ptr(), &long) };
+        assert_eq!(ok, 0, "over-length source must fail closed");
+        assert_eq!(
+            out, [0xCDu8; ED25519_SIG_LEN],
+            "output buffer must be untouched when the source is too long"
+        );
+    }
+
+    /// The PKCS#8-length guard behind `hew_ed25519_generate_pkcs8` has no
+    /// observable wrong-length path at the public function (ring always emits 83
+    /// bytes), so it is proven here directly: a non-83-byte source is refused
+    /// without writing the fixed PKCS#8 buffer.
+    #[test]
+    fn fill_fixed_pkcs8_length_guard_rejects_wrong_length() {
+        let mut out = [0xCDu8; ED25519_PKCS8_LEN]; // sentinel fill
+        let wrong = [0xAAu8; ED25519_PKCS8_LEN + 1]; // not an 83-byte document
+                                                     // SAFETY: out is valid for ED25519_PKCS8_LEN bytes; wrong is a valid slice.
+        let ok = unsafe { fill_fixed::<ED25519_PKCS8_LEN>(out.as_mut_ptr(), &wrong) };
+        assert_eq!(ok, 0, "wrong-length PKCS#8 source must fail closed");
+        assert_eq!(
+            out, [0xCDu8; ED25519_PKCS8_LEN],
+            "PKCS#8 output buffer must be untouched on a wrong-length source"
+        );
+    }
+
+    /// An exact-length source is copied in full and reports success — the seam
+    /// must not become a no-op that rejects everything.
+    #[test]
+    fn fill_fixed_copies_exact_length_source() {
+        let mut out = [0u8; ED25519_PUBLIC_LEN];
+        let src = [0x5Au8; ED25519_PUBLIC_LEN];
+        // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes; src is a valid slice.
+        let ok = unsafe { fill_fixed::<ED25519_PUBLIC_LEN>(out.as_mut_ptr(), &src) };
+        assert_eq!(ok, 1, "exact-length source must be copied");
+        assert_eq!(out, src, "all N bytes must be written on a length match");
     }
 
     // ── BytesTriple-ABI wrapper tests ─────────────────────────────────────────

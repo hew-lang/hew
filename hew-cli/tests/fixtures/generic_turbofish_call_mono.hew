@@ -1,0 +1,26 @@
+// A generic free function called with EXPLICIT turbofish type arguments
+// (`id<i64>(..)`, `id<bool>(..)`) monomorphises and runs at two distinct
+// BitCopy types in one program. Before the checker recorded turbofish sites in
+// `call_type_args`, an explicit-`<T>` call produced no monomorphisation entry,
+// so MIR found no per-instantiation symbol and failed closed with
+// "MIR lowering for function call is not implemented yet". Recording at every
+// generic call site (turbofish or inferred) registers `id$$i64` / `id$$bool`
+// so MIR has a concrete body to dispatch to.
+//
+// `wrap<i64>(..)` additionally drives a turbofish call whose argument is the
+// enclosing fn's own type parameter (`id<U>(x)` inside `wrap<U>`): the abstract
+// arg `U` is recorded and resolved per-monomorphisation, proving the
+// enclosing-type-param surface routes through the same machinery.
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn wrap<U>(x: U) -> U {
+    id<U>(x)
+}
+
+fn main() {
+    println(id<i64>(5));
+    println(id<bool>(true));
+    println(wrap<i64>(7));
+}

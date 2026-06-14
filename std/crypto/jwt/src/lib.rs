@@ -75,6 +75,13 @@ fn last_jwt_error() -> HewJwtError {
     else {
         return HewJwtError::None;
     };
+    // The explicit `3 => TokenMalformed` arm documents the real discriminant
+    // for that error; the `_` arm is the distinct fail-closed catch-all for a
+    // poisoned slot. They intentionally share a body — keep both for clarity.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "explicit code-3 mapping and the fail-closed catch-all are intentionally distinct"
+    )]
     match s.parse::<i32>().unwrap_or(-1) {
         1 => HewJwtError::AlgorithmUnsupported,
         2 => HewJwtError::InvalidKey,
@@ -82,7 +89,13 @@ fn last_jwt_error() -> HewJwtError {
         4 => HewJwtError::SignatureInvalid,
         5 => HewJwtError::ClaimsExpired,
         6 => HewJwtError::AllocationFailure,
-        _ => HewJwtError::None,
+        // Fail closed: a present slot only ever holds discriminants 1..=6 (the
+        // `None` case clears the slot, so it returns early above). Any other
+        // value here is a poisoned slot — an unparseable string, an out-of-range
+        // code, or a stored `0`. Mapping it to `None` would read a swallowed
+        // crypto error as success; surface `TokenMalformed` instead so a
+        // poisoned slot never silently decodes to Ok.
+        _ => HewJwtError::TokenMalformed,
     }
 }
 
@@ -748,5 +761,40 @@ mod tests {
                 "error variant {variant:?} did not round-trip through error slot"
             );
         }
+    }
+
+    /// Teeth-test for finding JWT-3: a poisoned error slot must fail closed.
+    ///
+    /// `last_jwt_error` maps any present-but-unrecognized slot value to
+    /// `TokenMalformed`, NOT `None`. Mapping it to `None` would read a swallowed
+    /// crypto error as success (a fail-open in the dangerous direction). Each
+    /// poisoned form below — an out-of-range code, a stored `0`, a negative
+    /// value, and an unparseable string — must decode to `TokenMalformed`.
+    #[test]
+    fn poisoned_error_slot_fails_closed_to_token_malformed() {
+        use hew_runtime::parse_error_slot::{clear_error, set_error, ErrorSlotKind};
+
+        for poison in ["99", "0", "-1", "garbage", "7"] {
+            set_error(ErrorSlotKind::Jwt, poison.to_string());
+            let recovered = last_jwt_error();
+            assert_eq!(
+                recovered,
+                HewJwtError::TokenMalformed,
+                "poisoned slot {poison:?} must fail closed to TokenMalformed, not decode as success"
+            );
+            assert_ne!(
+                recovered,
+                HewJwtError::None,
+                "poisoned slot {poison:?} must NOT read as None (= Ok)"
+            );
+        }
+        clear_error(ErrorSlotKind::Jwt);
+
+        // A genuinely absent slot still means None (no error occurred).
+        assert_eq!(
+            last_jwt_error(),
+            HewJwtError::None,
+            "a cleared/absent slot must decode to None"
+        );
     }
 }

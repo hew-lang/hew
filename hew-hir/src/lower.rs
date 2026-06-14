@@ -4984,17 +4984,16 @@ impl LowerCtx {
         let key = self.mk_key(call_span);
         let Some(type_args_raw) = self.call_type_args.get(&key).cloned() else {
             // Generic callee with no recorded type args at this site.
-            // The checker records every callsite whose freshened type
-            // args were resolved to fully concrete `Ty`s
-            // (`calls.rs:78`); the only ways to miss a site are
-            // (a) an explicit `<T>` syntax that doesn't re-record
-            //     (`calls.rs:183`'s `record_call_type_args` guard), or
-            // (b) the call failed to type-check.
-            // In (a) the call is trivially monomorphic at the source
-            // surface but downstream stages still need a registry
-            // entry — that wiring lands in G-1.b once the explicit
-            // type-args path is examined end-to-end.
-            // (Per plan G-1.a: do not re-infer; treat as out of scope.)
+            // The checker records every generic call site — inferred or
+            // explicit-turbofish — whose resolved type args came back fully
+            // concrete (`apply_instantiated_call_signature_with_assoc` records
+            // unconditionally; `record_concrete_call_type_args` drops any entry
+            // that still carries an inference var). So the only ways to reach
+            // this early return are:
+            // (a) the call failed to type-check, or
+            // (b) a turbofish whose resolved arg is still under inference (the
+            //     fail-closed guard correctly excluded it).
+            // Both cases are non-monomorphisable here; skip the registry entry.
             return;
         };
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());

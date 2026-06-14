@@ -8819,6 +8819,124 @@ fn generic_impl_method_level_type_params_freshen_per_call() {
     );
 }
 
+/// F4 regression: an explicit-turbofish generic call (`id<i64>(5)`) must
+/// record its resolved type arguments in `call_type_args`. Before the fix
+/// the checker only recorded inferred sites (`type_args.is_none()`), so the
+/// turbofish entry was missing — HIR/MIR then found no monomorphisation
+/// data and MIR fell through to the "function call NYI" diagnostic.
+#[test]
+fn turbofish_generic_call_records_call_type_args() {
+    let source = r"
+        fn id<T>(x: T) -> T { x }
+        fn main() {
+            let y = id<i64>(5);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let call_span = result
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            Item::Function(fd) if fd.name == "main" => {
+                fd.body.stmts.iter().find_map(|(stmt, _)| match stmt {
+                    Stmt::Let {
+                        value: Some((Expr::Call { .. }, span)),
+                        ..
+                    } => Some(span.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("main let-bound turbofish call should exist");
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.call_type_args.get(&SpanKey::from(&call_span)),
+        Some(&vec![Ty::I64]),
+        "turbofish `id<i64>(5)` must record T=i64; got {:?}",
+        output.call_type_args
+    );
+}
+
+/// F4 regression: multi-parameter turbofish records every resolved arg in
+/// declaration order.
+#[test]
+fn multi_param_turbofish_records_all_call_type_args() {
+    let source = r"
+        fn make_pair<A, B>(a: A, b: B) -> A { a }
+        fn main() {
+            let p = make_pair<i64, bool>(10, true);
+        }
+    ";
+
+    let result = hew_parser::parse(source);
+    assert!(
+        result.errors.is_empty(),
+        "parse errors: {:?}",
+        result.errors
+    );
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&result.program);
+    assert!(
+        output.errors.is_empty(),
+        "type check errors: {:?}",
+        output.errors
+    );
+    assert!(
+        output
+            .call_type_args
+            .values()
+            .any(|args| args == &vec![Ty::I64, Ty::Bool]),
+        "turbofish `make_pair<i64, bool>` must record [i64, bool]; got {:?}",
+        output.call_type_args
+    );
+}
+
+/// F4 boundary: the unconditional recorder still fails closed — a resolved
+/// type argument that is still an unbound inference var must never reach
+/// `call_type_args` (the invariant HIR/MIR depend on: no `Ty::Var` crosses
+/// the checker output boundary).
+#[test]
+fn turbofish_recorder_excludes_inference_var_args() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let span = 0..0;
+    let var = TypeVar::fresh();
+
+    // An unresolved var arg must be dropped.
+    checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
+    assert!(
+        checker.call_type_args.is_empty(),
+        "unresolved inference-var arg must not be recorded: {:?}",
+        checker.call_type_args
+    );
+
+    // Once the var resolves to a concrete type, recording succeeds.
+    checker.subst.insert(var, &Ty::I64).unwrap();
+    checker.record_concrete_call_type_args(&span, &[Ty::Var(var)]);
+    assert_eq!(
+        checker.call_type_args.values().next(),
+        Some(&vec![Ty::I64]),
+        "resolved var arg must be recorded as its concrete type: {:?}",
+        checker.call_type_args
+    );
+}
+
 #[test]
 fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
     let source = r"

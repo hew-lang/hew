@@ -132,6 +132,36 @@ fn generic_impl_method_dispatches_at_two_bitcopy_types() {
     );
 }
 
+/// A generic free function called with EXPLICIT turbofish type arguments
+/// (`id<i64>(5)`, `id<bool>(true)`) monomorphises and runs at two distinct
+/// `BitCopy` types in one program, and a turbofish whose argument is the
+/// enclosing fn's own type parameter (`id<U>(x)` inside `wrap<U>`) routes
+/// through the per-monomorphisation substitution. Before the checker recorded
+/// turbofish call sites in `call_type_args`, the explicit-`<T>` surface
+/// produced no monomorphisation entry, so MIR failed closed with
+/// "MIR lowering for function call is not implemented yet"; the inferred path
+/// (`let y: i64 = id(5)`) already worked, proving the gap was the recording
+/// gate, not the MIR call arm. Passing at *both* i64 and bool proves genuine
+/// polymorphism through the turbofish surface.
+#[test]
+fn turbofish_generic_call_lowers_and_runs() {
+    require_codegen();
+
+    let output = run_fixture("generic_turbofish_call_mono.hew");
+    assert!(
+        output.status.success(),
+        "expected the explicit-turbofish generic call to lower and run; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        ["5", "true", "7"],
+        "turbofish generic call output mismatch; stdout: {stdout}"
+    );
+}
+
 /// A generic record monomorphised with an OWNED (clone/drop-SUPPORTED) field
 /// type (`string`) is admitted as the generic owned-record drop spine: the
 /// `Box$$string` layout is discovered, its `string` field gets an in-place

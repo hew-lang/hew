@@ -674,6 +674,16 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+/// True when `name` is a runtime built-in metric the observe registry owns.
+///
+/// The user-metric registry (`crate::metrics`) rejects any registration whose
+/// name collides with a built-in so a user metric cannot shadow runtime
+/// telemetry in the shared scrape output.
+#[must_use]
+pub fn is_builtin_metric_name(name: &str) -> bool {
+    observe_series().iter().any(|(builtin, _)| *builtin == name)
+}
+
 fn prometheus_label_value(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -847,6 +857,9 @@ pub(crate) fn reset_all() {
             map.clear();
         }
     });
+    // Clear the developer-defined metric registry on the same session
+    // boundary so a fresh session never observes a prior session's metrics.
+    crate::metrics::session_reset_metrics();
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _guard = dispatch_barrier_lock();

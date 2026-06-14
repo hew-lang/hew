@@ -41,6 +41,14 @@ fixtures=(
   # fixture is RED (hew run aborts), and a RED entry exits the loop before the
   # reject fixture below.
   samename_type_layout
+  # A generic enum (`Result<Vec<Box>, _>`) whose payload nests a qualified user
+  # type (`nestbox.Box`) reached via two import paths (directly and through
+  # `hew::nestrelay`, which re-imports `nestbox`). The heap-owning `Box`es are
+  # dropped at scope exit, exercising the generic-enum / owned-Vec-element drop
+  # and codec seed paths. The layout key for every such site must shorten the
+  # WHOLE type-arg spine to bare names, identical to the registration side, or
+  # the keys diverge and the drop falls through the codegen fail-closed.
+  nested_qualified_payload
 )
 
 for fixture in "${fixtures[@]}"; do

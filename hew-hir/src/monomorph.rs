@@ -111,19 +111,43 @@ pub fn mangle(origin_name: &str, type_args: &[ResolvedTy]) -> String {
     )
 }
 
-/// Recursively replace every `Named { name, .. }` in `ty` with its short
-/// (unqualified) name, stripping a leading `"module."` prefix.
+/// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
+/// short (unqualified) name, stripping a leading `"module."` prefix, while
+/// preserving the surrounding type structure.
 ///
-/// Mirrors `hew-codegen-rs/src/llvm.rs::shorten_named_args` so the enum
-/// layout-registration key (`EnumLayoutRegistry::insert`) and the codegen
-/// layout-lookup key agree on the bare-named spine. C1 stamps an
-/// authoritative module-qualified name onto `ResolvedTy::Named` for imported
-/// type references; that qualifier is meaningful for the OUTER user-type
-/// identity (the struct-layout collision scan) but must not leak into the
-/// type-arg spine of a generic enum mangle, where codegen always normalises
-/// to bare. Only `Named` names are touched; all other leaf variants pass
-/// through unchanged.
-fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
+/// This is the single canonical type-arg-spine normaliser shared by every
+/// layout-key producer: the enum layout-registration side
+/// (`EnumLayoutRegistry::insert`), the record layout-registration side
+/// (`hew-mir::lower::user_record_layout_key`), and EVERY codegen
+/// layout-lookup / drop-seed / codec-seed mangle site in
+/// `hew-codegen-rs/src/llvm.rs`. Because all of them call THIS function, the
+/// registration key and every lookup key for the same instantiated type are
+/// byte-identical by construction and cannot drift.
+///
+/// C1 stamps an authoritative module-qualified name onto `ResolvedTy::Named`
+/// for imported type references. That qualifier is meaningful for the OUTER
+/// user-type identity (the struct-layout collision scan dedupes by distinct
+/// qualified identity) but must NOT leak into a mangle key's type-arg spine:
+/// one payload type reached via two import paths (`fs.IoError` vs `IoError`)
+/// denotes one type and must collapse to one layout entry. Codegen always
+/// normalises its spine to bare before mangling, so every key producer does
+/// the same here.
+///
+/// Recurses into every compound `ResolvedTy` shape that `mangle_resolved_ty`
+/// descends into (Tuple/Array/Slice/Named-args, plus Function/Closure/
+/// Pointer/Borrow/TraitObject/Task), so a NESTED qualified payload
+/// (`Result<Vec<fs.Foo>, _>`, `Option<x.T>`) is shortened at every depth —
+/// not just the top-level args — and no shape can carry a qualified name into
+/// the key. Leaf variants and `TypeParam` (which carries only a parameter
+/// name, never a qualifier-bearing nested type) pass through unchanged.
+/// Closure captures are not part of the call-type identity (see
+/// `mangle_resolved_ty`) and are dropped here exactly as they are dropped from
+/// the mangle, keeping this normaliser congruent with the key it feeds.
+#[must_use]
+pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
+    fn shorten_boxed(ty: ResolvedTy) -> Box<ResolvedTy> {
+        Box::new(shorten_named_arg_qualifiers(ty))
+    }
     match ty {
         ResolvedTy::Named {
             name,
@@ -144,10 +168,58 @@ fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
                 .map(shorten_named_arg_qualifiers)
                 .collect(),
         ),
-        ResolvedTy::Array(elem, n) => {
-            ResolvedTy::Array(Box::new(shorten_named_arg_qualifiers(*elem)), n)
-        }
-        ResolvedTy::Slice(elem) => ResolvedTy::Slice(Box::new(shorten_named_arg_qualifiers(*elem))),
+        ResolvedTy::Array(elem, n) => ResolvedTy::Array(shorten_boxed(*elem), n),
+        ResolvedTy::Slice(elem) => ResolvedTy::Slice(shorten_boxed(*elem)),
+        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+            params: params
+                .into_iter()
+                .map(shorten_named_arg_qualifiers)
+                .collect(),
+            ret: shorten_boxed(*ret),
+        },
+        ResolvedTy::Closure { params, ret, .. } => ResolvedTy::Closure {
+            params: params
+                .into_iter()
+                .map(shorten_named_arg_qualifiers)
+                .collect(),
+            ret: shorten_boxed(*ret),
+            // Captures are not part of the call-type identity (see
+            // `mangle_resolved_ty`); drop them so the normalised form matches
+            // what the mangle renders.
+            captures: Vec::new(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable,
+            pointee: shorten_boxed(*pointee),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: shorten_boxed(*pointee),
+        },
+        ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
+            traits: traits
+                .into_iter()
+                .map(|b| hew_types::ResolvedTraitBound {
+                    trait_name: b
+                        .trait_name
+                        .rsplit_once('.')
+                        .map_or(b.trait_name.clone(), |(_, short)| short.to_string()),
+                    args: b
+                        .args
+                        .into_iter()
+                        .map(shorten_named_arg_qualifiers)
+                        .collect(),
+                    assoc_bindings: b
+                        .assoc_bindings
+                        .into_iter()
+                        .map(|(n, t)| (n, shorten_named_arg_qualifiers(t)))
+                        .collect(),
+                })
+                .collect(),
+        },
+        ResolvedTy::Task(inner) => ResolvedTy::Task(shorten_boxed(*inner)),
         other => other,
     }
 }
@@ -987,6 +1059,80 @@ mod tests {
             entries[0].key.type_args[1],
             ResolvedTy::named_user("IoError", vec![])
         );
+    }
+
+    #[test]
+    fn shorten_named_arg_qualifiers_strips_nested_qualified_payload() {
+        // A NESTED qualified payload must be shortened at every depth, not just
+        // at the top-level type args. `Result<Vec<fs.Foo>, _>` registered under
+        // a bare key but probed under a qualified key was the second asymmetry
+        // C1 introduced: a `Named`-only shortener that did not recurse the
+        // Array/Slice/Tuple/Vec-arg spine would leave the inner `fs.Foo`
+        // qualified and the keys would diverge.
+        let nested = ResolvedTy::named_user(
+            "Result",
+            vec![
+                ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("fs.Foo", vec![])]),
+                ResolvedTy::Tuple(vec![
+                    ResolvedTy::Slice(Box::new(ResolvedTy::named_user("net.Conn", vec![]))),
+                    ResolvedTy::Array(Box::new(ResolvedTy::named_user("io.Buf", vec![])), 4),
+                ]),
+            ],
+        );
+        let shortened = shorten_named_arg_qualifiers(nested);
+        let expected = ResolvedTy::named_user(
+            "Result",
+            vec![
+                ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("Foo", vec![])]),
+                ResolvedTy::Tuple(vec![
+                    ResolvedTy::Slice(Box::new(ResolvedTy::named_user("Conn", vec![]))),
+                    ResolvedTy::Array(Box::new(ResolvedTy::named_user("Buf", vec![])), 4),
+                ]),
+            ],
+        );
+        assert_eq!(shortened, expected);
+        // The mangle of the shortened spine carries no module qualifier — the
+        // byte form every codegen lookup probes.
+        assert_eq!(
+            mangle("Result", &[shortened]),
+            "Result$$Result_Vec_Foo_tuple_slice_Conn_array_Buf_4",
+        );
+    }
+
+    #[test]
+    fn enum_layout_registry_collapses_nested_qualified_payload() {
+        // The registry collapse must also hold when the qualified `Named` is
+        // NESTED inside another generic arg (`Option<Vec<fs.Foo>>`). The same
+        // instantiation reached via the declaring module (`Vec<Foo>`) and via
+        // an import-use site (`Vec<fs.Foo>`) must land on one entry under the
+        // bare-normalised mangled key, matching the codegen lookup spine.
+        fn option_vec_key(elem: ResolvedTy) -> EnumMonoKey {
+            EnumMonoKey {
+                origin: ItemId(12),
+                origin_name: "Option".into(),
+                type_args: vec![ResolvedTy::named_user("Vec", vec![elem])],
+            }
+        }
+        let mut reg = EnumLayoutRegistry::with_cap(8);
+        let qualified = ResolvedTy::named_user("fs.Foo", vec![]);
+        let bare = ResolvedTy::named_user("Foo", vec![]);
+        assert_eq!(
+            reg.insert(
+                option_vec_key(qualified),
+                vec![some_variant(ResolvedTy::I64), none_variant()],
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            reg.insert(
+                option_vec_key(bare),
+                vec![some_variant(ResolvedTy::I64), none_variant()],
+            ),
+            Ok(false)
+        );
+        let entries = reg.into_vec();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mangled_name, "Option$$Vec_Foo");
     }
 
     #[test]

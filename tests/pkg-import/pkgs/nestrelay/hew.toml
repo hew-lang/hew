@@ -1,0 +1,9 @@
+[package]
+name = "hew::nestrelay"
+version = "0.1.0"
+description = "Re-imports hew::nestbox so its Box type is reached via two import paths"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::nestbox" = { version = "0.1.0", path = "../nestbox" }

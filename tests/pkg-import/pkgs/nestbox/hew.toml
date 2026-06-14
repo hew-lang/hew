@@ -1,0 +1,6 @@
+[package]
+name = "hew::nestbox"
+version = "0.1.0"
+description = "Nested-qualified-payload fixture: a heap-owning Box and a Result<Vec<Box>, _> factory"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

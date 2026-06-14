@@ -4939,28 +4939,21 @@ fn push_unknown_type_diagnostics_for_layout_ty(
     }
 }
 
-/// Recursively strip the module prefix from every `Named` name in a type spine,
-/// mirroring codegen's `shorten_named_args` (llvm.rs ~3218). At import-use sites
-/// the MIR carries module-qualified names in both the origin AND the type args
-/// (`Pair<i64, json.Value>` → `Named { name: "Pair", args: [i64, json.Value] }`),
+/// Strip the module prefix from every `Named` name in a type spine, recursing
+/// over every compound `ResolvedTy` shape. At import-use sites the MIR carries
+/// module-qualified names in both the origin AND the type args
+/// (`Pair<i64, json.Value>` -> `Named { name: "Pair", args: [i64, json.Value] }`),
 /// while every layout-registration + codegen-thunk site keys on the bare
 /// (short) names (`Pair$$i64$Value`). Normalising the whole spine here keeps
 /// MIR's `user_record_layout_key` byte-congruent with the codegen consumers.
+///
+/// Delegates to the single canonical `hew_hir::shorten_named_arg_qualifiers`
+/// so the record layout-registration key, the enum layout-registration key,
+/// and every codegen lookup/drop/codec key are produced by ONE shortener and
+/// cannot drift — including for a NESTED qualified payload
+/// (`Pair<Vec<json.Value>, _>`) that a `Named`-only shortener would miss.
 fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
-    match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            is_opaque,
-        } => ResolvedTy::Named {
-            name: short_name(name).to_string(),
-            args: args.iter().map(shorten_named_ty_spine).collect(),
-            builtin: *builtin,
-            is_opaque: *is_opaque,
-        },
-        other => other.clone(),
-    }
+    hew_hir::shorten_named_arg_qualifiers(ty.clone())
 }
 
 /// Resolve the `record_field_orders` key for a user record type — the key MIR

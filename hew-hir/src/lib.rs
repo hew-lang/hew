@@ -35,8 +35,9 @@ pub use mono::{
     FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_resolved_ty, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout,
-    MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    mangle, mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params, EnumLayout,
+    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,

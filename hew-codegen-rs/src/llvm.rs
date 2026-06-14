@@ -3627,11 +3627,14 @@ fn collect_named_enum_deps(
     let ResolvedTy::Named { name, args, .. } = field_ty else {
         return;
     };
-    // Compute the mangled lookup key the same way `resolve_ty` does.
+    // Compute the mangled lookup key the same way `resolve_ty` does: the
+    // registration side keys a generic enum on the bare-normalised spine, so
+    // shorten the type-arg spine before mangling (a nested qualified payload
+    // otherwise misses).
     let key: String = if args.is_empty() {
         name.clone()
     } else {
-        mangle(name, args)
+        mangle_with_shortened_args(short_name(name), args)
     };
     if names.contains(key.as_str()) {
         if let Some(idx) = enum_layouts.iter().position(|l| l.name == key) {
@@ -4076,7 +4079,7 @@ fn machine_layout_for_local<'a, 'ctx>(
     } else {
         let key = mangle(name, args);
         if !fn_ctx.machine_layouts.contains_key(&key) {
-            let short_key = mangle(short_name(name), args);
+            let short_key = mangle_with_shortened_args(short_name(name), args);
             if fn_ctx.machine_layouts.contains_key(&short_key) {
                 short_key
             } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
@@ -4158,7 +4161,7 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     }
 }
 
-/// Recursively replace every `Named { name, .. }` in `ty` with its
+/// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
 /// short (unqualified) name, stripping any leading `"module."` prefix.
 ///
 /// This normalises the type-arg spine of a generic instantiation so
@@ -4168,34 +4171,56 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 /// the qualified form. Without normalisation the mangled lookup key
 /// diverges and `resolve_ty` falls through to D10 for the generic type.
 ///
-/// Only `Named` variants are touched; all other `ResolvedTy` leaf variants
-/// are returned unchanged.
+/// Thin wrapper over the single canonical `hew_hir::shorten_named_arg_qualifiers`
+/// so the codegen lookup spine and the HIR/MIR registration spine are shortened
+/// by ONE function and cannot drift — including for a NESTED qualified payload
+/// (`Result<Vec<fs.Foo>, _>`) that a `Named`-only shortener would miss.
 fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
-    match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            is_opaque,
-        } => ResolvedTy::Named {
-            name: short_name(&name).to_string(),
-            args: args.into_iter().map(shorten_named_args).collect(),
-            builtin,
-            is_opaque,
-        },
-        other => other,
+    hew_hir::shorten_named_arg_qualifiers(ty)
+}
+
+/// Mangle `name` with `args` after shortening the WHOLE type-arg spine to bare
+/// (unqualified) names. This is the layout-key form every codegen consumer must
+/// use: the enum/record layout-registration side keys on the bare-normalised
+/// spine (`hew_hir::shorten_named_arg_qualifiers` via `EnumLayoutRegistry::insert`
+/// and `hew-mir::lower::user_record_layout_key`), so every codegen lookup /
+/// drop-seed / codec-seed key MUST shorten the spine identically or the keys
+/// diverge and the layout lookup falls through to the D10 fail-closed gate.
+/// Nested qualified payloads are shortened at every depth.
+fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> String {
+    if args.iter().any(needs_normalization) {
+        let short_args: Vec<ResolvedTy> = args.iter().cloned().map(shorten_named_args).collect();
+        mangle(name, &short_args)
+    } else {
+        mangle(name, args)
     }
 }
 
-/// Returns `true` when `ty` or any nested `Named` contains a module-qualified
-/// name (i.e. `short_name(name) != name`).  Used as a fast pre-check before
-/// the allocation in `shorten_named_args` so the common unqualified path stays
-/// alloc-free.
+/// Returns `true` when `ty` or any nested compound carries a module-qualified
+/// `Named` name (i.e. `short_name(name) != name`).  Used as a fast pre-check
+/// before the allocation in `shorten_named_args` / `mangle_with_shortened_args`
+/// so the common unqualified path stays alloc-free. Recurses every compound
+/// shape `shorten_named_arg_qualifiers` rewrites so a qualified payload nested
+/// in a Tuple/Array/Slice/Function/etc. is not missed by the pre-check.
 fn needs_normalization(ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
             short_name(name) != name.as_str() || args.iter().any(needs_normalization)
         }
+        ResolvedTy::Tuple(items) => items.iter().any(needs_normalization),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => needs_normalization(elem),
+        ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
+            params.iter().any(needs_normalization) || needs_normalization(ret)
+        }
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            needs_normalization(pointee)
+        }
+        ResolvedTy::TraitObject { traits } => traits.iter().any(|b| {
+            short_name(&b.trait_name) != b.trait_name.as_str()
+                || b.args.iter().any(needs_normalization)
+                || b.assoc_bindings.iter().any(|(_, t)| needs_normalization(t))
+        }),
+        ResolvedTy::Task(inner) => needs_normalization(inner),
         _ => false,
     }
 }
@@ -4221,7 +4246,7 @@ fn enum_layout_key_for_ty(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> CodegenRes
             .find(|el| el.name == *name || short_name(&el.name) == short)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle(short, args);
+        let mangled = mangle_with_shortened_args(short, args);
         fn_ctx
             .enum_layouts
             .iter()
@@ -4256,7 +4281,7 @@ fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLay
             .iter()
             .find(|el| el.name == *name || short_name(&el.name) == short)
     } else {
-        let mangled = mangle(short, args);
+        let mangled = mangle_with_shortened_args(short, args);
         enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
@@ -4366,7 +4391,7 @@ fn is_heap_owning_record_composite_return(
     } else {
         // Generic instantiation: resolve by the mangled registry key.
         let full_mangled = mangle(name, args);
-        let short_mangled = mangle(short, args);
+        let short_mangled = mangle_with_shortened_args(short, args);
         record_layouts.contains_key(full_mangled.as_str())
             || record_layouts.contains_key(short_mangled.as_str())
     };
@@ -9346,7 +9371,7 @@ fn collect_enum_inplace_drop_seeds(
                         .find(|el| el.name == *name || short_name(&el.name) == short)
                         .map(|el| el.name.clone())
                 } else {
-                    let mangled = mangle(short, args);
+                    let mangled = mangle_with_shortened_args(short, args);
                     enum_layouts
                         .iter()
                         .find(|el| el.name == mangled || el.name == *name)
@@ -9422,7 +9447,7 @@ fn collect_record_inplace_drop_seeds(
                         .map(|rl| rl.name.clone())
                 } else {
                     let full_mangled = mangle(name, args);
-                    let short_mangled = mangle(short, args);
+                    let short_mangled = mangle_with_shortened_args(short, args);
                     record_layouts
                         .iter()
                         .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
@@ -9485,7 +9510,7 @@ fn collect_xnode_codec_drop_seeds(
                 .find(|el| el.name == *name || short_name(&el.name) == short)
                 .map(|el| el.name.clone())
         } else {
-            let mangled = hew_hir::mangle(short, args);
+            let mangled = mangle_with_shortened_args(short, args);
             enum_layouts
                 .iter()
                 .find(|el| el.name == mangled || el.name == *name)
@@ -9504,7 +9529,7 @@ fn collect_xnode_codec_drop_seeds(
                 .find(|rl| rl.name == *name || short_name(&rl.name) == short)
                 .map(|rl| rl.name.clone())
         } else {
-            let mangled = hew_hir::mangle(short, args);
+            let mangled = mangle_with_shortened_args(short, args);
             record_layouts
                 .iter()
                 .find(|rl| rl.name == mangled || rl.name == *name)
@@ -9584,7 +9609,7 @@ fn collect_vec_owned_element_seeds(
                     .find(|el| el.name == *name || short_name(&el.name) == short)
                     .map(|el| el.name.clone())
             } else {
-                let mangled = mangle(short, args);
+                let mangled = mangle_with_shortened_args(short, args);
                 enum_layouts
                     .iter()
                     .find(|el| el.name == mangled || el.name == *name)
@@ -9602,7 +9627,7 @@ fn collect_vec_owned_element_seeds(
                     .find(|rl| rl.name == *name || short_name(&rl.name) == short)
                     .map(|rl| rl.name.clone())
             } else {
-                let mangled = mangle(short, args);
+                let mangled = mangle_with_shortened_args(short, args);
                 record_layouts
                     .iter()
                     .find(|rl| rl.name == mangled || rl.name == *name)
@@ -14221,7 +14246,7 @@ fn record_struct_for<'ctx>(
                 .copied()
                 .or_else(|| {
                     (!args.is_empty())
-                        .then(|| mangle(short_name(name), args))
+                        .then(|| mangle_with_shortened_args(short_name(name), args))
                         .and_then(|short_key| {
                             fn_ctx.record_layouts.get(short_key.as_str()).copied()
                         })
@@ -16348,7 +16373,7 @@ fn owned_elem_thunk_key(
             .find(|el| el.name == *name || short_name(&el.name) == short)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle(short, args);
+        let mangled = mangle_with_shortened_args(short, args);
         fn_ctx
             .enum_layouts
             .iter()
@@ -16373,10 +16398,12 @@ fn owned_elem_thunk_key(
         return Some((OwnedElemThunkKind::Enum, short.to_string()));
     }
     // Record: look up the codegen record registry key (mangled if generic).
+    // A generic instantiation registers on the bare-normalised spine, so
+    // shorten the type-arg spine before mangling.
     let lookup_key = if args.is_empty() {
         name.clone()
     } else {
-        mangle(name, args)
+        mangle_with_shortened_args(short_name(name), args)
     };
     if fn_ctx
         .record_field_resolved_tys
@@ -18927,7 +18954,7 @@ fn layout_vec_element_needs_descriptor<'ctx>(
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle(name, args)
+                mangle_with_shortened_args(short_name(name), args)
             };
             if fn_ctx.record_layouts.contains_key(lookup_key.as_str())
                 || fn_ctx.record_layouts.contains_key(short_name(name))
@@ -18982,7 +19009,7 @@ fn resolved_ty_is_plain_bitcopy(
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle(name, args)
+                mangle_with_shortened_args(short_name(name), args)
             };
             let short_key = short_name(name);
             let (record_key, fields) =
@@ -23712,7 +23739,7 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             let short = name
                 .rsplit_once('.')
                 .map_or(name.as_str(), |(_, bare)| bare);
-            Ok(mangle(short, args))
+            Ok(mangle_with_shortened_args(short, args))
         }
         other => Err(CodegenError::FailClosed(format!(
             "RecordInPlace drop requires a user record type; got {other:?}"
@@ -24210,7 +24237,7 @@ fn resolved_ty_contains_heap_leaf(
             let key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle(short, args)
+                mangle_with_shortened_args(short, args)
             };
             if !visiting.insert(key.clone()) {
                 // A recursive nominal already on the stack: its own fields are
@@ -39206,7 +39233,7 @@ fn xnode_registry_key(
         if records.iter().any(|r| r.name == full) || enums.iter().any(|e| e.name == full) {
             return full;
         }
-        hew_hir::mangle(short, args)
+        mangle_with_shortened_args(short, args)
     }
 }
 

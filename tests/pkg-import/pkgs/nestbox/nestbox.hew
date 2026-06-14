@@ -1,0 +1,32 @@
+//! Nested-qualified-payload fixture (owner module). Exports a heap-owning
+//! record `Box` (an owned `string` field, so it carries a non-trivial drop)
+//! and a factory returning `Result<Vec<Box>, i64>` — a generic enum whose
+//! payload nests a qualified user type two levels deep (`Vec<nestbox.Box>`).
+//!
+//! Reached through a second package (`hew::nestrelay`) that re-imports this one,
+//! the SAME `Box` type arrives at an import-use site spelled `nestbox.Box`. The
+//! generic-enum / Vec-element layout key for the `Result<Vec<Box>, _>` must
+//! shorten the WHOLE type-arg spine (including the nested `Box`) to bare names,
+//! or the registration key (`Result$$..._Vec_Box`) and the codegen drop/seed
+//! lookup diverge and the heap-owning drop fails closed.
+
+/// Heap-owning record: an owned `string` field forces a real drop helper.
+type Box {
+    label: string;
+}
+
+/// Build a `Box` joining two labels.
+pub fn make_box(a: string, b: string) -> Box {
+    Box { label: a + b }
+}
+
+/// Factory returning a generic enum (`Result`) whose Ok payload nests a
+/// qualified user type (`Vec<Box>`). The returned value is dropped at the
+/// caller's scope exit, exercising the generic-enum / owned-Vec-element drop
+/// path for a nested qualified payload.
+pub fn collect(a: string, b: string) -> Result<Vec<Box>, i64> {
+    let boxes: Vec<Box> = Vec::new();
+    boxes.push(make_box(a, b));
+    boxes.push(make_box(b, a));
+    Ok(boxes)
+}

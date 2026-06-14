@@ -1183,8 +1183,29 @@ class Interpreter {
     const right = this.resolve(frame, instruction.args[1], instruction.span);
     switch (instruction.op) {
       case "cmp.eq":
+        // f64 equality mirrors native codegen, which lowers `==` to LLVM `fcmp
+        // OEQ` (ordered equal): false if either operand is NaN, true for equal
+        // non-NaN values (including Infinity==Infinity). JS `===` matches OEQ
+        // exactly (`NaN===NaN` is false, `Infinity===Infinity` is true). The
+        // canonical-JSON path collapses NaN/±Infinity to `null` and cannot model
+        // this, so compare the raw numbers for f64 operands and keep canonical
+        // equality for i64/string/structural values.
+        if (left.kind === "f64" && right.kind === "f64") {
+          return left.value === right.value;
+        }
         return canonicalComparable(left) === canonicalComparable(right);
       case "cmp.ne":
+        // f64 inequality mirrors native `fcmp ONE` (ordered not-equal): true only
+        // when both operands are non-NaN AND differ. If either is NaN the result
+        // is false — so `nan != nan`, `nan != inf` are both false, unlike JS `!==`
+        // (which is true when a NaN is present). Model ONE explicitly.
+        if (left.kind === "f64" && right.kind === "f64") {
+          return (
+            !Number.isNaN(left.value) &&
+            !Number.isNaN(right.value) &&
+            left.value !== right.value
+          );
+        }
         return canonicalComparable(left) !== canonicalComparable(right);
       case "cmp.lt":
         return compareScalar(this.scalarComparable(left, instruction.span), this.scalarComparable(right, instruction.span), "<", (message) =>

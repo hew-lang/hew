@@ -989,16 +989,45 @@ fn main() {
         );
     }
 
-    // --- Fail-closed: statement-position if/match/if-let must reject at
-    //     the profile level, not silently trap at runtime. ---
+    // --- Statement-position if/match/if-let are admitted and lower to bytecode. ---
+    //
+    // These side-effecting control-flow statements (branches that return unit)
+    // were previously trapped by a blanket profile rejection. They now lower
+    // through `lower_stmt_if` / `lower_stmt_match` / `lower_stmt_if_let`, so the
+    // profile must admit them and the emitter must produce bytecode with branch
+    // structure (more than the single entry block).
+
+    fn assert_admits_with_branches(source: &str) {
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "statement-position control flow must be admitted, got error diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bc = output
+            .bytecode
+            .as_ref()
+            .expect("admitted statement-position control flow should emit bytecode");
+        let main_fn = bc
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main");
+        assert!(
+            main_fn.blocks.len() > 1,
+            "statement-position control flow should lower to multiple blocks, got: {:?}",
+            main_fn.blocks.iter().map(|b| &b.id).collect::<Vec<_>>()
+        );
+    }
 
     #[test]
-    fn statement_position_if_is_profile_rejected() {
-        // The `if` must be a non-tail statement (something must follow it) so
-        // the parser keeps it as `Stmt::If` rather than promoting it to a
-        // `trailing_expr`.  The `return` after the `if` ensures this.
-        set_test_hewpath();
-        assert_profile_rejection(
+    fn statement_position_if_is_admitted() {
+        // The `if` is a non-tail statement (the `return` after it prevents the
+        // parser from promoting it to a `trailing_expr`), so it stays `Stmt::If`
+        // and exercises the statement-position lowering path.
+        assert_admits_with_branches(
             r#"
 fn main() {
     let x: i64 = 1;
@@ -1008,15 +1037,13 @@ fn main() {
     return;
 }
 "#,
-            "statement_control_flow_rejected",
         );
     }
 
     #[test]
-    fn statement_position_match_is_profile_rejected() {
-        // Same pattern: a statement after the `match` prevents tail-promotion.
-        set_test_hewpath();
-        assert_profile_rejection(
+    fn statement_position_match_is_admitted() {
+        // A statement after the `match` keeps it in statement position.
+        assert_admits_with_branches(
             r#"
 fn main() {
     let x: i64 = 2;
@@ -1027,26 +1054,25 @@ fn main() {
     return;
 }
 "#,
-            "statement_control_flow_rejected",
         );
     }
 
     #[test]
-    fn statement_position_if_let_is_profile_rejected() {
-        // Same pattern: a statement after `if let` prevents tail-promotion.
-        set_test_hewpath();
-        assert_profile_rejection(
-            r#"
-enum Color { Red; Green; Blue; }
+    fn statement_position_if_let_is_admitted() {
+        // A statement after `if let` keeps it in statement position. The pattern
+        // is a payload-carrying constructor (`Value(n)`), which is the shape
+        // `lower_stmt_if_let` lowers into a tag check + branch.
+        assert_admits_with_branches(
+            r"
+enum Wrapped { Value(i64); Empty; }
 fn main() {
-    let c: Color = Color::Red;
-    if let Color::Red = c {
-        println("red");
+    let w: Wrapped = Value(7);
+    if let Value(n) = w {
+        println(n);
     }
     return;
 }
-"#,
-            "statement_control_flow_rejected",
+",
         );
     }
 

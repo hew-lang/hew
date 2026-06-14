@@ -1349,6 +1349,37 @@ impl Checker {
         true
     }
 
+    /// Whether `method` is a method of the builtin `Result`/`Option` surface.
+    ///
+    /// The builtin `Result<T, E>` / `Option<T>` nominals are declared in
+    /// `std/result.hew` / `std/option.hew` via `impl<T, E> Result<T, E>` /
+    /// `impl<T> Option<T>` blocks, each method carrying an `#[extern_symbol]`
+    /// rewrite. Those impls register their signatures in `fn_sigs` under the
+    /// bare keys `Result::<method>` / `Option::<method>`.
+    ///
+    /// A user package may declare its own `pub type Result` (the sqlite
+    /// ecosystem package does exactly this) and `impl` methods on it — those
+    /// also land in `fn_sigs` under the same bare `Result::<method>` keys. So
+    /// the bare-name lookup cannot, on its own, tell a builtin-`Result<T, E>`
+    /// receiver's legitimate method (`is_ok`) from a colliding user method
+    /// (`free`). When the receiver's `builtin` discriminant is
+    /// `Result`/`Option`, dispatch must be confined to this canonical set;
+    /// admitting a colliding user method on the builtin wrapper produces an
+    /// ill-typed call that crashes codegen-front. Mirrors the bare-name
+    /// collision precedent fixed via module-qualified registry keys
+    /// (`same_bare_name_imported_replies_derive_send_per_module`).
+    fn is_builtin_result_option_method(builtin: BuiltinType, method: &str) -> bool {
+        match builtin {
+            BuiltinType::Result => {
+                matches!(method, "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+            }
+            BuiltinType::Option => {
+                matches!(method, "is_some" | "is_none" | "unwrap" | "unwrap_or")
+            }
+            _ => false,
+        }
+    }
+
     fn option_result_runtime_symbol_exists(
         receiver_type_name: &str,
         method: &str,
@@ -6042,11 +6073,31 @@ impl Checker {
                 Ty::Named {
                     name,
                     args: type_args,
-                    ..
+                    builtin,
                 },
                 _,
             ) => {
-                if let Some(sig) = self.lookup_named_method_sig(name, type_args, method) {
+                // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
+                // `Result<T, AskError>` wrapper an actor ask produces) must
+                // dispatch only to the canonical builtin method set. A user
+                // package that declares its own `type Result` registers its
+                // methods under the same bare `Result::<method>` keys in
+                // `fn_sigs`; without this gate `lookup_named_method_sig` would
+                // return the colliding user method (e.g. `Result::free`) for a
+                // builtin-`Result` receiver and admit an ill-typed call that
+                // passes the wrapper aggregate where the inner success value is
+                // required — codegen-front then rejects the LLVM module. Confine
+                // the lookup to the builtin set so any other method falls
+                // through to the `no method on Result<...>` diagnostic below.
+                let builtin_result_option_skip = matches!(
+                    builtin,
+                    Some(b @ (BuiltinType::Result | BuiltinType::Option))
+                        if !Self::is_builtin_result_option_method(*b, method)
+                );
+                if let Some(sig) = (!builtin_result_option_skip)
+                    .then(|| self.lookup_named_method_sig(name, type_args, method))
+                    .flatten()
+                {
                     // Mutable-receiver enforcement (Q297 Stage 1): methods
                     // declared with `var self` (or the named-receiver `var`
                     // equivalent) require the call-site receiver to be a

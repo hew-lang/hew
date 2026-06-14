@@ -93,11 +93,21 @@ use crate::lifetime::poison_safe::PoisonSafe;
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
-// Error codes — kept in sync with `transport.rs`. We reuse the same value
-// for the partition error so reviewers and downstream code see `SimTransport`
-// partition failures as identical to TCP / QUIC transport errors
+// Error codes — pinned to `transport.rs` by the const-asserts below. We reuse
+// the same value for the partition error so reviewers and downstream code see
+// `SimTransport` partition failures as identical to TCP / QUIC transport errors
 // (`transparent-but-typed-failure`).
 const HEW_ERR_TRANSPORT: c_int = -14;
+
+// NW-1 native↔WASM parity guard: the two values `SimTransport` mirrors from
+// `transport.rs` (`HEW_ERR_TRANSPORT`, `MAX_FRAME_SIZE`) were previously kept in
+// sync by comment only. A `const _: () = assert!(...)` turns any future drift
+// into a build error rather than a silent behavioural divergence between the
+// production transports and the deterministic sim transport.
+const _: () = assert!(
+    HEW_ERR_TRANSPORT == crate::transport::HEW_ERR_TRANSPORT,
+    "sim_transport::HEW_ERR_TRANSPORT drifted from transport::HEW_ERR_TRANSPORT"
+);
 
 // Sim-only negative return codes used by the test-only vtable to convey
 // distinct typed outcomes through the `c_int` return channel without
@@ -114,10 +124,17 @@ const HEW_ERR_SIM_BUFFER_TOO_SMALL: c_int = -201;
 const HEW_ERR_SIM_DROPPED: c_int = -202;
 
 /// Maximum frame payload accepted by `SimTransport`. Mirrors
-/// `transport.rs::MAX_FRAME_SIZE`. Frames exceeding this size return
-/// `HEW_ERR_TRANSPORT` with a populated `set_last_error`, matching the wire
-/// behaviour of the TCP / QUIC transports (`serializer-fail-closed`).
+/// `transport.rs::MAX_FRAME_SIZE` (pinned by the const-assert below). Frames
+/// exceeding this size return `HEW_ERR_TRANSPORT` with a populated
+/// `set_last_error`, matching the wire behaviour of the TCP / QUIC transports
+/// (`serializer-fail-closed`).
 const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+
+// NW-1 parity guard (see the HEW_ERR_TRANSPORT assert above).
+const _: () = assert!(
+    MAX_FRAME_SIZE == crate::transport::MAX_FRAME_SIZE,
+    "sim_transport::MAX_FRAME_SIZE drifted from transport::MAX_FRAME_SIZE"
+);
 
 // ---------------------------------------------------------------------------
 // Public configuration

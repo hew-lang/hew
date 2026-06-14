@@ -252,13 +252,26 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
 /// restores the outer thread-current on drop, and unwinding through an
 /// `enter()` scope still rebinds the previous runtime (`lifecycle-symmetry`).
 ///
-/// `rt` must outlive the returned [`EnterGuard`] on this thread — the caller
-/// holds a borrow (`&RuntimeInner`) for at least the guard's scope, exactly as
-/// the scheduler worker holds a `*const RuntimeInner` valid until join. No Arc
-/// or refcount is taken; ownership stays with whoever owns the runtime.
-///
 /// `#[must_use]`: dropping the guard immediately would restore the previous
 /// runtime on the very next line, defeating the install.
+///
+/// # Safety
+///
+/// `rt` must outlive **every** [`rt_current`] dereference on this thread until
+/// the returned [`EnterGuard`] drops. `enter` stores `rt` as a raw pointer in
+/// [`CURRENT_RUNTIME`], and `rt_current` hands that pointer back as an apparent
+/// `&'static RuntimeInner` (see its `# SAFETY` arm). A `&RuntimeInner` borrow
+/// shorter than the guard's scope would let `rt_current` observe a dangling
+/// reference after `rt` is freed — a use-after-free. The borrow's lifetime is
+/// not checked by the compiler against the guard, so the caller carries that
+/// obligation. No Arc or refcount is taken; ownership stays with whoever owns
+/// the runtime.
+///
+/// The production callers discharge this as follows:
+/// - scheduler workers hold a `*const RuntimeInner` valid until join
+///   (`WorkerRuntimePtr`), so the entered runtime outlives the worker loop;
+/// - the actor terminate body enters the default runtime (`rt_default`), which
+///   is process-lifetime once installed.
 #[must_use]
 #[cfg_attr(
     target_arch = "wasm32",
@@ -267,7 +280,7 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
         reason = "the production callers (scheduler workers, actor terminate body) are native-only (cfg(not(wasm32))); the wasm32 cooperative runtime has no threads to enter, so this is unused there but kept for parity with the native resolver"
     )
 )]
-pub(crate) fn enter(rt: &RuntimeInner) -> EnterGuard {
+pub(crate) unsafe fn enter(rt: &RuntimeInner) -> EnterGuard {
     let prev = CURRENT_RUNTIME.with(|c| c.replace(rt as *const RuntimeInner));
     EnterGuard { prev }
 }
@@ -465,11 +478,15 @@ mod tests {
 
         assert!(current_slot().is_null(), "slot starts null");
 
-        let guard_a = enter(&rt_a);
+        // SAFETY: `rt_a`/`rt_b` are stack locals that outlive their guards —
+        // each guard is dropped before its runtime leaves scope — satisfying
+        // `enter`'s lifetime obligation.
+        let guard_a = unsafe { enter(&rt_a) };
         assert_eq!(current_slot(), a_ptr, "A is current after entering A");
 
         {
-            let guard_b = enter(&rt_b);
+            // SAFETY: as above; `guard_b` is dropped before `rt_b` leaves scope.
+            let guard_b = unsafe { enter(&rt_b) };
             assert_eq!(current_slot(), b_ptr, "B is current after entering B");
             drop(guard_b);
         }
@@ -491,11 +508,17 @@ mod tests {
         let rt_b = RuntimeInner::new(worker_less_scheduler());
         let a_ptr = &raw const rt_a;
 
-        let guard_a = enter(&rt_a);
+        // SAFETY: `rt_a`/`rt_b` are stack locals that outlive their guards —
+        // `guard_a` is dropped before `rt_a` leaves scope, and `_guard_b` drops
+        // on the panic edge before `rt_b` leaves scope — satisfying `enter`'s
+        // lifetime obligation.
+        let guard_a = unsafe { enter(&rt_a) };
         assert_eq!(current_slot(), a_ptr, "A is current");
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard_b = enter(&rt_b);
+            // SAFETY: as above; `_guard_b` drops during unwinding, before `rt_b`
+            // leaves scope.
+            let _guard_b = unsafe { enter(&rt_b) };
             assert_eq!(current_slot(), &raw const rt_b, "B is current");
             panic!("unwind through the enter(B) scope");
         }));

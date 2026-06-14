@@ -1673,7 +1673,13 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     // The guard is held until the matching `set_current_context(prev_context)`
     // restore at the end of this function, so it covers every normal/panic/trap
     // exit edge (lifecycle-symmetry).
-    let _rt_guard = crate::runtime::rt_default().map(crate::runtime::enter);
+    //
+    // SAFETY: `rt_default()` borrows the installed default runtime, which is
+    // process-lifetime once `install_default` has run (it is detached only by
+    // `take_default` at cleanup, after all workers join). It therefore outlives
+    // this guard and every `rt_current()` deref taken through it during the
+    // terminate body, satisfying `enter`'s lifetime obligation.
+    let _rt_guard = crate::runtime::rt_default().map(|rt| unsafe { crate::runtime::enter(rt) });
 
     // Set up crash recovery (returns null on non-worker threads).
     // SAFETY: `actor` is valid and in a terminal state; null msg is fine.

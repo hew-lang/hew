@@ -823,8 +823,10 @@ fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // WorkerRuntimePtr); `enter()` takes no ownership.
     //
     // SAFETY: `rt.0` is the non-null `RuntimeInner` this worker was spawned
-    // against, valid until join by the WorkerRuntimePtr contract.
-    let _rt_guard = runtime::enter(unsafe { &*rt.0 });
+    // against, valid until join by the WorkerRuntimePtr contract — so it
+    // outlives this guard (held for the loop body) and every `rt_current()`
+    // deref taken through it, satisfying `enter`'s lifetime obligation.
+    let _rt_guard = unsafe { runtime::enter(&*rt.0) };
     // In test builds, capture the raw default-runtime pointer this worker is
     // bound to. The NoWorkerSchedulerForTest harness can swap the runtime out
     // from under a late-starting worker; the per-iteration check below detects

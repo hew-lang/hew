@@ -236,6 +236,58 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
     }
 }
 
+/// Install `rt` as this thread's [`CURRENT_RUNTIME`] for the lifetime of the
+/// returned guard, restoring the previously-installed runtime when the guard
+/// drops.
+///
+/// Mirrors [`crate::execution_context::set_current_context`] (a `Cell::replace`
+/// returning the previous pointer) plus the `TestExecutionContext` RAII restore
+/// — the same save/restore precedent the dispatch boundary already trusts. The
+/// guard's `Drop` restores the saved pointer on **every** exit edge (normal
+/// return, panic, trap), so nested `enter()` calls compose: an inner guard
+/// restores the outer thread-current on drop, and unwinding through an
+/// `enter()` scope still rebinds the previous runtime (`lifecycle-symmetry`).
+///
+/// `rt` must outlive the returned [`EnterGuard`] on this thread — the caller
+/// holds a borrow (`&RuntimeInner`) for at least the guard's scope, exactly as
+/// the scheduler worker holds a `*const RuntimeInner` valid until join. No Arc
+/// or refcount is taken; ownership stays with whoever owns the runtime.
+///
+/// `#[must_use]`: dropping the guard immediately would restore the previous
+/// runtime on the very next line, defeating the install.
+#[must_use]
+#[allow(
+    dead_code,
+    reason = "called by scheduler workers + the dispatch boundary once the worker binding lands; exercised by this module's unit tests now"
+)]
+pub(crate) fn enter(rt: &RuntimeInner) -> EnterGuard {
+    let prev = CURRENT_RUNTIME.with(|c| c.replace(rt as *const RuntimeInner));
+    EnterGuard { prev }
+}
+
+/// RAII guard returned by [`enter`]; restores the previous [`CURRENT_RUNTIME`]
+/// pointer when dropped.
+///
+/// Holds the pointer that was current when [`enter`] ran (null when the thread
+/// was off the dispatch path). The guard never owns or frees the runtime it
+/// installed — it only owns the *restore* of the previous selection — so it is
+/// safe to drop after the entered runtime itself is gone, as long as the
+/// previous pointer it restores is still valid (it is, by the same
+/// outlives-the-guard contract that governs the entered runtime).
+#[allow(
+    dead_code,
+    reason = "constructed by `enter`, whose production callers land with the worker binding; exercised by this module's unit tests now"
+)]
+pub(crate) struct EnterGuard {
+    prev: *const RuntimeInner,
+}
+
+impl Drop for EnterGuard {
+    fn drop(&mut self) {
+        CURRENT_RUNTIME.with(|c| c.set(self.prev));
+    }
+}
+
 /// Publish `inner` as the default runtime via compare-exchange.
 ///
 /// Returns `true` when this call installed `inner`. Returns `false` when a
@@ -355,5 +407,94 @@ pub(crate) unsafe fn free_runtime_for_test(inner: *mut RuntimeInner) {
         // SAFETY: see fn docs — the caller guarantees `inner` came from
         // `Box::into_raw` and is now unreferenced.
         drop(unsafe { Box::from_raw(inner) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::worker_less_scheduler;
+
+    /// Read the raw `CURRENT_RUNTIME` thread-local pointer without resolving
+    /// through `rt_current` (which would panic when no default is installed).
+    fn current_slot() -> *const RuntimeInner {
+        CURRENT_RUNTIME.with(Cell::get)
+    }
+
+    /// Force the slot back to null on construction and on drop, so the test is
+    /// independent of which pooled thread runs it (mirrors `ContextResetGuard`
+    /// in `execution_context.rs`). The slot is private to this module, so the
+    /// test rather than a production caller owns the reset.
+    struct RuntimeSlotResetGuard;
+
+    impl RuntimeSlotResetGuard {
+        fn new() -> Self {
+            CURRENT_RUNTIME.with(|c| c.set(std::ptr::null()));
+            Self
+        }
+    }
+
+    impl Drop for RuntimeSlotResetGuard {
+        fn drop(&mut self) {
+            CURRENT_RUNTIME.with(|c| c.set(std::ptr::null()));
+        }
+    }
+
+    /// Nested `enter()` saves and restores the previous selection: entering A
+    /// then B makes B current; dropping B's guard restores A; dropping A's guard
+    /// restores null. This is the `lifecycle-symmetry` contract the dispatch
+    /// boundary and worker entry rely on (the shape of
+    /// `execution_context::nested_install_restores_previous_context`).
+    #[test]
+    fn nested_enter_restores_previous_runtime() {
+        let _reset = RuntimeSlotResetGuard::new();
+        let rt_a = RuntimeInner::new(worker_less_scheduler());
+        let rt_b = RuntimeInner::new(worker_less_scheduler());
+        let a_ptr = &raw const rt_a;
+        let b_ptr = &raw const rt_b;
+
+        assert!(current_slot().is_null(), "slot starts null");
+
+        let guard_a = enter(&rt_a);
+        assert_eq!(current_slot(), a_ptr, "A is current after entering A");
+
+        {
+            let guard_b = enter(&rt_b);
+            assert_eq!(current_slot(), b_ptr, "B is current after entering B");
+            drop(guard_b);
+        }
+        assert_eq!(current_slot(), a_ptr, "dropping B restores A");
+
+        drop(guard_a);
+        assert!(current_slot().is_null(), "dropping A restores null");
+    }
+
+    /// An `enter()` guard restores the previous selection even when the scope
+    /// unwinds: the guard's `Drop` runs during panic unwinding, so a panic
+    /// inside an `enter(B)` scope rebinds A, not leaks B. Without the matched
+    /// restore on the panic edge, `rt_current()` on this thread would keep
+    /// resolving the unwound runtime (`lifecycle-symmetry`).
+    #[test]
+    fn enter_restores_previous_runtime_on_panic() {
+        let _reset = RuntimeSlotResetGuard::new();
+        let rt_a = RuntimeInner::new(worker_less_scheduler());
+        let rt_b = RuntimeInner::new(worker_less_scheduler());
+        let a_ptr = &raw const rt_a;
+
+        let guard_a = enter(&rt_a);
+        assert_eq!(current_slot(), a_ptr, "A is current");
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard_b = enter(&rt_b);
+            assert_eq!(current_slot(), &raw const rt_b, "B is current");
+            panic!("unwind through the enter(B) scope");
+        }));
+        assert!(unwound.is_err(), "the inner scope panicked");
+
+        // Drop during unwinding must have restored A, not left B installed.
+        assert_eq!(current_slot(), a_ptr, "panic-path drop restores A");
+
+        drop(guard_a);
+        assert!(current_slot().is_null(), "dropping A restores null");
     }
 }

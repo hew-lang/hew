@@ -50,13 +50,20 @@ jobs:
       - name: Run hew-runtime ASan tests
         env:
           CARGO_TARGET_DIR: target/sanitizer-runtime-asan
-          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
+          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           ASAN_OPTIONS: detect_leaks=1
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/hew-runtime/lsan.supp
           ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-${{ env.LLVM_VERSION }}/bin/llvm-symbolizer
         run: |
-          # Nightly Rust supports ASan for this target.
-          cargo +nightly test --target x86_64-unknown-linux-gnu -p hew-runtime --lib
+          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
+          # error between the sanitizer-instrumented hew-runtime crates and the
+          # prebuilt (uninstrumented) sysroot std.  The prebuilt std stays
+          # uninstrumented — acceptable because these jobs detect data races and
+          # leaks in hew-runtime's own code, not in std.
+          cargo +nightly test \
+            --target x86_64-unknown-linux-gnu \
+            -p hew-runtime \
+            --lib
 
   # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime
@@ -65,9 +72,9 @@ jobs:
   # Optional features (tokio, quinn, profiler) are excluded to avoid async-
   # runtime instrumentation noise and keep the job focused and fast.
   #
-  # continue-on-error: upstream Rust/Cargo build-std + TSan link failures
-  # have no clean repo-side fix as of 2026-04 (duplicate lang items, panic-
-  # strategy mismatch).  Kept for signal; does not gate releases.
+  # continue-on-error: advisory signal only; does not gate releases.
+  # Real data-race findings in hew-runtime concurrency primitives are still
+  # surfaced and tracked even when this job is yellow.
   # ─────────────────────────────────────────────────────────────────────────
   rust-runtime-tsan:
     name: Rust runtime TSan (advisory)
@@ -93,11 +100,17 @@ jobs:
       - name: Run hew-runtime TSan tests
         env:
           CARGO_TARGET_DIR: target/sanitizer-runtime-tsan
-          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes
+          RUSTFLAGS: -Zsanitizer=thread -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer
           # halt_on_error=1 surfaces races immediately rather than summarising
           # them at process exit, which makes CI output easier to triage.
           TSAN_OPTIONS: halt_on_error=1
         run: |
+          # -Cunsafe-allow-abi-mismatch=sanitizer silences the hard ABI-mismatch
+          # error between the sanitizer-instrumented hew-runtime crates and the
+          # prebuilt (uninstrumented) sysroot std.  The prebuilt std stays
+          # uninstrumented — acceptable because this job detects data races in
+          # hew-runtime's own concurrency primitives, not in std.
+          #
           # --no-default-features excludes the tokio/quinn/profiler optional
           # features; the core runtime concurrency primitives (reply-channel,
           # mailbox, scheduler) are exercised by the lib tests without them.

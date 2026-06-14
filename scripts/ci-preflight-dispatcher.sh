@@ -631,6 +631,12 @@ case "$LANE" in
         add_command "make stdlib"
         add_command "scripts/check-libhew-fresh.sh"
         add_command "make test-runtime-net"
+        # Runtime ABI changes (e.g. HewCont layout / continuation resume protocol)
+        # are invisible to rlib unit tests alone — a Rust unit test can pass over a
+        # garbage codegen path.  Run the compiled .hew suites so a local preflight
+        # catches the same class of breakage that CI's fallback lane would catch.
+        add_command "make test-hew-ratchet"
+        add_command "make test-vertical-slice"
         if (( has_observe == 1 )); then
             add_command "cargo nextest run --profile ci -p hew-observe"
         fi

@@ -4077,7 +4077,12 @@ fn machine_layout_for_local<'a, 'ctx>(
             short_name(name).to_string()
         }
     } else {
-        let key = mangle(name, args);
+        // Shorten the type-arg spine for the full-outer-name key too: the
+        // registration side keys on bare args, so a raw `mangle(name, args)`
+        // carrying a qualified payload would never hit and only the short_key
+        // fallback would save it. Keying both candidates off the shortened
+        // spine removes that raw-args trap at this layout-lookup site.
+        let key = mangle_with_shortened_args(name, args);
         if !fn_ctx.machine_layouts.contains_key(&key) {
             let short_key = mangle_with_shortened_args(short_name(name), args);
             if fn_ctx.machine_layouts.contains_key(&short_key) {
@@ -4389,8 +4394,9 @@ fn is_heap_owning_record_composite_return(
                 .keys()
                 .any(|k| short_name(k) == short || k == name)
     } else {
-        // Generic instantiation: resolve by the mangled registry key.
-        let full_mangled = mangle(name, args);
+        // Generic instantiation: resolve by the mangled registry key. Both
+        // candidates shorten the type-arg spine (registration keys on bare args).
+        let full_mangled = mangle_with_shortened_args(name, args);
         let short_mangled = mangle_with_shortened_args(short, args);
         record_layouts.contains_key(full_mangled.as_str())
             || record_layouts.contains_key(short_mangled.as_str())
@@ -9446,7 +9452,7 @@ fn collect_record_inplace_drop_seeds(
                         .find(|rl| rl.name == *name || short_name(&rl.name) == short)
                         .map(|rl| rl.name.clone())
                 } else {
-                    let full_mangled = mangle(name, args);
+                    let full_mangled = mangle_with_shortened_args(name, args);
                     let short_mangled = mangle_with_shortened_args(short, args);
                     record_layouts
                         .iter()
@@ -14238,7 +14244,10 @@ fn record_struct_for<'ctx>(
             let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
                 std::borrow::Cow::Borrowed(name.as_str())
             } else {
-                std::borrow::Cow::Owned(mangle(name, args))
+                // Shorten the spine: registration keys on bare args, so a raw
+                // `mangle(name, args)` carrying a qualified payload would miss
+                // the primary key and lean entirely on the short-name fallback.
+                std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
             };
             fn_ctx
                 .record_layouts
@@ -39229,7 +39238,10 @@ fn xnode_registry_key(
         }
         short.to_string()
     } else {
-        let full = hew_hir::mangle(name, args);
+        // Shorten the spine for the full-outer-name candidate too: registration
+        // keys on bare args, so a qualified payload must be normalised here or
+        // the `full` probe never matches and only the short form would.
+        let full = mangle_with_shortened_args(name, args);
         if records.iter().any(|r| r.name == full) || enums.iter().any(|e| e.name == full) {
             return full;
         }

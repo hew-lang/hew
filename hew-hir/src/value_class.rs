@@ -75,7 +75,21 @@ pub fn lookup_type_marker_for_ty(
     }
 
     if !args.is_empty() {
-        let concrete_key = crate::monomorph::mangle(name, args);
+        // `type_classes` is keyed on the per-instantiation `mangled_name`, which
+        // the registry side (`RecordLayoutRegistry::insert`, `layout_mono`,
+        // `finalize_user_record_value_classes`) builds from the BARE-normalised
+        // type-arg spine. So the probe must shorten its args too: a generic with
+        // a module-qualified payload (`Holder<lmonobox.Box>`) is registered as
+        // `Holder$$Box`, and a raw `mangle(name, args)` keying `Holder$$lmonobox.Box`
+        // would miss and silently fall through to the coarse outer-name lookup
+        // below, losing the per-instantiation marker. Nested qualified payloads
+        // are shortened at depth by `shorten_named_arg_qualifiers`.
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(crate::monomorph::shorten_named_arg_qualifiers)
+            .collect();
+        let concrete_key = crate::monomorph::mangle(name, &short_args);
         if let Some((marker, _)) = type_classes.get(&concrete_key) {
             return Some(*marker);
         }
@@ -389,5 +403,61 @@ mod tests {
         assert_eq!(components[1].name, "Foo");
         assert_eq!(components[1].builtin, None);
         assert!(!components[1].has_args);
+    }
+
+    // ── C1 qualified-payload concrete-key symmetry ──────────────────────────
+    //
+    // `lookup_type_marker_for_ty` probes the per-instantiation marker via a
+    // mangled concrete key. `type_classes` is registered under the BARE-spine
+    // mangled name (`RecordLayoutRegistry::insert` / `layout_mono` /
+    // `finalize_user_record_value_classes` all shorten the spine). So a generic
+    // with a module-qualified payload (`Holder<lmonobox.Box>`) must shorten its
+    // probe args or the concrete key (`Holder$$lmonobox.Box`) diverges from the
+    // registered `Holder$$Box`, silently missing the per-instantiation marker.
+
+    #[test]
+    fn qualified_payload_resolves_per_instantiation_marker() {
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
+
+        let mut table: TypeClassTable = std::collections::HashMap::default();
+        // Registered under the BARE spine, exactly as the registry keys it.
+        let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::named_user("Box", vec![])]);
+        table.insert(bare_key, (ResourceMarker::BitCopy, None));
+
+        // Probe with the QUALIFIED payload (`lmonobox.Box`), the import-use form.
+        // A raw `mangle("Holder", [lmonobox.Box])` keys `Holder$$lmonobox.Box`
+        // and would miss the registered `Holder$$Box`.
+        let qualified = ResolvedTy::named_user(
+            "Holder",
+            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+        );
+        assert_eq!(
+            lookup_type_marker_for_ty(&qualified, &table),
+            Some(ResourceMarker::BitCopy),
+            "the qualified-payload probe must shorten its spine to hit the \
+             bare-key per-instantiation marker"
+        );
+    }
+
+    #[test]
+    fn distinct_payload_does_not_resolve_marker_via_concrete_key() {
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
+
+        let mut table: TypeClassTable = std::collections::HashMap::default();
+        // Only `Holder$$i64` is registered with a BitCopy marker.
+        let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::I64]);
+        table.insert(bare_key, (ResourceMarker::BitCopy, None));
+
+        // Probe `Holder<lmonobox.Box>` (→ concrete key `Holder$$Box`): the
+        // concrete-key path must NOT match the `Holder$$i64` entry. With no
+        // outer-name `Holder` entry either, the lookup yields None. Pins that
+        // shortening collapses qualifiers, not distinct payloads.
+        let qualified = ResolvedTy::named_user(
+            "Holder",
+            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+        );
+        assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
+        // Sanity: the unused variant keeps the linter honest.
+        let _ = ResourceMarker::Resource;
     }
 }

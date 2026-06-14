@@ -317,6 +317,23 @@ pub enum RuntimeCallFamily {
     // here as a runtime-call family.
     NodeLookup,
 
+    // --- User metrics (#1862) -----------------------------------------------
+    // `std::metrics` emit path: register-or-get + mutate developer-defined
+    // counters/gauges/histograms (and their labelled `*Vec` forms). Non-
+    // suspending, non-consuming (handles are Copy index IDs).
+    MetricCounterRegister,
+    MetricCounterInc,
+    MetricCounterAdd,
+    MetricGaugeRegister,
+    MetricGaugeSet,
+    MetricGaugeInc,
+    MetricGaugeDec,
+    MetricGaugeAdd,
+    MetricHistogramRegister,
+    MetricHistogramRecord,
+    MetricVecRegister,
+    MetricVecWith,
+
     // --- Observe ------------------------------------------------------------
     ObserveReadU64,
     ObserveScrape,
@@ -576,6 +593,19 @@ impl RuntimeCallFamily {
             Self::MathIntrinsic(MathIntrinsic::Round) => "round",
             // Node (pre-staged)
             Self::NodeLookup => "Node::lookup",
+            // User metrics (#1862)
+            Self::MetricCounterRegister => "hew_metric_counter_register",
+            Self::MetricCounterInc => "hew_metric_counter_inc",
+            Self::MetricCounterAdd => "hew_metric_counter_add",
+            Self::MetricGaugeRegister => "hew_metric_gauge_register",
+            Self::MetricGaugeSet => "hew_metric_gauge_set",
+            Self::MetricGaugeInc => "hew_metric_gauge_inc",
+            Self::MetricGaugeDec => "hew_metric_gauge_dec",
+            Self::MetricGaugeAdd => "hew_metric_gauge_add",
+            Self::MetricHistogramRegister => "hew_metric_histogram_register",
+            Self::MetricHistogramRecord => "hew_metric_histogram_record",
+            Self::MetricVecRegister => "hew_metric_vec_register",
+            Self::MetricVecWith => "hew_metric_vec_with",
             // Observe
             Self::ObserveReadU64 => "hew_observe_read_u64",
             Self::ObserveScrape => "hew_observe_scrape",
@@ -807,6 +837,19 @@ impl RuntimeCallFamily {
             "round" => Self::MathIntrinsic(MathIntrinsic::Round),
             // Node
             "Node::lookup" => Self::NodeLookup,
+            // User metrics (#1862)
+            "hew_metric_counter_register" => Self::MetricCounterRegister,
+            "hew_metric_counter_inc" => Self::MetricCounterInc,
+            "hew_metric_counter_add" => Self::MetricCounterAdd,
+            "hew_metric_gauge_register" => Self::MetricGaugeRegister,
+            "hew_metric_gauge_set" => Self::MetricGaugeSet,
+            "hew_metric_gauge_inc" => Self::MetricGaugeInc,
+            "hew_metric_gauge_dec" => Self::MetricGaugeDec,
+            "hew_metric_gauge_add" => Self::MetricGaugeAdd,
+            "hew_metric_histogram_register" => Self::MetricHistogramRegister,
+            "hew_metric_histogram_record" => Self::MetricHistogramRecord,
+            "hew_metric_vec_register" => Self::MetricVecRegister,
+            "hew_metric_vec_with" => Self::MetricVecWith,
             // Observe
             "hew_observe_read_u64" => Self::ObserveReadU64,
             "hew_observe_scrape" => Self::ObserveScrape,
@@ -1055,6 +1098,18 @@ impl RuntimeCallFamily {
             | F::LambdaActorWeakDrop
             | F::LambdaActorWeakSend
             | F::MathIntrinsic(_)
+            | F::MetricCounterRegister
+            | F::MetricCounterInc
+            | F::MetricCounterAdd
+            | F::MetricGaugeRegister
+            | F::MetricGaugeSet
+            | F::MetricGaugeInc
+            | F::MetricGaugeDec
+            | F::MetricGaugeAdd
+            | F::MetricHistogramRegister
+            | F::MetricHistogramRecord
+            | F::MetricVecRegister
+            | F::MetricVecWith
             | F::NodeLookup
             | F::ObserveReadU64
             | F::ObserveScrape

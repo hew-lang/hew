@@ -602,6 +602,229 @@ pub fn session_reset_metrics() {
     COLLISION_REJECTED.store(0, Ordering::Relaxed);
 }
 
+// =============================================================================
+// FFI ABI — hew_metric_* — the emit path std::metrics lowers to.
+// =============================================================================
+//
+// `std::metrics` declares these in an `extern "C"` block and calls them inside
+// `unsafe`. The ABI is intentionally narrow: a `*const c_char` name in, an
+// `i64` handle out (>= 0 valid, -1 = REGISTER_FAILED), and `i64`/`f64` values.
+// Handles are non-owning index IDs — Copy on the Hew side, no free, no
+// double-free class.
+
+use std::ffi::{c_char, CStr};
+
+/// Borrow a C string as `&str`, or `None` on null / non-UTF-8.
+///
+/// # Safety
+///
+/// `ptr` must be null or a valid NUL-terminated C string for the call.
+unsafe fn cstr_opt<'a>(ptr: *const c_char) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees a valid NUL-terminated C string per contract.
+    unsafe { CStr::from_ptr(ptr) }.to_str().ok()
+}
+
+/// Collect `n` C strings from a `*const *const c_char` array into owned
+/// `String`s. Returns `None` if the array pointer is null or any element is
+/// null / non-UTF-8.
+///
+/// # Safety
+///
+/// `arr` must be null or point to `n` valid `*const c_char` entries, each null
+/// or a valid NUL-terminated C string.
+unsafe fn cstr_array(arr: *const *const c_char, n: i64) -> Option<Vec<String>> {
+    let Ok(n) = usize::try_from(n) else {
+        return None;
+    };
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    if arr.is_null() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        // SAFETY: caller guarantees `n` valid entries; `i < n`.
+        let elem = unsafe { *arr.add(i) };
+        // SAFETY: each entry is null or a valid C string per contract.
+        let s = unsafe { cstr_opt(elem) }?;
+        out.push(s.to_string());
+    }
+    Some(out)
+}
+
+/// Register (or get) a counter. Returns the handle, or -1 on failure.
+///
+/// # Safety
+///
+/// `name` must be null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_counter_register(name: *const c_char) -> i64 {
+    // SAFETY: forwarded contract on `name`.
+    match unsafe { cstr_opt(name) } {
+        Some(name) => register_counter(name),
+        None => REGISTER_FAILED,
+    }
+}
+
+/// Increment a counter by one.
+#[no_mangle]
+pub extern "C" fn hew_metric_counter_inc(handle: i64) {
+    inc(handle);
+}
+
+/// Add `n` to a counter; a negative `n` is rejected and counted.
+#[no_mangle]
+pub extern "C" fn hew_metric_counter_add(handle: i64, n: i64) {
+    counter_add(handle, n);
+}
+
+/// Register (or get) a gauge. Returns the handle, or -1 on failure.
+///
+/// # Safety
+///
+/// `name` must be null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_gauge_register(name: *const c_char) -> i64 {
+    // SAFETY: forwarded contract on `name`.
+    match unsafe { cstr_opt(name) } {
+        Some(name) => register_gauge(name),
+        None => REGISTER_FAILED,
+    }
+}
+
+/// Set a gauge to `n`.
+#[no_mangle]
+pub extern "C" fn hew_metric_gauge_set(handle: i64, n: i64) {
+    gauge_set(handle, n);
+}
+
+/// Increment a gauge by one.
+#[no_mangle]
+pub extern "C" fn hew_metric_gauge_inc(handle: i64) {
+    inc(handle);
+}
+
+/// Decrement a gauge by one.
+#[no_mangle]
+pub extern "C" fn hew_metric_gauge_dec(handle: i64) {
+    gauge_dec(handle);
+}
+
+/// Add `n` (any sign) to a gauge.
+#[no_mangle]
+pub extern "C" fn hew_metric_gauge_add(handle: i64, n: i64) {
+    gauge_add(handle, n);
+}
+
+/// Register (or get) a histogram with `n_buckets` ascending bucket upper
+/// bounds. Returns the handle, or -1 on failure.
+///
+/// # Safety
+///
+/// `name` must be null or a valid NUL-terminated C string; `buckets` must be
+/// null or point to `n_buckets` readable `i64` values.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_histogram_register(
+    name: *const c_char,
+    buckets: *const i64,
+    n_buckets: i64,
+) -> i64 {
+    // SAFETY: forwarded contract on `name`.
+    let Some(name) = (unsafe { cstr_opt(name) }) else {
+        return REGISTER_FAILED;
+    };
+    let Ok(n) = usize::try_from(n_buckets) else {
+        return REGISTER_FAILED;
+    };
+    let bucket_slice: &[i64] = if n == 0 || buckets.is_null() {
+        &[]
+    } else {
+        // SAFETY: caller guarantees `n_buckets` readable i64s at `buckets`.
+        unsafe { std::slice::from_raw_parts(buckets, n) }
+    };
+    register_histogram(name, bucket_slice)
+}
+
+/// Record one histogram observation. `value` is floored to the registered
+/// integer bucket scale.
+#[no_mangle]
+pub extern "C" fn hew_metric_histogram_record(handle: i64, value: f64) {
+    // Bucket bounds are integers; floor the observation to the bucket scale.
+    // A non-finite observation is rejected and counted.
+    if !value.is_finite() {
+        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "buckets are integer-scaled; flooring the observation to the \
+                  bucket scale is the intended ABI. An out-of-i64-range \
+                  observation saturates, which lands outside every bucket."
+    )]
+    let floored = value.floor() as i64;
+    histogram_record(handle, floored);
+}
+
+/// Register (or get) a labelled metric of `kind` (0 = counter, 1 = gauge,
+/// 2 = histogram) with `n_keys` label keys. Returns the base handle, or -1.
+///
+/// # Safety
+///
+/// `name` must be null or a valid C string; `keys` must be null or point to
+/// `n_keys` valid `*const c_char` entries.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_vec_register(
+    name: *const c_char,
+    kind: i64,
+    keys: *const *const c_char,
+    n_keys: i64,
+) -> i64 {
+    // SAFETY: forwarded contract on `name`.
+    let Some(name) = (unsafe { cstr_opt(name) }) else {
+        return REGISTER_FAILED;
+    };
+    let kind = match kind {
+        0 => MetricKind::Counter,
+        1 => MetricKind::Gauge,
+        2 => MetricKind::Histogram,
+        _ => {
+            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return REGISTER_FAILED;
+        }
+    };
+    // SAFETY: forwarded contract on `keys`.
+    let Some(label_keys) = (unsafe { cstr_array(keys, n_keys) }) else {
+        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return REGISTER_FAILED;
+    };
+    register_labelled(name, kind, &label_keys)
+}
+
+/// Resolve (or materialise) the per-series handle for a labelled metric. The
+/// `vals` array must carry exactly the metric's declared label arity. Returns
+/// the series handle, or -1.
+///
+/// # Safety
+///
+/// `vals` must be null or point to `n_vals` valid `*const c_char` entries.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_vec_with(
+    base_handle: i64,
+    vals: *const *const c_char,
+    n_vals: i64,
+) -> i64 {
+    // SAFETY: forwarded contract on `vals`.
+    let Some(label_values) = (unsafe { cstr_array(vals, n_vals) }) else {
+        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        return REGISTER_FAILED;
+    };
+    resolve_series(base_handle, &label_values)
+}
+
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tests {
     use super::*;
@@ -864,5 +1087,107 @@ mod tests {
             .find(|m| m.canonical_name == "app.early")
             .unwrap();
         assert_eq!(m.series[0].1, 2, "early handle stayed valid across growth");
+    }
+
+    // --- FFI ABI boundary tests: call each hew_metric_* symbol directly. -----
+
+    use std::ffi::CString;
+
+    fn value_of(name: &str) -> i64 {
+        render_snapshot()
+            .into_iter()
+            .find(|m| m.canonical_name == name)
+            .map_or(i64::MIN, |m| m.series[0].1)
+    }
+
+    #[test]
+    fn ffi_counter_register_inc_add_round_trips() {
+        let _g = guard();
+        let name = CString::new("ffi.counter").unwrap();
+        // SAFETY: name is a valid C string.
+        let h = unsafe { hew_metric_counter_register(name.as_ptr()) };
+        assert!(h >= 0);
+        hew_metric_counter_inc(h);
+        hew_metric_counter_add(h, 4);
+        hew_metric_counter_add(h, -1); // rejected
+        assert_eq!(value_of("ffi.counter"), 5, "1 + 4, negative add ignored");
+        assert_eq!(self_metrics().invalid_ops, 1);
+    }
+
+    #[test]
+    fn ffi_counter_register_null_name_is_failed_sentinel() {
+        let _g = guard();
+        // SAFETY: null is an explicitly handled input.
+        let h = unsafe { hew_metric_counter_register(std::ptr::null()) };
+        assert_eq!(h, REGISTER_FAILED);
+    }
+
+    #[test]
+    fn ffi_gauge_full_surface_round_trips() {
+        let _g = guard();
+        let name = CString::new("ffi.gauge").unwrap();
+        // SAFETY: valid C string.
+        let h = unsafe { hew_metric_gauge_register(name.as_ptr()) };
+        assert!(h >= 0);
+        hew_metric_gauge_set(h, 10);
+        hew_metric_gauge_inc(h);
+        hew_metric_gauge_dec(h);
+        hew_metric_gauge_dec(h);
+        hew_metric_gauge_add(h, -3);
+        // 10 +1 -1 -1 -3 = 6
+        assert_eq!(value_of("ffi.gauge"), 6);
+    }
+
+    #[test]
+    fn ffi_histogram_register_and_record() {
+        let _g = guard();
+        let name = CString::new("ffi.hist").unwrap();
+        let buckets: [i64; 3] = [10, 100, 1000];
+        let n = i64::try_from(buckets.len()).unwrap();
+        // SAFETY: valid name and a 3-element i64 array.
+        let h = unsafe { hew_metric_histogram_register(name.as_ptr(), buckets.as_ptr(), n) };
+        assert!(h >= 0);
+        hew_metric_histogram_record(h, 5.0);
+        hew_metric_histogram_record(h, 50.0);
+        hew_metric_histogram_record(h, 5000.0);
+        hew_metric_histogram_record(h, f64::NAN); // rejected
+                                                  // base slot = observation count = 3 (NaN rejected).
+        assert_eq!(value_of("ffi.hist"), 3);
+        assert_eq!(self_metrics().invalid_ops, 1, "NaN observation counted");
+    }
+
+    #[test]
+    fn ffi_vec_register_and_with_round_trips() {
+        let _g = guard();
+        let name = CString::new("ffi.req").unwrap();
+        let key = CString::new("route").unwrap();
+        let keys: [*const c_char; 1] = [key.as_ptr()];
+        // SAFETY: valid name and a 1-element key array.
+        let base = unsafe { hew_metric_vec_register(name.as_ptr(), 0, keys.as_ptr(), 1) };
+        assert!(base >= 0);
+
+        let val = CString::new("home").unwrap();
+        let vals: [*const c_char; 1] = [val.as_ptr()];
+        // SAFETY: valid 1-element value array matching the declared arity.
+        let series = unsafe { hew_metric_vec_with(base, vals.as_ptr(), 1) };
+        assert!(series >= 0);
+        hew_metric_counter_inc(series);
+        hew_metric_counter_inc(series);
+
+        let snap = render_snapshot();
+        let m = snap.iter().find(|m| m.canonical_name == "ffi.req").unwrap();
+        assert_eq!(m.label_keys, vec!["route".to_string()]);
+        assert_eq!(m.series.len(), 1);
+        assert_eq!(m.series[0].0, vec!["home".to_string()]);
+        assert_eq!(m.series[0].1, 2);
+    }
+
+    #[test]
+    fn ffi_vec_register_rejects_unknown_kind() {
+        let _g = guard();
+        let name = CString::new("ffi.badkind").unwrap();
+        // SAFETY: valid name, null key array with zero keys.
+        let h = unsafe { hew_metric_vec_register(name.as_ptr(), 99, std::ptr::null(), 0) };
+        assert_eq!(h, REGISTER_FAILED);
     }
 }

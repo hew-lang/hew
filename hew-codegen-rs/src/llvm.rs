@@ -808,6 +808,20 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::LambdaActorWeakDrop
         | F::LambdaActorWeakSend
         | F::MathIntrinsic(_)
+        // User metrics (#1862): the registry is atomics + PoisonSafe + HashMap,
+        // all wasm32-safe.
+        | F::MetricCounterRegister
+        | F::MetricCounterInc
+        | F::MetricCounterAdd
+        | F::MetricGaugeRegister
+        | F::MetricGaugeSet
+        | F::MetricGaugeInc
+        | F::MetricGaugeDec
+        | F::MetricGaugeAdd
+        | F::MetricHistogramRegister
+        | F::MetricHistogramRecord
+        | F::MetricVecRegister
+        | F::MetricVecWith
         | F::NodeLookup
         | F::ObserveReadU64
         | F::ObserveScrape
@@ -22817,6 +22831,21 @@ fn lower_call_runtime_abi(
         | F::LambdaActorWeakClone
         | F::LambdaActorWeakDrop
         | F::MathIntrinsic(_)
+        // User metrics (#1862): allowlisted + typed, but reached via the
+        // declared-`extern "C"` call path from std/metrics.hew, not a direct
+        // MIR `Instr::CallRuntimeAbi` lowering. No per-family arm here yet.
+        | F::MetricCounterRegister
+        | F::MetricCounterInc
+        | F::MetricCounterAdd
+        | F::MetricGaugeRegister
+        | F::MetricGaugeSet
+        | F::MetricGaugeInc
+        | F::MetricGaugeDec
+        | F::MetricGaugeAdd
+        | F::MetricHistogramRegister
+        | F::MetricHistogramRecord
+        | F::MetricVecRegister
+        | F::MetricVecWith
         | F::NodeLookup
         | F::OptionUnwrap(_)
         | F::OptionUnwrapOr(_)

@@ -1707,8 +1707,7 @@ dependencies = [
  "hew-std-text-regex",
  "hew-std-text-semver",
  "hew-std-text-unicode",
- "hew-std-time-cron",
- "hew-std-time-datetime",
+ "hew-std-time",
 ]
 
 [[package]]
@@ -2117,21 +2116,11 @@ name = "hew-std-text-unicode"
 version = "0.5.0"
 
 [[package]]
-name = "hew-std-time-cron"
+name = "hew-std-time"
 version = "0.5.0"
 dependencies = [
  "chrono",
  "cron",
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
-
-[[package]]
-name = "hew-std-time-datetime"
-version = "0.5.0"
-dependencies = [
- "chrono",
  "hew-cabi",
  "hew-runtime",
  "libc",

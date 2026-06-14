@@ -1,9 +1,9 @@
 [package]
-name = "hew-std-time-cron"
+name = "hew-std-time"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Hew std::time::cron — cron expression scheduling"
+description = "Hew std::time — cron scheduling and datetime operations"
 readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
 keywords = ["hew", "stdlib"]
@@ -13,8 +13,8 @@ categories = ["compilers"]
 crate-type = ["staticlib", "lib"]
 
 [dependencies]
-hew-cabi = { path = "../../../hew-cabi" }
-hew-runtime = { path = "../../../hew-runtime" }
+hew-cabi = { path = "../../hew-cabi" }
+hew-runtime = { path = "../../hew-runtime" }
 cron = "0.16"
 chrono = { version = "0.4", default-features = false, features = [
   "clock",

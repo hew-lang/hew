@@ -45,5 +45,4 @@ hew-std-sort = { path = "../std/sort" }
 hew-std-text-regex = { path = "../std/text/regex" }
 hew-std-text-semver = { path = "../std/text/semver" }
 hew-std-text-unicode = { path = "../std/text/unicode" }
-hew-std-time-cron = { path = "../std/time/cron" }
-hew-std-time-datetime = { path = "../std/time/datetime" }
+hew-std-time = { path = "../std/time" }

@@ -73,8 +73,9 @@ type BytesTriple = hew_runtime::bytes::BytesTriple;
 ///
 /// Ring uses a PKCS#8 v2 template (`ed25519_pkcs8_v2_template.der`, 19 bytes)
 /// plus the 32-byte private scalar plus the 32-byte public point = 83 bytes.
-/// This constant is asserted at runtime in debug builds; if ring's encoding
-/// changes a `debug_assert!` in `hew_ed25519_generate_pkcs8` will catch it.
+/// This length is checked at runtime in all build profiles before any
+/// fixed-size buffer copy; if ring's encoding ever changes, the generating
+/// function fails closed (returns `0`) rather than overflowing the buffer.
 pub const ED25519_PKCS8_LEN: usize = 83;
 
 /// Length (bytes) of a raw Ed25519 public key.
@@ -159,12 +160,15 @@ pub unsafe extern "C" fn hew_ed25519_generate_pkcs8(out: *mut u8) -> i32 {
         return 0;
     };
     let bytes = pkcs8_doc.as_ref();
-    debug_assert_eq!(
-        bytes.len(),
-        ED25519_PKCS8_LEN,
-        "ring Ed25519 PKCS#8 document length changed"
-    );
-    // SAFETY: out is valid for ED25519_PKCS8_LEN bytes per caller contract.
+    // Fail closed: `out` is only valid for ED25519_PKCS8_LEN bytes. A hard
+    // length check (not a release-stripped `debug_assert!`) guarantees we never
+    // `copy_nonoverlapping` more bytes than the caller's fixed-size buffer holds
+    // if ring's PKCS#8 encoding ever changes length.
+    if bytes.len() != ED25519_PKCS8_LEN {
+        return 0;
+    }
+    // SAFETY: out is valid for ED25519_PKCS8_LEN bytes per caller contract, and
+    // bytes.len() is verified to equal ED25519_PKCS8_LEN above.
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
     1
 }
@@ -192,8 +196,14 @@ pub unsafe extern "C" fn hew_ed25519_public_key_from_pkcs8(
         return 0;
     };
     let pub_bytes = key_pair.public_key().as_ref();
-    debug_assert_eq!(pub_bytes.len(), ED25519_PUBLIC_LEN);
-    // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes per caller contract.
+    // Fail closed: `out` is only valid for ED25519_PUBLIC_LEN bytes. A hard
+    // length check (not a release-stripped `debug_assert!`) prevents a
+    // buffer overflow if the public-key length ever diverges from 32.
+    if pub_bytes.len() != ED25519_PUBLIC_LEN {
+        return 0;
+    }
+    // SAFETY: out is valid for ED25519_PUBLIC_LEN bytes per caller contract, and
+    // pub_bytes.len() is verified to equal ED25519_PUBLIC_LEN above.
     unsafe { std::ptr::copy_nonoverlapping(pub_bytes.as_ptr(), out, pub_bytes.len()) };
     1
 }
@@ -237,8 +247,14 @@ pub unsafe extern "C" fn hew_ed25519_sign(
 
     let sig = key_pair.sign(msg_bytes);
     let sig_bytes = sig.as_ref();
-    debug_assert_eq!(sig_bytes.len(), ED25519_SIG_LEN);
-    // SAFETY: sig_out is valid for ED25519_SIG_LEN bytes per caller contract.
+    // Fail closed: `sig_out` is only valid for ED25519_SIG_LEN bytes. A hard
+    // length check (not a release-stripped `debug_assert!`) prevents a
+    // buffer overflow if the signature length ever diverges from 64.
+    if sig_bytes.len() != ED25519_SIG_LEN {
+        return 0;
+    }
+    // SAFETY: sig_out is valid for ED25519_SIG_LEN bytes per caller contract, and
+    // sig_bytes.len() is verified to equal ED25519_SIG_LEN above.
     unsafe { std::ptr::copy_nonoverlapping(sig_bytes.as_ptr(), sig_out, sig_bytes.len()) };
     1
 }
@@ -872,6 +888,69 @@ mod tests {
         let ok =
             unsafe { hew_ed25519_public_key_from_pkcs8(bad.as_ptr(), bad.len(), out.as_mut_ptr()) };
         assert_eq!(ok, 0, "invalid PKCS#8 must be rejected");
+    }
+
+    // --- SIGN-1: wrong-length inputs fail closed without touching the output ---
+    //
+    // The fixed-size output buffers are only valid for their documented length.
+    // A wrong-length input must return 0 and leave the output buffer untouched
+    // (no partial write, no overflow) — the hard length checks promoted from
+    // `debug_assert!` guarantee this in release builds, not just debug.
+
+    /// A PKCS#8 input that is too short must be rejected, leaving `out` untouched.
+    #[test]
+    fn public_key_from_pkcs8_rejects_short_input_without_writing_out() {
+        let short = [0u8; ED25519_PKCS8_LEN - 1]; // wrong length
+        let mut out = [0xCDu8; ED25519_PUBLIC_LEN]; // sentinel fill
+                                                    // SAFETY: short is a valid slice of its own length; out is a valid buffer.
+        let ok = unsafe {
+            hew_ed25519_public_key_from_pkcs8(short.as_ptr(), short.len(), out.as_mut_ptr())
+        };
+        assert_eq!(ok, 0, "short PKCS#8 input must fail closed");
+        assert_eq!(
+            out, [0xCDu8; ED25519_PUBLIC_LEN],
+            "output buffer must be untouched on a rejected input"
+        );
+    }
+
+    /// A PKCS#8 input that is too long must be rejected, leaving `out` untouched.
+    #[test]
+    fn public_key_from_pkcs8_rejects_long_input_without_writing_out() {
+        let long = [0u8; ED25519_PKCS8_LEN + 16]; // wrong length
+        let mut out = [0xCDu8; ED25519_PUBLIC_LEN]; // sentinel fill
+                                                    // SAFETY: long is a valid slice of its own length; out is a valid buffer.
+        let ok = unsafe {
+            hew_ed25519_public_key_from_pkcs8(long.as_ptr(), long.len(), out.as_mut_ptr())
+        };
+        assert_eq!(ok, 0, "over-long PKCS#8 input must fail closed");
+        assert_eq!(
+            out, [0xCDu8; ED25519_PUBLIC_LEN],
+            "output buffer must be untouched on a rejected input"
+        );
+    }
+
+    /// A wrong-length private key must be rejected by `sign`, leaving `sig_out`
+    /// untouched — no partial write into the fixed 64-byte buffer.
+    #[test]
+    fn sign_rejects_wrong_length_key_without_writing_sig() {
+        let wrong_len_key = [0u8; ED25519_PKCS8_LEN + 8]; // wrong length, invalid doc
+        let msg = b"test";
+        let mut sig = [0xCDu8; ED25519_SIG_LEN]; // sentinel fill
+                                                 // SAFETY: all buffers are valid for their own lengths.
+        let ok = unsafe {
+            hew_ed25519_sign(
+                wrong_len_key.as_ptr(),
+                wrong_len_key.len(),
+                msg.as_ptr(),
+                msg.len(),
+                sig.as_mut_ptr(),
+            )
+        };
+        assert_eq!(ok, 0, "wrong-length key must fail closed");
+        assert_eq!(
+            sig, [0xCDu8; ED25519_SIG_LEN],
+            "signature buffer must be untouched on a rejected key"
+        );
     }
 
     // ── BytesTriple-ABI wrapper tests ─────────────────────────────────────────

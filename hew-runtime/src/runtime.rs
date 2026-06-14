@@ -179,8 +179,11 @@ thread_local! {
     /// Const-init null mirrors `CURRENT_EXECUTION_CONTEXT`
     /// (`execution_context.rs`). The pointer, when non-null, was installed by
     /// `enter()` against a `RuntimeInner` that outlives the installing guard on
-    /// this thread; no `enter()` caller exists yet (M2 Stage 1), so the slot is
-    /// always null and every read falls through to the default.
+    /// this thread — scheduler workers `enter()` their owning runtime at loop
+    /// entry, and the actor terminate body `enter()`s it beside the
+    /// execution-context install so user `on(stop)` code resolves the right
+    /// runtime. The slot is non-null on those entered paths and null off them
+    /// (where the read falls through to the default).
     static CURRENT_RUNTIME: Cell<*const RuntimeInner> = const { Cell::new(std::ptr::null()) };
 }
 
@@ -230,8 +233,9 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
     } else {
         // SAFETY: a non-null TLS pointer was installed by `enter()` against a
         // `RuntimeInner` that outlives the installing guard on this thread
-        // (the guard restores the previous pointer on drop). No `enter()`
-        // caller exists in M2 Stage 1, so this arm is unreachable today.
+        // (the guard restores the previous pointer on drop). This arm is taken
+        // on scheduler workers (worker-loop `enter()`) and in the actor
+        // terminate body (terminate `enter()`).
         unsafe { &*p }
     }
 }
@@ -256,9 +260,12 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
 /// `#[must_use]`: dropping the guard immediately would restore the previous
 /// runtime on the very next line, defeating the install.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "called by scheduler workers + the dispatch boundary once the worker binding lands; exercised by this module's unit tests now"
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the production callers (scheduler workers, actor terminate body) are native-only (cfg(not(wasm32))); the wasm32 cooperative runtime has no threads to enter, so this is unused there but kept for parity with the native resolver"
+    )
 )]
 pub(crate) fn enter(rt: &RuntimeInner) -> EnterGuard {
     let prev = CURRENT_RUNTIME.with(|c| c.replace(rt as *const RuntimeInner));
@@ -274,9 +281,12 @@ pub(crate) fn enter(rt: &RuntimeInner) -> EnterGuard {
 /// safe to drop after the entered runtime itself is gone, as long as the
 /// previous pointer it restores is still valid (it is, by the same
 /// outlives-the-guard contract that governs the entered runtime).
-#[allow(
-    dead_code,
-    reason = "constructed by `enter`, whose production callers land with the worker binding; exercised by this module's unit tests now"
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "constructed only by `enter`, whose production callers are native-only; unused on the cooperative wasm32 runtime"
+    )
 )]
 pub(crate) struct EnterGuard {
     prev: *const RuntimeInner,

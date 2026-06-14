@@ -466,6 +466,50 @@ mod tests {
         // lock_or_recover proves the PoisonError path works.)
     }
 
+    /// Off-dispatch fallback: a closure run on a blocking-pool worker thread
+    /// resolves `rt_current()` through the `DEFAULT_RUNTIME` fallback, NOT a TLS
+    /// install.
+    ///
+    /// The pool worker never calls `enter()` (its `CURRENT_RUNTIME` slot stays
+    /// null), so a submitted closure that touches a runtime authority must fall
+    /// through to the installed default rather than trap. This is the
+    /// blocking-pool arm of the off-dispatch inventory: the only production
+    /// closure (`transport::resolve_addr_via_pool`'s `getaddrinfo`) reads no
+    /// authority today, but were one to, the fallback must carry it. A TLS-only
+    /// `rt_current()` would panic here on the pool thread.
+    #[test]
+    fn pool_closure_resolves_runtime_via_default_fallback() {
+        // Install a worker-less default `RuntimeInner` (serialized on the
+        // default-runtime slot) so `rt_current()` has a default to fall back to.
+        let _guard = crate::runtime_test_guard();
+        let want = crate::runtime::default_runtime_ptr(Ordering::SeqCst);
+        assert!(!want.is_null(), "guard must install a default runtime");
+
+        // SAFETY: test owns pool lifetime.
+        unsafe {
+            let pool = hew_blocking_pool_new();
+
+            // The closure runs on a pool worker thread, off the dispatch path.
+            // Resolve `rt_current()` there and report the address it selected
+            // (a raw pointer is not `Send`; the address is what we compare).
+            let got = spawn_blocking_result(
+                pool,
+                || std::ptr::from_ref(crate::runtime::rt_current()) as usize,
+                None,
+            )
+            .expect("pool closure must complete");
+
+            assert_eq!(
+                got, want as usize,
+                "an off-dispatch pool worker must resolve the default runtime via \
+                 the rt_current() fallback (null TLS), not trap or pick a different \
+                 runtime"
+            );
+
+            hew_blocking_pool_stop(pool);
+        }
+    }
+
     /// Normal completion: closure returns a value, caller observes it.
     #[test]
     fn spawn_blocking_result_normal_completion() {

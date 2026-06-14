@@ -34,6 +34,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 use crate::hew_node::NodeSlot;
@@ -168,12 +169,41 @@ pub(crate) fn rt_default() -> Option<&'static RuntimeInner> {
     }
 }
 
-/// Resolve the runtime that owns the work on this thread — fail closed.
+thread_local! {
+    /// Per-thread current runtime, selected by `enter()` at a dispatch
+    /// boundary or worker entry. Null when this thread is off the dispatch
+    /// path (the I/O reactor, the teardown reaper drain, the periodic-timer
+    /// ticker, a fresh program thread before `hew_sched_init`), in which case
+    /// [`rt_current`] resolves through the [`DEFAULT_RUNTIME`] fallback.
+    ///
+    /// Const-init null mirrors `CURRENT_EXECUTION_CONTEXT`
+    /// (`execution_context.rs`). The pointer, when non-null, was installed by
+    /// `enter()` against a `RuntimeInner` that outlives the installing guard on
+    /// this thread; no `enter()` caller exists yet (M2 Stage 1), so the slot is
+    /// always null and every read falls through to the default.
+    static CURRENT_RUNTIME: Cell<*const RuntimeInner> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Resolve the runtime that owns the work on this thread — TLS-first, then the
+/// default-slot fallback, fail-closed when neither is installed.
 ///
 /// This is the resolver every de-globalized subsystem reads through (the
 /// live-actor registry, name registry, shutdown phase, supervisor roots,
-/// timers, node slot). It returns the installed default runtime, or **panics**
-/// when none is installed.
+/// timers, node slot). It reads the per-thread [`CURRENT_RUNTIME`] selection
+/// first; off the dispatch path (the slot is null) it returns the installed
+/// default runtime; with neither installed it **panics**.
+///
+/// # The default-slot fallback (off-dispatch path)
+///
+/// The `else` arm reads [`DEFAULT_RUNTIME`] and is **load-bearing in M2, not a
+/// fail-open shortcut**. Off-dispatch threads never `enter()` — the I/O reactor
+/// reading `live_actors`, the teardown reaper drain reading
+/// `deferred_teardown_threads` — and resolve their (single, default) runtime
+/// through this arm. Deleting it would re-trap every off-dispatch reader. It is
+/// removed at M4 (the two-runtime / JIT-entry milestone), once a TLS install
+/// covers every dispatch path and a null slot can fail closed as a missed
+/// `enter()`; `no-fail-open-fallback-after-authority` fires there, not here —
+/// single-runtime totality is not yet proven.
 ///
 /// # Why fail-closed, not lazy-default
 ///
@@ -181,23 +211,29 @@ pub(crate) fn rt_default() -> Option<&'static RuntimeInner> {
 /// before any runtime authority is touched: AOT and JIT programs install it via
 /// `hew_sched_init`; tests install it via the runtime test guard
 /// (`crate::runtime_test_guard`) or `NoWorkerSchedulerForTest`. There is no
-/// lazy auto-create and no silent `None` fallback — touching a runtime
-/// authority with no runtime installed is a hard logic error, so it traps loudly
-/// instead of fabricating state that would leak past the missing lifecycle call
-/// (`no-fail-open-fallback-after-authority`).
-///
-/// Single-runtime today means `rt_current()` always resolves to the one default
-/// runtime; the per-thread `CURRENT_RUNTIME` selection arrives with the TLS
-/// install (M2).
+/// lazy auto-create — both the TLS slot and the default slot being unset is a
+/// hard logic error, so it traps loudly instead of fabricating state that would
+/// leak past the missing lifecycle call.
 #[inline]
 pub(crate) fn rt_current() -> &'static RuntimeInner {
-    rt_default().unwrap_or_else(|| {
-        panic!(
-            "hew-runtime: no runtime installed — a runtime authority was used \
-             before hew_sched_init (production) or without a runtime test guard \
-             (tests). Install a default RuntimeInner first."
-        )
-    })
+    let p = CURRENT_RUNTIME.with(Cell::get);
+    if p.is_null() {
+        // Off-dispatch / single-runtime fallback (M1 behaviour preserved).
+        // Removed at M4; required now for the off-dispatch readers above.
+        rt_default().unwrap_or_else(|| {
+            panic!(
+                "hew-runtime: no runtime installed — a runtime authority was used \
+                 before hew_sched_init (production) or without a runtime test guard \
+                 (tests). Install a default RuntimeInner first."
+            )
+        })
+    } else {
+        // SAFETY: a non-null TLS pointer was installed by `enter()` against a
+        // `RuntimeInner` that outlives the installing guard on this thread
+        // (the guard restores the previous pointer on drop). No `enter()`
+        // caller exists in M2 Stage 1, so this arm is unreachable today.
+        unsafe { &*p }
+    }
 }
 
 /// Publish `inner` as the default runtime via compare-exchange.

@@ -14302,11 +14302,19 @@ fn record_struct_for<'ctx>(
                 .get(lookup_key.as_ref())
                 .copied()
                 .or_else(|| {
-                    (!args.is_empty())
-                        .then(|| mangle_with_shortened_args(short_name(name), args))
-                        .and_then(|short_key| {
-                            fn_ctx.record_layouts.get(short_key.as_str()).copied()
-                        })
+                    // Fallback: registration keys on the bare (short) outer
+                    // name, so a monomorphic record reached through a
+                    // module-qualified spelling (`shapes.Point`) misses the
+                    // primary key. Retry under the short name. The generic arm
+                    // shortens both the outer name and the type-arg spine.
+                    let short_key: std::borrow::Cow<str> = if args.is_empty() {
+                        std::borrow::Cow::Borrowed(short_name(name))
+                    } else {
+                        std::borrow::Cow::Owned(mangle_with_shortened_args(short_name(name), args))
+                    };
+                    (short_key.as_ref() != lookup_key.as_ref())
+                        .then(|| fn_ctx.record_layouts.get(short_key.as_ref()).copied())
+                        .flatten()
                 })
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(

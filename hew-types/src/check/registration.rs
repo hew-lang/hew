@@ -5012,44 +5012,55 @@ impl Checker {
         // (`builtin: None`) while an `impl Closable` in another module resolves
         // the bare name to the builtin surface (`builtin: Some(CloseError)`).
         // Re-derive the tag from the name on both sides so trait-conformance
-        // compares nominal identity rather than the incidental resolution path
-        // (the user-facing diagnostics still render the original, untouched
-        // types).
-        fn canonicalize_builtin_tags(ty: &Ty) -> Ty {
+        // compares nominal identity rather than the incidental resolution path.
+        //
+        // Under qualified-by-default the impl side resolves the SAME error type
+        // through its module-qualified spelling (`closable.CloseError`) while
+        // the trait declaration carries the bare `CloseError`. These name the
+        // one type, so strip a known-module prefix from every `Named` name
+        // before re-deriving the tag, using the module-aware `strip_module_prefix`
+        // authority (a `Foo.Bar` whose `Foo` is not an in-scope module is left
+        // untouched). The user-facing diagnostics still render the original,
+        // untouched types.
+        fn canonicalize_builtin_tags(ty: &Ty, modules: &std::collections::HashSet<String>) -> Ty {
+            let recurse = |t: &Ty| canonicalize_builtin_tags(t, modules);
             match ty {
-                Ty::Tuple(elems) => {
-                    Ty::Tuple(elems.iter().map(canonicalize_builtin_tags).collect())
+                Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(recurse).collect()),
+                Ty::Array(elem, n) => Ty::Array(Box::new(recurse(elem)), *n),
+                Ty::Slice(elem) => Ty::Slice(Box::new(recurse(elem))),
+                Ty::Named { name, args, .. } => {
+                    // Shorten a known-module qualifier so `closable.CloseError`
+                    // and the bare `CloseError` canonicalize to the same name.
+                    let short = name
+                        .split_once('.')
+                        .filter(|(module, _)| modules.contains(*module))
+                        .map_or_else(|| name.clone(), |(_, bare)| bare.to_string());
+                    Ty::normalize_named(short, args.iter().map(recurse).collect())
                 }
-                Ty::Array(elem, n) => Ty::Array(Box::new(canonicalize_builtin_tags(elem)), *n),
-                Ty::Slice(elem) => Ty::Slice(Box::new(canonicalize_builtin_tags(elem))),
-                Ty::Named { name, args, .. } => Ty::normalize_named(
-                    name.clone(),
-                    args.iter().map(canonicalize_builtin_tags).collect(),
-                ),
                 Ty::Function { params, ret } => Ty::Function {
-                    params: params.iter().map(canonicalize_builtin_tags).collect(),
-                    ret: Box::new(canonicalize_builtin_tags(ret)),
+                    params: params.iter().map(recurse).collect(),
+                    ret: Box::new(recurse(ret)),
                 },
                 Ty::Closure {
                     params,
                     ret,
                     captures,
                 } => Ty::Closure {
-                    params: params.iter().map(canonicalize_builtin_tags).collect(),
-                    ret: Box::new(canonicalize_builtin_tags(ret)),
-                    captures: captures.iter().map(canonicalize_builtin_tags).collect(),
+                    params: params.iter().map(recurse).collect(),
+                    ret: Box::new(recurse(ret)),
+                    captures: captures.iter().map(recurse).collect(),
                 },
                 Ty::Pointer {
                     is_mutable,
                     pointee,
                 } => Ty::Pointer {
                     is_mutable: *is_mutable,
-                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                    pointee: Box::new(recurse(pointee)),
                 },
                 Ty::Borrow { pointee } => Ty::Borrow {
-                    pointee: Box::new(canonicalize_builtin_tags(pointee)),
+                    pointee: Box::new(recurse(pointee)),
                 },
-                Ty::Task(inner) => Ty::Task(Box::new(canonicalize_builtin_tags(inner))),
+                Ty::Task(inner) => Ty::Task(Box::new(recurse(inner))),
                 other => other.clone(),
             }
         }
@@ -5233,7 +5244,9 @@ impl Checker {
             .zip(impl_sig.params.iter())
             .enumerate()
         {
-            if canonicalize_builtin_tags(expected) != canonicalize_builtin_tags(actual) {
+            if canonicalize_builtin_tags(expected, &self.modules)
+                != canonicalize_builtin_tags(actual, &self.modules)
+            {
                 let param_label = impl_sig.param_names.get(i).map_or_else(
                     || format!("parameter {}", i + 1),
                     |n| format!("parameter `{n}`"),
@@ -5262,8 +5275,8 @@ impl Checker {
             }
         }
 
-        if canonicalize_builtin_tags(&expected_return)
-            != canonicalize_builtin_tags(&impl_sig.return_type)
+        if canonicalize_builtin_tags(&expected_return, &self.modules)
+            != canonicalize_builtin_tags(&impl_sig.return_type, &self.modules)
         {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {

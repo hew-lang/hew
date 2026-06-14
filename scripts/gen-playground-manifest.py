@@ -40,8 +40,13 @@ EXAMPLE_ORDER = {
         "fibonacci",
         "float_arithmetic",
         "float_division",
+        "float_nonfinite_compare",
         "higher_order_functions",
         "mixed_numeric",
+        "stmt_control_flow",
+        "stmt_if",
+        "stmt_if_let",
+        "stmt_match",
         "string_interpolation",
     ),
     "concurrency": (
@@ -83,7 +88,16 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # opcode families; the sandbox VM executes them at native parity.
     "basics/float_arithmetic": "runnable",
     "basics/float_division": "runnable",
+    # Non-finite f64 equality (NaN/±Infinity) executes at native parity now that
+    # the sandbox VM compares f64 operands with IEEE OEQ/ONE semantics.
+    "basics/float_nonfinite_compare": "runnable",
     "basics/mixed_numeric": "runnable",
+    # Statement-position if/match/if-let lower to branch terminators in sandbox
+    # bytecode; all branch bodies are sandbox-admitted side effects.
+    "basics/stmt_control_flow": "runnable",
+    "basics/stmt_if": "runnable",
+    "basics/stmt_if_let": "runnable",
+    "basics/stmt_match": "runnable",
     "basics/string_interpolation": "runnable",
     "types/pattern_matching": "runnable",
     # Actor/supervisor/machine support was added in the sandbox VM; these now compile

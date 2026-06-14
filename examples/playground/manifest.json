@@ -52,6 +52,19 @@
     }
   },
   {
+    "id": "basics/float_nonfinite_compare",
+    "category": "basics",
+    "name": "Float Non-Finite Compare",
+    "description": "IEEE-754 equality on NaN and \u00b1Infinity f64 values",
+    "source_path": "basics/float_nonfinite_compare.hew",
+    "expected_path": "basics/float_nonfinite_compare.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "basics/higher_order_functions",
     "category": "basics",
     "name": "Function Composition",
@@ -78,12 +91,12 @@
     }
   },
   {
-    "id": "basics/string_interpolation",
+    "id": "basics/stmt_control_flow",
     "category": "basics",
-    "name": "String Interpolation",
-    "description": "Format strings with embedded expressions",
-    "source_path": "basics/string_interpolation.hew",
-    "expected_path": "basics/string_interpolation.expected",
+    "name": "Statement-position Control Flow",
+    "description": "if/match/if-let in statement position with side-effecting branches",
+    "source_path": "basics/stmt_control_flow.hew",
+    "expected_path": "basics/stmt_control_flow.expected",
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
@@ -91,11 +104,51 @@
     }
   },
   {
-    "id": "basics/stmt_control_flow",
+    "id": "basics/stmt_if",
     "category": "basics",
-    "name": "Statement-position Control Flow",
-    "description": "if/match/if-let in statement position with side-effecting branches",
-    "source_path": "basics/stmt_control_flow.hew",
+    "name": "Statement If",
+    "description": "Statement-position if with side-effecting branches",
+    "source_path": "basics/stmt_if.hew",
+    "expected_path": "basics/stmt_if.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_if_let",
+    "category": "basics",
+    "name": "Statement If Let",
+    "description": "Statement-position if-let with side-effecting branches",
+    "source_path": "basics/stmt_if_let.hew",
+    "expected_path": "basics/stmt_if_let.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_match",
+    "category": "basics",
+    "name": "Statement Match",
+    "description": "Statement-position match with side-effecting arms",
+    "source_path": "basics/stmt_match.hew",
+    "expected_path": "basics/stmt_match.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/string_interpolation",
+    "category": "basics",
+    "name": "String Interpolation",
+    "description": "Format strings with embedded expressions",
+    "source_path": "basics/string_interpolation.hew",
+    "expected_path": "basics/string_interpolation.expected",
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",

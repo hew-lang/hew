@@ -1,0 +1,20 @@
+//! Post-function-mono layout fixture (owner module). Exports a heap-owning
+//! record `Box` (an owned `string` field, so it carries a non-trivial drop).
+//!
+//! The importer builds LOCAL generic `Holder<T>` / `Slot<T>` via LOCAL generic
+//! factories, instantiated with `lmonobox.Box` as a QUALIFIED type-arg. The
+//! concrete `Holder<Box>` / `Slot<Box>` layouts are then discovered only by the
+//! post-function-mono `layout_mono` pass — its registration key must shorten the
+//! whole type-arg spine to bare names (`Holder$$Box`, not `Holder$$lmonobox.Box`)
+//! or the registered layout diverges from every codegen / MIR lookup key and the
+//! heap-owning Box drop falls through the fail-closed gate.
+
+/// Heap-owning record: an owned `string` field forces a real drop helper.
+type Box {
+    label: string;
+}
+
+/// Build a `Box` joining two labels.
+pub fn make_box(a: string, b: string) -> Box {
+    Box { label: a + b }
+}

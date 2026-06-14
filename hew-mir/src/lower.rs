@@ -4956,6 +4956,27 @@ fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
     hew_hir::shorten_named_arg_qualifiers(ty.clone())
 }
 
+/// Mangle a generic instantiation's LAYOUT key after shortening the whole
+/// type-arg spine to bare (unqualified) payload names — the MIR sibling of
+/// codegen's `mangle_with_shortened_args` and the generic arm of
+/// `user_record_layout_key`.
+///
+/// Every record/enum layout is registered under the bare-normalised spine (the
+/// HIR `EnumLayoutRegistry::insert`, the `layout_mono` pass, and the record
+/// origin-site path all route their `mangled_name` through
+/// `hew_hir::shorten_named_arg_qualifiers`). So every MIR layout LOOKUP that
+/// mangles a key from an expression's type — field access / field store,
+/// `StructInit`, the owned-element and enum-layout reachability walks — MUST
+/// shorten its spine identically, or a key carrying a module-qualified payload
+/// (`Holder<lmonobox.Box>` → `Holder$$lmonobox.Box`) diverges from the
+/// registered `Holder$$Box` and the lookup falls through the fail-closed gate.
+/// Nested qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at
+/// every depth. In-repo unqualified generics are unaffected (a no-op strip).
+fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
+    let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
+    hew_hir::mangle(name, &short_args)
+}
+
 /// Resolve the `record_field_orders` key for a user record type — the key MIR
 /// and codegen must agree on so the value-class admit, the drop-plan validator,
 /// and the synthesised `__hew_record_{clone,drop}_inplace_<R>` thunk all name
@@ -6478,7 +6499,7 @@ impl Builder {
         let key = if elem_args.is_empty() {
             elem_name.clone()
         } else {
-            hew_hir::mangle(elem_name, elem_args)
+            mangle_layout_key(elem_name, elem_args)
         };
         let is_enum = self
             .enum_layouts
@@ -6552,7 +6573,7 @@ impl Builder {
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    hew_hir::mangle(short, args)
+                    mangle_layout_key(short, args)
                 };
                 if !visiting.insert(key.clone()) {
                     return false;
@@ -6626,7 +6647,7 @@ impl Builder {
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    hew_hir::mangle(name, args)
+                    mangle_layout_key(name, args)
                 };
                 self.vec_owned_element_keys.contains(&key)
                     || self.vec_owned_element_keys.contains(name)
@@ -7364,7 +7385,7 @@ impl Builder {
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        hew_hir::mangle(name, args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -8107,7 +8128,7 @@ impl Builder {
                 let record_key = match &expr_ty {
                     ResolvedTy::Named {
                         name: tname, args, ..
-                    } if !args.is_empty() => hew_hir::mangle(tname, args),
+                    } if !args.is_empty() => mangle_layout_key(tname, args),
                     ResolvedTy::Named {
                         name: tname,
                         args,
@@ -8340,7 +8361,7 @@ impl Builder {
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        hew_hir::mangle(name, args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -20517,7 +20538,7 @@ impl Builder {
                         layout.name == *name || crate::model::short_name(&layout.name) == short
                     })
                 } else {
-                    let mangled = hew_hir::mangle(short, args);
+                    let mangled = mangle_layout_key(short, args);
                     self.enum_layouts
                         .iter()
                         .find(|layout| layout.name == mangled || layout.name == *name)
@@ -26801,7 +26822,7 @@ fn ty_is_heap_owning_enum_composite(
             .iter()
             .find(|el| el.name == *name || crate::model::short_name(&el.name) == short)
     } else {
-        let mangled = hew_hir::mangle(short, args);
+        let mangled = mangle_layout_key(short, args);
         enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)

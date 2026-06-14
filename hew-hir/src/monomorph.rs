@@ -463,12 +463,35 @@ impl RecordLayoutRegistry {
     /// Attempt to insert a new layout. Returns `Ok(true)` if a fresh
     /// entry landed, `Ok(false)` if the key was already present, and
     /// `Err(())` if the cap was exceeded.
+    ///
+    /// The dedup key and mangled name are computed from the type-arg spine with
+    /// module qualifiers stripped from every `Named` payload name — identical
+    /// discipline to `EnumLayoutRegistry::insert`. A generic record instantiated
+    /// through an import-use site (`Holder<fs.IoError>`, with C1's authoritative
+    /// qualified `Named.name`) would otherwise register under
+    /// `Holder$$fs.IoError` while every codegen / MIR lookup probes the bare
+    /// `Holder$$IoError`, the miss falling through the fail-closed gate. This
+    /// also keeps the `layout_mono` dedup seed (`seen_records`, populated from
+    /// these keys) congruent with `layout_mono`'s own shortened keys so a record
+    /// already registered here dedups against the post-mono discovery. The outer
+    /// `origin_name` is kept verbatim (codegen keeps the outer name and only
+    /// shortens the args).
     pub(crate) fn insert(
         &mut self,
         key: RecordMonoKey,
         fields: Vec<(String, ResolvedTy)>,
         span: Range<usize>,
     ) -> Result<bool, ()> {
+        let normalized_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
+        let key = RecordMonoKey {
+            type_args: normalized_args,
+            ..key
+        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }

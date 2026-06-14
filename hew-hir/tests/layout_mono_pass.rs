@@ -193,3 +193,16 @@ fn uninstantiated_generic_produces_no_layout() {
         "no Box layout should exist when make is never instantiated: {names:?}"
     );
 }
+
+// The byte-exact congruence of a `layout_mono`-discovered layout carrying a
+// module-QUALIFIED payload (`Holder<lmonobox.Box>` → registered as `Holder$$Box`,
+// the bare key every codegen / MIR lookup probes) is proven two ways:
+//   * end-to-end, through the real `hew run` pkg-path resolver, by
+//     `tests/pkg-import/postmono_qualified_layout.hew` (both the record AND enum
+//     paths); and
+//   * deterministically, at the `register_record` / `register_enum` surface, by
+//     the unit tests in `hew-hir/src/layout_mono.rs`
+//     (`register_record_shortens_qualified_payload_spine` and its enum sibling),
+//     which assert the exact mangle bytes without depending on the cross-module
+//     checker (the in-harness `lower_through_checker_from_program` does not
+//     resolve a qualified type-arg threaded through an explicit annotation).

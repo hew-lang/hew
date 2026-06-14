@@ -49,6 +49,16 @@ fixtures=(
   # WHOLE type-arg spine to bare names, identical to the registration side, or
   # the keys diverge and the drop falls through the codegen fail-closed.
   nested_qualified_payload
+  # A LOCAL generic record (`Holder<T>`) and enum (`Slot<T>`) constructed only
+  # inside LOCAL generic factories, instantiated with the QUALIFIED type-arg
+  # `lmonobox.Box`. The concrete `Holder<Box>` / `Slot<Box>` layouts are
+  # discovered only post-function-mono (the `layout_mono` pass). That pass must
+  # shorten the whole type-arg spine to bare names for both the registration key
+  # and the mangled name, identical to every codegen / MIR layout lookup, or the
+  # qualified `Holder$$lmonobox.Box` registration diverges from the bare
+  # `Holder$$Box` lookup and the heap-owning Box drop / field read falls through
+  # the codegen fail-closed.
+  postmono_qualified_layout
 )
 
 for fixture in "${fixtures[@]}"; do

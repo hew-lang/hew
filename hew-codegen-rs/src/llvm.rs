@@ -10071,7 +10071,13 @@ fn emit_enum_clone_inplace_body<'ctx>(
         .llvm_ctx("enum clone tag switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, &builder, 208, "enum_clone_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "enum_clone_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -10238,7 +10244,13 @@ fn emit_enum_drop_inplace_body<'ctx>(
         .llvm_ctx("enum drop tag switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, &builder, 208, "enum_drop_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "enum_drop_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -10609,7 +10621,13 @@ fn emit_overwrite_collect_enum<'ctx>(
         .build_switch(tag, trap_bb, &cases)
         .llvm_ctx("overwrite collect enum tag switch")?;
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_collect_tag_oob")?;
+    emit_trap_with_code_raw(
+        cx.ctx,
+        cx.llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ow_collect_tag_oob",
+    )?;
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
         let payload = builder
@@ -10900,7 +10918,13 @@ fn emit_overwrite_neutralize_enum<'ctx>(
         .build_switch(tag, trap_bb, &cases)
         .llvm_ctx("overwrite neutralize enum tag switch")?;
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(cx.ctx, cx.llvm_mod, builder, 208, "ow_neutralize_tag_oob")?;
+    emit_trap_with_code_raw(
+        cx.ctx,
+        cx.llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ow_neutralize_tag_oob",
+    )?;
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
         let payload = builder
@@ -19412,7 +19436,11 @@ fn lower_layout_vec_direct_call(
                 .build_conditional_branch(nonzero, next_bb, trap_bb)
                 .llvm_ctx("hew_vec_pop_layout branch")?;
             fn_ctx.builder.position_at_end(trap_bb);
-            emit_trap_with_code(fn_ctx, 205, "hew_vec_pop_layout_empty_trap")?;
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_INDEX_OUT_OF_BOUNDS as u64,
+                "hew_vec_pop_layout_empty_trap",
+            )?;
             return Ok(());
         }
         "hew_vec_contains_thunk" => {
@@ -33109,7 +33137,7 @@ fn lower_terminator<'ctx>(
                 .llvm_ctx("send status branch")?;
 
             fn_ctx.builder.position_at_end(send_fail_bb);
-            emit_trap_with_code(fn_ctx, 206, "actor_send_fail")?;
+            emit_trap_with_code(fn_ctx, HEW_TRAP_ACTOR_SEND_FAILED as u64, "actor_send_fail")?;
         }
         Terminator::Ask {
             actor,
@@ -39415,7 +39443,13 @@ fn emit_ser_enum<'ctx>(
         .llvm_ctx("ser enum switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "ser_enum_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "ser_enum_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);
@@ -39850,7 +39884,13 @@ fn emit_de_enum<'ctx>(
         .llvm_ctx("de enum switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(ctx, llvm_mod, builder, 208, "de_enum_tag_oob")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "de_enum_tag_oob",
+    )?;
 
     for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
         builder.position_at_end(variant_bbs[idx]);

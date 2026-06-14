@@ -345,3 +345,140 @@ fn emitted_trap_codes_equal_runtime_constants() {
     // Both still single-source their code from the runtime constant at the
     // emit site (the build-level G2 guard covers them).
 }
+
+// ---------------------------------------------------------------------------
+// Source self-scan guard: no raw integer literal in emit_trap_with_code calls.
+//
+// The value-driven `emitted_trap_codes_equal_runtime_constants` test cannot
+// exercise the synthesised enum-tag-OOB / ser/de-tag-OOB helpers that call
+// `emit_trap_with_code_raw` directly (they fire only inside synthesised bodies
+// that the MIR fixture pipeline never emits). This structural guard fills the
+// gap: it scans `llvm.rs` at compile time and fails if ANY call to
+// `emit_trap_with_code` or `emit_trap_with_code_raw` passes a bare integer
+// literal as the code argument, rather than a `HEW_TRAP_*` named constant.
+//
+// Algorithm:
+//  1. Load the source via `include_str!` so the check is always in sync.
+//  2. Strip line-comment tails (`//` to end of line) so doc-comment mentions
+//     of numeric codes do not false-positive. String contents in this file
+//     are only label strings ("some_label"), never integer-looking values, so
+//     simple `//`-stripping is sufficient.
+//  3. For each `emit_trap_with_code` token (either variant) that is NOT a `fn`
+//     definition, locate the argument list (up to 8 lines ahead) and assert
+//     that no argument is a bare decimal integer (i.e., a token that is only
+//     digits, possibly surrounded by whitespace and followed by a comma or `)`,
+//     WITHOUT a preceding `HEW_TRAP_` prefix or a following `as u64` cast).
+// ---------------------------------------------------------------------------
+
+/// Fail if any `emit_trap_with_code[_raw]` call in llvm.rs passes a bare
+/// integer literal as the code argument instead of a `HEW_TRAP_*` constant.
+///
+/// Works for both single-line and multi-line call forms: for each call site
+/// (not a `fn` definition), the argument list is extracted by scanning forward
+/// until the parens balance, then each comma-separated argument is inspected.
+/// An argument that is solely decimal digits (no leading identifier, no
+/// trailing `as`) is a bare integer — a violation.
+#[test]
+fn no_raw_integer_in_emit_trap_with_code_calls() {
+    // Include llvm.rs at compile time so the path is always resolved against
+    // the actual source tree, regardless of test working directory.
+    let source = include_str!("../src/llvm.rs");
+
+    // Strip single-line comment tails so doc-comment mentions like
+    // `hew_trap_with_code(HEW_TRAP_ACTOR_SEND_FAILED=206)` in `///` lines
+    // do not produce false positives. String literal contents in llvm.rs are
+    // only label strings (e.g. "enum_clone_tag_oob"), never integer-looking,
+    // so `//`-stripping without full string-awareness is sufficient here.
+    let stripped: String = source
+        .lines()
+        .map(|line| {
+            if let Some(idx) = line.find("//") {
+                &line[..idx]
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let needle = "emit_trap_with_code";
+    let mut violations: Vec<String> = Vec::new();
+    let mut search_start = 0usize;
+
+    while let Some(rel) = stripped[search_start..].find(needle) {
+        let call_start = search_start + rel;
+
+        // Determine the line number for diagnostics.
+        let line_num = stripped[..call_start].lines().count() + 1;
+
+        // Skip function definitions: `fn emit_trap_with_code` — look back a
+        // few chars for `fn `.
+        let look_back = call_start.saturating_sub(4);
+        if stripped[look_back..call_start].contains("fn ") {
+            search_start = call_start + needle.len();
+            continue;
+        }
+
+        // Advance past the needle to find the opening `(`.
+        let after_needle = call_start + needle.len();
+        // The name may be `emit_trap_with_code` or `emit_trap_with_code_raw`;
+        // skip any `_raw` suffix and whitespace to reach `(`.
+        let paren_pos = match stripped[after_needle..].find('(') {
+            Some(p) => after_needle + p,
+            None => {
+                search_start = after_needle;
+                continue;
+            }
+        };
+
+        // Extract balanced argument list by scanning for matching `)`.
+        let args_start = paren_pos + 1;
+        let mut depth = 1usize;
+        let mut args_end = args_start;
+        for (i, ch) in stripped[args_start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        args_end = args_start + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let args_text = &stripped[args_start..args_end];
+
+        // Split arguments on top-level commas (no nested paren splitting needed
+        // for these calls; the args are simple expressions, not closures).
+        let args: Vec<&str> = args_text.split(',').map(str::trim).collect();
+
+        // `emit_trap_with_code(fn_ctx, CODE, label)` → code is arg index 1
+        // `emit_trap_with_code_raw(ctx, mod, builder, CODE, label)` → index 3
+        // We check EVERY argument for the bare-integer smell rather than
+        // hard-coding the index, so the guard works even if call signatures evolve.
+        for arg in &args {
+            let tok = arg.trim();
+            // A bare integer: all digits, length >= 3 (trap codes are 3-digit),
+            // no alphabetic prefix (would indicate a named constant), no `as`
+            // following (would indicate a cast expression on a named constant).
+            let is_bare_integer =
+                !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) && tok.len() >= 3;
+
+            if is_bare_integer {
+                violations.push(format!(
+                    "llvm.rs line {line_num}: call `emit_trap_with_code[_raw]` passes raw integer `{tok}` as code arg — use a HEW_TRAP_* constant instead"
+                ));
+            }
+        }
+
+        search_start = after_needle;
+    }
+
+    assert!(
+        violations.is_empty(),
+        "emit_trap_with_code[_raw] calls with raw integer literal code args found in llvm.rs:\n{}",
+        violations.join("\n")
+    );
+}

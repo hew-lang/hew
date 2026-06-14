@@ -4544,16 +4544,18 @@ fn resolve_ty<'ctx>(
         // Always resolve via the normalised (short) args so every use of
         // `Result<Listener, fs.IoError>` maps to the same LLVM struct as
         // `Result<Listener, IoError>`.
-        let effective_args: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization)
-        {
-            std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
-        } else {
-            std::borrow::Cow::Borrowed(args)
-        };
+        // Layout-key mangling goes through the single codegen authority
+        // `mangle_with_shortened_args` (NOT a direct `mangle`): it shortens the
+        // whole type-arg spine to bare names before mangling, matching the
+        // enum/record layout-REGISTRATION spine. Routing here (rather than
+        // precomputing shortened args and calling `mangle` directly) keeps the
+        // one-authority rule structurally intact — a future raw-args layout-key
+        // mangle introduced near this block is the regression the
+        // `mangle_with_shortened_args`-routing guard catches.
         let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
             std::borrow::Cow::Borrowed(name.as_str())
         } else {
-            std::borrow::Cow::Owned(mangle(name, &effective_args))
+            std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
         };
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
@@ -4569,7 +4571,7 @@ fn resolve_ty<'ctx>(
                 return Ok((*st).into());
             }
         } else {
-            let short_key = mangle(short_name(name), &effective_args);
+            let short_key = mangle_with_shortened_args(short_name(name), args);
             if let Some(st) = record_layouts.get(short_key.as_str()) {
                 return Ok((*st).into());
             }
@@ -48697,6 +48699,123 @@ fn main() {
         // string(1) + bytes(1) + vec(1) + inner record(1) + enum max(0, 2)
         // + bitcopy(0) + io handle(0) = 6
         assert_eq!(cap, 6, "capacity must sum records and max enum variants");
+    }
+
+    /// `mangle_with_shortened_args` is the single codegen layout-key authority:
+    /// every layout-map lookup key must shorten the WHOLE type-arg spine to bare
+    /// names before mangling, matching the enum/record layout-REGISTRATION spine.
+    /// This pins that the authority is byte-identical to the (now-removed) inline
+    /// "shorten `effective_args`, then `mangle`" path the `resolve_ty` lookup keys
+    /// used to build — so the structural-purity reroute through the authority is
+    /// proven behaviour-preserving, not just asserted. A nested qualified payload
+    /// (`Result<Vec<fs.Foo>, _>`) is shortened at every depth.
+    #[test]
+    fn mangle_authority_matches_inline_shortened_mangle() {
+        // The inline path `resolve_ty` previously used at the layout-key sites:
+        // compute `effective_args` by shortening every arg when ANY needs it,
+        // then `mangle`. The authority must reproduce this byte-for-byte.
+        fn inline_legacy_key(name: &str, args: &[ResolvedTy]) -> String {
+            let effective: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization)
+            {
+                std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
+            } else {
+                std::borrow::Cow::Borrowed(args)
+            };
+            mangle(name, &effective)
+        }
+
+        let q = |n: &str, a: Vec<ResolvedTy>| ResolvedTy::named_user(n, a);
+        let cases: Vec<(&str, Vec<ResolvedTy>)> = vec![
+            // bare (no normalisation needed) — Cow::Borrowed branch
+            ("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
+            // top-level qualified payload — `fs.IoError` must shorten to `IoError`
+            (
+                "Result",
+                vec![q("Listener", vec![]), q("fs.IoError", vec![])],
+            ),
+            // NESTED qualified payload — shortened at depth, not just top level
+            (
+                "Result",
+                vec![
+                    ResolvedTy::named_user("Vec", vec![q("fs.Foo", vec![])]),
+                    q("string", vec![]),
+                ],
+            ),
+            // mixed: one qualified, one already-bare arg
+            ("Option", vec![q("json.Value", vec![])]),
+        ];
+
+        for (name, args) in &cases {
+            assert_eq!(
+                mangle_with_shortened_args(name, args),
+                inline_legacy_key(name, args),
+                "authority diverged from the inline shortened-mangle path for `{name}` {args:?}"
+            );
+            // And the short-name spelling (the fallback key) must match too.
+            let short = short_name(name);
+            assert_eq!(
+                mangle_with_shortened_args(short, args),
+                inline_legacy_key(short, args),
+                "authority diverged on the short-name fallback key for `{name}` {args:?}"
+            );
+        }
+    }
+
+    /// Structural-purity guard: every layout-key mangle inside `resolve_ty` must
+    /// route through the codegen authority `mangle_with_shortened_args`, never a
+    /// direct `mangle(...)`. A direct `mangle` on raw (un-shortened) args would
+    /// build a key off the qualified spine and miss the bare-keyed layout entry —
+    /// the exact regression class C1 closed. A whole-file "exactly one mangle()"
+    /// scan would false-positive on the file's many legitimate symbol/method/
+    /// thunk mangles, so this guard is scoped to the `resolve_ty` body only,
+    /// where every `mangle` is a layout-key mangle and must use the authority.
+    /// `mangle_with_shortened_args(` is NOT flagged: it shares no `mangle(`
+    /// substring (it is `mangle_w...`), and line comments are stripped first so
+    /// prose mentioning `mangle(name, args)` does not trip the scan.
+    #[test]
+    fn resolve_ty_layout_keys_route_through_mangle_authority() {
+        let src = include_str!("llvm.rs");
+        // Find the `resolve_ty` definition and brace-match its body.
+        let sig = "fn resolve_ty<'ctx>(";
+        let sig_at = src.find(sig).expect("resolve_ty signature present");
+        let body_open = src[sig_at..]
+            .find('{')
+            .map(|o| sig_at + o)
+            .expect("resolve_ty opening brace");
+        let mut depth = 0usize;
+        let mut body_end = body_open;
+        for (i, ch) in src[body_open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            body_end > body_open,
+            "failed to brace-match resolve_ty body"
+        );
+        let body = &src[body_open..=body_end];
+
+        // Strip line comments so prose mentioning `mangle(...)` is not scanned;
+        // then assert no direct `mangle(` call survives. The authority call
+        // `mangle_with_shortened_args(` contains no `mangle(` substring.
+        let offending: Vec<&str> = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .filter(|code| code.contains("mangle("))
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "resolve_ty must build layout keys via `mangle_with_shortened_args`, \
+             never a direct `mangle(...)`; offending line(s): {offending:?}"
+        );
     }
 }
 

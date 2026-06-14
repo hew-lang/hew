@@ -235,6 +235,32 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "import std::text::regex;\nfn main() {\n    let r = regex.new(\"a.c\");\n    println(r.is_match(\"abc\"));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
+    Construct {
+        id: "statement-position `if`",
+        // Now lowered: lower_stmt_if runs the branch for its side effects and
+        // discards the result (unit). Pinned to the stmt_if case.
+        probe: "fn main() {\n    let x: i64 = 1;\n    if x == 1 {\n        println(\"yes\");\n    }\n    return;\n}\n",
+        coverage: Coverage::Parity("stmt_if"),
+    },
+    Construct {
+        id: "statement-position `match`",
+        // Now lowered: lower_stmt_match dispatches each arm for its side effects.
+        // The scrutinee is an enum (the runnable match form) — a scalar-literal
+        // scrutinee is a separate, still-NotYetRunnable construct (`enum.tag`
+        // dispatch traps on a non-enum value), so this probe isolates the
+        // statement-position lowering #1901 made runnable.
+        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = Green;\n    match c {\n        Red => println(\"stop\"),\n        Green => println(\"go\"),\n    }\n    return;\n}\n",
+        coverage: Coverage::Parity("stmt_match"),
+    },
+    Construct {
+        id: "statement-position `if let`",
+        // Now lowered: lower_stmt_if_let runs the matched/else branch for its side
+        // effects. The pattern is a constructor-with-binding (the runnable form
+        // the stmt_if_let case proves); a unit-variant `if let` binds no payload
+        // and exercises a different path. Pinned to the stmt_if_let case.
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = Value(7);\n    if let Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
+        coverage: Coverage::Parity("stmt_if_let"),
+    },
 
     // ───────────── Admitted but NOT yet runnable (fail-loud) ─────────────
     // Each compiles to bytecode then TRAPS on the VM (non-zero exit). These are
@@ -242,32 +268,41 @@ const CONSTRUCTS: &[Construct] = &[
     // They fail LOUD (trap), never silent-wrong. The honesty test runs each and
     // asserts it really does not run cleanly; making one runnable trips it.
     Construct {
-        id: "float arithmetic (`f64 + f64`) — G1 float class",
-        // lower_binary maps Add/Sub/Mul/Div to i64.checked_* regardless of
-        // operand type; the VM has no i64 op for f64 operands and traps. Fixed
-        // type-aware lowering is the SP-1 lane; until then this is fail-loud.
+        id: "float arithmetic (`f64 + f64`) — G1 float class closed",
+        // Was the G1 silent-wrong hole: lower_binary mapped Add/Sub/Mul/Div to
+        // i64.checked_* regardless of operand type. The emitter now dispatches the
+        // f64.* opcode family by operand type, so f64 add/sub/mul run at parity.
         probe: "fn main() {\n    let a: f64 = 1.5;\n    let b: f64 = 2.5;\n    println(a + b);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "lower_binary emits i64.checked_* for f64 operands; f64 op family lands with SP-1 type-aware numeric lowering",
-        },
+        coverage: Coverage::Parity("float_arithmetic"),
     },
     Construct {
         id: "float division",
+        // f64 division/remainder lowers to the f64.* opcode family (IEEE-754,
+        // never trap-on-zero). Pinned to the float_division case.
         probe: "fn main() {\n    let a: f64 = 7.0;\n    let b: f64 = 2.0;\n    println(a / b);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "f64 division lowers to i64.checked_div; SP-1 type-aware lowering supplies f64.div",
-        },
+        coverage: Coverage::Parity("float_division"),
     },
     Construct {
-        id: "unary float negate (`-f64`) — G1 float class",
-        // lower_expr's Unary arm emits i64.neg unconditionally; -3.5 traps.
+        id: "unary float negate (`-f64`) — G1 float class closed",
+        // Unary::Negate is now type-directed: f64 operands emit f64.neg. The
+        // float_arithmetic example carries the `-f64` line.
         probe: "fn main() {\n    let a: f64 = 3.5;\n    println(-a);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Unary::Negate emits i64.neg regardless of type; f64.neg lands with SP-1",
-        },
+        coverage: Coverage::Parity("float_arithmetic"),
+    },
+    Construct {
+        id: "non-finite f64 comparison (`==`/`!=`)",
+        // f64 `==`/`!=` now mirror native `fcmp OEQ`/`ONE`: NaN never equal,
+        // ±Infinity compare by sign, -0.0 == 0.0. Pinned to float_nonfinite_compare.
+        probe: "fn main() {\n    let nan: f64 = 0.0 / 0.0;\n    println(nan == nan);\n}\n",
+        coverage: Coverage::Parity("float_nonfinite_compare"),
+    },
+    Construct {
+        id: "mixed integer + float arithmetic in one program",
+        // The emitter dispatches the i64.checked_* and f64.* opcode families per
+        // operand type within the same program: `rows * cols` stays on the checked
+        // i64 path, `width * height` takes the f64 path. Pinned to mixed_numeric.
+        probe: "fn main() {\n    let rows: i64 = 7;\n    let cols: i64 = 3;\n    let width: f64 = 2.5;\n    let height: f64 = 4.0;\n    println(f\"int {rows * cols}\");\n    println(f\"float {width * height}\");\n}\n",
+        coverage: Coverage::Parity("mixed_numeric"),
     },
     Construct {
         id: "boolean not (`!b`)",
@@ -338,12 +373,19 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
-        id: "expression-position if-let",
-        probe: "enum Box { Has(i64); Empty; }\nfn main() {\n    let b = Has(9);\n    let v = if let Has(x) = b { x } else { 0 };\n    println(v);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::IfLet has no emit arm -> emit_unsupported -> trap",
-        },
+        id: "expression-statement if-let (result discarded)",
+        // `Expr::IfLet` as a trailing/sole function-body expression: the parser
+        // emits `Stmt::Expression(Expr::IfLet)`. lower_expr now routes it through
+        // lower_stmt_if_let for side effects and yields unit (the result is
+        // discarded), so a function body that is a single if-let runs at parity.
+        // The `announce` helper in stmt_if_let.hew is exactly this form.
+        //
+        // NOTE: if-let in *value* position (`let v = if let .. { x } else { y }`)
+        // is NOT this construct — its result is always unit, so consuming it is a
+        // separate, not-yet-lowered concern (value-producing if-let needs the arm
+        // values joined on a result local, which is not yet emitted).
+        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(Has(9));\n    describe(Empty);\n}\n",
+        coverage: Coverage::Parity("stmt_if_let"),
     },
     Construct {
         id: "numeric cast (`as`)",
@@ -407,27 +449,6 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "type Count = i64;\nfn main() {\n    println(5);\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
-        },
-    },
-    Construct {
-        id: "statement-position `if`",
-        probe: "fn main() {\n    let x: i64 = 1;\n    if x == 1 {\n        println(\"yes\");\n    }\n    return;\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "statement_control_flow_rejected",
-        },
-    },
-    Construct {
-        id: "statement-position `match`",
-        probe: "fn main() {\n    let x: i64 = 2;\n    match x {\n        1 => println(\"one\"),\n        _ => println(\"other\"),\n    }\n    return;\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "statement_control_flow_rejected",
-        },
-    },
-    Construct {
-        id: "statement-position `if let`",
-        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = Red;\n    if let Red = c {\n        println(\"red\");\n    }\n    return;\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "statement_control_flow_rejected",
         },
     },
     Construct {
@@ -588,7 +609,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 21;
+    const RUNNABLE_BASELINE: usize = 31;
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))
@@ -761,7 +782,7 @@ mod ast_surface {
             Expr::MapLiteral { .. } => Some("map literal (`{\"k\": v}`)"),
             Expr::Block(_) => Some("nested expr-if returning string"),
             Expr::If { .. } => Some("nested expr-if returning string"),
-            Expr::IfLet { .. } => Some("expression-position if-let"),
+            Expr::IfLet { .. } => Some("expression-statement if-let (result discarded)"),
             Expr::Match { .. } => Some("match with constructor-payload patterns"),
             Expr::Lambda { .. } => Some("closure / lambda value"),
             Expr::Spawn { .. } => Some("actor spawn + receive + mutable state"),

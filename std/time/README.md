@@ -1,9 +1,7 @@
-# hew-std-time
+# std::time
 
-Hew std::time — cron expression scheduling and datetime operations.
-
-This crate provides the native runtime support for two Hew standard-library
-modules:
+The time module group within Hew's `hew-std` crate, providing native runtime
+support for two Hew standard-library modules:
 
 - `std::time::cron` — cron expression parsing and next-occurrence scheduling.
 - `std::time::datetime` — date/time formatting, parsing, and component

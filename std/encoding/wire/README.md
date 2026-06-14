@@ -1,4 +1,4 @@
-# hew-std-encoding-wire
+# std::encoding::wire
 
 > **Retired-by-doctrine note (v0.5):** The legacy HBF byte-layout helpers
 > (`encode_header`, framing) in this module are no longer on the

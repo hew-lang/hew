@@ -267,7 +267,7 @@ integration-test infrastructure at `0b955839` is:
 | `hew-wasm/tests/v05_wasm_coverage.rs` | v0.5 fixture coverage via `hew_wasm` API (runs native target only) |
 | `hew-runtime/src/wasm_parity_tests.rs` | Runtime parity tests (actor stop lifecycle, added by `06a481de`) |
 
-**Test gaps still open:** #1678 (include `hew-std-encoding-toml` in wasm32-wasip1
+**Test gaps still open:** #1678 (include toml module in wasm32-wasip1
 runtime archives) and #1679 (periodic timer and timeout e2e wasm tests) have no
 direct Rust integration-test equivalents yet. These gaps are tracked in the
 respective issues and are not blocked by this audit.

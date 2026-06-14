@@ -22,9 +22,11 @@ extern crate hew_runtime;
 // wire-codec and dependency-free modules. Every native-only module is gated
 // behind `cfg(not(wasm))` because its crates (ring, quinn/tokio's socket2,
 // flate2, getrandom, argon2, aws-lc, …) hard-`compile_error!` on wasm32. This
-// preserves the pre-consolidation behaviour, where only the json/yaml/toml
-// archives were ever built for wasm. The .hew-path module resolution and the
-// native dead-strip are unaffected; this only narrows what compiles for wasm.
+// preserves the pre-consolidation surface: wasm exports the pure-Rust codecs
+// (json, yaml, toml, csv, hex, base64, log, math, mem, uuid) and dependency-free
+// modules, while native-only deps remain behind cfg gates. The .hew-path module
+// resolution and the native dead-strip are unaffected; this only narrows what
+// compiles for wasm.
 
 // encoding — wire codecs (wasm + native)
 pub mod json;

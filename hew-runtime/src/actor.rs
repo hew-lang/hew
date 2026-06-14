@@ -1660,6 +1660,27 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     let installed_prev = crate::execution_context::set_current_context(&raw mut execution_context);
     debug_assert_eq!(installed_prev, prev_context);
 
+    // Bind this thread to the owning runtime for the terminate body, beside the
+    // execution-context install and torn down on the same exit edge below. The
+    // terminate callback runs user `on(stop)` code that can touch runtime
+    // authorities (spawn/send), so it must resolve the right `RuntimeInner`
+    // through TLS rather than relying on the caller's binding. Worker-thread
+    // callers are already `enter()`-ed (this re-enters the same default); the
+    // install matters for any terminate path reached without a worker `enter()`.
+    // Single-runtime: the entered runtime equals the default, so behaviour is
+    // preserved. `None` when no runtime is installed (e.g. a bare terminate unit
+    // test) — the existing fallback covers that, and the guard drops as a no-op.
+    // The guard is held until the matching `set_current_context(prev_context)`
+    // restore at the end of this function, so it covers every normal/panic/trap
+    // exit edge (lifecycle-symmetry).
+    //
+    // SAFETY: `rt_default()` borrows the installed default runtime, which is
+    // process-lifetime once `install_default` has run (it is detached only by
+    // `take_default` at cleanup, after all workers join). It therefore outlives
+    // this guard and every `rt_current()` deref taken through it during the
+    // terminate body, satisfying `enter`'s lifetime obligation.
+    let _rt_guard = crate::runtime::rt_default().map(|rt| unsafe { crate::runtime::enter(rt) });
+
     // Set up crash recovery (returns null on non-worker threads).
     // SAFETY: `actor` is valid and in a terminal state; null msg is fine.
     let jmp_buf_ptr = unsafe { crate::signal::prepare_dispatch_recovery(actor, ptr::null_mut()) };

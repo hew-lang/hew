@@ -178,6 +178,26 @@ pub fn lookup_named_method_sig(
         })
 }
 
+/// Instantiate a snapshotted builtin `Result`/`Option` method signature against
+/// the receiver's type arguments.
+///
+/// `sig` is the canonical signature captured from the compiled-in
+/// `std/result.hew` / `std/option.hew` impl block (see
+/// `Checker::builtin_result_option_method_sigs`). `type_params` are the impl's
+/// type parameters (`["T", "E"]` for `Result`, `["T"]` for `Option`) and
+/// `type_args` are the receiver's concrete arguments. Substitution mirrors
+/// [`lookup_named_method_sig`] so a builtin receiver dispatch produces the same
+/// instantiated signature it would have before a user `type Result`/`type
+/// Option` collision could shadow the stdlib entry in `fn_sigs`.
+#[must_use]
+pub fn instantiate_builtin_result_option_method_sig(
+    sig: &FnSig,
+    type_params: &[String],
+    type_args: &[Ty],
+) -> FnSig {
+    instantiate_named_method_sig(sig.clone(), type_params, type_args)
+}
+
 /// Look up a builtin method signature for `Sender`, `Receiver`, `Stream`, or `Sink`.
 #[must_use]
 pub fn lookup_builtin_method_sig(receiver_ty: &Ty, method: &str) -> Option<FnSig> {

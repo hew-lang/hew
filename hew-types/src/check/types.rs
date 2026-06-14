@@ -2437,6 +2437,24 @@ pub struct Checker {
     /// Moved into the output at `check_program` exit after `subst.resolve`
     /// settles inference variables.
     pub(super) actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
+    /// Canonical builtin `Result`/`Option` receiver method signatures, snapshotted
+    /// from the compiled-in `std/result.hew` / `std/option.hew` impl blocks at
+    /// builtin-registration time, keyed by `(builtin discriminant, method name)`.
+    ///
+    /// The builtin `Result<T, E>` / `Option<T>` nominals register their methods
+    /// (`is_ok`, `unwrap`, …) into `fn_sigs` under the bare keys
+    /// `Result::<method>` / `Option::<method>`. A user package may declare its own
+    /// `pub type Result` with colliding methods, which land under the SAME bare
+    /// keys and clobber the stdlib entries by registration order — so `fn_sigs`
+    /// can no longer name the canonical builtin surface for a builtin receiver.
+    ///
+    /// This table is populated ONLY from the stdlib source and is never written
+    /// by user-impl registration, so it is the origin-based source of truth for
+    /// dispatch on a builtin `Result`/`Option` receiver. Each stored `FnSig`
+    /// retains its impl-level `type_params` and `extern_symbol`, so call sites
+    /// instantiate it against the receiver's type arguments exactly as
+    /// `lookup_named_method_sig` would have.
+    pub(super) builtin_result_option_method_sigs: HashMap<(crate::BuiltinType, String), FnSig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2631,6 +2649,7 @@ impl Checker {
             lang_items: crate::LangItemRegistry::new(),
             lang_item_spans: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
+            builtin_result_option_method_sigs: HashMap::new(),
         }
     }
 

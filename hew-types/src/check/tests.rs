@@ -829,6 +829,124 @@ fn bare_await_actor_ask_in_match_still_types_as_result() {
 }
 
 #[test]
+fn user_method_on_builtin_result_wrapper_is_rejected() {
+    // A user package may declare its own `type Result` and `impl` methods on
+    // it (the sqlite ecosystem package does exactly this). An actor ask
+    // (`await db.query(...)`) is typed as the builtin wrapper
+    // `Result<UserResult, AskError>`. Calling the user method `free` on that
+    // wrapper must be rejected: `free` is not part of the builtin `Result`
+    // surface, and admitting it (via the bare-name `Result::free` key the user
+    // impl registers in `fn_sigs`) produces an ill-typed call that passes the
+    // wrapper aggregate where the inner success value is required — codegen
+    // then rejects the LLVM module. The checker must reject this with an
+    // `UndefinedMethod` diagnostic naming the builtin `Result<...>` receiver.
+    let output = check_source(
+        r#"
+        type Result { handle: i64; }
+        impl Result {
+            fn free(self) {}
+        }
+        actor Db {
+            receive fn query(sql: string) -> Result {
+                Result { handle: 0 }
+            }
+        }
+        fn main() {
+            let db = spawn Db;
+            let r = await db.query("SELECT 1");
+            r.free();
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedMethod
+                && error.message.contains("no method `free`")
+                && error.message.contains("Result<")
+        }),
+        "user method `free` on a builtin `Result<...>` ask-wrapper must be \
+         rejected as UndefinedMethod; got: {:#?}",
+        output.errors
+    );
+    // The colliding user method must NOT be recorded as a dispatch rewrite —
+    // that is the ill-typed call codegen-front would reject.
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::free"
+        )),
+        "no `Result::free` rewrite must be recorded for a builtin Result \
+         receiver; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
+    // A user package may declare its own `type Result` with a method whose name
+    // COLLIDES with the builtin surface but whose signature differs — here
+    // `fn is_ok(self) -> i64`. Both land in `fn_sigs` under the bare key
+    // `Result::is_ok`. An actor ask (`await d.process(5)`) is typed as the
+    // builtin wrapper `Result<i64, AskError>`. Calling `r.is_ok()` on that
+    // builtin receiver must resolve to the BUILTIN `bool`-returning method, not
+    // the user `i64`-returning one.
+    //
+    // Resolution must be origin-based, not a name allowlist: `is_ok` IS a
+    // builtin method name, so a name-only gate would still consult `fn_sigs`
+    // and select the colliding user `is_ok` — the `let ok: bool` annotation
+    // then fails with `found i64`. Confining the lookup to the stdlib snapshot
+    // for builtin `Result`/`Option` receivers selects the builtin method for
+    // ALL method names.
+    let output = check_source(
+        r"
+        type Result { handle: i64; }
+        impl Result {
+            fn is_ok(self) -> i64 { self.handle }
+        }
+        actor Doubler {
+            receive fn process(n: i64) -> i64 { n * 2 }
+        }
+        fn main() {
+            let d = spawn Doubler;
+            let r = await d.process(5);
+            let ok: bool = r.is_ok();
+            let v = r.unwrap();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "builtin Result methods on an actor-ask wrapper must resolve to the \
+         builtin surface even when a user `type Result` declares a colliding \
+         `is_ok` with a different return type; got: {:#?}",
+        output.errors
+    );
+    // The `is_ok` call must lower to the builtin runtime symbol, never the user
+    // `Result::is_ok` method key. A user-method rewrite here is the ill-typed
+    // call codegen-front would reject.
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_result_is_ok"
+        )),
+        "`r.is_ok()` on a builtin Result receiver must lower to \
+         `hew_result_is_ok`; got: {:#?}",
+        output.method_call_rewrites
+    );
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::is_ok"
+        )),
+        "no user `Result::is_ok` rewrite must be recorded for a builtin Result \
+         receiver; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
 fn constructor_pattern_against_non_enum_still_errors() {
     // Negative: an `Ok`/`Err` pattern against a plain integer literal must
     // still produce a "cannot match non-enum type" diagnostic. The block-unwrap

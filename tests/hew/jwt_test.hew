@@ -39,3 +39,31 @@ fn test_decode_insecure_returns_payload_without_verification() {
     let token = jwt.encode(payload, "fixture-secret", "HS256");
     testing.assert_eq_str(jwt.decode_insecure(token), payload);
 }
+
+// ── Fail-closed error path (finding JWT-3) ────────────────────────────
+// A malformed token must surface the typed `TokenMalformed` error, never
+// decode as success. This proves the fail-closed direction on the compiled
+// path: an error never reads as Ok.
+
+#[test]
+fn test_try_decode_malformed_token_surfaces_token_malformed() {
+    match jwt.try_decode("not-a-real-jwt", "fixture-secret", "HS256") {
+        Ok(_) => panic("malformed token must not decode as Ok"),
+        Err(err) => match err {
+            JwtError::TokenMalformed => testing.assert_true(true),
+            _ => panic(f"expected TokenMalformed, got: {jwt.error_message(err)}"),
+        },
+    }
+}
+
+#[test]
+fn test_last_error_is_token_malformed_after_malformed_decode() {
+    match jwt.try_decode("...", "fixture-secret", "HS256") {
+        Ok(_) => panic("garbage token must not decode as Ok"),
+        Err(_) => match jwt.last_error() {
+            JwtError::TokenMalformed => testing.assert_true(true),
+            JwtError::None => panic("last_error must not read None after a failed decode"),
+            other => panic(f"expected TokenMalformed, got: {jwt.error_message(other)}"),
+        },
+    }
+}

@@ -2,7 +2,104 @@
 
 ## [Unreleased]
 
-### Fixed — `hew eval`
+## [0.5.1] — 2026-06-14
+
+v0.5.1 is a correctness and trust release. It ships no new user-language
+surface; every change closes a gap in what 0.5.0 promised or hardens the
+substrate those promises rest on. The companion narrative release notes live at
+[`docs/releases/v0.5.1.md`](docs/releases/v0.5.1.md). This entry is the
+structured changelog.
+
+### Fixed — ownership and memory safety
+
+- **Ask-reply lifecycle is owned.** A per-reply-type destructor thunk is
+  registered on the reply channel at ask time, so an owned reply value is
+  reclaimed on every non-consume edge — delivered-but-never-read teardown,
+  cancellation before delivery, and producer-side allocation failure — on both
+  the native and WASM channel paths. (#1869, closes #1739, #1735)
+- **Nested collection elements own their storage.** Pushing a `Vec`, `HashMap`,
+  or `HashSet` into an outer `Vec` now deep-copies through the owned descriptor
+  ABI instead of sharing backing storage, removing a silent aliasing hazard.
+  (#1868, closes #1722)
+- **Supervised-restart safety.** The checker now rejects owned-heap types
+  (`String`, `Vec`, `Bytes`, `HashMap`, and similar) as supervised child init
+  args (`E_SUPERVISOR_INIT_ARG_NON_BITCOPY`), closing a use-after-free on
+  restart from the byte-copy template. Pool children are exempt. (#1852,
+  closes #1719)
+- **Three stdlib FFI defects closed.** `std/misc/uuid` aligns
+  `hew_uuid_parse` to its `i32` return; `std/crypto/jwt` fails closed to
+  `TokenMalformed` on an unexpected error-slot discriminant; and
+  `std/crypto/sign` promotes the ed25519 fixed-buffer length checks from
+  release-stripped `debug_assert!` to hard checks in every profile through a
+  single checked-copy seam. (#1888)
+
+### Fixed — runtime
+
+- **Droppable runtime.** The process-global runtime statics now live as fields
+  of a single droppable `RuntimeInner` resolved through an explicit-install
+  lifecycle; `rt_current()` fails closed when no runtime is installed rather
+  than materializing one lazily, and teardown drops the runtime last. (#1874)
+- **Thread-local current runtime.** Worker threads install the owning runtime
+  on entry via a thread-local slot behind a borrow-based RAII `enter()` guard,
+  preserving the single-runtime observable behaviour with no added refcount.
+  (#1891)
+- **Orderly WASM teardown.** The runtime cleanup chain now fires on all normal
+  WASM exits, including short-lived programs that exit via `_start` before the
+  post-main cleanup hooks. (#1851, closes #1718)
+- **SWIM clock determinism on Linux.** The SWIM failure detector runs on an
+  injectable clock so the driven-clock test advances deterministically without
+  depending on wall-clock scheduling. (#1846, #1872, closes #1716)
+
+### Fixed — compiler fail-closed guarantees
+
+- **Single-source trap codes.** The runtime `HEW_TRAP_*` constants are the
+  single source for all trap-code values; codegen reads them directly and a
+  source self-scan test rejects raw-literal trap emission, closing the
+  unclassified-exit gap for trap code 209. (#1883)
+- **`AskError::DecodeFailure` is reachable.** ABI discriminant 13 is reconciled
+  across the runtime, the `hew-types` surface enum, HIR lowering, and
+  `std/builtins.hew`, with a cross-crate parity test pinning the `AskError`,
+  `SendError`, and `RecvError` discriminants. (#1883)
+- **Qualified-by-default cross-module type identity.** Module-qualified type
+  args are normalized through a single enforced shortening authority across the
+  HIR/MIR/codegen layout-key spine, so same-bare-name types from different
+  packages no longer collide in layout keying and monomorphisation. (#1880)
+- **Fail-closed on unregistered bytes-typed externs.** A `bytes`-signature
+  extern whose symbol is absent from the BytesTriple registries now produces a
+  build error naming the symbol rather than silently reinterpreting the return;
+  this surfaced and fixed two live ABI mismatches in the TCP and TLS surfaces.
+  (#1849)
+
+### Fixed — language correctness
+
+- **Closure pid captures** lower correctly: pid captures are classified
+  strong/no-drop in the capture-env layout and module layout tables thread into
+  child builders so nested spawns resolve layouts. (#1838, closes #1827)
+- **Fork task type-checking.** `fork name = call()` bindings are type-checked
+  in scope bodies, with fail-closed rejections for arg-bearing non-named fork
+  spawns, task-value awaits in let position, and `Vec` fork args. (#1839,
+  closes #1829)
+- **Machine transition `select`.** Machine values are observable through the
+  channel pattern: machines are admitted as channel elements, local handles
+  transfer with consume intent, and the MIR select-arm CFG dataflow fix treats
+  arm bodies as real successors. (#1840, closes #1818)
+- **Block-wrapped actor-ask await.** A `match await { actor.method(args) }`
+  scrutinee is now recognised as an actor ask and typed
+  `Result<T, AskError>`. (#1841)
+- **Range loop const inference.** Const-bound range loop variables are resolved
+  before method lookup. (#1857, closes #1762)
+- **`actor` as a module path segment.** `use actor::queue::Queue` parses
+  instead of failing on the reserved word. (#1848, closes #1729)
+- **Unicode brace escapes.** `\u{...}` escape sequences in string literals are
+  decoded. (#1856, closes #1675)
+- **Reserved-word recovery.** Using a reserved word as a method or function
+  name now emits one diagnostic with a rename hint and recovers at the next
+  item boundary instead of cascading. (#1842)
+- **Miri-clean parser.** The recursion guard holds an `Rc<Cell<u32>>` instead
+  of a raw pointer to `Parser.depth`, fixing an aliasing UB Miri flagged;
+  `cargo miri test -p hew-parser` is clean. (#1836)
+
+### Changed — `hew eval`
 
 - **Runtime failures are no longer silent.** A child that died from a signal
   (e.g. divide-by-zero) while producing no stderr now yields a synthesized
@@ -11,15 +108,12 @@
 - **`--jit auto` falls back to AOT.** `auto` now selects the best available
   backend (today the AOT path) instead of failing; the explicit
   `--jit inprocess` mode still fails closed with a named diagnostic because the
-  in-process LLJIT bridge is not implemented yet. (#1227, #1235)
+  in-process LLJIT bridge is not implemented yet. (#1227, #1235, #1873)
 - **No whole-program lints against REPL fragments.** Defining and then using a
   function, binding or import across separate inputs no longer raises
   "never called", "unused variable", "unused import" or "unused mut" — these
   completeness lints are suppressed for the synthetic single-fragment program
   while `hew check`/`hew build` keep reporting them.
-
-### Changed — `hew eval`
-
 - `hew eval` is presented as a lightweight, one-shot evaluator — a single
   expression, a piped snippet, or a `-f <file>` program, plus an interactive
   session for exploration — rather than a stateful interpreter. The `--help`
@@ -28,6 +122,45 @@
 - The startup notice about a prior session that ended without `:quit` is now a
   calm, actionable note explaining that each input runs in its own subprocess,
   rather than an alarming uncaught-signal warning.
+
+### Changed — tooling and standard library
+
+- **`hew test` path loading.** Paths are canonicalized before test discovery,
+  so all tests in a file are found regardless of the invoking directory.
+  (#1853, closes #1695)
+- **`hew-observe` in release packages.** `hew-observe` is built, verified, and
+  shipped in all release packages alongside `hew-lsp`, and non-TTY invocations
+  exit with a clear diagnostic instead of aborting. (#1871)
+- **POSIX installer and PowerShell completions.** The Unix installer is a
+  single `/bin/sh` script with no bash dependency; `install.ps1` generates
+  PowerShell completions and prints a `$PROFILE` activation snippet. (#1859,
+  closes #1710)
+- **`std/time` consolidated** into a single `hew-std-time` crate with `cron`
+  and `datetime` as modules; the consolidation is symbol-transparent and
+  per-module dead-strip is preserved. (#1886)
+
+### Changed — Windows, CI, and build
+
+- **Three Windows compile fixes:** `.exe` extensions on native binaries, a
+  corrected `cc` fallback selection, and an `xml2s.lib` stub for LLVM 22
+  tarball consumers. (#1787, #1786, #1788)
+- **ASan lane building and green.** Both sanitizer jobs pass
+  `-Cunsafe-allow-abi-mismatch=sanitizer`; the ASan lane is fully trustworthy
+  and a heap-use-after-free in `hew_stream_poll` is closed. The TSan lane
+  builds but runs advisory-only until instrumented-std is available upstream.
+  (#1894)
+- **CI reliability and supply chain.** Every GitHub Action is pinned to a
+  verified commit SHA, the abandoned `ilammy/msvc-dev-cmd` action is replaced
+  by an in-repo `setup-msvc` composite, macOS builds use Homebrew `llvm@22`,
+  and `make ci-local-linux` reproduces the Linux CI step sequence locally.
+  (#1834)
+- **Preflight gap closed.** The `runtime-net` preflight lane now runs
+  `make test-hew-ratchet` and `make test-vertical-slice` so a runtime ABI
+  change cannot pass preflight while breaking the compiled Hew suite. (#1879)
+- **WASM packages.** `wasm-opt` is re-enabled for the published browser and
+  sandbox packages, `hew-std-encoding-toml` is included in the wasm32-wasip1
+  runtime archives, and the WASM packages are published to GitHub Packages.
+  (#1865, closes #1855; #1847, closes #1678; #1837)
 
 ## [0.5.0] — 2026-06-11
 

@@ -50,7 +50,9 @@ get_mtime() {
 lib_mtime=$(get_mtime "$LIBHEW")
 
 # Scan source inputs: all .rs files, Cargo.toml, and build.rs under
-# hew-lib/ and hew-runtime/ (the two crates that directly produce libhew.a).
+# hew-lib/, hew-runtime/, and hew-std/ — the crates that feed libhew.a. The
+# hew-lib umbrella links hew-runtime plus the consolidated hew-std staticlib,
+# so a stdlib edit changes libhew.a and must count toward freshness.
 latest_src_mtime=0
 latest_src_file=""
 
@@ -63,6 +65,7 @@ while IFS= read -r -d '' f; do
 done < <(find \
     "${REPO_ROOT}/hew-lib" \
     "${REPO_ROOT}/hew-runtime" \
+    "${REPO_ROOT}/hew-std" \
     \( -name "*.rs" -o -name "Cargo.toml" -o -name "build.rs" \) \
     -not -path "*/target/*" \
     -print0)

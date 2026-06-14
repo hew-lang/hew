@@ -1,0 +1,6 @@
+[package]
+name = "hew::closableerr"
+version = "0.1.0"
+description = "Qualified trait-signature fixture: a trait whose method returns a sibling error type, referenced bare in the trait but qualified in the importer's impl"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,6 @@
+[package]
+name = "hew::qualshapes"
+version = "0.1.0"
+description = "Qualified-construction layout fixture: monomorphic + generic records reached through a module-qualified outer name"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

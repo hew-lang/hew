@@ -59,6 +59,22 @@ fixtures=(
   # `Holder$$Box` lookup and the heap-owning Box drop / field read falls through
   # the codegen fail-closed.
   postmono_qualified_layout
+  # A monomorphic record (`Point`) and a generic record (`Holder<Box>`) both
+  # CONSTRUCTED through their module-qualified OUTER name (`qualshapes.Point`,
+  # `qualshapes.Holder<qualshapes.Box>`) under qualified-by-default. Layout
+  # registration keys on the bare outer name (`Point`, `Holder$$Box`), so the
+  # MIR `StructInit` field-order lookup, the MIR codegen-readiness check, and
+  # the codegen `record_struct_for` monomorphic arm must each shorten the
+  # qualified outer name before the lookup, or the construction falls through
+  # the field-order / record-layout fail-closed.
+  qualified_construct_layout
+  # An `impl Closable` whose `close` returns the error type through its
+  # module-qualified spelling (`closableerr.CloseError`) while the trait
+  # declares it bare (`CloseError`). `check_impl_method_against_trait` must
+  # shorten the known-module qualifier before comparing signatures, or it
+  # rejects the impl with a false `TraitImplSignatureMismatch`. Called via
+  # receiver dispatch so the proof turns only on trait conformance.
+  qualified_trait_sig
 )
 
 for fixture in "${fixtures[@]}"; do

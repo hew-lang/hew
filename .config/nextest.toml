@@ -30,7 +30,13 @@ real-timing = { max-threads = 1 }
 # Exclude hew-wasm by default (requires wasmtime). Exclude sandbox parity from
 # generic nextest runs because it spawns the hew-sandbox-vm Node runner; CI
 # enforces it through the provisioned `make sandbox-parity` step.
-default-filter = "not package(hew-wasm) - binary(parity)"
+# binary(parity) is the standalone parity binary; the parity_ratchet binary also
+# holds VM-dependent work — its live_gate test spawns the Node runner and asserts
+# node_modules is installed, so it is excluded by name here while the binary's
+# structural ratchet tests (which need no VM) keep running. make sandbox-parity
+# runs both via plain `cargo test` (no nextest profile), so the live gate stays
+# enforced where the deps are provisioned.
+default-filter = "not package(hew-wasm) - binary(parity) - test(live_gate_matches_declared_coverage)"
 # Global concurrency cap: defaults to all available cores (num-cpus), which is
 # fine for pure in-process tests.  The subprocess-intensive group above provides
 # the finer-grained cap for tests that spawn child processes.
@@ -52,8 +58,13 @@ test-group = "subprocess-intensive"
 # codegen build step.
 # Exclude sandbox parity from generic nextest runs because it needs
 # `npm --prefix hew-sandbox-vm ci`; CI enforces it through the provisioned
-# `make sandbox-parity` step.
-default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity)"
+# `make sandbox-parity` step. binary(parity) is the standalone parity binary;
+# the parity_ratchet binary's live_gate test also drives the Node VM and asserts
+# node_modules is present, so it is excluded by name while parity_ratchet's
+# structural ratchet tests (no VM) keep running in this profile. make
+# sandbox-parity runs the live gate via plain `cargo test`, so it stays enforced
+# where the npm deps are provisioned.
+default-filter = "not package(hew-wasm) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage)"
 # Defense-in-depth for tests that bypass the bounded exec helper: nextest kills
 # tests after 3 × 100 s = 300 s without status updates/output.
 slow-timeout = { period = "100s", terminate-after = 3 }

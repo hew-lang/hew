@@ -5958,6 +5958,14 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
+                    // This compiled-in bootstrap path publishes the bare name
+                    // unconditionally (these builtin surfaces are always in
+                    // scope). Record the importer binding so the qualified-by-
+                    // default use-time gate treats the bare name as published.
+                    self.unqualified_to_module.insert(
+                        (self.current_module.clone(), td.name.clone()),
+                        module_short.to_string(),
+                    );
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
@@ -5970,9 +5978,18 @@ impl Checker {
                     ) {
                         continue;
                     }
+                    let event_name = format!("{}Event", md.name);
                     self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.clone());
-                    self.known_types.insert(format!("{}Event", md.name));
+                    self.known_types.insert(event_name.clone());
+                    self.unqualified_to_module.insert(
+                        (self.current_module.clone(), md.name.clone()),
+                        module_short.to_string(),
+                    );
+                    self.unqualified_to_module.insert(
+                        (self.current_module.clone(), event_name),
+                        module_short.to_string(),
+                    );
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {

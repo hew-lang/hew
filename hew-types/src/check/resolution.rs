@@ -1334,6 +1334,30 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
+                // Qualified-by-default: a bare reference to a type exported by
+                // exactly one *plainly* imported module (no `::{ }` / glob /
+                // alias opt-in) is not in scope. Fail closed with both the
+                // qualifier and the explicit-opt-in import as suggestions,
+                // rather than silently binding the source module's bare def.
+                let published_bare = self
+                    .unqualified_to_module
+                    .contains_key(&(self.current_module.clone(), name.clone()));
+                if !is_local && owner_modules.len() == 1 && !published_bare {
+                    let owner = owner_modules[0];
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::UndefinedType,
+                        &te.1,
+                        format!(
+                            "type `{name}` is not in scope; it is exported by module `{owner}` \
+                             but a plain `import` does not publish it unqualified"
+                        ),
+                        vec![
+                            format!("qualify the reference, e.g. `{owner}.{name}`"),
+                            format!("or opt in to the bare name: `import {owner}::{{ {name} }}`"),
+                        ],
+                    );
+                    return Ty::Error;
+                }
                 let resolved_name = if is_local && self.type_defs.contains_key(name) {
                     name.clone()
                 } else {

@@ -47,6 +47,7 @@ const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
     "concurrency/async_await",
     "concurrency/counter_actor",
     "concurrency/supervisor",
+    "language/string_slicing",
     "machines/traffic_light",
 ];
 
@@ -59,8 +60,8 @@ fn curated_playground_examples_run_under_wasi() {
     let manifest = load_playground_manifest();
     assert_eq!(
         manifest.len(),
-        14,
-        "expected the curated 14-snippet manifest"
+        28,
+        "expected the curated 28-snippet manifest"
     );
 
     let mut actual_unsupported: Vec<&str> = manifest

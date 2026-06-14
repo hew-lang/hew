@@ -42,6 +42,7 @@ EXAMPLE_ORDER = {
         "float_division",
         "float_nonfinite_compare",
         "higher_order_functions",
+        "if_let_value",
         "mixed_numeric",
         "stmt_control_flow",
         "stmt_if",
@@ -109,6 +110,12 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/stmt_if_let": "runnable",
     "basics/stmt_match": "runnable",
     "basics/string_interpolation": "runnable",
+    # Value-position if-let: the matched arm value flows into a binding or
+    # trailing expression. The lowering now declares a result local, binds the
+    # matched payload in the then-arm, joins arms on the result local, and yields
+    # it — identical to value-position if. The sandbox VM executes this at native
+    # parity following the fix in this PR.
+    "basics/if_let_value": "runnable",
     "types/pattern_matching": "runnable",
     # Actor/supervisor/machine support was added in the sandbox VM; these now compile
     # to bytecode and execute in the educational browser sandbox.

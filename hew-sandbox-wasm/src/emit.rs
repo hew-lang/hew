@@ -1825,8 +1825,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::Await(operand) => self.lower_await(operand, span.clone()),
-            Expr::IfLet { .. }
-            | Expr::Tuple(_)
+            // `if let` in expression position (e.g. as the last expression in a
+            // function body): lower for side effects; the result is always unit.
+            Expr::IfLet {
+                pattern,
+                expr: scrutinee,
+                body,
+                else_body,
+            } => {
+                self.lower_stmt_if_let(pattern, scrutinee, body, else_body.as_ref(), span.clone())?;
+                Ok(self.emit_const_unit(Some(span.clone())))
+            }
+            Expr::Tuple(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }

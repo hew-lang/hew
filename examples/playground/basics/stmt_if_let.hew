@@ -6,23 +6,27 @@ enum Wrapped {
     Empty;
 }
 
-fn main() {
-    let a = Value(10);
-    if let Value(n) = a {
-        println(f"a has value: {n}");
-    }
-    let b = Empty;
-    if let Value(n) = b {
-        println(f"b has value: {n}");
+fn announce(w: Wrapped) {
+    if let Value(n) = w {
+        println(f"value: {n}");
     } else {
-        println("b is empty");
+        println("empty");
     }
-    let c = Value(42);
-    if let Value(n) = c {
-        if n > 40 {
-            println("large value");
-        } else {
-            println("small value");
-        }
+}
+
+fn main() {
+    announce(Value(10));
+    announce(Empty);
+    announce(Value(99));
+
+    // No-else form: only fires when pattern matches.
+    let x = Value(7);
+    if let Value(n) = x {
+        println(f"x is {n}");
     }
+    let y = Empty;
+    if let Value(n) = y {
+        println(f"should not print: {n}");
+    }
+    println("done");
 }

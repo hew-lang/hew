@@ -78,6 +78,19 @@
     }
   },
   {
+    "id": "basics/if_let_value",
+    "category": "basics",
+    "name": "If Let Value",
+    "description": "Value-position if-let: the matched arm value flows into a binding",
+    "source_path": "basics/if_let_value.hew",
+    "expected_path": "basics/if_let_value.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "basics/mixed_numeric",
     "category": "basics",
     "name": "Mixed Numeric Types",

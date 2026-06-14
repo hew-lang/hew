@@ -114,6 +114,14 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // Value-position if-let (`let v = if let Value(n) = w { n } else { d }`):
+        // the matched arm value is joined on a result local, so the expression
+        // yields the matched value, not unit. Proves the value-position lowering.
+        test_name: "if_let_value",
+        source_rel: "examples/playground/basics/if_let_value.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         test_name: "arithmetic_operators",
         source_rel: "examples/playground/language/arithmetic_operators.hew",
         // Integer +,-,*,/,%, unary negate, and all six comparisons.

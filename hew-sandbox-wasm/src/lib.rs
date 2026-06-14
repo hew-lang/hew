@@ -50,6 +50,10 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "stmt_if",
     "stmt_match",
     "stmt_if_let",
+    // Value-position if-let now joins the matched/else arm values on a result
+    // local, so `let v = if let .. { x } else { y }` yields the matched value
+    // (not unit). Backed by the if_let_value parity case.
+    "if_let_value",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

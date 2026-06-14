@@ -374,18 +374,31 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "expression-statement if-let (result discarded)",
-        // `Expr::IfLet` as a trailing/sole function-body expression: the parser
-        // emits `Stmt::Expression(Expr::IfLet)`. lower_expr now routes it through
-        // lower_stmt_if_let for side effects and yields unit (the result is
-        // discarded), so a function body that is a single if-let runs at parity.
-        // The `announce` helper in stmt_if_let.hew is exactly this form.
+        // `Expr::IfLet` as a trailing/sole function-body expression with its
+        // result discarded (statement position): the parser emits
+        // `Stmt::Expression(Expr::IfLet)`. lower_expr_if_let falls back to
+        // lower_stmt_if_let for the no-else form and yields unit, so a function
+        // body that is a single if-let runs at parity. The `announce` helper in
+        // stmt_if_let.hew is exactly this form.
         //
-        // NOTE: if-let in *value* position (`let v = if let .. { x } else { y }`)
-        // is NOT this construct — its result is always unit, so consuming it is a
-        // separate, not-yet-lowered concern (value-producing if-let needs the arm
-        // values joined on a result local, which is not yet emitted).
+        // The complementary *value* position (`let v = if let .. { x } else
+        // { y }`) is the separate "value-position if-let" construct below, which
+        // joins the arm values on a result local. This row covers only the
+        // discarded-result / no-else form.
         probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(Has(9));\n    describe(Empty);\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
+    },
+    Construct {
+        id: "value-position if-let (arm values joined)",
+        // `Expr::IfLet` whose result is consumed (`let v = if let Value(n) = w
+        // { n } else { d }`). lower_expr_if_let declares a result local, binds
+        // the matched payload in the then-arm, lowers each arm's value, joins
+        // them on the result local, and yields it — mirroring value-position
+        // `Expr::If`. Before #1901's follow-up this silently yielded unit
+        // regardless of the matched value (a G1-class silent-wrong hole); it now
+        // runs at parity. Pinned to the if_let_value case.
+        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(Value(7)));\n    println(pick(Empty));\n}\n",
+        coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
         id: "numeric cast (`as`)",
@@ -609,7 +622,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 31;
+    const RUNNABLE_BASELINE: usize = 32;
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))
@@ -782,7 +795,7 @@ mod ast_surface {
             Expr::MapLiteral { .. } => Some("map literal (`{\"k\": v}`)"),
             Expr::Block(_) => Some("nested expr-if returning string"),
             Expr::If { .. } => Some("nested expr-if returning string"),
-            Expr::IfLet { .. } => Some("expression-statement if-let (result discarded)"),
+            Expr::IfLet { .. } => Some("value-position if-let (arm values joined)"),
             Expr::Match { .. } => Some("match with constructor-payload patterns"),
             Expr::Lambda { .. } => Some("closure / lambda value"),
             Expr::Spawn { .. } => Some("actor spawn + receive + mutable state"),

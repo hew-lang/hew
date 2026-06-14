@@ -1,0 +1,38 @@
+//! @name If Let Value
+//! @description Value-position if-let: the matched arm value flows into a binding
+
+enum Wrapped {
+    Value(i64);
+    Empty;
+}
+
+// Value position: the if-let is the right-hand side of a `let`, so its result
+// is consumed. The matched arm yields the bound payload; the else arm yields a
+// default. This must produce the matched value, not unit.
+fn unwrap_or(w: Wrapped, fallback: i64) -> i64 {
+    let v = if let Value(n) = w {
+        n
+    } else {
+        fallback
+    };
+    v
+}
+
+// Value position as a function's trailing expression: the if-let result is the
+// function's return value.
+fn doubled_or_zero(w: Wrapped) -> i64 {
+    if let Value(n) = w {
+        n * 2
+    } else {
+        0
+    }
+}
+
+fn main() {
+    println(unwrap_or(Value(7), 0));
+    println(unwrap_or(Empty, 0));
+    println(unwrap_or(Value(42), 99));
+    println(unwrap_or(Empty, 99));
+    println(doubled_or_zero(Value(5)));
+    println(doubled_or_zero(Empty));
+}

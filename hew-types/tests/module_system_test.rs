@@ -6,7 +6,8 @@
 
 use hew_parser::ast::{
     ActorDecl, Block, Expr, FnDecl, ImportDecl, ImportName, ImportSpec, IntRadix, Item, Literal,
-    Param, Program, ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
+    Param, Program, ReceiveFnDecl, Spanned, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::{SpanKey, TypeDefKind};
@@ -703,6 +704,94 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         ),
         other => panic!("expected Ty::Named, got {other:?}"),
     }
+}
+
+/// A `pub type` with a single scalar field of the named primitive type.
+/// Used to build two same-bare-name types with divergent layouts.
+fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: field.to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: scalar.to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: vec![],
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+#[test]
+fn same_bare_name_types_register_independent_divergent_field_layouts() {
+    // C1 authority: two co-imported modules each export a `Widget` with a
+    // DIVERGENT layout (`v: i8` vs `v: i64`). Their qualified `type_defs` keys
+    // must hold INDEPENDENT field sets — each its own module's declared field
+    // type — not two aliases of whichever bare `Widget` won the last-write-wins
+    // race. The assertion is exact-value (`== I8` / `== I64`), the form with
+    // teeth: an alias-of-one-winner bug makes both keys carry the same type and
+    // fails here, where a `contains_key` check would pass on the collision.
+    let import_narrow = make_user_import(
+        &["pkg", "widgeti8"],
+        None,
+        vec![(
+            Item::TypeDecl(pub_struct_with_scalar_field("Widget", "v", "i8")),
+            0..0,
+        )],
+    );
+    let import_wide = make_user_import(
+        &["pkg", "widgeti64"],
+        None,
+        vec![(
+            Item::TypeDecl(pub_struct_with_scalar_field("Widget", "v", "i64")),
+            0..0,
+        )],
+    );
+    let program = Program {
+        items: vec![
+            (Item::Import(import_narrow), 0..0),
+            (Item::Import(import_wide), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    let narrow = output
+        .type_defs
+        .get("widgeti8.Widget")
+        .expect("widgeti8.Widget must register its own qualified def");
+    let wide = output
+        .type_defs
+        .get("widgeti64.Widget")
+        .expect("widgeti64.Widget must register its own qualified def");
+
+    assert_eq!(
+        narrow.fields.get("v"),
+        Some(&Ty::I8),
+        "widgeti8.Widget must keep its own i8 field, not the wide module's i64"
+    );
+    assert_eq!(
+        wide.fields.get("v"),
+        Some(&Ty::I64),
+        "widgeti64.Widget must keep its own i64 field, not the narrow module's i8"
+    );
 }
 
 #[test]

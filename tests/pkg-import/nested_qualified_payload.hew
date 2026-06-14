@@ -1,0 +1,42 @@
+// Nested qualified payload reached via two import paths, with a heap-owning drop.
+//
+// `hew::nestbox` owns a heap-owning record `Box` (an owned `Vec<string>`) and a
+// factory `collect() -> Result<Vec<Box>, i64>`. `hew::nestrelay` re-imports
+// `nestbox` and re-exposes the same factory, so the SAME `Box` type arrives at
+// two import-use sites spelled `nestbox.Box`. The returned generic enum nests a
+// qualified user payload two levels deep (`Result<Vec<nestbox.Box>, _>`).
+//
+// The layout key for that `Result` / its owned `Vec<Box>` element must shorten
+// the WHOLE type-arg spine to bare names — not just the top-level args — so the
+// registration key (`Vec_Box`, `Result$$..._Vec_Box`) and every codegen
+// drop/seed/codec lookup are byte-identical. A `Named`-only shortener leaves the
+// nested `Box` qualified, the keys diverge, and the heap-owning drop of the
+// returned value falls through the codegen fail-closed gate.
+//
+// Harness verb: hew run
+// Expected: counts printed for both the direct and relayed factory; the owned
+// Vec<Box> (and its inner Vec<string> tags) drop cleanly at scope exit.
+import hew::nestbox;
+
+import hew::nestrelay;
+
+fn count_via_owner(a: string, b: string) -> i64 {
+    match nestbox.collect(a, b) {
+        Ok(boxes) => boxes.len(),
+        Err(_) => -1,
+    }
+}
+
+fn count_via_relay(a: string, b: string) -> i64 {
+    match nestrelay.relay_collect(a, b) {
+        Ok(boxes) => boxes.len(),
+        Err(_) => -1,
+    }
+}
+
+fn main() {
+    let owner = count_via_owner("x", "y");
+    let relay = count_via_relay("p", "q");
+    println(f"owner={owner}");
+    println(f"relay={relay}");
+}

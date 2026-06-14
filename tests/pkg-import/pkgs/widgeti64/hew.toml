@@ -1,0 +1,6 @@
+[package]
+name = "hew::widgeti64"
+version = "0.1.0"
+description = "Same-bare-name type fixture: exports a `Widget` with an i64 field"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

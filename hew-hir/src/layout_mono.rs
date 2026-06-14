@@ -783,10 +783,28 @@ impl Discovery<'_> {
         if args.len() != type_params.len() {
             return;
         }
+        // Normalise the type-arg spine to bare payload names BEFORE building the
+        // dedup key and the mangled name. The origin-site registries
+        // (`EnumLayoutRegistry::insert`, and the `RecordMonoKey` the
+        // `record_record_layout` path builds) plus every codegen layout-lookup /
+        // drop-seed / codec-seed mangle site all key on the bare spine via the
+        // shared `shorten_named_arg_qualifiers`. A generic record discovered
+        // here through an import-use site (`Holder<lmonobox.Box>`, with C1's
+        // authoritative qualified `Named.name`) would otherwise register under
+        // `Holder$$lmonobox.Box` while every lookup probes `Holder$$Box`, the
+        // miss falling through the codegen fail-closed gate. Routing through the
+        // canonical shortener keeps the registration key byte-identical to the
+        // lookup key and collapses the qualified/bare spellings of one payload
+        // type (reached via two import paths) to one layout entry.
+        let normalized_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(crate::monomorph::shorten_named_arg_qualifiers)
+            .collect();
         let key = RecordMonoKey {
             origin: *id,
             origin_name: name.to_string(),
-            type_args: args.to_vec(),
+            type_args: normalized_args,
         };
         if !self.seen_records.insert(key.clone()) {
             return;
@@ -834,7 +852,9 @@ impl Discovery<'_> {
             }
             return;
         }
-        let mangled_name = mangle(name, args);
+        // Mangle from the SHORTENED spine (`key.type_args`), not the raw `args`,
+        // so the registered name matches the codegen lookup key byte-for-byte.
+        let mangled_name = mangle(name, &key.type_args);
         self.new_records.push(RecordLayout {
             key,
             mangled_name,
@@ -858,10 +878,22 @@ impl Discovery<'_> {
         if args.len() != type_params.len() {
             return;
         }
+        // Normalise the type-arg spine to bare payload names BEFORE building the
+        // dedup key and the mangled name — identical discipline to
+        // `register_record` and `EnumLayoutRegistry::insert`. A generic enum
+        // discovered here through an import-use site (`Slot<lmonobox.Box>`)
+        // would otherwise register under `Slot$$lmonobox.Box` while every
+        // codegen lookup probes `Slot$$Box`, the miss falling through the
+        // codegen fail-closed gate.
+        let normalized_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(crate::monomorph::shorten_named_arg_qualifiers)
+            .collect();
         let key = EnumMonoKey {
             origin: *id,
             origin_name: name.to_string(),
-            type_args: args.to_vec(),
+            type_args: normalized_args,
         };
         if !self.seen_enums.insert(key.clone()) {
             return;
@@ -893,7 +925,9 @@ impl Discovery<'_> {
             }
             return;
         }
-        let mangled_name = mangle(name, args);
+        // Mangle from the SHORTENED spine (`key.type_args`) so the registered
+        // name matches the codegen lookup key byte-for-byte.
+        let mangled_name = mangle(name, &key.type_args);
         self.new_enums.push(EnumLayout {
             key,
             mangled_name,
@@ -1026,5 +1060,147 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
         }),
         ResolvedTy::Task(inner) => residual_in_ty(inner, residual_domain),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh `Discovery` with empty seed sets and a generous cap — enough to
+    /// exercise `register_record` / `register_enum` in isolation.
+    fn empty_discovery<'a>(
+        record_decls: &'a HashMap<String, RecordDecl>,
+        enum_decls: &'a HashMap<String, EnumDecl>,
+        all_type_params: &'a HashSet<String>,
+    ) -> Discovery<'a> {
+        Discovery {
+            record_decls,
+            enum_decls,
+            all_type_params,
+            seen_records: HashSet::new(),
+            seen_enums: HashSet::new(),
+            existing_record_count: 0,
+            existing_enum_count: 0,
+            new_records: Vec::new(),
+            new_enums: Vec::new(),
+            cap: 64,
+            record_cap_diag_emitted: false,
+            enum_cap_diag_emitted: false,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// `register_record` must shorten a module-qualified payload spine before it
+    /// builds the dedup key and the mangled name. A generic record discovered
+    /// post-mono through an import-use site (`Holder<lmonobox.Box>`) must
+    /// register under the bare `Holder$$Box` — byte-identical to every codegen /
+    /// MIR layout lookup — never the qualified `Holder$$lmonobox.Box`.
+    #[test]
+    fn register_record_shortens_qualified_payload_spine() {
+        let mut record_decls = HashMap::new();
+        record_decls.insert(
+            "Holder".to_string(),
+            RecordDecl {
+                id: ItemId(1),
+                type_params: vec!["T".to_string()],
+                fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+            },
+        );
+        let enum_decls = HashMap::new();
+        let all_type_params = HashSet::new();
+        let mut disc = empty_discovery(&record_decls, &enum_decls, &all_type_params);
+
+        let decl = RecordDecl {
+            id: ItemId(1),
+            type_params: vec!["T".to_string()],
+            fields: vec![("item".to_string(), ResolvedTy::named_user("T", vec![]))],
+        };
+        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        disc.register_record("Holder", &decl, &[qualified_arg], &(0..0));
+
+        assert_eq!(disc.new_records.len(), 1, "one layout registered");
+        let layout = &disc.new_records[0];
+        assert_eq!(
+            layout.mangled_name, "Holder$$Box",
+            "qualified payload must be shortened in the mangled name"
+        );
+        assert_eq!(
+            layout.key.type_args,
+            vec![ResolvedTy::named_user("Box", vec![])],
+            "the dedup key's type-arg spine must be shortened to bare names"
+        );
+        // The field type keeps the substituted (qualified) payload — its own
+        // identity is resolved by ITS layout key, which the lookup also shortens.
+        assert_eq!(
+            layout.fields,
+            vec![(
+                "item".to_string(),
+                ResolvedTy::named_user("lmonobox.Box", vec![])
+            )],
+        );
+    }
+
+    /// `register_enum` mirrors `register_record`: a qualified payload spine is
+    /// shortened before the key and mangled name. `Slot<lmonobox.Box>` registers
+    /// under the bare `Slot$$Box`.
+    #[test]
+    fn register_enum_shortens_qualified_payload_spine() {
+        let record_decls = HashMap::new();
+        let mut enum_decls = HashMap::new();
+        enum_decls.insert(
+            "Slot".to_string(),
+            EnumDecl {
+                id: ItemId(2),
+                type_params: vec!["T".to_string()],
+                variants: vec![
+                    HirVariant {
+                        name: "Filled".to_string(),
+                        kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                    },
+                    HirVariant {
+                        name: "Empty".to_string(),
+                        kind: HirVariantKind::Unit,
+                    },
+                ],
+            },
+        );
+        let all_type_params = HashSet::new();
+        let mut disc = empty_discovery(&record_decls, &enum_decls, &all_type_params);
+
+        let decl = EnumDecl {
+            id: ItemId(2),
+            type_params: vec!["T".to_string()],
+            variants: vec![
+                HirVariant {
+                    name: "Filled".to_string(),
+                    kind: HirVariantKind::Tuple(vec![ResolvedTy::named_user("T", vec![])]),
+                },
+                HirVariant {
+                    name: "Empty".to_string(),
+                    kind: HirVariantKind::Unit,
+                },
+            ],
+        };
+        let qualified_arg = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        disc.register_enum("Slot", &decl, &[qualified_arg], &(0..0));
+
+        assert_eq!(disc.new_enums.len(), 1, "one layout registered");
+        let layout = &disc.new_enums[0];
+        assert_eq!(
+            layout.mangled_name, "Slot$$Box",
+            "qualified payload must be shortened in the mangled name"
+        );
+        assert_eq!(
+            layout.key.type_args,
+            vec![ResolvedTy::named_user("Box", vec![])],
+            "the dedup key's type-arg spine must be shortened to bare names"
+        );
+        // The substituted variant payload keeps the qualified spelling (resolved
+        // by the payload type's own shortened layout key downstream).
+        assert_eq!(
+            layout.variants[0].field_tys,
+            vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+        );
     }
 }

@@ -1,0 +1,12 @@
+//! Re-imports `hew::nestbox` and re-exposes its factory, so the SAME `Box`
+//! type is reachable through two import paths: directly via `nestbox` and
+//! transitively via this relay. The nested qualified payload `Vec<nestbox.Box>`
+//! in the relayed `Result` must key its layout on the bare-normalised spine.
+
+import hew::nestbox;
+
+/// Relay the owner's factory unchanged. The return type carries the qualified
+/// nested payload (`Result<Vec<nestbox.Box>, i64>`) at this import-use site.
+pub fn relay_collect(a: string, b: string) -> Result<Vec<nestbox.Box>, i64> {
+    nestbox.collect(a, b)
+}

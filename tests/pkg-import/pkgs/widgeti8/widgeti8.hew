@@ -1,0 +1,13 @@
+//! Same-bare-name type fixture (narrow layout). Exports a `Widget` record whose
+//! sole field is an `i8`. A sibling package `hew::widgeti64` exports a `Widget`
+//! of the same bare name carrying an `i64` — a divergent layout. Importing both
+//! exercises the cross-package bare-name collision in the MIR `RecordLayout`
+//! registry: keying a type's layout/field order by its bare name lets the second
+//! module's `Widget` clobber the first, so a field load against the surviving
+//! layout trips the codegen fail-closed. The fix derives each type's layout
+//! through its module-qualified identity, not the last-write-wins bare key.
+
+/// Narrow `Widget`: a single `i8` field.
+type Widget {
+    v: i8;
+}

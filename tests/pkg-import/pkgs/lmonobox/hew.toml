@@ -1,0 +1,6 @@
+[package]
+name = "hew::lmonobox"
+version = "0.1.0"
+description = "Post-mono layout fixture: a heap-owning Box reached as a qualified type-arg"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

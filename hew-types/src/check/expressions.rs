@@ -2417,6 +2417,60 @@ impl Checker {
                 expected.clone()
             }
 
+            // Module-qualified struct init coercion: a bare construction name
+            // (`Widget { … }`) constrained by a module-qualified expected type
+            // (`widgeti8.Widget`) must resolve its field types from the
+            // QUALIFIED type def, not the bare `type_defs["Widget"]` key — which
+            // is last-write-wins across two packages that each export `Widget`.
+            // Two same-bare-name types from different modules are distinct
+            // identities; pinning the construction to the expected module's def
+            // keeps each `Widget`'s field layout its own (the i8 vs i64
+            // collision). The struct-init site records the QUALIFIED name so the
+            // qualifier survives into HIR/MIR layout keying. Only fires when the
+            // expected name is qualified (`module.Type`), shares the bare
+            // construction name's short form, and is a non-generic struct/record
+            // (generics route through the arms below); single-module programs
+            // never reach it (bare construction == bare expected).
+            (
+                Expr::StructInit {
+                    name,
+                    fields,
+                    type_args,
+                    base,
+                },
+                Ty::Named {
+                    name: expected_name,
+                    args: expected_args,
+                    ..
+                },
+            ) if name != expected_name
+                && expected_args.is_empty()
+                && !name.contains('.')
+                && !name.contains("::")
+                && expected_name
+                    .rsplit_once('.')
+                    .is_some_and(|(_, short)| short == name.as_str())
+                && self.lookup_type_def(expected_name).is_some_and(|td| {
+                    td.type_params.is_empty()
+                        && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
+                }) =>
+            {
+                let actual = self.check_struct_init(
+                    expected_name,
+                    fields,
+                    type_args.as_deref(),
+                    base.as_deref(),
+                    span,
+                );
+                // `check_struct_init` returns the qualified `Named` but does not
+                // record the init site; the synthesize path records via
+                // `synthesize_inner`'s tail, which this arm bypasses. Record the
+                // qualified type so HIR/MIR key the layout by the module
+                // identity, not the bare last-write-wins name.
+                self.record_type(span, &actual);
+                actual
+            }
+
             // Struct init coercion: propagate expected type args into field checking
             (
                 Expr::StructInit {

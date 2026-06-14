@@ -1,0 +1,42 @@
+// Cross-package same-bare-name type, divergent layout.
+//
+// Two imported packages each export a record named `Widget`:
+//   hew::widgeti8.Widget  { v: i8 }
+//   hew::widgeti64.Widget { v: i64 }
+//
+// A type's layout (field order, field types) is registered in the MIR
+// `RecordLayout` registry. Keying that registry on the bare name `Widget`
+// collides across the two packages (last-write-wins): the second module's
+// `Widget` clobbers the first, so a field load assembled for one layout reads
+// against the surviving layout's slot and trips the codegen fail-closed
+// (`RecordFieldLoad dest slot type does not match field type: dest=i8,
+// field=i64`). The registry must derive each type's layout through its
+// module-qualified identity, so both `Widget`s coexist with their own layout
+// regardless of import order.
+//
+// Harness verb: hew run
+// Expected (after C1 lands): a=7 then b=1000 — each `Widget` keeps its own
+// field width. Today this fixture is RED: `hew run` aborts at the codegen
+// field-type fail-closed. It is the proving fixture C1 flips green.
+import hew::widgeti8;
+
+import hew::widgeti64;
+
+// Reading through a module-qualified parameter type pins each field load to its
+// own layout: an i8 load from the narrow `Widget`, an i64 load from the wide
+// one. With the bare-keyed registry the two layouts collide and one load reads
+// the wrong slot width.
+fn read_narrow(w: widgeti8.Widget) -> i8 {
+    w.v
+}
+
+fn read_wide(w: widgeti64.Widget) -> i64 {
+    w.v
+}
+
+fn main() {
+    let a: widgeti8.Widget = Widget { v: 7 };
+    let b: widgeti64.Widget = Widget { v: 1000 };
+    println(f"a={read_narrow(a)}");
+    println(f"b={read_wide(b)}");
+}

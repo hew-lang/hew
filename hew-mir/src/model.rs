@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use hew_hir::{mangle, sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
+use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{NumericWidth, ResolvedTy};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
@@ -1065,6 +1065,49 @@ pub fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
+/// THE single enum-layout lookup authority for this module.
+///
+/// Resolve a `Named { name, args }` to its registered [`EnumLayout`]. Every
+/// generic instantiation is registered under a mangle of the BARE outer name
+/// and the SHORTENED type-arg spine (`EnumLayoutRegistry::insert`, the
+/// `layout_mono` pass, and the MIR `mangle_layout_key` all route their
+/// `mangled_name` through `hew_hir::shorten_named_arg_qualifiers`). So a probe
+/// keyed from a use-site type carrying a module-qualified payload
+/// (`Slot<lmonobox.Box>` → naive `Slot$$lmonobox.Box`) diverges from the
+/// registered `Slot$$Box` and the lookup falls through the fail-closed gate.
+///
+/// Routing EVERY enum-layout probe in this module through here makes that miss
+/// structurally impossible: the function shortens `args` internally before
+/// mangling, so a caller CANNOT pass a raw qualified spine into the key. Nested
+/// qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at every
+/// depth. The empty-args arm keeps the existing bare-or-short-name match.
+///
+/// No call site in this module may build a generic enum-layout key with a raw
+/// `mangle(.., args)`; the `mangle_feeding_layout_lookup_is_centralised` guard
+/// test fails if one reappears.
+fn find_enum_layout<'a>(
+    name: &str,
+    args: &[ResolvedTy],
+    enum_layouts: &'a [EnumLayout],
+) -> Option<&'a EnumLayout> {
+    let short = short_name(name);
+    if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|el| el.name == name || short_name(&el.name) == short)
+    } else {
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(hew_hir::shorten_named_arg_qualifiers)
+            .collect();
+        let mangled = hew_hir::mangle(short, &short_args);
+        enum_layouts
+            .iter()
+            .find(|el| el.name == mangled || el.name == name)
+    }
+}
+
 /// Returns `true` if the given `ResolvedTy` (or any type reachable through
 /// its generic arguments or enum variant field types) contains a heap-owning
 /// type such as `string` or `Bytes`.
@@ -1126,7 +1169,6 @@ fn ty_contains_heap_owning_inner(
             ..
         } => true,
         ResolvedTy::Named { name, args, .. } => {
-            let short = short_name(name);
             // 1. Check type arguments first (fast path: Option<string>, etc.)
             if args
                 .iter()
@@ -1137,20 +1179,11 @@ fn ty_contains_heap_owning_inner(
             // 2. Inspect the enum layout's variant field types directly.
             //    Covers non-param heap-owning fields in generic enums
             //    (e.g. `Envelope<i64>` where `Message(string)` is unrelated
-            //    to the type parameter `T`). Layout names follow the
-            //    monomorphisation scheme registered by `register_enum_layouts`:
-            //    - args empty:     bare name or short_name match
-            //    - args non-empty: mangle(short_name, args) → "Envelope$$i64"
-            let found = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-            } else {
-                let mangled = mangle(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-            };
+            //    to the type parameter `T`). `find_enum_layout` is the single
+            //    lookup authority — it shortens the type-arg spine before
+            //    mangling so a qualified payload (`Envelope<lmonobox.Box>`)
+            //    keys the registered `Envelope$$Box`, never `Envelope$$lmonobox.Box`.
+            let found = find_enum_layout(name, args, enum_layouts);
             if let Some(layout) = found {
                 if !visited_enum_layouts.insert(layout.name.clone()) {
                     // The checker rejects recursive value types; if one reaches
@@ -1269,17 +1302,9 @@ fn ty_contains_unclonable_opaque_inner(
                 }
             }
             // 4. An enum layout under this name — recurse into variant payloads.
-            //    Keying mirrors `ty_contains_heap_owning` / `register_enum_layouts`.
-            let enum_found = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-            } else {
-                let mangled = mangle(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-            };
+            //    `find_enum_layout` shortens the spine so a qualified payload
+            //    resolves to its registered bare-arg key.
+            let enum_found = find_enum_layout(name, args, enum_layouts);
             if let Some(layout) = enum_found {
                 if visited.insert(layout.name.clone()) {
                     let found = layout.variants.iter().any(|v| {
@@ -1359,16 +1384,7 @@ fn ty_contains_closure_value_inner(
                     }
                 }
             }
-            let enum_found = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-            } else {
-                let mangled = mangle(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-            };
+            let enum_found = find_enum_layout(name, args, enum_layouts);
             if let Some(layout) = enum_found {
                 if visited.insert(layout.name.clone()) {
                     let found = layout.variants.iter().any(|v| {
@@ -1519,17 +1535,7 @@ fn ty_layout_carries_owned_handle(
     visited_enum_layouts: &mut HashSet<String>,
     unresolved_default: bool,
 ) -> bool {
-    let short = short_name(name);
-    let found = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-    } else {
-        let mangled = mangle(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
+    let found = find_enum_layout(name, args, enum_layouts);
     let Some(layout) = found else {
         return unresolved_default;
     };
@@ -5391,6 +5397,155 @@ mod heap_owning_tests {
         }];
         let user_value = ResolvedTy::named_user("Value", vec![]);
         assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
+    }
+
+    // ── Qualified-payload layout-key symmetry (C1) ──────────────────────────
+    //
+    // The MIR ownership/drop authorities probe `enum_layouts` by mangling the
+    // outer name + type-arg spine. A generic enum instantiated through an
+    // import-use site carries a MODULE-QUALIFIED payload in its args
+    // (`Slot<lmonobox.Box>`), while the layout is REGISTERED under the bare
+    // spine (`Slot$$Box`). If a probe mangles the raw qualified spine
+    // (`Slot$$lmonobox.Box`) it diverges from the registered key, the lookup
+    // falls through, and the ownership/drop/clone decision silently wrong-answers
+    // (no member-drop synthesised → leak, or no opaque fail-closed → unsound
+    // clone). `find_enum_layout` shortens the spine so the probe matches.
+
+    /// A generic enum registered under its bare-arg key resolves when probed
+    /// with a QUALIFIED payload, so its opaque variant payload still fails
+    /// closed for the actor-state clone direction.
+    #[test]
+    fn qualified_payload_enum_resolves_for_opaque_fail_closed() {
+        // Registered as `Slot$$Box` (bare outer, bare arg) — exactly what
+        // `EnumLayoutRegistry::insert` / `layout_mono` emit.
+        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let enums = vec![EnumLayout {
+            name: registered_key,
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                // The substituted payload carries the unclonable opaque handle.
+                field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            }],
+            is_indirect: false,
+        }];
+        // The PROBE type carries the qualified payload as the import-use MIR does:
+        // `Slot<lmonobox.Box>`. A raw `mangle("Slot", [lmonobox.Box])` would key
+        // `Slot$$lmonobox.Box` and MISS the registered `Slot$$Box`.
+        let qualified =
+            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        assert!(
+            ty_contains_unclonable_opaque(&qualified, &[], &enums),
+            "qualified-payload enum must resolve to its bare-key layout and \
+             fail closed on the opaque variant payload"
+        );
+    }
+
+    /// The same divergence for the heap-owning (drop-synthesis) authority: a
+    /// generic enum carrying a `string` variant payload must be seen as
+    /// heap-owning when probed with a qualified payload spine.
+    #[test]
+    fn qualified_payload_enum_resolves_for_heap_owning_drop() {
+        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let enums = vec![EnumLayout {
+            name: registered_key,
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                field_tys: vec![ResolvedTy::String],
+            }],
+            is_indirect: false,
+        }];
+        let qualified =
+            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        assert!(
+            ty_contains_heap_owning(&qualified, &enums),
+            "qualified-payload enum must resolve to its bare-key layout and be \
+             classified heap-owning so its member-drop fires"
+        );
+    }
+
+    /// A NESTED qualified payload (`Slot<Vec<lmonobox.Box>>`) shortens at every
+    /// depth, so the inner qualifier cannot leak into the key.
+    #[test]
+    fn nested_qualified_payload_enum_resolves() {
+        let registered_key = hew_hir::mangle(
+            "Slot",
+            &[ResolvedTy::named_user(
+                "Vec",
+                vec![ResolvedTy::named_user("Box", vec![])],
+            )],
+        );
+        let enums = vec![EnumLayout {
+            name: registered_key,
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            }],
+            is_indirect: false,
+        }];
+        let qualified = ResolvedTy::named_user(
+            "Slot",
+            vec![ResolvedTy::named_user(
+                "Vec",
+                vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
+            )],
+        );
+        assert!(ty_contains_unclonable_opaque(&qualified, &[], &enums));
+    }
+
+    /// Negative control: a probe whose payload genuinely differs from the
+    /// registered instantiation must NOT resolve. Pins that `find_enum_layout`
+    /// is shortening qualifiers, not collapsing distinct payloads.
+    #[test]
+    fn distinct_payload_enum_does_not_resolve() {
+        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::I64]);
+        let enums = vec![EnumLayout {
+            name: registered_key,
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            }],
+            is_indirect: false,
+        }];
+        // Probe `Slot<lmonobox.Box>` (→ `Slot$$Box`) against a layout registered
+        // as `Slot$$i64`: no match, so the opaque payload is NOT reached.
+        let qualified =
+            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        assert!(!ty_contains_unclonable_opaque(&qualified, &[], &enums));
+    }
+
+    /// Structural guard: every generic enum-layout key built in this module must
+    /// route through `find_enum_layout`. A bare `mangle(.., args)` that feeds a
+    /// layout probe re-opens the C1 qualified-spine miss class. This self-scan of
+    /// the source keeps the single-authority invariant from silently eroding.
+    #[test]
+    fn mangle_feeding_layout_lookup_is_centralised() {
+        let src = include_str!("model.rs");
+        // The ONLY `mangle(` call in this module's non-test code is the one
+        // inside `find_enum_layout`. Strip the test module (which legitimately
+        // mangles bare-arg fixture keys) before scanning.
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("model.rs has a non-test prefix");
+        // Count only real call sites: drop comment lines (`//` / `///`) so the
+        // doc-comment mentions of `mangle(` in this module's prose don't inflate
+        // the count. The single remaining call lives in `find_enum_layout`.
+        let mangle_calls = prod
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("mangle(").count())
+            .sum::<usize>();
+        assert_eq!(
+            mangle_calls, 1,
+            "exactly one `mangle(` call is allowed in model.rs non-test code \
+             (inside `find_enum_layout`, the single layout-lookup authority); \
+             a new one feeds the C1 qualified-spine miss class — route it \
+             through `find_enum_layout` instead. Found {mangle_calls}."
+        );
     }
 }
 

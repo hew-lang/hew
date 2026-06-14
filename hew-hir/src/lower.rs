@@ -2164,7 +2164,8 @@ pub fn lower_program_with_mono_cap(
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {
-                            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let hir_decl =
+                                ctx.lower_imported_type_decl(decl, span.clone(), module_short);
                             ctx.type_classes
                                 .entry(hir_decl.name.clone())
                                 .or_insert((hir_decl.marker, None));
@@ -2718,9 +2719,11 @@ pub fn lower_program_with_mono_cap(
                             if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
                                 items.push(HirItem::TypeDecl(hir_decl));
                             } else {
-                                items.push(HirItem::TypeDecl(
-                                    ctx.lower_type_decl(decl, span.clone()),
-                                ));
+                                items.push(HirItem::TypeDecl(ctx.lower_imported_type_decl(
+                                    decl,
+                                    span.clone(),
+                                    module_short,
+                                )));
                             }
                         }
                         // Emit `HirItem::Machine` entries for imported pub
@@ -7896,6 +7899,10 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root/local identity by default; the imported-module carrier
+            // (`lower_imported_type_decl`) stamps `Some(module_short)` for
+            // package-exported types.
+            defining_module: None,
             marker,
             is_opaque: decl.is_opaque,
             is_indirect: decl.is_indirect,
@@ -7950,10 +7957,35 @@ impl LowerCtx {
             id,
             node: self.ids.node(),
             name: decl.name.clone(),
+            // Root/local identity by default; an imported-record carrier would
+            // stamp `Some(module_short)`. Imported records are not yet emitted
+            // as `HirItem::Record` (the imported `Item::Record` arm is a skip),
+            // so today every lowered record is root-identity.
+            defining_module: None,
             type_params,
             fields,
             span,
         }
+    }
+
+    /// Lower a type declared in an imported package module.
+    ///
+    /// Identical to [`lower_type_decl`](Self::lower_type_decl) except that the
+    /// resulting `HirTypeDecl` carries `defining_module = Some(module_short)` —
+    /// the `(defining-module, name)` identity (mirroring
+    /// [`lower_imported_actor`](Self::lower_imported_actor)) that lets MIR
+    /// layout keys and codegen symbols distinguish two same-named types from
+    /// different modules. The decl `name` stays bare; switching keys/symbols to
+    /// `qualified_name()` is the downstream re-key this carrier enables.
+    fn lower_imported_type_decl(
+        &mut self,
+        decl: &TypeDecl,
+        span: std::ops::Range<usize>,
+        module_short: &str,
+    ) -> HirTypeDecl {
+        let mut lowered = self.lower_type_decl(decl, span);
+        lowered.defining_module = Some(module_short.to_string());
+        lowered
     }
 
     /// Lower a `supervisor` declaration to `HirSupervisorDecl`.
@@ -10692,6 +10724,38 @@ impl LowerCtx {
                                 IntentKind::Read,
                             ))
                         });
+                    // A bare construction (`Widget { … }`) constrained by a
+                    // module-qualified expected type is checked against the
+                    // qualified type def, and the checker records the QUALIFIED
+                    // `Named { name: "widgeti8.Widget" }` at this span. Carry
+                    // that qualifier onto the init expression's type so MIR can
+                    // resolve the per-module layout when two packages export a
+                    // same-bare-name type. Only adopt the recorded name when it
+                    // is the dotted form of the same short construction name and
+                    // names a non-builtin user type; a single-module construction
+                    // records the bare name and keeps `name` byte-identically.
+                    // For a non-colliding qualified reference MIR keeps the bare
+                    // layout key and codegen resolves the qualified name to the
+                    // single bare struct by short-name, so this is safe even when
+                    // the type does not collide.
+                    let result_name = self
+                        .expr_types
+                        .get(&self.mk_key(&span))
+                        .and_then(|ty| match ty {
+                            Ty::Named {
+                                name: recorded,
+                                builtin: None,
+                                ..
+                            } if recorded.contains('.')
+                                && recorded
+                                    .rsplit_once('.')
+                                    .is_some_and(|(_, short)| short == name.as_str()) =>
+                            {
+                                Some(recorded.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| name.clone());
                     (
                         HirExprKind::StructInit {
                             name: name.clone(),
@@ -10700,7 +10764,7 @@ impl LowerCtx {
                             base: hir_base,
                         },
                         ResolvedTy::Named {
-                            name: name.clone(),
+                            name: result_name,
                             args: resolved_type_args,
                             builtin: None,
                             is_opaque: false,
@@ -14213,6 +14277,18 @@ impl LowerCtx {
             // collides with a user record/enum of the same name. See
             // `LowerCtx::resolves_to_opaque_handle`.
             ResolvedTy::named_opaque(type_name.to_string(), args)
+        } else if name.contains('.') {
+            // Module-qualified user type (`widgeti64.Widget`). Preserve the
+            // full `{module}.{name}` identity so MIR layout keys and field
+            // resolution distinguish two same-bare-name types from different
+            // packages (the `i8` vs `i64` `Widget` collision). The MIR
+            // `lookup_record_field_order` already strips the prefix on a miss,
+            // so a layout registered under either the qualified or the bare
+            // key still resolves; carrying the qualifier is what lets the
+            // per-module layout (keyed by `HirTypeDecl::qualified_name()`) win
+            // over the bare last-write-wins entry once MIR keys by it. A bare
+            // reference (single-module program) keeps its short name unchanged.
+            ResolvedTy::named_user(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
         }

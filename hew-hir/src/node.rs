@@ -655,9 +655,36 @@ pub struct HirRecordDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Defining-module identity of this record declaration.
+    ///
+    /// `None` means root-program identity (root-file or file-import records);
+    /// `Some(module_short)` means a package module exports it. Carried for the
+    /// same `(defining-module, name)` reason as [`HirTypeDecl::defining_module`]
+    /// and [`HirActorDecl::defining_module`]: MIR layout keys and codegen
+    /// symbols must tell two same-named records from different modules apart.
+    /// [`Self::qualified_name`] derives the dotted registry key; root records
+    /// qualify to their bare name. The decl `name` stays bare in both cases.
+    pub defining_module: Option<String>,
     pub type_params: Vec<String>,
     pub fields: Vec<HirField>,
     pub span: Span,
+}
+
+impl HirRecordDecl {
+    /// Dotted qualified identity key for this record: `bank.Widget` for a
+    /// record exported by package module `bank`, the bare `Widget` for a
+    /// root-program record (`defining_module == None`).
+    ///
+    /// Matches the checker's qualified `type_defs` keys and mangles through
+    /// [`crate::mangle_dotted_name`], which maps the bare/root form to itself
+    /// — so single-module programs are byte-identical by construction.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        match &self.defining_module {
+            Some(module_short) => format!("{module_short}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 // ── Supervisor declarations ──────────────────────────────────────────────────
@@ -754,6 +781,22 @@ pub struct HirTypeDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Defining-module identity of this type declaration.
+    ///
+    /// `None` means the type's identity is the root program namespace: types
+    /// declared in the root file, and types spliced into the root item list by
+    /// a file-path import (`import "x.hew";`) — file-import splicing keeps
+    /// those root-identical. `Some(module_short)` means the type is exported by
+    /// a package module (`import bank;` → `Some("bank")`).
+    ///
+    /// Carried so MIR layout keys and codegen symbol synthesis can tell two
+    /// same-named types from different modules apart — the same
+    /// `(defining-module, name)` identity model [`HirActorDecl`] already uses
+    /// for actors. [`Self::qualified_name`] derives the dotted registry key;
+    /// root types qualify to their bare name, so single-module programs see
+    /// byte-identical layouts and symbols. The decl `name` stays bare in both
+    /// cases — qualification lives in the carrier, not the name.
+    pub defining_module: Option<String>,
     pub marker: ResourceMarker,
     /// `#[opaque]` — this type is a pointer-width opaque runtime handle.
     /// Distinct from `marker` (which carries `BitCopy` for opaque-only
@@ -798,6 +841,24 @@ pub struct HirTypeDecl {
     /// next-stage `EnumLayoutRegistry` lane will land.
     pub variants: Vec<HirVariant>,
     pub span: Span,
+}
+
+impl HirTypeDecl {
+    /// Dotted qualified identity key for this type: `bank.Widget` for a type
+    /// exported by package module `bank`, the bare `Widget` for a root-program
+    /// type (`defining_module == None`).
+    ///
+    /// This is the registry-key form (matching the checker's qualified
+    /// `type_defs` keys); native symbols derive from it through
+    /// [`crate::mangle_dotted_name`], which maps the root/bare form to itself
+    /// — so qualifying is a no-op for single-module programs by construction.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        match &self.defining_module {
+            Some(module_short) => format!("{module_short}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// One variant of an enum-kind `HirTypeDecl`. Mirrors the shape distinctions

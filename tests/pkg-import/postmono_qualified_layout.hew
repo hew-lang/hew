@@ -1,0 +1,57 @@
+// Post-function-mono layout discovery with a module-qualified payload.
+//
+// `hew::lmonobox` exports a heap-owning `Box`. LOCAL generic types
+// `Holder<T>` (record) / `Slot<T>` (enum) are constructed only inside LOCAL
+// generic factories `hold<T>` / `fill<T>`, each instantiated with the QUALIFIED
+// type-arg `lmonobox.Box`. At the factory origin the type is abstract
+// (`Holder<T>` / `Slot<T>`), so no concrete layout is registered there; the
+// concrete `Holder<Box>` / `Slot<Box>` layouts become observable only after
+// `hold` / `fill` are monomorphised — the `layout_mono` pass.
+//
+// That pass must shorten the whole type-arg spine to bare names when it builds
+// the registration key and mangled name (`Holder$$Box`, `Slot$$Box`), identical
+// to every codegen / MIR layout lookup. If it registered the qualified spelling
+// (`Holder$$lmonobox.Box`) the lookup would miss and the heap-owning Box drop —
+// or even the field read — would fall through the codegen fail-closed gate.
+//
+// Harness verb: hew run
+// Expected: both factory paths read the joined label length (4) and the owned
+// Box / its inner string drop cleanly at scope exit.
+import hew::lmonobox;
+
+type Holder<T> {
+    item: T;
+}
+
+enum Slot<T> {
+    Filled(T);
+    Empty;
+}
+
+fn hold<T>(x: T) -> Holder<T> {
+    Holder { item: x }
+}
+
+fn fill<T>(x: T) -> Slot<T> {
+    Slot::Filled(x)
+}
+
+fn run_holder(a: string, b: string) -> i64 {
+    let h: Holder<lmonobox.Box> = hold(lmonobox.make_box(a, b));
+    h.item.label.len()
+}
+
+fn run_slot(a: string, b: string) -> i64 {
+    let s: Slot<lmonobox.Box> = fill(lmonobox.make_box(a, b));
+    match s {
+        Filled(bx) => bx.label.len(),
+        Empty => -1,
+    }
+}
+
+fn main() {
+    let hold_len = run_holder("ab", "cd");
+    let slot_len = run_slot("ef", "gh");
+    println(f"hold={hold_len}");
+    println(f"slot={slot_len}");
+}

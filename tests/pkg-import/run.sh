@@ -33,6 +33,32 @@ fixtures=(
   imported_trait_method
   local_actor_ask_guard
   mixed_import_impl_collision
+  # Two packages export a divergent-layout `Widget` (i8 vs i64); each is
+  # constructed and read through its module-qualified identity. The MIR
+  # `RecordLayout` registry must key each layout by qualified name, not the
+  # bare `Widget`, or one field load reads the wrong slot width and trips the
+  # codegen fail-closed. Kept last: until qualified type identity lands this
+  # fixture is RED (hew run aborts), and a RED entry exits the loop before the
+  # reject fixture below.
+  samename_type_layout
+  # A generic enum (`Result<Vec<Box>, _>`) whose payload nests a qualified user
+  # type (`nestbox.Box`) reached via two import paths (directly and through
+  # `hew::nestrelay`, which re-imports `nestbox`). The heap-owning `Box`es are
+  # dropped at scope exit, exercising the generic-enum / owned-Vec-element drop
+  # and codec seed paths. The layout key for every such site must shorten the
+  # WHOLE type-arg spine to bare names, identical to the registration side, or
+  # the keys diverge and the drop falls through the codegen fail-closed.
+  nested_qualified_payload
+  # A LOCAL generic record (`Holder<T>`) and enum (`Slot<T>`) constructed only
+  # inside LOCAL generic factories, instantiated with the QUALIFIED type-arg
+  # `lmonobox.Box`. The concrete `Holder<Box>` / `Slot<Box>` layouts are
+  # discovered only post-function-mono (the `layout_mono` pass). That pass must
+  # shorten the whole type-arg spine to bare names for both the registration key
+  # and the mangled name, identical to every codegen / MIR layout lookup, or the
+  # qualified `Holder$$lmonobox.Box` registration diverges from the bare
+  # `Holder$$Box` lookup and the heap-owning Box drop / field read falls through
+  # the codegen fail-closed.
+  postmono_qualified_layout
 )
 
 for fixture in "${fixtures[@]}"; do

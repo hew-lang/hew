@@ -1145,24 +1145,33 @@ fn classify_named(
 /// (`hew-mir/src/lower.rs`): the plain `name` for a monomorphic enum
 /// (`args` empty), or the `hew_hir::mangle`d symbol for a generic
 /// instantiation (e.g. `Option<string>` → `Option$$string`).
+///
+/// The generic arm shortens the WHOLE type-arg spine before mangling. The
+/// registration side (`EnumLayoutRegistry::insert`, the `layout_mono` pass)
+/// keys on the bare-normalised spine, so a use-site type carrying a
+/// module-qualified payload (`Slot<lmonobox.Box>`) MUST shorten its args here
+/// or the probe (`Slot$$lmonobox.Box`) diverges from the registered
+/// `Slot$$Box`. Both the full-outer-name and short-outer-name candidates are
+/// built from the SAME shortened args; only the outer name varies (to absorb a
+/// qualified outer prefix). Nested qualified payloads are shortened at depth.
 fn lookup_enum_layout<'a>(
     name: &str,
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],
 ) -> Option<&'a EnumLayout> {
-    // The `name` at use sites after HIR resolution may carry a module-qualified
-    // prefix (e.g. `"json.ParseError"`), while `enum_layouts` always registers
-    // the unqualified decl name (`"ParseError"`). Try the full name first so an
-    // exact match wins; fall back to the short name (suffix after the last `.`)
-    // so imported enums resolve correctly. For generic enums, mangle both forms.
     let short = name.rsplit_once('.').map_or(name, |(_, s)| s);
     if args.is_empty() {
         enum_layouts
             .iter()
             .find(|el| el.name == name || el.name == short)
     } else {
-        let full_mangled = hew_hir::mangle(name, args);
-        let short_mangled = hew_hir::mangle(short, args);
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(hew_hir::shorten_named_arg_qualifiers)
+            .collect();
+        let full_mangled = hew_hir::mangle(name, &short_args);
+        let short_mangled = hew_hir::mangle(short, &short_args);
         enum_layouts
             .iter()
             .find(|el| el.name == full_mangled || el.name == short_mangled)
@@ -1178,7 +1187,11 @@ fn lookup_enum_layout<'a>(
 /// carries SUBSTITUTED field types (`[i64, string]`), so a caller that recurses
 /// `layout.field_tys` recurses concrete types, never the bare `A`/`B` params.
 /// Module-qualified names are matched both as the full name and the short
-/// (post-`.`) suffix so imported records resolve.
+/// (post-`.`) suffix so imported records resolve. The generic arm shortens the
+/// whole type-arg spine before mangling (identical discipline to
+/// `lookup_enum_layout`): a record instantiated with a qualified payload
+/// (`Holder<json.Value>`) registers under `Holder$$Value`, so the probe must
+/// shorten its args to match. Nested qualified payloads are shortened at depth.
 fn lookup_record_layout<'a>(
     name: &str,
     args: &[ResolvedTy],
@@ -1190,8 +1203,13 @@ fn lookup_record_layout<'a>(
             .iter()
             .find(|r| r.name == name || r.name == short)
     } else {
-        let full_mangled = hew_hir::mangle(name, args);
-        let short_mangled = hew_hir::mangle(short, args);
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(hew_hir::shorten_named_arg_qualifiers)
+            .collect();
+        let full_mangled = hew_hir::mangle(name, &short_args);
+        let short_mangled = hew_hir::mangle(short, &short_args);
         record_layouts
             .iter()
             .find(|r| r.name == full_mangled || r.name == short_mangled)
@@ -1728,20 +1746,26 @@ mod tests {
     }
 
     /// Slice 2 — transitive fail-closed: a generic record whose substituted
-    /// field is an opaque handle (`Box<json.Value>` → `Box$$json.Value` with a
-    /// `json.Value` field) must fail closed, because the recursion classifies
-    /// the substituted opaque field (`OpaqueHandle`) — there is no shallow
-    /// clone. A regression here would be a UAF on supervisor restart
-    /// (`unclonable-leaf-fails-closed-transitively`). The opaque field is
-    /// `OpaqueHandle`, which is a recorded-but-unclonable kind: the record
-    /// classifies structurally but the opaque leaf carries no clone helper, so
-    /// the downstream owned-aggregate authority (which requires every field
-    /// classify cleanly under the actor-state classifier) excludes it. Here we
-    /// pin that the recursion descends into the SUBSTITUTED opaque field and
-    /// produces an `OpaqueHandle`, never a silent BitCopy/shallow clone.
+    /// field is an opaque handle (`Box<json.Value>`) must fail closed, because
+    /// the recursion classifies the substituted opaque field (`OpaqueHandle`) —
+    /// there is no shallow clone. A regression here would be a UAF on supervisor
+    /// restart (`unclonable-leaf-fails-closed-transitively`). The opaque field
+    /// is `OpaqueHandle`, a recorded-but-unclonable kind: the record classifies
+    /// structurally but the opaque leaf carries no clone helper, so the
+    /// downstream owned-aggregate authority (which requires every field classify
+    /// cleanly) excludes it.
+    ///
+    /// C1 symmetry: the registry shortens the qualified payload's prefix, so the
+    /// layout is REGISTERED under the bare key `Box$$Value` (not the raw
+    /// `Box$$json.Value`). The use-site probe still carries the qualified
+    /// `Box<json.Value>`; `lookup_record_layout` must shorten its spine to
+    /// resolve it. This pins both the bare-key registration discipline AND that
+    /// the recursion descends into the SUBSTITUTED opaque field.
     #[test]
     fn generic_record_with_opaque_substituted_field_classifies_opaque_leaf() {
-        let key = hew_hir::mangle("Box", &[ResolvedTy::named_opaque("json.Value", vec![])]);
+        // Registered under the SHORTENED spine, exactly as the real registry
+        // (`RecordLayoutRegistry::insert` / `layout_mono`) keys it.
+        let key = hew_hir::mangle("Box", &[ResolvedTy::named_opaque("Value", vec![])]);
         let records = vec![RecordLayout {
             name: key.clone(),
             // The substituted field is the opaque handle, NOT the bare `T`.
@@ -1749,6 +1773,7 @@ mod tests {
         }];
         let mut v = HashSet::new();
         let result = classify_state_field_full(
+            // The use-site probe carries the QUALIFIED payload (import-use form).
             &named("Box", vec![ResolvedTy::named_opaque("json.Value", vec![])]),
             &records,
             &[],
@@ -1756,11 +1781,9 @@ mod tests {
             &mut v,
         )
         .expect("the record itself classifies; the opaque leaf is recorded");
-        // The record classifies as a UserRecord carrying the mangled key, but
-        // its substituted field is the opaque handle — confirm the recursion
-        // reaches the opaque leaf rather than treating `T` as BitCopy. We assert
-        // by classifying the field type directly: it must be OpaqueHandle, the
-        // unclonable leaf that the owned-aggregate authority rejects.
+        // The record classifies as a UserRecord carrying the bare-spine mangled
+        // key, and its substituted field is the opaque handle — confirm the
+        // recursion reaches the opaque leaf rather than treating `T` as BitCopy.
         assert_eq!(result, StateFieldCloneKind::UserRecord { name: key });
         let mut fv = HashSet::new();
         let field_kind = classify_state_field_full(
@@ -1776,6 +1799,96 @@ mod tests {
             "the substituted opaque field must classify as OpaqueHandle (no \
              shallow clone), got {field_kind:?}"
         );
+    }
+
+    // ── C1 qualified-payload layout-key symmetry (actor-state clone) ────────
+    //
+    // The actor-state clone classifier resolves a generic field's layout via
+    // `lookup_record_layout` / `lookup_enum_layout`. A field instantiated
+    // through an import-use site carries a MODULE-QUALIFIED payload in its args
+    // (`Pair<i64, json.Value>`), while the layout is REGISTERED under the bare
+    // spine (`Pair$$i64$Value`). If the probe mangled the raw qualified spine it
+    // would diverge from the registered key, fail closed as
+    // `MissingRecordLayout`, and the actor would lose a clonable field — a
+    // restart-time UAF or a spurious unclonable rejection. The lookup helpers
+    // shorten the spine so the qualified use-site resolves to its bare key.
+
+    /// A generic RECORD field whose payload is module-qualified at the use site
+    /// resolves to its bare-key registered layout and classifies through.
+    #[test]
+    fn qualified_payload_record_field_resolves_to_bare_key() {
+        // Registered under the bare spine (`Pair$$i64$Value`), as the registry keys it.
+        let key = hew_hir::mangle(
+            "Pair",
+            &[ResolvedTy::I64, ResolvedTy::named_user("Value", vec![])],
+        );
+        let records = vec![
+            RecordLayout {
+                name: key.clone(),
+                field_tys: vec![ResolvedTy::I64, ResolvedTy::named_user("Value", vec![])],
+            },
+            // The nested `Value` record so the field recursion classifies cleanly.
+            RecordLayout {
+                name: "Value".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            },
+        ];
+        let mut v = HashSet::new();
+        // The probe carries the QUALIFIED payload (`json.Value`) as the import-use
+        // MIR does. A raw `mangle("Pair", [i64, json.Value])` would key
+        // `Pair$$i64$json.Value` and miss the registered `Pair$$i64$Value`.
+        let result = classify_state_field_full(
+            &named("Pair", vec![ResolvedTy::I64, named("json.Value", vec![])]),
+            &records,
+            &[],
+            &[],
+            &mut v,
+        )
+        .expect("qualified-payload record field must resolve to its bare-key layout");
+        assert_eq!(
+            result,
+            StateFieldCloneKind::UserRecord { name: key },
+            "the resolved layout carries the bare-spine mangled key"
+        );
+    }
+
+    /// A generic ENUM field carrying a module-qualified payload at the use site
+    /// resolves to its bare-key registered layout and classifies as `Enum`,
+    /// driving the tag-aware actor-state clone — never a fail-closed miss.
+    #[test]
+    fn qualified_payload_enum_field_resolves_to_bare_key() {
+        // Registered under the bare spine (`Slot$$Value`).
+        let key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Value", vec![])]);
+        let layouts = vec![EnumLayout {
+            name: key.clone(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Full".to_string(),
+                    field_tys: vec![ResolvedTy::String],
+                },
+                MachineVariantLayout {
+                    name: "Empty".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let mut v = HashSet::new();
+        // Probe with the qualified payload `Slot<lmonobox.Value>`.
+        let result = classify_state_field_with_enum_layouts(
+            &named("Slot", vec![named("lmonobox.Value", vec![])]),
+            &no_records(),
+            &layouts,
+            &mut v,
+        )
+        .expect("qualified-payload enum field must resolve to its bare-key layout");
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Enum { name: key },
+            "the resolved layout carries the bare-spine mangled key"
+        );
+        assert!(v.is_empty(), "recursion guard must drain on success");
     }
 
     #[test]

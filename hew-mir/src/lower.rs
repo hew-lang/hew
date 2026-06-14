@@ -877,6 +877,51 @@ pub fn lower_hir_module_with_facts(
     // Key: (supervisor_name, child_name) → Vec<(field_name, HirExpr)>.
     let mut supervisor_child_hir_init_args: HashMap<(String, String), Vec<(String, HirExpr)>> =
         HashMap::new();
+    // Pre-scan for same-bare-name TYPE collisions across modules. Two imported
+    // packages that each export a `Widget` with a divergent layout collide if
+    // the layout registry keys by the bare name (last-write-wins). Only such a
+    // genuine collision earns the module-qualified registry key; a type whose
+    // bare name is unique in the module keeps the bare key, byte-identical to
+    // the pre-qualification behaviour (so a single `pub type Ctx` constructed
+    // and returned within its own module — qualified at the import boundary but
+    // bare internally — is untouched and never grows a second LLVM struct).
+    //
+    // A name collides when two non-generic record/type decls share a bare name
+    // but have distinct qualified identities (`{module}.{name}`). Generic decls
+    // are excluded (they emit no bare-name layout here; their per-instantiation
+    // layouts are mangled). Built once, consulted by every layout arm below.
+    let collided_type_names: HashSet<String> = {
+        let mut bare_to_qualified: HashMap<&str, HashSet<String>> = HashMap::new();
+        for item in &module.items {
+            let (bare, qualified) = match item {
+                HirItem::Record(decl) if decl.type_params.is_empty() => {
+                    (decl.name.as_str(), decl.qualified_name())
+                }
+                HirItem::TypeDecl(decl) if decl.type_params.is_empty() => {
+                    (decl.name.as_str(), decl.qualified_name())
+                }
+                _ => continue,
+            };
+            bare_to_qualified.entry(bare).or_default().insert(qualified);
+        }
+        bare_to_qualified
+            .into_iter()
+            .filter(|(_, quals)| quals.len() > 1)
+            .map(|(bare, _)| bare.to_string())
+            .collect()
+    };
+    // The registry key for a monomorphic module type: its qualified identity
+    // (`{module}.{name}`) ONLY when its bare name collides with another module's
+    // same-bare type; otherwise the bare name (byte-identical to the pre-C1
+    // behaviour). A colliding type's construction sites carry the same qualified
+    // name (the Stage-2 checker stamps it), so they resolve to the right layout.
+    let type_layout_key = |bare: &str, qualified: String| -> String {
+        if collided_type_names.contains(bare) {
+            qualified
+        } else {
+            bare.to_string()
+        }
+    };
     for item in &module.items {
         match item {
             HirItem::Record(decl) => {
@@ -901,13 +946,14 @@ pub fn lower_hir_module_with_facts(
                 // slice — codegen will fail-closed on any
                 // `ResolvedTy::Named` reach-through that names a tuple
                 // record.
+                let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
-                        name: decl.name.clone(),
+                        name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                     });
                 }
-                record_field_orders.insert(decl.name.clone(), fields);
+                record_field_orders.insert(layout_key, fields);
             }
             HirItem::TypeDecl(decl) => {
                 // `pub type Foo { ... }` and `pub type Foo<T> { ... }` are
@@ -928,6 +974,10 @@ pub fn lower_hir_module_with_facts(
                 if !decl.type_params.is_empty() {
                     continue;
                 }
+                // Same collision-aware keying as the record arm: a same-bare
+                // `pub type` (struct- OR enum-shaped) from two packages keys by
+                // its qualified identity; a unique bare name keys bare.
+                let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 let fields: Vec<(String, ResolvedTy)> = decl
                     .fields
                     .iter()
@@ -935,10 +985,10 @@ pub fn lower_hir_module_with_facts(
                     .collect();
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
-                        name: decl.name.clone(),
+                        name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                     });
-                    record_field_orders.insert(decl.name.clone(), fields);
+                    record_field_orders.insert(layout_key.clone(), fields);
                 }
                 // Enum-kind type decls: register a tagged-union layout for
                 // every monomorphic enum, walking ALL variants (unit, tuple,
@@ -958,8 +1008,11 @@ pub fn lower_hir_module_with_facts(
                             field_tys: v.field_tys(),
                         })
                         .collect();
+                    // Enum-shaped pub types collide the same way (R6): a
+                    // same-bare-name enum from two packages keys by its
+                    // qualified identity, a unique one stays bare.
                     enum_layouts.push(crate::model::EnumLayout {
-                        name: decl.name.clone(),
+                        name: layout_key,
                         tag_width,
                         variants,
                         is_indirect: decl.is_indirect,
@@ -4886,28 +4939,42 @@ fn push_unknown_type_diagnostics_for_layout_ty(
     }
 }
 
-/// Recursively strip the module prefix from every `Named` name in a type spine,
-/// mirroring codegen's `shorten_named_args` (llvm.rs ~3218). At import-use sites
-/// the MIR carries module-qualified names in both the origin AND the type args
-/// (`Pair<i64, json.Value>` → `Named { name: "Pair", args: [i64, json.Value] }`),
+/// Strip the module prefix from every `Named` name in a type spine, recursing
+/// over every compound `ResolvedTy` shape. At import-use sites the MIR carries
+/// module-qualified names in both the origin AND the type args
+/// (`Pair<i64, json.Value>` -> `Named { name: "Pair", args: [i64, json.Value] }`),
 /// while every layout-registration + codegen-thunk site keys on the bare
 /// (short) names (`Pair$$i64$Value`). Normalising the whole spine here keeps
 /// MIR's `user_record_layout_key` byte-congruent with the codegen consumers.
+///
+/// Delegates to the single canonical `hew_hir::shorten_named_arg_qualifiers`
+/// so the record layout-registration key, the enum layout-registration key,
+/// and every codegen lookup/drop/codec key are produced by ONE shortener and
+/// cannot drift — including for a NESTED qualified payload
+/// (`Pair<Vec<json.Value>, _>`) that a `Named`-only shortener would miss.
 fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
-    match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            is_opaque,
-        } => ResolvedTy::Named {
-            name: short_name(name).to_string(),
-            args: args.iter().map(shorten_named_ty_spine).collect(),
-            builtin: *builtin,
-            is_opaque: *is_opaque,
-        },
-        other => other.clone(),
-    }
+    hew_hir::shorten_named_arg_qualifiers(ty.clone())
+}
+
+/// Mangle a generic instantiation's LAYOUT key after shortening the whole
+/// type-arg spine to bare (unqualified) payload names — the MIR sibling of
+/// codegen's `mangle_with_shortened_args` and the generic arm of
+/// `user_record_layout_key`.
+///
+/// Every record/enum layout is registered under the bare-normalised spine (the
+/// HIR `EnumLayoutRegistry::insert`, the `layout_mono` pass, and the record
+/// origin-site path all route their `mangled_name` through
+/// `hew_hir::shorten_named_arg_qualifiers`). So every MIR layout LOOKUP that
+/// mangles a key from an expression's type — field access / field store,
+/// `StructInit`, the owned-element and enum-layout reachability walks — MUST
+/// shorten its spine identically, or a key carrying a module-qualified payload
+/// (`Holder<lmonobox.Box>` → `Holder$$lmonobox.Box`) diverges from the
+/// registered `Holder$$Box` and the lookup falls through the fail-closed gate.
+/// Nested qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at
+/// every depth. In-repo unqualified generics are unaffected (a no-op strip).
+fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
+    let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
+    hew_hir::mangle(name, &short_args)
 }
 
 /// Resolve the `record_field_orders` key for a user record type — the key MIR
@@ -6432,7 +6499,7 @@ impl Builder {
         let key = if elem_args.is_empty() {
             elem_name.clone()
         } else {
-            hew_hir::mangle(elem_name, elem_args)
+            mangle_layout_key(elem_name, elem_args)
         };
         let is_enum = self
             .enum_layouts
@@ -6506,7 +6573,7 @@ impl Builder {
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    hew_hir::mangle(short, args)
+                    mangle_layout_key(short, args)
                 };
                 if !visiting.insert(key.clone()) {
                     return false;
@@ -6580,7 +6647,7 @@ impl Builder {
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    hew_hir::mangle(name, args)
+                    mangle_layout_key(name, args)
                 };
                 self.vec_owned_element_keys.contains(&key)
                     || self.vec_owned_element_keys.contains(name)
@@ -7318,7 +7385,7 @@ impl Builder {
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        hew_hir::mangle(name, args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -8046,11 +8113,28 @@ impl Builder {
                 // is `Named { name, args: <concrete> }` and the layout was
                 // registered under the mangled name; for a monomorphic
                 // record `args` is empty and the bare name is the key.
+                //
+                // A bare construction (`Widget { … }`) constrained by a
+                // module-qualified expected type carries the QUALIFIED name on
+                // `expr.ty` (the HIR lowering stamps it from the checker-recorded
+                // type). Prefer that qualified name so the lookup hits the
+                // per-module layout when two packages export a same-bare-name
+                // type. A non-colliding type keeps a bare layout key, but
+                // `lookup_record_field_order` strips the module prefix on a miss,
+                // so a qualified `expr.ty` still resolves the bare entry. A
+                // single-module construction never carries a dotted name and
+                // falls through to the bare syntactic `name` byte-identically.
                 let expr_ty = self.subst_ty(&expr.ty);
                 let record_key = match &expr_ty {
                     ResolvedTy::Named {
                         name: tname, args, ..
-                    } if !args.is_empty() => hew_hir::mangle(tname, args),
+                    } if !args.is_empty() => mangle_layout_key(tname, args),
+                    ResolvedTy::Named {
+                        name: tname,
+                        args,
+                        builtin: None,
+                        ..
+                    } if args.is_empty() && tname.contains('.') => tname.clone(),
                     _ => name.clone(),
                 };
                 // Look up the declaration-order field list for this record.
@@ -8277,7 +8361,7 @@ impl Builder {
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        hew_hir::mangle(name, args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -20454,7 +20538,7 @@ impl Builder {
                         layout.name == *name || crate::model::short_name(&layout.name) == short
                     })
                 } else {
-                    let mangled = hew_hir::mangle(short, args);
+                    let mangled = mangle_layout_key(short, args);
                     self.enum_layouts
                         .iter()
                         .find(|layout| layout.name == mangled || layout.name == *name)
@@ -26738,7 +26822,7 @@ fn ty_is_heap_owning_enum_composite(
             .iter()
             .find(|el| el.name == *name || crate::model::short_name(&el.name) == short)
     } else {
-        let mangled = hew_hir::mangle(short, args);
+        let mangled = mangle_layout_key(short, args);
         enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
@@ -30283,6 +30367,7 @@ mod enum_layout_tests {
             id: ItemId(0),
             node: HirNodeId(0),
             name: "Shape".to_string(),
+            defining_module: None,
             marker: ResourceMarker::None,
             is_opaque: false,
             is_indirect: false,
@@ -30347,6 +30432,7 @@ mod enum_layout_tests {
             id: ItemId(1),
             node: HirNodeId(1),
             name: "Colour".to_string(),
+            defining_module: None,
             marker: ResourceMarker::None,
             is_opaque: false,
             is_indirect: false,
@@ -30396,6 +30482,7 @@ mod enum_layout_tests {
             id: option_item_id,
             node: HirNodeId(10),
             name: "Option".to_string(),
+            defining_module: None,
             marker: ResourceMarker::None,
             is_opaque: false,
             is_indirect: false,

@@ -35,8 +35,9 @@ pub use mono::{
     FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_resolved_ty, substitute_type_params, EnumLayout, EnumMonoKey, EnumVariantLayout,
-    MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey, MONOMORPHISATION_REGISTRY_CAP,
+    mangle, mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params, EnumLayout,
+    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
@@ -44,9 +45,9 @@ pub use node::{
     HirField, HirFn, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRegexLiteral, HirRestartPolicy,
-    HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
     HirVarSelfMethodTarget, HirVariant, HirVariantKind, WhereOrigin,
 };
 pub use value_class::{

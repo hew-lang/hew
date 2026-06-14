@@ -293,16 +293,25 @@ pub fn link_executable(
         .output()
         .map_err(|e| format!("Error: cannot invoke linker: {e}"))?;
 
-    // Forward raw linker output so the user sees the full error.
+    // The linker's stderr is BUILD-time diagnostic output, not the compiled
+    // program's RUNTIME output. `hew run` execs the linked binary in this same
+    // process, so anything written to stderr here is indistinguishable from what
+    // the program itself writes at runtime. Forwarding it unconditionally leaked
+    // benign, platform-specific linker notes (e.g. a binutils warning some Linux
+    // hosts emit and quiet hosts don't) into the program's stderr — breaking
+    // callers that assert the program produced no output (#1900).
+    //
+    // `linker_stderr_diagnostics` routes it correctly: on FAILURE the linker's
+    // stderr IS the error and is surfaced through hew's own diagnostic channel
+    // (prefixed); on SUCCESS benign warnings are suppressed so they cannot
+    // pollute the program's runtime output.
     let stderr_text = String::from_utf8_lossy(&output.stderr);
-    if !stderr_text.is_empty() {
-        eprint!("{stderr_text}");
+
+    for line in linker_stderr_diagnostics(&stderr_text, output.status.success()) {
+        eprintln!("{line}");
     }
 
     if !output.status.success() {
-        for hint in diagnose_linker_errors(&stderr_text) {
-            eprintln!("{hint}");
-        }
         return Err("linking failed".into());
     }
 
@@ -833,6 +842,35 @@ fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
 
 /// Parse linker stderr for unresolved `hew_*` symbols and return human-readable
 /// hints pointing to the runtime feature that must be enabled.
+/// Decide which diagnostic lines hew should emit for a linker subprocess's
+/// stderr, keeping BUILD-time linker output out of the compiled program's
+/// RUNTIME stderr.
+///
+/// `hew run` execs the linked binary in the same process, so any line hew
+/// writes to stderr here is indistinguishable from the program's own runtime
+/// output. The split is therefore strict:
+///
+/// - On link **failure** (`success == false`): the linker's stderr is the
+///   error. Every non-blank line is surfaced through hew's own channel with a
+///   `hew: linker:` prefix, followed by the parsed feature/duplicate-symbol
+///   hints. A real link error stays fully visible.
+/// - On link **success** (`success == true`): benign, platform-specific linker
+///   warnings are suppressed entirely. They are not the program's output and
+///   must never appear in it (#1900).
+fn linker_stderr_diagnostics(stderr: &str, success: bool) -> Vec<String> {
+    if success {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<String> = stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("hew: linker: {line}"))
+        .collect();
+    lines.extend(diagnose_linker_errors(stderr));
+    lines
+}
+
 pub(crate) fn diagnose_linker_errors(stderr: &str) -> Vec<String> {
     let mut seen: std::collections::BTreeSet<(&'static str, &'static str)> =
         std::collections::BTreeSet::new();
@@ -1246,6 +1284,50 @@ mod tests {
     #[test]
     fn feature_hint_non_hew_symbol() {
         assert_eq!(symbol_to_feature_hint("some_other_symbol"), None);
+    }
+
+    // ── linker_stderr_diagnostics: build-vs-runtime stderr split (#1900) ──
+
+    #[test]
+    fn linker_stderr_suppressed_on_success_with_benign_warning() {
+        // A successfully-linked program must not inherit the linker's benign,
+        // platform-specific warnings in its runtime stderr.
+        let stderr = "/usr/bin/ld: warning: foo.o: missing .note.GNU-stack section\n";
+        assert!(linker_stderr_diagnostics(stderr, true).is_empty());
+    }
+
+    #[test]
+    fn linker_stderr_suppressed_on_success_when_empty() {
+        assert!(linker_stderr_diagnostics("", true).is_empty());
+    }
+
+    #[test]
+    fn linker_stderr_surfaced_and_prefixed_on_failure() {
+        // A real link error must stay visible, routed through hew's own channel.
+        let stderr = "foo.o: undefined reference to `some_missing_sym'\n";
+        let lines = linker_stderr_diagnostics(stderr, false);
+        assert_eq!(
+            lines[0],
+            "hew: linker: foo.o: undefined reference to `some_missing_sym'"
+        );
+    }
+
+    #[test]
+    fn linker_stderr_failure_appends_feature_hints() {
+        // Failure output carries both the raw (prefixed) linker line and the
+        // parsed feature hint for a known Hew runtime symbol.
+        let stderr = "foo.o: undefined reference to `hew_json_parse'\n";
+        let lines = linker_stderr_diagnostics(stderr, false);
+        assert!(lines[0].starts_with("hew: linker: "));
+        assert!(lines.iter().any(|l| l.contains("serialization")));
+    }
+
+    #[test]
+    fn linker_stderr_failure_skips_blank_lines() {
+        let stderr = "real error line\n\n   \nsecond line\n";
+        let lines = linker_stderr_diagnostics(stderr, false);
+        assert_eq!(lines[0], "hew: linker: real error line");
+        assert_eq!(lines[1], "hew: linker: second line");
     }
 
     // ── diagnose_linker_errors ────────────────────────────────────────

@@ -162,7 +162,7 @@ pub fn clear_all_for_actor(actor_id: u64) {
 
 // ── Test helpers (cross-crate, doc-hidden) ───────────────────────────────────
 //
-// These helpers let integration tests in other crates (e.g. hew-std-encoding-toml)
+// These helpers let integration tests in other crates (e.g. hew-std's toml module)
 // inject and inspect actor-keyed errors without a running scheduler.  They are
 // not part of the public API: they are `#[doc(hidden)]` and prefixed with `__`
 // to signal test-only intent without gating behind `#[cfg(test)]` (which would

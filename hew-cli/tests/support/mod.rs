@@ -14,11 +14,7 @@ use std::sync::OnceLock;
 static CODEGEN_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 static WASI_RUNNER_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
-const WASI_STDLIB_ARCHIVES: &[(&str, &str)] = &[
-    ("hew-std-encoding-json", "libhew_std_encoding_json.a"),
-    ("hew-std-encoding-yaml", "libhew_std_encoding_yaml.a"),
-    ("hew-std-encoding-toml", "libhew_std_encoding_toml.a"),
-];
+const WASI_STDLIB_ARCHIVES: &[(&str, &str)] = &[("hew-std", "libhew_std.a")];
 
 pub fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))

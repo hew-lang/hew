@@ -133,12 +133,10 @@ runtime:
 stdlib:
 	cargo build -p hew-lib
 
-# Build the WASM runtime + focused wire JSON/YAML/TOML archives
+# Build the WASM runtime + the consolidated stdlib archive (libhew_std.a)
 wasm-runtime:
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-	cargo build -p hew-std-encoding-json --target wasm32-wasip1
-	cargo build -p hew-std-encoding-yaml --target wasm32-wasip1
-	cargo build -p hew-std-encoding-toml --target wasm32-wasip1
+	cargo build -p hew-std --target wasm32-wasip1
 
 # Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm:
@@ -355,7 +353,7 @@ assemble: | hew adze runtime stdlib wasm-runtime
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
-	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a libhew_std_encoding_toml.a; do \
+	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_DEBUG_DIR)/$$lib ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
 			ln -sfn ../../../$(WASM_DEBUG_DIR)/$$lib \
@@ -404,9 +402,7 @@ release:
 	$(RELEASE_ENV) cargo build -p adze-cli --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
-	$(RELEASE_ENV) cargo build -p hew-std-encoding-json --target wasm32-wasip1 --release
-	$(RELEASE_ENV) cargo build -p hew-std-encoding-yaml --target wasm32-wasip1 --release
-	$(RELEASE_ENV) cargo build -p hew-std-encoding-toml --target wasm32-wasip1 --release
+	$(RELEASE_ENV) cargo build -p hew-std --target wasm32-wasip1 --release
 	$(MAKE) assemble-release
 
 # Validate release builds on all supported platforms before tagging.
@@ -434,7 +430,7 @@ assemble-release:
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
-	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a libhew_std_encoding_toml.a; do \
+	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
 			ln -sfn ../../../$(WASM_RELEASE_DIR)/$$lib \
@@ -550,15 +546,7 @@ test-runtime-net:
 		-p hew-runtime \
 		-p hew-analysis \
 		-p hew-lsp \
-		-p hew-std-net-dns \
-		-p hew-std-net-http \
-		-p hew-std-net-ipnet \
-		-p hew-std-net-mime \
-		-p hew-std-net-quic \
-		-p hew-std-net-smtp \
-		-p hew-std-net-tls \
-		-p hew-std-net-url \
-		-p hew-std-net-websocket
+		-p hew-std
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
@@ -982,7 +970,7 @@ install: install-check
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
-	@for lib in libhew_runtime.a libhew_std_encoding_json.a libhew_std_encoding_yaml.a libhew_std_encoding_toml.a; do \
+	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
 			install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
 			install -m 644 $(WASM_RELEASE_DIR)/$$lib \

@@ -829,6 +829,89 @@ fn bare_await_actor_ask_in_match_still_types_as_result() {
 }
 
 #[test]
+fn user_method_on_builtin_result_wrapper_is_rejected() {
+    // A user package may declare its own `type Result` and `impl` methods on
+    // it (the sqlite ecosystem package does exactly this). An actor ask
+    // (`await db.query(...)`) is typed as the builtin wrapper
+    // `Result<UserResult, AskError>`. Calling the user method `free` on that
+    // wrapper must be rejected: `free` is not part of the builtin `Result`
+    // surface, and admitting it (via the bare-name `Result::free` key the user
+    // impl registers in `fn_sigs`) produces an ill-typed call that passes the
+    // wrapper aggregate where the inner success value is required — codegen
+    // then rejects the LLVM module. The checker must reject this with an
+    // `UndefinedMethod` diagnostic naming the builtin `Result<...>` receiver.
+    let output = check_source(
+        r#"
+        type Result { handle: i64; }
+        impl Result {
+            fn free(self) {}
+        }
+        actor Db {
+            receive fn query(sql: string) -> Result {
+                Result { handle: 0 }
+            }
+        }
+        fn main() {
+            let db = spawn Db;
+            let r = await db.query("SELECT 1");
+            r.free();
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedMethod
+                && error.message.contains("no method `free`")
+                && error.message.contains("Result<")
+        }),
+        "user method `free` on a builtin `Result<...>` ask-wrapper must be \
+         rejected as UndefinedMethod; got: {:#?}",
+        output.errors
+    );
+    // The colliding user method must NOT be recorded as a dispatch rewrite —
+    // that is the ill-typed call codegen-front would reject.
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::free"
+        )),
+        "no `Result::free` rewrite must be recorded for a builtin Result \
+         receiver; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
+    // Positive control for `user_method_on_builtin_result_wrapper_is_rejected`:
+    // the canonical builtin `Result` methods (`is_ok`/`is_err`/`unwrap`/
+    // `unwrap_or`) must still resolve cleanly on the `Result<T, AskError>`
+    // wrapper produced by an actor ask. The bare-name dispatch gate must not
+    // over-reject the legitimate builtin surface.
+    let output = check_source(
+        r"
+        actor Doubler {
+            receive fn process(n: i64) -> i64 { n * 2 }
+        }
+        fn main() {
+            let d = spawn Doubler;
+            let r = await d.process(5);
+            let ok = r.is_ok();
+            let v = r.unwrap();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "builtin Result methods on an actor-ask wrapper must type-check; \
+         got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn constructor_pattern_against_non_enum_still_errors() {
     // Negative: an `Ok`/`Err` pattern against a plain integer literal must
     // still produce a "cannot match non-enum type" diagnostic. The block-unwrap

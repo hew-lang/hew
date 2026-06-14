@@ -58,12 +58,12 @@ pub fn v7() -> string {
 pub fn is_valid(s: string) -> bool {
     unsafe {
         hew_uuid_parse(s)
-    }
+    } != 0
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_uuid_v4() -> string;
     fn hew_uuid_v7() -> string;
-    fn hew_uuid_parse(s: string) -> bool;
+    fn hew_uuid_parse(s: string) -> i32; // INTERNAL-ABI: 1 = valid, 0 = invalid (matches Rust #[no_mangle] -> i32)
 }

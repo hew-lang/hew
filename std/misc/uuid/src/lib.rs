@@ -115,4 +115,39 @@ mod tests {
         // SAFETY: null is explicitly accepted as a no-op.
         unsafe { hew_uuid_free(std::ptr::null_mut()) };
     }
+
+    /// FFI signature-parity guard (finding FFI-1).
+    ///
+    /// `hew_uuid_parse` returns `i32` on the Rust side (`#[no_mangle]` above).
+    /// The Hew binding in `uuid.hew` must declare the same return type, or the
+    /// compiled call reads a 32-bit value through a 1-byte `bool` ABI and gets
+    /// garbage in the high bytes. This test parses the `.hew` extern block and
+    /// fails closed if its declared return type is anything other than `-> i32`,
+    /// so any drift back to `bool` (or any other type) goes red here.
+    #[test]
+    fn hew_binding_declares_uuid_parse_returns_i32() {
+        let hew_src = include_str!("../uuid.hew");
+
+        // Locate the `hew_uuid_parse` extern declaration line.
+        let decl = hew_src
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("fn hew_uuid_parse"))
+            .expect("uuid.hew must declare an extern `fn hew_uuid_parse`");
+
+        // Strip any trailing line comment before inspecting the signature.
+        let signature = decl.split("//").next().unwrap_or(decl).trim();
+
+        assert!(
+            signature.contains("-> i32"),
+            "uuid.hew binding for hew_uuid_parse must return i32 to match the \
+             Rust `#[no_mangle] -> i32` signature; found: {signature:?}"
+        );
+        // The mismatched `bool` declaration must never return.
+        assert!(
+            !signature.contains("-> bool"),
+            "uuid.hew binding for hew_uuid_parse must not declare `-> bool` \
+             (Rust returns i32); found: {signature:?}"
+        );
+    }
 }

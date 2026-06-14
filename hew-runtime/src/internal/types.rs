@@ -227,6 +227,12 @@ pub enum HewError {
     ErrTimeout = -3,
     ErrClosed = -4,
     ErrOom = -5,
+    /// A send/ask/by-id targeted an actor owned by a different runtime than the
+    /// caller's. The boundary fails closed (refuse + diagnose) rather than
+    /// routing a foreign pointer. Never returned in a single-runtime program,
+    /// where every actor carries the same `RuntimeId`. Additive: existing codes
+    /// are unchanged.
+    ErrForeignRuntime = -6,
 }
 
 /// Task state (cooperative scheduling within an actor).

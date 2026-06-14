@@ -238,6 +238,31 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
     }
 }
 
+/// Resolve the id of the runtime bound on this thread, without panicking when
+/// none is installed.
+///
+/// Same TLS-first → default-slot resolution order as [`rt_current`], but
+/// returns `None` instead of trapping when neither is installed. The
+/// cross-runtime send boundary uses this so it can run on a thread that has no
+/// runtime bound (an alias send issued before `hew_sched_init`, or in a unit
+/// test that drives a send path without a runtime guard): with no runtime
+/// installed there is no second runtime an actor could be foreign to, so the
+/// boundary treats the pointer as in-runtime rather than fabricating a trap the
+/// pre-check never used to take. Reads only the id discriminant, never a
+/// borrowed authority.
+#[inline]
+pub(crate) fn rt_current_id() -> Option<RuntimeId> {
+    let p = CURRENT_RUNTIME.with(Cell::get);
+    if p.is_null() {
+        rt_default().map(RuntimeInner::runtime_id)
+    } else {
+        // SAFETY: a non-null TLS pointer was installed by `enter()` against a
+        // `RuntimeInner` that outlives the installing guard on this thread,
+        // exactly as in `rt_current`.
+        Some(unsafe { (*p).runtime_id() })
+    }
+}
+
 /// Install `rt` as this thread's [`CURRENT_RUNTIME`] for the lifetime of the
 /// returned guard, restoring the previously-installed runtime when the guard
 /// drops.

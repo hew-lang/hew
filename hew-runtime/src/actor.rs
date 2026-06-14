@@ -2534,6 +2534,18 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
     // as `hew_actor_send`).
     let a = unsafe { &*actor };
 
+    // EXIT(cross-runtime): the actor belongs to a different runtime than the
+    // caller. Fail closed without routing the foreign pointer, releasing the
+    // caller-transferred refcount exactly once so the buffer does not leak.
+    // Never fires single-runtime.
+    if !actor_runtime_matches(a) {
+        if !envelope.is_null() {
+            // SAFETY: caller transferred one refcount on `envelope`.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        }
+        return;
+    }
+
     // EXIT(drop-fault-injection): the deterministic harness asks us to
     // silently discard this message. The receiver never consumes the
     // payload, so the alias path must release the envelope here — the
@@ -2728,6 +2740,10 @@ pub unsafe extern "C" fn hew_actor_try_send(
     cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+    // Fail closed on a cross-runtime pointer (never fires single-runtime).
+    if !actor_runtime_matches(a) {
+        return HewError::ErrForeignRuntime as i32;
+    }
     let mb = a.mailbox.cast::<HewMailbox>();
 
     // SAFETY: Mailbox is valid for the actor's lifetime.
@@ -2786,6 +2802,10 @@ pub(crate) unsafe fn hew_actor_send_guaranteed(
     }
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+    // Fail closed on a cross-runtime pointer (never fires single-runtime).
+    if !actor_runtime_matches(a) {
+        return HewError::ErrForeignRuntime as i32;
+    }
     let mb = a.mailbox.cast::<HewMailbox>();
 
     // SAFETY: Mailbox is valid for the actor's lifetime.
@@ -3847,6 +3867,49 @@ pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_send`].
+/// Fail-closed cross-runtime boundary check for the held-actor-pointer send /
+/// ask / by-id paths.
+///
+/// Returns `true` when `a` is owned by the runtime currently bound on this
+/// thread, so the send may proceed. Returns `false` when the calling runtime
+/// and the target actor's stamped `runtime_id` disagree — a foreign pointer
+/// reached a send path. The caller refuses the operation (`ErrForeignRuntime`)
+/// rather than routing it: the runtime ids are compared as plain discriminants,
+/// so nothing in the foreign runtime is dereferenced to make the decision
+/// (`boundary-fail-closed`).
+///
+/// In a single-runtime program every actor carries `RuntimeId::DEFAULT` and the
+/// thread resolves the same default runtime, so this always returns `true` and
+/// the check is invisible. It becomes load-bearing once more than one runtime
+/// can exist in one process (the multi-runtime / `:reset` milestone), where it
+/// is the wall that keeps two runtimes' actors from accepting each other's
+/// pointers. A mismatch is a logic error, not a normal outcome, so it is logged
+/// once at the boundary before the refusal.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn actor_runtime_matches(a: &HewActor) -> bool {
+    // Resolve the calling runtime's id without trapping when none is installed.
+    // With no runtime bound there is no second runtime the actor could be
+    // foreign to, so the boundary treats the send as in-runtime — it must not
+    // introduce a "runtime must be installed" precondition the pre-check never
+    // had (e.g. an alias send before init, or a unit test driving a send path
+    // without a runtime guard).
+    let Some(current) = crate::runtime::rt_current_id() else {
+        return true;
+    };
+    if current == a.runtime_id {
+        return true;
+    }
+    eprintln!(
+        "hew-runtime: refused a send to actor {:#x} owned by runtime {} from runtime {} \
+         (cross-runtime boundary; pointer not routed)",
+        a.id,
+        a.runtime_id.as_u64(),
+        current.as_u64(),
+    );
+    false
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_result_internal(
     actor: *mut HewActor,
@@ -3871,6 +3934,13 @@ unsafe fn actor_send_result_internal_reply(
     cabi_guard!(actor.is_null(), HewError::ErrActorStopped as i32);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Fail closed if this actor belongs to a different runtime than the caller
+    // (the single routing authority for held-pointer send/ask/by-id; by-id and
+    // wire delivery both funnel through here). Never fires single-runtime.
+    if !actor_runtime_matches(a) {
+        return HewError::ErrForeignRuntime as i32;
+    }
 
     // Check for injected drop fault (testing only). Silently discard
     // the message without enqueuing it.
@@ -5871,6 +5941,87 @@ mod tests {
         // the now-untracked actor ID instead of crashing.
         let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
         assert_eq!(rc, -1);
+    }
+
+    /// A held actor pointer stamped with a different `runtime_id` than the
+    /// runtime bound on this thread fails closed on every held-pointer send
+    /// path (`boundary-fail-closed`): the boundary refuses with
+    /// `ErrForeignRuntime` and never routes the foreign pointer. In a
+    /// single-runtime program this never fires, so a DEFAULT-stamped actor
+    /// (the control) still accepts the same sends.
+    ///
+    /// This stamps the discriminant directly rather than constructing a second
+    /// worker-backed runtime: the check compares two `RuntimeId`s and the
+    /// second runtime is never dereferenced, so a foreign id is sufficient to
+    /// exercise the wall without standing up a second scheduler.
+    #[test]
+    fn cross_runtime_send_fails_closed() {
+        let _guard = crate::runtime_test_guard();
+
+        // The thread is bound to the default runtime (RuntimeId::DEFAULT) via
+        // the test guard. Build a fully-formed test actor and re-stamp it as if
+        // it were spawned by a different runtime.
+        let (actor, mailbox) = make_stop_test_actor_with_id(0xBEEF, HewActorState::Idle);
+        // SAFETY: the test exclusively owns `actor` and never publishes it.
+        unsafe {
+            (*actor).runtime_id = crate::runtime_id::RuntimeId(1);
+        }
+
+        // Every held-pointer send path refuses the foreign actor.
+        // SAFETY: `actor` is valid and fully owned by this test; null payload.
+        let try_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            try_rc,
+            HewError::ErrForeignRuntime as i32,
+            "try_send to a foreign-runtime actor must fail closed"
+        );
+
+        // SAFETY: as above.
+        let guaranteed_rc = unsafe { hew_actor_send_guaranteed(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            guaranteed_rc,
+            HewError::ErrForeignRuntime as i32,
+            "send_guaranteed to a foreign-runtime actor must fail closed"
+        );
+
+        // The fire-and-forget result path (used by `hew_actor_send`) also
+        // refuses; assert on the result-returning internal it delegates to.
+        // SAFETY: as above.
+        let send_rc = unsafe { actor_send_result_internal(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            send_rc,
+            HewError::ErrForeignRuntime as i32,
+            "send to a foreign-runtime actor must fail closed"
+        );
+
+        // The refusal must NOT have enqueued anything: no message reached the
+        // mailbox, so nothing was routed to the foreign actor.
+        // SAFETY: `mailbox` is valid and owned by this test.
+        let has_messages = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+        assert_eq!(
+            has_messages, 0,
+            "a refused cross-runtime send must not enqueue a message"
+        );
+
+        // Control: re-stamp as the default runtime and the SAME send now
+        // succeeds (the check is invisible single-runtime).
+        // SAFETY: the test owns `actor`.
+        unsafe {
+            (*actor).runtime_id = crate::runtime_id::RuntimeId::DEFAULT;
+        }
+        // SAFETY: as above.
+        let ok_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            ok_rc,
+            HewError::Ok as i32,
+            "a same-runtime actor must accept the send"
+        );
+
+        // SAFETY: the test fully owns the actor and its mailbox.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     #[test]

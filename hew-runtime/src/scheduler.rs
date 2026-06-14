@@ -432,10 +432,21 @@ pub extern "C" fn hew_sched_init() -> c_int {
     let mut handles: Vec<Option<JoinHandle<()>>> = Vec::with_capacity(worker_count);
     let mut spawn_err: Option<std::io::Error> = None;
 
+    // The runtime we just installed owns these workers; thread its pointer into
+    // each spawn closure so the worker `enter()`s it (TLS) at loop entry. `rt_default`
+    // resolves the pointer this thread published via `install_default` above — a
+    // null here would mean a concurrent `take_default` raced cleanup against init,
+    // which `hew_sched_init`'s once-from-main-thread contract forbids; bail loudly
+    // rather than spawn an unbound worker.
+    let Some(rt) = runtime::rt_default().map(|r| WorkerRuntimePtr(r as *const RuntimeInner)) else {
+        eprintln!("hew: scheduler init failed — default runtime lost after install");
+        std::process::exit(1);
+    };
+
     for (id, deque) in deques.into_iter().enumerate() {
         match thread::Builder::new()
             .name(format!("hew-worker-{id}"))
-            .spawn(move || worker_loop(id, &deque))
+            .spawn(move || worker_loop(id, rt, &deque))
         {
             Ok(handle) => handles.push(Some(handle)),
             Err(e) => {
@@ -771,12 +782,49 @@ pub fn sched_try_wake() {
 
 // ── Worker loop ─────────────────────────────────────────────────────────
 
+/// `Send` carrier for the owning-runtime pointer threaded into a worker's
+/// spawn closure.
+///
+/// A bare `*const RuntimeInner` is `!Send`, so it cannot cross the
+/// `thread::spawn` boundary on its own. The pointer references the
+/// `RuntimeInner` this worker is bound to (the one `hew_sched_init` just
+/// installed); it is valid until `teardown_workers` joins this worker, which
+/// `hew_runtime_cleanup` guarantees happens *before* `take_default` frees the
+/// runtime — the same valid-until-join contract that already governs the
+/// scheduler borrow (`get_scheduler()` below). No Arc or refcount is taken;
+/// ownership of the runtime stays with the default slot.
+#[derive(Clone, Copy)]
+struct WorkerRuntimePtr(*const RuntimeInner);
+
+// SAFETY: the pointer is only dereferenced on the worker thread (via `enter()`
+// at worker entry) and the `RuntimeInner` it names outlives the worker by the
+// join-before-free contract documented above. Crossing the spawn boundary is
+// the sole reason for this wrapper.
+unsafe impl Send for WorkerRuntimePtr {}
+
 /// Main loop executed by each worker thread.
-fn worker_loop(id: usize, local: &WorkDeque) {
+///
+/// `rt` is the [`RuntimeInner`] that owns this worker. The worker `enter()`s it
+/// for the loop's entire lifetime so every in-dispatch `rt_current()` read
+/// (the live-actor registry, name registry, shutdown phase, timers, node slot)
+/// resolves through the per-thread [`crate::runtime::CURRENT_RUNTIME`] slot
+/// rather than the default-slot fallback. In single-runtime the entered runtime
+/// equals the default, so behaviour is preserved; the value is the TLS path
+/// being live and tsan-clean.
+fn worker_loop(id: usize, rt: WorkerRuntimePtr, local: &WorkDeque) {
     // Production invariant: the default runtime pointer never changes after
     // hew_sched_init, so a missing scheduler here is a hard logic error — keep
     // the loud panic (the same contract as before this fix).
     let sched = get_scheduler().expect("scheduler not initialized");
+    // Bind this thread to its owning runtime for the loop's lifetime. The guard
+    // restores the previous (null) CURRENT_RUNTIME on every exit edge — normal
+    // return, panic, or a longjmp/trap unwinding out of the loop — preserving
+    // lifecycle-symmetry. The pointer is valid until this worker is joined (see
+    // WorkerRuntimePtr); `enter()` takes no ownership.
+    //
+    // SAFETY: `rt.0` is the non-null `RuntimeInner` this worker was spawned
+    // against, valid until join by the WorkerRuntimePtr contract.
+    let _rt_guard = runtime::enter(unsafe { &*rt.0 });
     // In test builds, capture the raw default-runtime pointer this worker is
     // bound to. The NoWorkerSchedulerForTest harness can swap the runtime out
     // from under a late-starting worker; the per-iteration check below detects

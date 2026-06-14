@@ -16,10 +16,12 @@
 // load-bearing drop-safety path. In-receive collection field access is a
 // separate, pre-existing gap and is deliberately avoided here.
 //
-// WASM is intentionally not registered: the codegen gate maps every
-// `hew_hashmap_*_layout` callee to a structured `WasmUnsupportedSubstrate`
-// diagnostic before lowering — the v0.5 fail-closed behaviour for this
-// native-only runtime substrate (tracked WASM-parity gap).
+// WASM is intentionally not registered, but the reason is the actor substrate,
+// not the collections: the `hew_hashmap_*_layout` and Vec layout families are
+// target-agnostic and lower/link on wasm32 (the non-actor map/set surface runs
+// under `wasm32-wasi` in `hew-cli/tests/wasi_run_e2e.rs`). This fixture spawns
+// an actor, and the actor runtime ABI is the WASI gap tracked by #1821; once
+// that lands the actor-state collection-drop path can be registered for WASI.
 //
 // `hew run examples/v05/collection_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.

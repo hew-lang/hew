@@ -24,10 +24,13 @@
 // field access is a separate, pre-existing gap that faults for both HashMap
 // and HashSet, independent of this drop fix.)
 //
-// WASM is intentionally not registered here: the codegen gate maps every
-// `hew_hashset_*_layout` callee to a structured `WasmUnsupportedSubstrate`
-// diagnostic before lowering, which is the v0.5 fail-closed behaviour for this
-// native-only runtime substrate.
+// WASM is intentionally not registered here, but the reason is the actor
+// substrate, not the collection: the `hew_hashset_*_layout` family is
+// target-agnostic and lowers/links on wasm32 (the non-actor map/set surface
+// runs under `wasm32-wasi` in `hew-cli/tests/wasi_run_e2e.rs`). This fixture
+// spawns an actor, and the actor runtime ABI is the WASI gap tracked by #1821;
+// once that lands the actor-state collection-drop path can be registered for
+// WASI too.
 //
 // `hew run examples/v05/hashset_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.

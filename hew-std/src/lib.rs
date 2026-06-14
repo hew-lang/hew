@@ -17,53 +17,85 @@
 // and the DNS blocking pool) resolve at compile time.
 extern crate hew_runtime;
 
-// crypto
-pub mod crypto;
-pub mod encrypt;
-pub mod jwt;
-pub mod password;
-pub mod sign;
+// ── WASM build surface ────────────────────────────────────────────────────
+// The wasm32 target (browser playground wire codecs) compiles only the
+// wire-codec and dependency-free modules. Every native-only module is gated
+// behind `cfg(not(wasm))` because its crates (ring, quinn/tokio's socket2,
+// flate2, getrandom, argon2, aws-lc, …) hard-`compile_error!` on wasm32. This
+// preserves the pre-consolidation behaviour, where only the json/yaml/toml
+// archives were ever built for wasm. The .hew-path module resolution and the
+// native dead-strip are unaffected; this only narrows what compiles for wasm.
 
-// encoding
-pub mod base64;
-pub mod compress;
-pub mod csv;
-pub mod hex;
+// encoding — wire codecs (wasm + native)
 pub mod json;
-pub mod markdown;
-pub mod msgpack;
-pub mod protobuf;
 pub mod toml;
-pub mod xml;
 pub mod yaml;
 
-// math + memory
+// pure-Rust / dependency-free modules (wasm + native)
+pub mod base64;
+pub mod csv;
+pub mod hex;
+pub mod log;
 pub mod math;
 pub mod mem;
+pub mod mime;
+pub mod random;
+pub mod semver;
+pub mod sort;
+pub mod unicode;
+
+// ── Native-only modules ───────────────────────────────────────────────────
+
+// crypto
+#[cfg(not(target_family = "wasm"))]
+pub mod crypto;
+#[cfg(not(target_family = "wasm"))]
+pub mod encrypt;
+#[cfg(not(target_family = "wasm"))]
+pub mod jwt;
+#[cfg(not(target_family = "wasm"))]
+pub mod password;
+#[cfg(not(target_family = "wasm"))]
+pub mod sign;
+
+// encoding — native-only codecs
+#[cfg(not(target_family = "wasm"))]
+pub mod compress;
+#[cfg(not(target_family = "wasm"))]
+pub mod markdown;
+#[cfg(not(target_family = "wasm"))]
+pub mod msgpack;
+#[cfg(not(target_family = "wasm"))]
+pub mod protobuf;
+#[cfg(not(target_family = "wasm"))]
+pub mod xml;
 
 // misc
-pub mod log;
+#[cfg(not(target_family = "wasm"))]
 pub mod uuid;
 
 // net
+#[cfg(not(target_family = "wasm"))]
 pub mod dns;
+#[cfg(not(target_family = "wasm"))]
 pub mod http;
+#[cfg(not(target_family = "wasm"))]
 pub mod ipnet;
-pub mod mime;
+#[cfg(not(target_family = "wasm"))]
 pub mod quic;
+#[cfg(not(target_family = "wasm"))]
 pub mod smtp;
+#[cfg(not(target_family = "wasm"))]
 pub mod tls;
+#[cfg(not(target_family = "wasm"))]
 pub mod url;
+#[cfg(not(target_family = "wasm"))]
 pub mod websocket;
 
-// random + sort
-pub mod random;
-pub mod sort;
-
 // text
+#[cfg(not(target_family = "wasm"))]
 pub mod regex;
-pub mod semver;
-pub mod unicode;
 
 // time
+#[cfg(not(target_family = "wasm"))]
 pub mod time;

@@ -12,19 +12,26 @@ categories = ["compilers"]
 [lib]
 crate-type = ["staticlib", "lib"]
 
+# Wasm + native deps. The wasm32 build (browser playground wire codecs)
+# compiles only the json/yaml/toml/pure modules, so only their crates may
+# appear here. Every native-only crate lives in the cfg(not(wasm)) block below
+# — many of them (ring, socket2, flate2, getrandom, …) hard-`compile_error!`
+# on wasm32, so listing them unconditionally would break the wasm build.
 [dependencies]
 # Shared ABI + runtime (path deps).
 hew-cabi = { path = "../hew-cabi" }
 hew-runtime = { path = "../hew-runtime" }
 
-# Workspace-pinned deps.
+# Wire-codec + pure-module deps (wasm-safe).
 base64.workspace = true
 libc.workspace = true
-rmp-serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 toml.workspace = true
 
-# Module-specific external deps (union of the former per-module crates).
+# Native-only module deps (union of the former per-module crates). Gated off the
+# wasm build, where their crates do not compile.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = [
   "clock",
@@ -48,8 +55,8 @@ quinn = "0.11"
 rcgen = "0.14"
 regex = "1"
 ring = "0.17"
+rmp-serde.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-serde_yaml = "0.9"
 tiny_http = "0.12"
 tokio = { version = "1", default-features = false, features = [
   "rt",

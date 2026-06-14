@@ -6051,6 +6051,17 @@ impl Checker {
                     let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                         Self::canonical_primitive_or_builtin_key_from_name(type_name)
                     });
+                    // The compiled-in `std/result.hew` / `std/option.hew` impl
+                    // blocks are the origin of the builtin `Result`/`Option`
+                    // receiver method surface. Snapshot each canonical sig into
+                    // a dedicated side table keyed by builtin discriminant +
+                    // method name BEFORE any user `type Result`/`type Option`
+                    // impl can clobber the colliding bare `Result::<method>` key
+                    // in `fn_sigs`. Dispatch on a builtin receiver resolves
+                    // against this table only, so a user method on a same-named
+                    // user type can never be selected for a builtin wrapper.
+                    let builtin_receiver = crate::lookup_builtin_type(type_name)
+                        .filter(|b| matches!(b, BuiltinType::Result | BuiltinType::Option));
                     for method in &id.methods {
                         let sig = self.register_impl_method(
                             type_name,
@@ -6058,6 +6069,10 @@ impl Checker {
                             id.type_params.as_ref(),
                             id.where_clause.as_ref(),
                         );
+                        if let Some(builtin) = builtin_receiver {
+                            self.builtin_result_option_method_sigs
+                                .insert((builtin, method.name.clone()), sig.clone());
+                        }
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {

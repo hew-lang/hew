@@ -884,20 +884,33 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
 
 #[test]
 fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
-    // Positive control for `user_method_on_builtin_result_wrapper_is_rejected`:
-    // the canonical builtin `Result` methods (`is_ok`/`is_err`/`unwrap`/
-    // `unwrap_or`) must still resolve cleanly on the `Result<T, AskError>`
-    // wrapper produced by an actor ask. The bare-name dispatch gate must not
-    // over-reject the legitimate builtin surface.
+    // A user package may declare its own `type Result` with a method whose name
+    // COLLIDES with the builtin surface but whose signature differs — here
+    // `fn is_ok(self) -> i64`. Both land in `fn_sigs` under the bare key
+    // `Result::is_ok`. An actor ask (`await d.process(5)`) is typed as the
+    // builtin wrapper `Result<i64, AskError>`. Calling `r.is_ok()` on that
+    // builtin receiver must resolve to the BUILTIN `bool`-returning method, not
+    // the user `i64`-returning one.
+    //
+    // Resolution must be origin-based, not a name allowlist: `is_ok` IS a
+    // builtin method name, so a name-only gate would still consult `fn_sigs`
+    // and select the colliding user `is_ok` — the `let ok: bool` annotation
+    // then fails with `found i64`. Confining the lookup to the stdlib snapshot
+    // for builtin `Result`/`Option` receivers selects the builtin method for
+    // ALL method names.
     let output = check_source(
         r"
+        type Result { handle: i64; }
+        impl Result {
+            fn is_ok(self) -> i64 { self.handle }
+        }
         actor Doubler {
             receive fn process(n: i64) -> i64 { n * 2 }
         }
         fn main() {
             let d = spawn Doubler;
             let r = await d.process(5);
-            let ok = r.is_ok();
+            let ok: bool = r.is_ok();
             let v = r.unwrap();
         }
         ",
@@ -905,9 +918,31 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
 
     assert!(
         output.errors.is_empty(),
-        "builtin Result methods on an actor-ask wrapper must type-check; \
-         got: {:#?}",
+        "builtin Result methods on an actor-ask wrapper must resolve to the \
+         builtin surface even when a user `type Result` declares a colliding \
+         `is_ok` with a different return type; got: {:#?}",
         output.errors
+    );
+    // The `is_ok` call must lower to the builtin runtime symbol, never the user
+    // `Result::is_ok` method key. A user-method rewrite here is the ill-typed
+    // call codegen-front would reject.
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_result_is_ok"
+        )),
+        "`r.is_ok()` on a builtin Result receiver must lower to \
+         `hew_result_is_ok`; got: {:#?}",
+        output.method_call_rewrites
+    );
+    assert!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::is_ok"
+        )),
+        "no user `Result::is_ok` rewrite must be recorded for a builtin Result \
+         receiver; got: {:#?}",
+        output.method_call_rewrites
     );
 }
 

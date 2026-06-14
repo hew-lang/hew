@@ -24,6 +24,9 @@ const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "actor_pipeline",
     "supervisor",
     "traffic_light",
+    "stmt_if",
+    "stmt_match",
+    "stmt_if_let",
 ];
 
 const PARITY_CASES: &[ParityCase] = &[
@@ -104,6 +107,21 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "traffic_light",
         source_rel: "examples/playground/machines/traffic_light.hew",
         // Machine support now emits bytecode; no profile divergence.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_if",
+        source_rel: "examples/playground/basics/stmt_if.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_match",
+        source_rel: "examples/playground/basics/stmt_match.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_if_let",
+        source_rel: "examples/playground/basics/stmt_if_let.hew",
         accepted_divergences: &[],
     },
 ];

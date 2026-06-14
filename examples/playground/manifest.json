@@ -91,6 +91,18 @@
     }
   },
   {
+    "id": "basics/stmt_control_flow",
+    "category": "basics",
+    "name": "Statement-position Control Flow",
+    "description": "if/match/if-let in statement position with side-effecting branches",
+    "source_path": "basics/stmt_control_flow.hew",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "concurrency/actor_pipeline",
     "category": "concurrency",
     "name": "Actor Pipeline",

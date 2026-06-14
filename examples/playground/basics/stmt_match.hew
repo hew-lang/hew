@@ -1,0 +1,28 @@
+//! @name Statement Match
+//! @description Statement-position match with side-effecting arms
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+fn describe(c: Color) {
+    match c {
+        Red => println("red"),
+        Green => println("green"),
+        Blue => println("blue"),
+    }
+}
+
+fn main() {
+    describe(Red);
+    describe(Green);
+    describe(Blue);
+    let c = Green;
+    match c {
+        Red => println("stop"),
+        Green => println("go"),
+        Blue => println("other"),
+    }
+}

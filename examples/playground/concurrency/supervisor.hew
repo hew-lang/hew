@@ -22,8 +22,6 @@ fn main() {
     // Access supervised children by their declared names.
     let w1 = workers.w1;
     let w2 = workers.w2;
-    // Expression-position match (sandbox bytecode does not yet admit
-    // statement-position match); -1 marks a failed ask.
     let a = match await w1.work(10) {
         Ok(v) => v,
         Err(_) => -1,

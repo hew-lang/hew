@@ -1,0 +1,28 @@
+//! @name Statement If Let
+//! @description Statement-position if-let with side-effecting branches
+
+enum Wrapped {
+    Value(i64);
+    Empty;
+}
+
+fn main() {
+    let a = Value(10);
+    if let Value(n) = a {
+        println(f"a has value: {n}");
+    }
+    let b = Empty;
+    if let Value(n) = b {
+        println(f"b has value: {n}");
+    } else {
+        println("b is empty");
+    }
+    let c = Value(42);
+    if let Value(n) = c {
+        if n > 40 {
+            println("large value");
+        } else {
+            println("small value");
+        }
+    }
+}

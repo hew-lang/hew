@@ -6277,6 +6277,45 @@ fn no_warn_used_import() {
 }
 
 #[test]
+fn no_warn_named_import_type_used_bare() {
+    // A named import (`::{ T }`) of a type used only as a bare type reference
+    // must mark the module used — qualified-by-default routes bare references
+    // through the published binding, which must still consume the import so the
+    // unused-import lint does not false-positive.
+    let source = "import std::io::closable::{ CloseError };\n\
+                  fn handle(e: CloseError) -> i64 { 0 }\n\
+                  fn main() { let _ = handle; println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
+        "named import used via a bare type reference must not warn unused: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn warn_named_import_type_unused() {
+    // The complement: a named import whose type is never referenced still warns.
+    let source = "import std::io::closable::{ CloseError };\nfn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
+        "an unused named import must still warn: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
         import std::string;

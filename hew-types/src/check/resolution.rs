@@ -1370,12 +1370,24 @@ impl Checker {
                         _ => name.clone(),
                     }
                 };
-                // Mark module as used when type name is module-qualified
+                // Mark module as used when type name is module-qualified.
                 if let Some((module, _)) = resolved_name.split_once('.') {
                     self.used_modules.borrow_mut().insert(ImportKey::new(
                         self.current_module.clone(),
                         module.to_string(),
                     ));
+                } else if let Some(module) = self
+                    .unqualified_to_module
+                    .get(&(self.current_module.clone(), resolved_name.clone()))
+                {
+                    // A bare reference that resolves through a published binding
+                    // (named / glob / aliased import) keeps the bare spelling but
+                    // still consumes the owning module — mark it used so the
+                    // unused-import lint does not false-positive on bare type
+                    // references reached via an explicit opt-in or glob.
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), module.clone()));
                 }
                 // Auto-parameterise channel handle types: bare `Sender`
                 // becomes `Sender<T>` with a fresh type variable so that

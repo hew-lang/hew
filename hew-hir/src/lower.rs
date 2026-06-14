@@ -361,6 +361,7 @@ const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
     "MailboxFull",
     "OrphanedAsk",
     "NoRunnableWork",
+    "DecodeFailure",
 ];
 
 /// Description of a built-in tagged union for the HIR pre-pass that seeds
@@ -432,8 +433,10 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
                 "MailboxFull",
                 "OrphanedAsk",
                 "NoRunnableWork",
+                "DecodeFailure",
             ],
             variant_payloads: &[
+                &[],
                 &[],
                 &[],
                 &[],

@@ -20854,7 +20854,7 @@ fn lower_call_runtime_abi(
                 //   3=EncodeFailed, 4=SendFailed, 5=Timeout,
                 //   6=ConnectionDropped, 7=PayloadSizeMismatch,
                 //   8=WorkerAtCapacity, 9=ActorStopped, 10=MailboxFull,
-                //   11=OrphanedAsk, 12=NoRunnableWork.
+                //   11=OrphanedAsk, 12=NoRunnableWork, 13=DecodeFailure.
                 // SendError discriminants (`hew-runtime/src/duplex.rs`):
                 //   1=Closed, 2=Full, 3=ActorStopped, 4=DoubleClose,
                 //   5=OrphanedAsk.

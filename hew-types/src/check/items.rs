@@ -593,6 +593,28 @@ impl Checker {
         self.check_function_as(fd, &fn_name);
     }
 
+    /// Check a function body with the tail Ok-coercion armed for an explicit
+    /// `Result<_, _>` return.
+    ///
+    /// Arms `tail_ok_armed` only when `resolved_expected_ret` is `Result<_, _>`
+    /// and the function is not a generator (whose body yields Unit, not the
+    /// declared type). `check_block` and `synthesize` disarm the flag everywhere
+    /// but genuine function-return tail positions, so the coercion performed in
+    /// `check_against` is strictly tail-only and never fires in a non-tail
+    /// expression position.
+    fn check_body_with_tail_ok_coercion(
+        &mut self,
+        fd: &FnDecl,
+        resolved_expected_ret: &Ty,
+        block_expected: Option<&Ty>,
+    ) -> Ty {
+        let prev_tail_ok_armed = self.tail_ok_armed;
+        self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
+        let actual = self.check_block(&fd.body, block_expected);
+        self.tail_ok_armed = prev_tail_ok_armed;
+        actual
+    }
+
     /// Check a function body using `fn_name` for the `fn_sigs` lookup.
     ///
     /// Impl methods are registered under qualified names (e.g. `Connection::close`)
@@ -711,7 +733,8 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
-        let actual = self.check_block(&fd.body, block_expected);
+        let actual =
+            self.check_body_with_tail_ok_coercion(fd, &resolved_expected_ret, block_expected);
         // A completely empty body on a method whose `Self` is a compiler
         // builtin (`LocalPid`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid

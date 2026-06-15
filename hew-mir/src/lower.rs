@@ -10660,6 +10660,31 @@ impl Builder {
             result_ty
         };
 
+        // Mixed-divergence recovery (#1911). When SOME arms diverge
+        // (`return`/`panic`) and some yield a value, the checker types the whole
+        // `match` `Unit`: a block ending in `return` is itself `Unit`, so the
+        // arm-type join with the value arms collapses to `Unit` rather than the
+        // value arms' real type. (This is distinct from the all-diverging case,
+        // which the #1907 reachability guard handles by skipping the dead Move.)
+        // With `result_ty == Unit` the result place is the i8 Unit stand-in, yet
+        // the value-yielding arms move a non-scalar (`String`/`Vec`/record) into
+        // it and the reachable join secures that i8 into the function's
+        // non-scalar return slot — the `Move type mismatch: src=i8 dest=ptr`
+        // abort. Recover the real result type from the arms: a genuinely-`Unit`
+        // match has all-`Unit`/`Never` arm bodies, so the first arm whose body
+        // type is neither `Unit` nor `Never` is the value the live arms produce,
+        // and the result place must carry THAT type. The diverging arms still
+        // lower to `None` (no Move into the result place; they secure their own
+        // return slot and return), so widening the result place is safe for them.
+        let result_ty = if matches!(result_ty, ResolvedTy::Unit) {
+            arms.iter()
+                .map(|arm| &arm.body.ty)
+                .find(|ty| !matches!(ty, ResolvedTy::Unit | ResolvedTy::Never))
+                .unwrap_or(result_ty)
+        } else {
+            result_ty
+        };
+
         // Payload predicates (literal comparisons against constructor payload
         // fields) are now lowered inside `lower_match_enum_tag`. No early
         // exit here — the dispatcher routes to the correct sub-function which

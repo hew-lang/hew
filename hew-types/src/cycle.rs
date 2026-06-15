@@ -218,6 +218,7 @@ fn collect_value_type_edges_for_def<'a>(
                                 &member_desc,
                                 true,
                                 &mut HashSet::new(),
+                                &mut HashSet::new(),
                             );
                         }
                     }
@@ -237,6 +238,7 @@ fn collect_value_type_edges_for_def<'a>(
                                 &member_desc,
                                 true,
                                 &mut HashSet::new(),
+                                &mut HashSet::new(),
                             );
                         }
                     }
@@ -255,6 +257,7 @@ fn collect_value_type_edges_for_def<'a>(
                     &td.name,
                     &member_desc,
                     true,
+                    &mut HashSet::new(),
                     &mut HashSet::new(),
                 );
             }
@@ -294,6 +297,7 @@ fn collect_value_type_refs<'a>(
     member_desc: &str,
     is_direct_edge: bool,
     visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
+    active: &mut HashSet<String>,
 ) {
     match ty {
         Ty::Tuple(elems) => {
@@ -308,6 +312,7 @@ fn collect_value_type_refs<'a>(
                     member_desc,
                     is_direct_edge,
                     visited_value_types,
+                    active,
                 );
             }
         }
@@ -322,6 +327,7 @@ fn collect_value_type_refs<'a>(
                 member_desc,
                 is_direct_edge,
                 visited_value_types,
+                active,
             );
         }
         Ty::Named {
@@ -341,6 +347,7 @@ fn collect_value_type_refs<'a>(
                         member_desc,
                         is_direct_edge,
                         visited_value_types,
+                        active,
                     );
                 }
             }
@@ -368,6 +375,20 @@ fn collect_value_type_refs<'a>(
                 if !visited_value_types.insert(key) {
                     return;
                 }
+                // Bound the generic-instantiation expansion by type name, not by
+                // the `(name, args)` key. A diverging polymorphic self-reference
+                // — `Wrap<T> { w: Wrap<Wrap<T>> }` — substitutes to a strictly
+                // larger arg vector at every level (`Wrap<i64>` →
+                // `Wrap<Wrap<i64>>` → …), so the `(name, args)` set never
+                // collides and the walk expands without bound (OOM). The edge
+                // `from → target_def.name` is already recorded above, so once a
+                // type name is active on the current expansion chain, descending
+                // into its fields again only re-derives edges the outer frame
+                // already owns. Skipping that descent keeps the SCC graph
+                // complete while making the walk terminate.
+                if !active.insert(target_def.name.clone()) {
+                    return;
+                }
                 collect_instantiated_value_type_fields(
                     target_def,
                     args,
@@ -378,7 +399,9 @@ fn collect_value_type_refs<'a>(
                     from,
                     member_desc,
                     visited_value_types,
+                    active,
                 );
+                active.remove(target_def.name.as_str());
             }
         },
         _ => {}
@@ -399,6 +422,7 @@ fn collect_instantiated_value_type_fields<'a>(
     from: &str,
     member_desc: &str,
     visited_value_types: &mut HashSet<(String, Vec<Ty>)>,
+    active: &mut HashSet<String>,
 ) {
     match td.kind {
         TypeDefKind::Enum => {
@@ -418,6 +442,7 @@ fn collect_instantiated_value_type_fields<'a>(
                                 member_desc,
                                 false,
                                 visited_value_types,
+                                active,
                             );
                         }
                     }
@@ -434,6 +459,7 @@ fn collect_instantiated_value_type_fields<'a>(
                                 member_desc,
                                 false,
                                 visited_value_types,
+                                active,
                             );
                         }
                     }
@@ -453,6 +479,7 @@ fn collect_instantiated_value_type_fields<'a>(
                     member_desc,
                     false,
                     visited_value_types,
+                    active,
                 );
             }
         }

@@ -477,3 +477,63 @@ jobs:
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
               --profile ci --no-fail-fast
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FreeBSD aarch64 — full build + workspace tests
+  # Runs inside a FreeBSD 15.1 aarch64 VM under QEMU emulation on a standard
+  # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
+  # but needs no new host infra. This job cannot be reproduced locally; CI is
+  # the proving gate for the FreeBSD aarch64 toolchain.
+  # ─────────────────────────────────────────────────────────────────────────
+  gate-freebsd-aarch64:
+    name: Release Gate — FreeBSD aarch64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Build and test on FreeBSD aarch64
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        with:
+          release: "15.1"
+          arch: aarch64
+          mem: 8192
+          prepare: |
+            mkdir -p /usr/local/etc/pkg/repos
+            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
+              > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
+            pkg install -y llvm22 rust cmake ninja git pkgconf libffi libxml2
+
+          run: |
+            set -eux
+
+            git config --global --add safe.directory "$(pwd)"
+
+            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            /usr/local/llvm22/bin/llvm-config --version
+
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-lib --release
+
+            target/release/hew --version
+            target/release/adze --version
+            target/release/hew-lsp --version
+            target/release/hew-observe --version
+            test -f target/release/libhew.a
+
+            # Smoke test — compile and run a .hew program
+            echo 'fn main() { println("smoke-ok") }' > _smoke.hew
+            target/release/hew build _smoke.hew -o _smoke_bin
+            chmod +x _smoke_bin
+            OUTPUT=$(./_smoke_bin)
+            echo "$OUTPUT"
+            echo "$OUTPUT" | grep -q "smoke-ok"
+            rm -f _smoke.hew _smoke_bin
+
+            # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
+            cargo install cargo-nextest --locked
+
+            cargo nextest run --workspace \
+              --exclude hew-wasm --exclude hew-cabi \
+              --profile ci --no-fail-fast

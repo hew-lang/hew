@@ -9,7 +9,7 @@
 //! `hew_actor_monitor`), but the user-source surface fails closed today. See
 //! commit `1698840f` for the explicit deferral.
 
-import std::io::closable::{ Closable, CloseError };
+import std::io::closable::{Closable, CloseError};
 
 // WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on

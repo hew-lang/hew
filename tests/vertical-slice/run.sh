@@ -1408,6 +1408,15 @@ expect_check_fail_contains \
   "capture of opaque/owned value" \
   "gen_fn_capture_opaque_handle"
 
+# Generator proving-gate (compile + run + stdout-order): the behavioural oracle
+# the generator->coro substrate unification must preserve byte-for-byte.
+# gen_lazy_interleave proves LAZY per-resume side-effect interleaving (effects
+# fire one-per-resume, never eager-drained); gen_mid_iteration_drop proves a
+# generator dropped while suspended releases its frame cleanly and does not run
+# the unconsumed yields' effects.
+run_accept_expect_stdout "gen_lazy_interleave"
+run_accept_expect_stdout "gen_mid_iteration_drop"
+
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate
 # ---------------------------------------------------------------------------

@@ -1,0 +1,168 @@
+//! Generator proving-gate corpus — the behavioural oracle the generator→coro
+//! substrate unification MUST preserve byte-for-byte.
+//!
+//! These behaviours are captured against the CURRENT thread-based generator
+//! runtime (`hew-runtime/src/generator.rs`, the `hew_gen_*` symbols). When the
+//! `gen`/`yield` lowering is rerouted onto the `llvm.coro.*` + `hew_cont_*`
+//! continuation substrate, every assertion here MUST still hold — the reroute
+//! is representation-only and the observable behaviour is frozen.
+//!
+//! Covered behaviours:
+//!   - exact yield sequence + count (the value channel surfaces each yield),
+//!   - cross-yield-live local state (a local set before a yield, read after),
+//!   - owned-value (heap String) yields exhausted cleanly,
+//!   - the done / terminal-None path (the for-loop terminates),
+//!   - re-iteration independence (a fresh generator yields the full sequence),
+//!   - yield-in-a-loop (multi-suspend bodies),
+//!   - mid-iteration early-exit (the generator is dropped while suspended).
+//!
+//! Lazy side-effect INTERLEAVING (effects fire per-resume, not eager-drained)
+//! is the headline behavioural proof, but it requires observing stdout ORDER
+//! across the suspend boundary, which an in-program assertion cannot capture
+//! today (a gen-block cannot capture an outer mutable order-log — see the
+//! Cluster-1 capture-lowering gap, #1909). That proof lives in the companion
+//! run-and-compare fixture `tests/vertical-slice/accept/gen_lazy_interleave`
+//! (stdout-order oracle), authored alongside this file.
+//!
+//! Out of corpus (pre-existing language corners, NOT regressions the reroute
+//! introduces): a no-yield `gen { return 0; }` infers `Generator<Never, R>`
+//! and `for v in g` over a `Never` yield type is rejected
+//! (`E_NOT_YET_IMPLEMENTED: Never type cannot occur in a value-bearing
+//! position`); a gen-block that captures an outer mutable binding hits the
+//! Cluster-1 capture-lowering gap (#1909). Both are substrate-independent and
+//! orthogonal to the thread->coro migration.
+
+import std::testing;
+
+// ── Exact yield sequence + count ──────────────────────────────────────
+// The value channel must surface each yielded value exactly once, in order.
+#[test]
+fn gen_yields_exact_sequence_and_count() {
+    let g = gen {
+        yield 10;
+        yield 20;
+        yield 30;
+    };
+    var sum = 0;
+    var count = 0;
+    var last = 0;
+    for v in g {
+        sum = sum + v;
+        count = count + 1;
+        last = v;
+    }
+    testing.assert_eq(count, 3);
+    testing.assert_eq(sum, 60);
+    testing.assert_eq(last, 30);
+}
+
+// ── Cross-yield-live local state ──────────────────────────────────────
+// `kept` is assigned before the first yield and read after resume. The
+// spilled local must survive the suspension (the GenStateLayout ↔ coro-frame
+// reconcile point: CoroSplit's automatic spill must capture this local).
+#[test]
+fn gen_cross_yield_live_local_survives_suspend() {
+    let g = gen {
+        let kept = 100;
+        yield 1;
+        yield kept + 1;
+        yield kept + 41;
+    };
+    var collected = 0;
+    var count = 0;
+    for v in g {
+        collected = collected + v;
+        count = count + 1;
+    }
+    // 1 + 101 + 141 = 243; proves `kept` round-tripped across both resumes.
+    testing.assert_eq(count, 3);
+    testing.assert_eq(collected, 243);
+}
+
+// ── Yield-in-a-loop (multi-suspend body) ──────────────────────────────
+// A generator whose yields fire from inside a loop, with a loop-carried local
+// live across every suspension. The await path already proves loop-bodied
+// coroutines; generators are the same frame shape.
+#[test]
+fn gen_yield_in_loop_accumulates() {
+    let g = gen {
+        var i = 0;
+        while i < 5 {
+            yield i * i;
+            i = i + 1;
+        }
+    };
+    var sum = 0;
+    var count = 0;
+    for v in g {
+        sum = sum + v;
+        count = count + 1;
+    }
+    // 0 + 1 + 4 + 9 + 16 = 30 across 5 yields.
+    testing.assert_eq(count, 5);
+    testing.assert_eq(sum, 30);
+}
+
+// ── Done / terminal-None path ─────────────────────────────────────────
+// The for-loop must terminate after the generator is exhausted; the
+// post-loop statement must execute (the None sentinel returned control).
+#[test]
+fn gen_done_sentinel_terminates_loop() {
+    let g = gen { yield 7; yield 8; };
+    var seen = 0;
+    for v in g {
+        seen = seen + 1;
+    }
+    // Control reached here => the done sentinel ended the loop.
+    testing.assert_eq(seen, 2);
+}
+
+// ── Re-iteration independence ─────────────────────────────────────────
+// Two separately-constructed generators each yield the full sequence; the
+// runtime frame of one does not bleed into the other.
+#[test]
+fn gen_independent_instances_each_full_sequence() {
+    var first = 0;
+    let g1 = gen {
+        yield 1;
+        yield 2;
+        yield 3;
+    };
+    for v in g1 {
+        first = first + v;
+    }
+    var second = 0;
+    let g2 = gen {
+        yield 1;
+        yield 2;
+        yield 3;
+    };
+    for v in g2 {
+        second = second + v;
+    }
+    testing.assert_eq(first, 6);
+    testing.assert_eq(second, 6);
+}
+
+// ── Owned-value (heap String) yields exhausted cleanly ────────────────
+// Each yielded value is a freshly heap-allocated String. Exhausting the
+// generator must consume each owned value exactly once. Under the coro path
+// this is the drop-count reconcile: the cleanup outline must drop exactly the
+// frame-owned heap values, with no leak (LSan) and no double-free (ASan).
+#[test]
+fn gen_owned_string_yields_exhaust_cleanly() {
+    let g = gen {
+        yield "alpha" + "-x";
+        yield "beta" + "-y";
+        yield "gamma" + "-z";
+    };
+    var count = 0;
+    var total_len = 0;
+    for s in g {
+        count = count + 1;
+        total_len = total_len + s.len();
+    }
+    // "alpha-x"(7) + "beta-y"(6) + "gamma-z"(7) = 20.
+    testing.assert_eq(count, 3);
+    testing.assert_eq(total_len, 20);
+}

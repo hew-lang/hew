@@ -1,0 +1,28 @@
+// Proving-gate fixture: MID-ITERATION DROP — the generator is dropped while
+// suspended, holding owned heap values it never surfaced.
+//
+// The consumer breaks after the first value. The generator is suspended at the
+// second yield holding "second-B" and never reaches "third-C". Dropping it must
+// release exactly the live frame-owned values (no leak under LSan, no
+// double-free under ASan) and must NOT print the unconsumed markers.
+//
+// Expected stdout: "first-A" then "after-break" — the unconsumed yields never
+// print because their println side effects never fire (lazy). On the thread
+// runtime the dropped generator's thread is cancelled + joined and its unsent
+// mpsc values are drained; on the coro path the cleanup outline drops the
+// frame-owned values. The observable behaviour is frozen across the migration.
+fn main() {
+    let g = gen {
+        println("gen:first");
+        yield "first" + "-A";
+        println("gen:second");
+        yield "second" + "-B";
+        println("gen:third");
+        yield "third" + "-C";
+    };
+    for s in g {
+        println(s);
+        break;
+    }
+    println("after-break");
+}

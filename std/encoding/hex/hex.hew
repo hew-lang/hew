@@ -41,8 +41,7 @@ pub fn decode(s: string) -> bytes {
     if slen % 2 != 0 {
         return out;
     }
-    var i = 0;
-    while i < slen {
+    for i in (0 .. slen).step_by(2) {
         let hi = hex_char_to_nibble(s.slice(i, i + 1));
         let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
         if hi < 0 {
@@ -52,7 +51,6 @@ pub fn decode(s: string) -> bytes {
             return bytes::new();
         }
         out.push((hi * 16 + lo) as u8);
-        i = i + 2;
     }
     out
 }

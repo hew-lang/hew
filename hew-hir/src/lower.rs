@@ -8841,6 +8841,82 @@ impl LowerCtx {
         (params, body)
     }
 
+    /// Lower a `receive gen fn` handler body into a generator-shell block.
+    ///
+    /// Mirrors `lower_actor_body` for state-field/param binding and scope
+    /// handling, but lowers the body with the declared yield type pushed onto
+    /// `generator_yield_tys` (so `yield` inside the body resolves its enclosing
+    /// Yield type) and wraps the result in a `HirExprKind::GenBlock` tail typed
+    /// `Generator<Yield = T, Return = Unit>`. The `yield_ty` is the handler's
+    /// declared element type; the body falls off the end with Unit. This is the
+    /// actor-path analogue of `lower_generator_fn_body`.
+    fn lower_actor_generator_body(
+        &mut self,
+        state_fields: &[HirField],
+        params: &[Param],
+        body: &Block,
+        yield_ty: ResolvedTy,
+        span: &Span,
+    ) -> (Vec<HirBinding>, HirBlock) {
+        let gen_return_ty = ResolvedTy::Unit;
+        let saved_scope_depth = self.scope_depth;
+        self.scope_depth = 0;
+        self.push_scope();
+        for field in state_fields {
+            self.bind(
+                field.name.clone(),
+                field.ty.clone(),
+                true,
+                field.span.clone(),
+            );
+        }
+        let params = params
+            .iter()
+            .map(|p| {
+                let ty = self.lower_type(&p.ty);
+                self.bind(p.name.clone(), ty, p.is_mutable, p.ty.1.clone())
+            })
+            .collect();
+
+        self.generator_yield_tys.push(yield_ty.clone());
+        let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
+            ctx.lower_block(body, &gen_return_ty)
+        });
+        self.generator_yield_tys.pop();
+
+        self.pop_scope();
+        self.scope_depth = saved_scope_depth;
+
+        let generator_ty = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![yield_ty.clone(), gen_return_ty.clone()],
+            builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
+        };
+        let gen_block_expr = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&generator_ty, &self.type_classes),
+            ty: generator_ty.clone(),
+            intent: IntentKind::Read,
+            kind: HirExprKind::GenBlock {
+                body: gen_body,
+                yield_ty,
+                return_ty: gen_return_ty,
+            },
+            span: span.clone(),
+        };
+        let wrapped = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements: Vec::new(),
+            tail: Some(Box::new(gen_block_expr)),
+            ty: generator_ty,
+            span: span.clone(),
+        };
+        (params, wrapped)
+    }
+
     fn lower_actor_receive_fn(
         &mut self,
         rf: &ReceiveFnDecl,
@@ -8855,8 +8931,28 @@ impl LowerCtx {
         } else {
             return_ty.clone()
         };
-        let (params, body) =
-            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
+        let (params, body) = if rf.is_generator {
+            // A `receive gen fn` lowers its body through the same `GenBlock`
+            // generator-shell path a standalone `gen fn` uses
+            // (`lower_generator_fn_body`): the declared `-> T` is the Yield
+            // element type, the body falls off the end with Unit, and the
+            // handler value is `Generator<Yield = T, Return = Unit>`. We push
+            // the yield type onto `generator_yield_tys` around the body lower
+            // so any `yield` inside the body resolves its enclosing yield type
+            // (the gap was an empty stack here → "no enclosing generator yield
+            // type"), then wrap the lowered body in a `HirExprKind::GenBlock`
+            // tail so MIR lowers it through the `Terminator::Yield`
+            // state-machine path rather than bailing out.
+            self.lower_actor_generator_body(
+                state_fields,
+                &rf.params,
+                &rf.body,
+                return_ty.clone(),
+                &rf.span,
+            )
+        } else {
+            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty)
+        };
         let state_guard = match self
             .actor_handler_state_guards
             .get(&self.mk_key(&rf.span))

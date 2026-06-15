@@ -1604,8 +1604,22 @@ impl Checker {
         } else {
             declared_ret.clone()
         };
-        // Store declared yields type so Expr::Yield can check against it.
-        self.current_return_type = Some(declared_ret);
+        // Store the type that drives `yield`/`return` checking inside the body.
+        // For a `receive gen fn` the declared `-> T` is the yield element type;
+        // the body falls off the end with Unit, so the handler value is
+        // `Generator<Yield = T, Return = Unit>`. Shape `current_return_type` as
+        // that generator type — exactly like a standalone `gen fn`
+        // (`check_fn_decl`) — so `Stmt::Return` extracts the Unit Return
+        // component (rejecting `return <T>;`, accepting bare `return;`) and
+        // `synthesize_yield` extracts the `T` Yield component. Storing the bare
+        // yield type instead fails open: `return <T>;` would unify against `T`
+        // and a bare `return;` would be wrongly rejected.
+        let current_return_type = if rf.is_generator {
+            Ty::generator(declared_ret, Ty::Unit)
+        } else {
+            declared_ret
+        };
+        self.current_return_type = Some(current_return_type);
         let prev_in_generator = self.in_generator;
         self.in_generator = rf.is_generator;
 

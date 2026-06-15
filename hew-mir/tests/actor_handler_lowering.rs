@@ -555,26 +555,97 @@ fn actor_handler_every_ns_lowers_to_layout_every_ms() {
 }
 
 #[test]
-fn actor_handler_generator_receive_fn_emits_unsupported_diagnostic_and_no_body() {
+fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
+    // A `receive gen fn` handler lowers through the shared GenBlock state-machine
+    // path: the HIR lower wraps the handler body in a `HirExprKind::GenBlock`
+    // tail typed `Generator<Yield = i64, Return = Unit>` (see
+    // `lower_actor_generator_body`). MIR lowers that handler as a generator —
+    // the handler shell emits `Terminator::MakeGenerator` and the yield body is
+    // surfaced as a sibling `__hew_gen_body_*` function — with NO UnsupportedNode
+    // diagnostic. Before the fix, the handler was skipped with a "separate lane"
+    // diagnostic and produced no MIR body.
     let mut ids = IdGen::default();
-    let generator_return = return_none_stmt(&mut ids);
-    let generator_body = block(&mut ids, vec![generator_return], None, ResolvedTy::Unit);
+    let yield_value = literal_expr(&mut ids, HirLiteral::Integer(7), ResolvedTy::I64);
+    let yield_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ResolvedTy::Unit,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Yield {
+            value: Some(Box::new(yield_value)),
+            yield_ty: ResolvedTy::I64,
+        },
+        span: 0..0,
+    };
+    let yield_stmt = HirStmt {
+        node: ids.node(),
+        kind: HirStmtKind::Expr(yield_expr),
+        span: 0..0,
+    };
+    let gen_inner = block(&mut ids, vec![yield_stmt], None, ResolvedTy::Unit);
+    let generator_ty = ResolvedTy::Named {
+        name: "Generator".to_string(),
+        args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+        builtin: Some(BuiltinType::Generator),
+        is_opaque: false,
+    };
+    let gen_block = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: generator_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::GenBlock {
+            body: gen_inner,
+            yield_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
+        },
+        span: 0..0,
+    };
+    let generator_body = block(&mut ids, vec![], Some(gen_block), generator_ty);
     let ticks = receive("ticks", true, vec![], ResolvedTy::I64, generator_body);
     let actor = actor(&mut ids, "Counter", vec![ticks]);
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    assert!(pipeline
-        .raw_mir
-        .iter()
-        .all(|func| func.name != "Counter__recv__ticks"));
-    assert!(pipeline.diagnostics.iter().any(|diag| {
+    // No "separate lane" UnsupportedNode diagnostic for the generator handler.
+    assert!(!pipeline.diagnostics.iter().any(|diag| {
         matches!(
             &diag.kind,
             MirDiagnosticKind::UnsupportedNode { reason }
                 if reason == "actor receive fn declared as generator; generator MIR lowering is a separate lane"
         )
     }));
+    // The handler shell exists and materialises the generator handle.
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Counter__recv__ticks")
+        .expect("generator handler must produce a MIR function");
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::MakeGenerator { .. })),
+        "generator handler must emit Terminator::MakeGenerator"
+    );
+    // The yield body is surfaced as a sibling gen-body function with a Yield.
+    let gen_body = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| {
+            func.name
+                .starts_with("__hew_gen_body_Counter__recv__ticks_")
+        })
+        .expect("generator handler must surface a __hew_gen_body_* function");
+    assert!(
+        gen_body
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Yield { .. })),
+        "generator body must contain a Terminator::Yield"
+    );
 }
 
 #[test]

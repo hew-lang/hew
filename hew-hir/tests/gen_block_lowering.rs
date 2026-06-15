@@ -23,6 +23,20 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
     )
 }
 
+/// Type-check `source` and return the checker's error messages without lowering.
+/// Used by reject-path regressions where the body is expected to be ill-typed.
+fn typecheck_errors(source: &str) -> Vec<String> {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    tco.errors.iter().map(|e| e.message.clone()).collect()
+}
+
 fn main_body(output: &hew_hir::LowerOutput) -> &hew_hir::HirBlock {
     output
         .module
@@ -230,6 +244,140 @@ fn gen_fn_lowers_to_generator_returning_fn_with_genblock_body() {
     assert_eq!(
         value.as_ref().expect("tail yield must carry value").ty,
         ResolvedTy::I64
+    );
+}
+
+fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::HirActorDecl {
+    output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Actor(actor) if actor.name == name => Some(actor),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected lowered actor named {name}"))
+}
+
+#[test]
+fn actor_receive_gen_fn_yield_lowers_through_genblock() {
+    // Regression: `yield` inside an actor `receive gen fn` used to find an
+    // empty `generator_yield_tys` stack during HIR lowering ("yield expression
+    // has no enclosing generator yield type") because `lower_actor_receive_fn`
+    // never pushed the handler's Yield type the way `lower_generator_fn_body`
+    // does for a standalone `gen fn`. The handler now lowers its body through
+    // the shared `GenBlock` path: the outer block is a thin wrapper whose tail
+    // is a `GenBlock` typed `Generator<Yield = i64, Return = Unit>`, with the
+    // yields inside the GenBlock body. This is the producer-side analogue of
+    // `gen_fn_lowers_to_generator_returning_fn_with_genblock_body`.
+    let output = typecheck_and_lower(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn count_up() -> i64 { yield 1; yield 2; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "verify diagnostics: {verify:?}");
+
+    let actor = find_actor(&output, "Seq");
+    let handler = actor
+        .receive_handlers
+        .iter()
+        .find(|receive| receive.name == "count_up")
+        .expect("count_up generator receive handler should lower");
+    assert!(
+        handler.is_generator,
+        "receive gen fn must carry is_generator"
+    );
+    // `return_ty` stays the declared element type (the protocol/ABI layer
+    // consults it as the stream element type); the body tail carries the
+    // generator handle type.
+    assert_eq!(handler.return_ty, ResolvedTy::I64);
+    assert!(
+        handler.body.statements.is_empty(),
+        "generator handler outer block should be a thin GenBlock wrapper"
+    );
+    let tail = handler
+        .body
+        .tail
+        .as_ref()
+        .expect("generator handler body must have a GenBlock tail");
+    let HirExprKind::GenBlock {
+        body,
+        yield_ty,
+        return_ty,
+    } = &tail.kind
+    else {
+        panic!("expected GenBlock tail, got {:?}", tail.kind);
+    };
+    assert_eq!(yield_ty, &ResolvedTy::I64);
+    assert_eq!(return_ty, &ResolvedTy::Unit);
+    assert_generator_type(&tail.ty, &ResolvedTy::I64, &ResolvedTy::Unit);
+
+    // The first `yield 1;` is a statement; the trailing `yield 2;` (with a
+    // semicolon) is also a statement, so the GenBlock body has two statement
+    // yields and no tail yield.
+    let yields = yield_values(body);
+    assert_eq!(yields.len(), 2, "expected two statement yields in gen body");
+    for (value, yield_ty) in yields {
+        assert_eq!(yield_ty, &ResolvedTy::I64);
+        let value = value.as_ref().expect("yield must carry value");
+        assert_eq!(value.ty, ResolvedTy::I64);
+    }
+}
+
+#[test]
+fn actor_receive_gen_fn_rejects_non_unit_return() {
+    // Regression (fail-open fix): an actor `receive gen fn`'s declared `-> T` is
+    // the Yield element type; the body falls off the end with Unit, so an
+    // explicit `return <T>;` must be rejected exactly like a standalone
+    // `gen fn` — the value would otherwise be silently dropped. The checker
+    // shapes `current_return_type` as `Generator<Yield = T, Return = Unit>`, so
+    // `return 7;` is checked against the Unit Return component and fails.
+    let errors = typecheck_errors(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn one_then_done() -> i64 { yield 42; return 7; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("expected `()`") && m.contains("found `i64`")),
+        "expected a Unit/i64 return-type mismatch on the explicit `return 7;`, got: {errors:?}"
+    );
+}
+
+#[test]
+fn actor_receive_gen_fn_accepts_bare_return() {
+    // Companion to the reject regression: a bare `return;` in an actor
+    // `receive gen fn` is valid (it returns the Unit Return component) and must
+    // not be flagged as a Unit-vs-`i64` mismatch. Before the fix the body was
+    // checked against the bare yield type, so a bare return was wrongly rejected.
+    let output = typecheck_and_lower(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn one_then_done() -> i64 { yield 42; return; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
     );
 }
 

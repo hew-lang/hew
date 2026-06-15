@@ -2306,20 +2306,6 @@ fn lower_actor_receive_handlers(
     let mut lowered = Vec::new();
 
     for handler in &actor.receive_handlers {
-        if handler.is_generator {
-            diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::UnsupportedNode {
-                    reason: "actor receive fn declared as generator; generator MIR lowering is a separate lane"
-                        .to_string(),
-                },
-                note: format!(
-                    "actor `{}` receive fn `{}` is a generator and is skipped by ActorHandler MIR lowering",
-                    actor.name, handler.name
-                ),
-            });
-            continue;
-        }
-
         let self_field_errors = unknown_self_fields_in_block(&handler.body, &state_fields);
         if !self_field_errors.is_empty() {
             for field in self_field_errors {
@@ -2354,16 +2340,37 @@ fn lower_actor_receive_handlers(
         }
         emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
+        // For a generator handler (`receive gen fn`) the HIR-lowered body is a
+        // thin block whose tail is a `HirExprKind::GenBlock` typed
+        // `Generator<Yield, Unit>` (see `lower_actor_generator_body` in
+        // hew-hir). The handler function's *MIR* return type is therefore the
+        // generator handle type carried on that tail, NOT the declared element
+        // type recorded on `handler.return_ty` (which the protocol/ABI layer
+        // still consults as the stream element type). Lowering with
+        // `is_generator: true` and the generator return type routes the body
+        // through the `GenBlock` → `Terminator::Yield` state-machine path
+        // (`lower_gen_block`): the handler becomes a thin shell that emits
+        // `MakeGenerator` and returns the generator handle, and the actual
+        // yield body is surfaced as a sibling `__hew_gen_body_*` function.
+        let fn_return_ty = if handler.is_generator {
+            handler
+                .body
+                .tail
+                .as_ref()
+                .map_or_else(|| handler.return_ty.clone(), |tail| tail.ty.clone())
+        } else {
+            handler.return_ty.clone()
+        };
         let synthetic_fn = HirFn {
             id: actor.id,
             node: actor.node,
             name: format!("{}::{}", actor.name, handler.name),
             type_params: Vec::new(),
             params: handler.params.clone(),
-            return_ty: handler.return_ty.clone(),
+            return_ty: fn_return_ty,
             body: handler.body.clone(),
             span: handler.span.clone(),
-            is_generator: false,
+            is_generator: handler.is_generator,
             intrinsic_id: None,
         };
         lowered.push(lower_function(
@@ -4122,10 +4129,20 @@ fn lower_actor_handler_layouts(actor: &HirActorDecl) -> Vec<ActorHandlerLayout> 
     let descriptor = actor.protocol_descriptor.as_ref();
     let mut layouts = Vec::with_capacity(actor.receive_handlers.len());
     for handler in &actor.receive_handlers {
-        // Generator handlers have no lowered MIR body and are therefore
-        // absent from both the actor body MIR and the dispatch trampoline.
-        // Skip them here to keep the layout consistent with the body
-        // lowering in `lower_actor_receive_handlers`.
+        // Generator handlers (`receive gen fn`) DO have a lowered MIR body now
+        // (`lower_actor_receive_handlers` routes them through the `GenBlock`
+        // state-machine path, emitting the handler shell plus a sibling
+        // `__hew_gen_body_*`). They are NOT message-dispatch handlers, though:
+        // a `receive gen fn` is invoked as a `Stream<T>` producer
+        // (`for await x in actor.count_up()`), not via the request/reply
+        // protocol the trampoline routes. Until the consumer-side
+        // stream-dispatch bridge lands (each call → a per-call channel-backed
+        // `Stream<T>`), they stay out of the protocol dispatch layout — their
+        // function return type is `Generator<T, Unit>`, not the `T` the
+        // request/reply trampoline would reply with. Keeping the body present
+        // but the dispatch row absent is consistent: codegen validates the
+        // generator body without a trampoline arm that would mis-handle the
+        // reply.
         if handler.is_generator {
             continue;
         }

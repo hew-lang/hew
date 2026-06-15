@@ -635,6 +635,148 @@ fn tuple_build_and_return_without_post_move_use_is_accepted() {
     );
 }
 
+// ---------- #1295: `#[resource]` inherent `close(self)` consume ----------
+//
+// A `#[resource]` type's inherent `fn close(self)` is the implicit-drop
+// dispatch target AND a terminal consuming method. Calling it explicitly moves
+// the receiver, so (a) a later use is rejected at CHECK time and (b) the
+// scope-exit implicit drop is suppressed on the consumed path — the close fires
+// exactly once. The checker registers the resource `close` into the consume
+// path; HIR lowers the receiver with `IntentKind::Consume`; MIR transitions the
+// binding to `Consumed` and excludes it from the function-exit drop set.
+
+/// Reading the receiver after a `#[resource]` inherent `close()` is a
+/// use-after-close: the explicit close moved the binding, so the trailing read
+/// must surface `UseAfterConsume`. This is the verified #1295 double-close
+/// safety bug — before the fix the binding stayed live and `hew check` admitted
+/// the read.
+#[test]
+fn checked_mir_rejects_use_after_resource_close() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() -> i64 {
+            let c = Conn { id: 1 };
+            c.close();
+            c.id
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
+        )),
+        "reading `c.id` after `c.close()` on a `#[resource]` type must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+/// A second `close()` of a `#[resource]` value is rejected — the first call
+/// consumed the receiver.
+#[test]
+fn checked_mir_rejects_second_resource_close() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() {
+            let c = Conn { id: 1 };
+            c.close();
+            c.close();
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
+        )),
+        "a second `c.close()` on a `#[resource]` type must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+/// An explicitly-closed `#[resource]` value is excluded from the function-exit
+/// drop set: the explicit `close()` is the single release, and the scope-exit
+/// implicit drop is suppressed (no double-close). The drop plan for `serve`
+/// carries no `DropKind::Resource` for `c`.
+#[test]
+fn explicit_resource_close_suppresses_scope_exit_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() {
+            let c = Conn { id: 1 };
+            c.close();
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a single explicit close must type-check cleanly: {:?}",
+        p.diagnostics
+    );
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    assert!(
+        serve.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|d| d.kind != hew_mir::DropKind::Resource)),
+        "an explicitly-closed `#[resource]` must NOT also earn a scope-exit \
+         resource drop — that is the #1295 double-close: {:?}",
+        serve.drop_plans
+    );
+}
+
+/// A `#[resource]` value that is NEVER explicitly closed keeps its scope-exit
+/// implicit drop — the regression guard for the fix. The drop plan for `serve`
+/// carries a `DropKind::Resource` for `c`.
+#[test]
+fn never_closed_resource_keeps_scope_exit_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() {
+            let c = Conn { id: 1 };
+            let _ = c.id;
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a never-closed resource must type-check cleanly: {:?}",
+        p.diagnostics
+    );
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    assert!(
+        serve.drop_plans.iter().any(|(_, plan)| plan
+            .drops
+            .iter()
+            .any(|d| d.kind == hew_mir::DropKind::Resource)),
+        "a never-explicitly-closed `#[resource]` must keep its scope-exit \
+         implicit drop so it is released exactly once: {:?}",
+        serve.drop_plans
+    );
+}
+
 #[test]
 fn copy_operands_moved_into_tuple_are_not_flagged() {
     // Copy-operand control: BitCopy ints placed into a tuple are shared,

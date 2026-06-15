@@ -3207,6 +3207,24 @@ impl Checker {
         }
 
         let Some(symbol_name) = self.resolve_vec_runtime_symbol(method, &elem_ty, span) else {
+            // Polymorphic element re-resolution (#1929 Stage 1). When the
+            // element is a declared type parameter the concrete `hew_vec_*`
+            // symbol cannot be chosen here — it depends on the type
+            // monomorphisation substitutes per instantiation. Rather than
+            // dropping the entry (which fails closed at HIR with
+            // `MethodCallNoRewrite`), KEEP the `hew_vec_{method}_FAMILY`
+            // placeholder the dispatch registry stamped: HIR lowers it to a
+            // `ResolvedImplCall` and MIR re-resolves the per-ABI symbol from
+            // the substituted concrete element via the same authority that
+            // backs the constructor (`vec_generic_element_abi` +
+            // `vec_element_op_symbol`). Scoped to the element-typed ops with a
+            // runtime-backed generic path; every other method/element keeps
+            // failing closed by dropping the entry.
+            if matches!(method, "push" | "get" | "set" | "pop")
+                && self.is_vec_element_abstract_type_param(&elem_ty)
+            {
+                return;
+            }
             self.resolved_calls.remove(&key);
             return;
         };
@@ -3215,6 +3233,92 @@ impl Checker {
             .expect("collection resolver inserted Vec call before symbol override")
             .target
             .symbol_name = symbol_name.to_string();
+    }
+
+    /// True when `elem_ty` is a bare, no-argument declared type parameter
+    /// (e.g. the `T` in `fn f<T>(v: Vec<T>)`). This is the signal that a
+    /// `Vec<T>` element-typed method cannot be resolved to a concrete runtime
+    /// symbol at check time and must be re-resolved per monomorphisation
+    /// (#1929 Stage 1). A bare `Ty::Named` with no args and no builtin
+    /// discriminator that names an in-scope type parameter is the abstract
+    /// element; anything else (a concrete nominal, a builtin, an applied
+    /// generic) is not.
+    fn is_vec_element_abstract_type_param(&self, elem_ty: &Ty) -> bool {
+        matches!(
+            elem_ty,
+            Ty::Named { name, args, builtin: None }
+                if args.is_empty() && self.is_type_param_in_scope(name)
+        )
+    }
+
+    /// Build the `Ty → VecElementToken` verdict table that MIR consults when
+    /// re-resolving a `Vec<T>` element-typed method under a type parameter
+    /// (#1929 Stage 1). Every concrete type observed as a generic call /
+    /// record-init type-argument is classified through
+    /// [`Self::classify_vec_generic_element`]; types absent from the result
+    /// (non-`Copy`/owned layout, owned heap-handles, closures, nested
+    /// collections, unresolved nominals) fail closed downstream.
+    pub(super) fn build_vec_generic_element_abi(
+        &self,
+        call_type_args: &HashMap<SpanKey, Vec<Ty>>,
+        record_init_type_args: &HashMap<SpanKey, Vec<Ty>>,
+        type_defs: &HashMap<String, TypeDef>,
+    ) -> HashMap<Ty, crate::stdlib::VecElementToken> {
+        let mut out = HashMap::new();
+        for args in call_type_args
+            .values()
+            .chain(record_init_type_args.values())
+        {
+            for ty in args {
+                if out.contains_key(ty) {
+                    continue;
+                }
+                if let Some(token) = self.classify_vec_generic_element(ty, type_defs) {
+                    out.insert(ty.clone(), token);
+                }
+            }
+        }
+        out
+    }
+
+    /// Classify a concrete element type's `Vec<T>` runtime ABI for the
+    /// monomorphisation re-resolution path, using the same authority as the
+    /// constructor ([`crate::stdlib::vec_element_runtime_suffix`]).
+    ///
+    /// Stage 1 admits exactly what already round-trips on the concrete path
+    /// without new runtime/codegen machinery: scalar (`bool`/`i32`/`i64`/`f64`)
+    /// and `string` elements unconditionally, and pointer / layout-descriptor
+    /// elements **only when the element is `Copy`**. The `Copy` gate is what
+    /// makes the pointer and layout arms safe: it admits identity handles
+    /// (`LocalPid`/`ActorRef`) and bit-copy value records, while deferring
+    /// every shape with an ownership contract — owned heap-handles, non-`Copy`
+    /// records, closures (each owns a captured environment), and nested
+    /// collections (each owns a backing store). Those would alias an owner
+    /// across a shallow `_ptr`/`_layout` op and double-free; they stay
+    /// fail-closed until the owned generic path lands.
+    fn classify_vec_generic_element(
+        &self,
+        ty: &Ty,
+        type_defs: &HashMap<String, TypeDef>,
+    ) -> Option<crate::stdlib::VecElementToken> {
+        use crate::stdlib::VecElementToken;
+        let suffix = crate::stdlib::vec_element_runtime_suffix(ty, type_defs)?;
+        let token = VecElementToken::from_runtime_suffix(suffix)?;
+        let admissible = match token {
+            // Bit-copy scalars and the CoW `string` representation carry no
+            // owner-aliasing hazard across the shared-buffer element ops.
+            VecElementToken::Bool
+            | VecElementToken::I32
+            | VecElementToken::I64
+            | VecElementToken::F64
+            | VecElementToken::Str => true,
+            // Pointer-identity and layout-descriptor elements are admitted
+            // only when `Copy` — see the doc comment for why.
+            VecElementToken::Ptr | VecElementToken::Layout => {
+                self.registry.implements_marker(ty, MarkerTrait::Copy)
+            }
+        };
+        admissible.then_some(token)
     }
 
     /// Fail-closed gate for the Vec pipeline methods (`map`/`filter`/`reduce`)

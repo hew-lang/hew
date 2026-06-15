@@ -1008,7 +1008,7 @@ impl Checker {
     /// True if `name` is a type parameter declared in the current scope —
     /// either the resolver's bounds stack (even with no bounds) or the
     /// current function's signature.
-    fn is_type_param_in_scope(&self, name: &str) -> bool {
+    pub(super) fn is_type_param_in_scope(&self, name: &str) -> bool {
         for frame in self.current_type_param_bounds.iter().rev() {
             if frame.bounds.contains_key(name) {
                 return true;

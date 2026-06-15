@@ -236,6 +236,22 @@ pub struct TypeCheckOutput {
     /// Inferred type arguments for generic function calls that lack explicit
     /// type annotations.  Keyed by the call expression's span.
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
+    /// Per-concrete-element `Vec<T>` runtime-ABI verdict for the
+    /// monomorphisation re-resolution of element-typed methods under a type
+    /// parameter (#1929 Stage 1).
+    ///
+    /// Populated at the checker output boundary by classifying every concrete
+    /// type that appears as a generic call / record-init type-argument through
+    /// the same authority that backs the constructor path
+    /// ([`crate::stdlib::vec_element_runtime_suffix`] + the `Copy` marker for
+    /// the `layout` class). A `Vec<T>` `push`/`get`/`set`/`pop` whose element
+    /// is a declared type parameter keeps the `hew_vec_*_FAMILY` placeholder
+    /// through HIR; MIR substitutes the concrete element per instantiation,
+    /// looks it up here, and maps `(method, token)` to the concrete symbol via
+    /// [`crate::stdlib::vec_element_op_symbol`]. An element ABSENT from this
+    /// map (non-`Copy`/owned layout, tuples, closures, unresolved nominals)
+    /// fails closed at MIR — never a silent accept.
+    pub vec_generic_element_abi: HashMap<Ty, crate::stdlib::VecElementToken>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types.  Keyed by the
     /// initialiser expression's span.
@@ -943,6 +959,7 @@ impl Default for TypeCheckOutput {
             cycle_capable_actors: HashSet::default(),
             user_modules: HashSet::default(),
             call_type_args: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             record_init_type_args: HashMap::new(),
             stack_hints: Vec::new(),
             actor_send_aliasing: HashMap::new(),

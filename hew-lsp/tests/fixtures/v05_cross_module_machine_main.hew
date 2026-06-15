@@ -1,4 +1,4 @@
-import machines::toggle;
+import machines::toggle::{Toggle, Flip};
 
 fn cross_module_machine_probe() -> string {
     var toggle: Toggle = Toggle::Off;

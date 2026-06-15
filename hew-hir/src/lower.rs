@@ -258,8 +258,24 @@ const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 /// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
 /// `machine_ctor_registry`. One variant: Timeout=0, no payload.
 const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
-const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
+pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
+
+/// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
+/// idx: i64 }` in declaration order.
+///
+/// This is the SINGLE authority both the origin-site layout registration
+/// ([`LowerCtx::register_vec_iter_layout`]) and the per-monomorphisation
+/// layout discovery ([`crate::layout_mono::run_layout_mono_pass`], which seeds
+/// `VecIter` into its record-decl table) consume, so the two paths can never
+/// disagree on field order or field types. The for-in / into-iter desugar
+/// constructs the `VecIter` literal with exactly these fields in this order.
+pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
+    vec![
+        ("vec".to_string(), LowerCtx::resolved_vec_ty(elem_ty.clone())),
+        ("idx".to_string(), ResolvedTy::I64),
+    ]
+}
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
@@ -16182,6 +16198,17 @@ impl LowerCtx {
     }
 
     fn register_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span, context: &str) {
+        // #1929 Stage 2: a synthetic `Option<elem>` registered under a generic
+        // body carries an abstract element (`Option$$<T>`), which would leak a
+        // `T` payload to the MIR value-class boundary (`UnknownType`). Skip it —
+        // the concrete `Option$$<elem>` for each instantiation is recovered by
+        // the post-function-mono layout walk (`Option` is seeded into
+        // `crate::layout_mono`'s enum-decl table). A concrete operand never
+        // takes this branch, so every concrete synthetic-Option path is
+        // byte-identical.
+        if self.contains_abstract_type_param(operand_ty) {
+            return;
+        }
         let key = EnumMonoKey {
             origin: SYNTHETIC_OPTION_ITEM,
             origin_name: "Option".to_string(),
@@ -16221,16 +16248,25 @@ impl LowerCtx {
     }
 
     fn register_vec_iter_layout(&mut self, elem_ty: &ResolvedTy, span: &Span) {
-        let vec_ty = Self::resolved_vec_ty(elem_ty.clone());
+        // #1929 Stage 2: under a generic body the element is a declared type
+        // parameter, so registering an ABSTRACT `VecIter$$<T>` layout here would
+        // leak a `Vec<T>` field to the MIR value-class boundary (`UnknownType`).
+        // Skip it — exactly as the user-generic-record path (`record_record_layout`)
+        // fails closed on abstract args. The concrete `VecIter$$<elem>` for each
+        // instantiation is registered by the post-function-mono layout walk
+        // (`crate::layout_mono::run_layout_mono_pass`, which seeds `VecIter` into
+        // its record-decl table) once the enclosing fn is substituted. A concrete
+        // element never takes this branch, so the concrete for-in path is
+        // byte-identical.
+        if self.contains_abstract_type_param(elem_ty) {
+            return;
+        }
         let key = RecordMonoKey {
             origin: SYNTHETIC_VEC_ITER_ITEM,
             origin_name: "VecIter".to_string(),
             type_args: vec![elem_ty.clone()],
         };
-        let fields = vec![
-            ("vec".to_string(), vec_ty),
-            ("idx".to_string(), ResolvedTy::I64),
-        ];
+        let fields = vec_iter_field_shape(elem_ty);
         if self
             .record_layout_registry
             .insert(key, fields, span.clone())

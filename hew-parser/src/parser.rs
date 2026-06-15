@@ -6866,6 +6866,14 @@ impl<'src> Parser<'src> {
                 // Note: bare {} remains a Block — empty HashMap coercion is
                 // handled in the type checker when expected type is HashMap.
                 // Use direct lookahead (no save/restore) for the common block path.
+                //
+                // A `{` reaching this arm is unambiguously a block (or map)
+                // expression — even in `if`/`while` condition or `match`
+                // scrutinee position (`if { let x = Foo { a: 1 }; x.a } {…}`).
+                // The `{` opens the block's body, so the enclosing condition's
+                // block is no longer ambiguous: lift `no_struct_literal` so a
+                // struct literal INSIDE this block parses. Restored on arm exit.
+                let _allow_struct = self.set_no_struct_literal(false);
                 if matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
                     && self.peek_at(self.pos + 2) == Some(&Token::Colon)
                 {
@@ -7518,9 +7526,22 @@ impl<'src> Parser<'src> {
             if let Some(mut name) = Self::dotted_expr_name(&lhs.0) {
                 name.push('.');
                 name.push_str(&method);
-                if self.peek() == Some(&Token::LeftBrace) {
+                // A `{` here begins a struct literal only when struct literals
+                // are allowed in this position and the brace actually opens a
+                // field list. In `if`/`while` condition or `match` scrutinee
+                // position the `no_struct_literal` restriction is active, so
+                // `if m.E::V { } else { }` opens the then-block — the `{` must
+                // NOT be consumed as an empty struct literal here (which would
+                // orphan the `else`). The probe also guards `{ stmt; }` blocks.
+                if self.peek() == Some(&Token::LeftBrace)
+                    && !self.no_struct_literal()
+                    && self.probe_struct_init_brace()
+                {
                     self.advance(); // consume {
-                    let (fields, base) = self.parse_struct_init_fields()?;
+                                    // Inside the struct body the `{` is consumed, so any nested
+                                    // bare-ident struct literal is unambiguous again.
+                    let (fields, base) =
+                        self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                     let end = self.peek_span().start;
                     return Some((
                         Expr::StructInit {

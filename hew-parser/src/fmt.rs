@@ -2351,7 +2351,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write_indent();
                 self.write("if ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_block(then_block, self.source.len());
                 if let Some(eb) = else_block {
@@ -2381,7 +2381,7 @@ impl<'a> Formatter<'a> {
             Stmt::Match { scrutinee, arms } => {
                 self.write_indent();
                 self.write("match ");
-                self.format_expr(&scrutinee.0);
+                self.format_cond_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in
@@ -2460,7 +2460,7 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("while ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2666,6 +2666,27 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Format an `if`/`while` condition or `match` scrutinee, wrapping a direct
+    /// struct literal in parens so it re-parses correctly.
+    ///
+    /// In condition/scrutinee position the parser suppresses bare struct
+    /// literals (the `{` opens the block / loop body / match arms), so a struct
+    /// literal that is the direct condition must keep its parens: `if (Foo {
+    /// a: 1 }) {}` and `match (Foo { a: 1 }) { … }` would otherwise format to
+    /// `if Foo { a: 1 } {}` / `match Foo { a: 1 } { … }`, which re-parse with
+    /// the struct body swallowing the block. Only a direct `StructInit` needs
+    /// this — every other condition form (binary ops, calls, blocks, nested
+    /// `if`/`match`) re-parses unchanged.
+    fn format_cond_expr(&mut self, expr: &Expr) {
+        if matches!(expr, Expr::StructInit { .. }) {
+            self.write("(");
+            self.format_expr(expr);
+            self.write(")");
+        } else {
+            self.format_expr(expr);
+        }
+    }
+
     /// Format an expression with precedence tracking for correct parenthesization.
     ///
     /// `parent_prec` is the precedence of the enclosing binary operator (0 at top level).
@@ -2752,7 +2773,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write("if ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_expr(&then_block.0);
                 if let Some(eb) = else_block {
@@ -2779,7 +2800,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Match { scrutinee, arms } => {
                 self.write("match ");
-                self.format_expr(&scrutinee.0);
+                self.format_cond_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in

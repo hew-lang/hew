@@ -82,6 +82,21 @@ fixtures=(
   # and must not bind the wrong (i64) layout. Ambiguity is decided over
   # PUBLISHED bare bindings, not bare exports.
   published_bare_no_poison
+  # An ALIASED opt-in (`import hew::aliassrc::{ Payload as Tag }`) constructs the
+  # record through its alias binding (`Tag { code: … }`). The checker resolves
+  # `Tag` to the SOURCE identity `aliassrc.Payload`; HIR lowering must stamp that
+  # source identity onto the StructInit result type, not the bare binding `Tag`,
+  # or the MIR field-order lookup misses the registered bare `Payload` layout and
+  # the construction falls through the field-order fail-closed. Reading the field
+  # back proves the source layout was constructed end-to-end.
+  alias_import_resolves_bare_binding_to_source_identity
+  # The same owner module ALSO exports a DISTINCT `Other` record. Aliasing
+  # `Payload as Other` must bind the SOURCE `aliassrc.Payload`, never the
+  # same-named export `aliassrc.Other`: the construction `Other { code: … }`
+  # initialises `Payload`'s sole field, and HIR keys the StructInit off the
+  # resolved source identity rather than the bare alias binding so the field-order
+  # lookup hits `Payload`, not the unregistered `Other` alias key.
+  alias_import_does_not_conflate_with_same_named_export
 )
 
 for fixture in "${fixtures[@]}"; do

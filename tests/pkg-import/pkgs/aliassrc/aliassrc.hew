@@ -1,0 +1,29 @@
+//! Aliased-import construction fixture (owner module).
+//!
+//! Exports two DISTINCT records with divergent shapes. `Payload` carries a
+//! single `code` field; `Other` carries a `tag` field AND a `note` field, so a
+//! construction that conflated the two source identities would read a different
+//! field set and slot count.
+//!
+//! An importer aliases `Payload as Tag` and constructs `Tag { … }`. Under
+//! qualified-by-default the alias binding `Tag` is never opted in under the
+//! source name `Payload`; the checker resolves `Tag` to the SOURCE identity
+//! `aliassrc.Payload` and records that qualified name on the construction's
+//! type. HIR lowering must stamp the source identity onto the StructInit result
+//! type — never the bare binding `Tag` — so the MIR field-order lookup keys off
+//! `aliassrc.Payload` (which strips to the registered bare `Payload`) rather
+//! than the unregistered alias `Tag`, which would trip the field-order
+//! fail-closed.
+
+/// Aliased record reached through `aliassrc::{ Payload as Tag }`.
+pub type Payload {
+    code: i64;
+}
+
+/// A DISTINCT record sharing no layout with `Payload`. Used by the
+/// no-conflation oracle: aliasing `Payload as Other` must bind the SOURCE
+/// `Payload`, never this same-named `Other` export.
+pub type Other {
+    tag: i64;
+    note: i64;
+}

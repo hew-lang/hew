@@ -1067,6 +1067,7 @@ fn walk_expr(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. } => {

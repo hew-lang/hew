@@ -1,0 +1,66 @@
+//! e2e coverage for `this` as a value inside an actor `receive fn`.
+//!
+//! `this` evaluates to the actor's own `LocalPid<Self>` handle. A self-send
+//! (`this.go()`) re-enqueues work to the actor's own mailbox — the substrate
+//! every timer/retry/pump-loop actor composes on. This proves the self-send
+//! actually delivers through the mailbox (each delivery mutates state and
+//! re-enqueues until a bound), not a no-op lowering: a no-op would never
+//! advance the counter past its first tick.
+
+import std::testing;
+
+actor Counter {
+    var n: i64 = 0;
+
+    // Each delivery increments and self-sends until the bound is reached.
+    // The self-send is `this.go()` — `this` as a method receiver.
+    receive fn go() {
+        if n < 3 {
+            n = n + 1;
+            this.go();
+        }
+    }
+
+    receive fn total() -> i64 {
+        n
+    }
+}
+
+actor Pump {
+    var n: i64 = 0;
+
+    receive fn go() {
+        if n < 7 {
+            n = n + 1;
+            this.go();
+        }
+    }
+
+    receive fn total() -> i64 {
+        n
+    }
+}
+
+#[test]
+fn self_send_drives_bounded_recursion_to_exact_terminal() {
+    let c = spawn Counter();
+    c.go();
+    // The self-sends drain through the mailbox; the ask serialises behind them.
+    // sleep gives the bounded self-send chain time to complete before observing.
+    sleep_ms(100);
+    match await c.total() {
+        Ok(n) => testing.assert_eq(n, 3),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn self_send_with_higher_bound_reaches_that_bound() {
+    let p = spawn Pump();
+    p.go();
+    sleep_ms(100);
+    match await p.total() {
+        Ok(n) => testing.assert_eq(n, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}

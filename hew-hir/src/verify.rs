@@ -367,6 +367,7 @@ impl Verifier {
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::MachineFieldAccess { .. }
             | HirExprKind::Continue { .. }
+            | HirExprKind::ActorSelf
             | HirExprKind::MachineEventFieldAccess { .. } => {}
             HirExprKind::Scope { body }
             | HirExprKind::ForkBlock { body, .. }

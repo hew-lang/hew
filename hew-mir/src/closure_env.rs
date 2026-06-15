@@ -517,6 +517,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
         | HirExprKind::ContextReader { .. }
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
     }
 }

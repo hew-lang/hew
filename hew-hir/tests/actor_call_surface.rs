@@ -222,6 +222,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_)
         | HirExprKind::CallTraitMethodStatic { .. } => {}
     }

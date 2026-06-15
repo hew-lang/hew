@@ -3862,6 +3862,7 @@ fn collect_call_sites_in_expr(
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
     }
 }
@@ -6626,6 +6627,7 @@ impl LowerCtx {
             | HirExprKind::MachineFieldAccess { .. }
             | HirExprKind::MachineEventFieldAccess { .. }
             | HirExprKind::Continue { .. }
+            | HirExprKind::ActorSelf
             | HirExprKind::MachineVariantCtor { payload: None, .. }
             | HirExprKind::Unsupported(_) => {}
         }
@@ -12032,6 +12034,72 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
                 ResolvedTy::Bytes,
             ),
+            // `this` as a value inside an actor `receive fn` — the actor's own
+            // handle. The checker (`Expr::This` synthesis) records its type as
+            // `LocalPid<Self>` in `expr_types`, but ONLY when `this` is used
+            // inside an actor; outside an actor it reports
+            // "`this` can only be used inside an actor" and records `Ty::Error`.
+            // HIR is checker-authoritative here: it READS that recorded type, it
+            // does NOT re-derive the actor identity from the AST. A `this.field`
+            // access in a machine transition body is intercepted earlier by the
+            // `Expr::FieldAccess { object: Expr::This, .. }` arm and never
+            // reaches here. A bare machine-body `this` is suppressed downstream
+            // by `MachineBodyAllowlist`; it has no `LocalPid<Actor>` entry, so
+            // this arm fails closed for it rather than fabricating a handle.
+            Expr::This => {
+                let checker_key = self.mk_key(&span);
+                match self.expr_types.get(&checker_key).cloned() {
+                    Some(ty) => match ResolvedTy::from_ty(&ty) {
+                        Ok(
+                            resolved @ ResolvedTy::Named {
+                                builtin: Some(BuiltinType::LocalPid),
+                                ..
+                            },
+                        ) => (HirExprKind::ActorSelf, resolved),
+                        // The checker recorded a type for `this` that is not a
+                        // `LocalPid<_>`. The only authoritative producer is the
+                        // actor-handler synthesis (`LocalPid<Self>`); anything
+                        // else is a boundary violation — fail closed, never
+                        // fabricate a self-handle.
+                        Ok(other) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "this".to_string(),
+                                    reason: format!(
+                                        "expected `LocalPid<Self>` recorded by the checker, \
+                                         got `{}`",
+                                        other.user_facing()
+                                    ),
+                                },
+                                span.clone(),
+                                "`this` is the actor self-handle; its checker type must be \
+                                 `LocalPid<Self>`",
+                            ));
+                            return self.unsupported_expr(span, "`this` with non-LocalPid type");
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "this".to_string(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "`this` self-handle type failed the checker boundary conversion",
+                            ));
+                            return self.unsupported_expr(span, "`this` type boundary conversion");
+                        }
+                    },
+                    // No recorded type means the checker did not synthesize
+                    // `this` here — it errored ("`this` can only be used inside
+                    // an actor") and recorded nothing usable. The checker
+                    // diagnostic already fired; fail closed without papering
+                    // over it.
+                    None => {
+                        return self
+                            .unsupported_expr(span, "`this` outside an actor receive handler");
+                    }
+                }
+            }
             _ => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -19371,6 +19439,7 @@ fn collect_captures_walk(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_captures_walk(left, param_ids, seen, captures, self_id);
@@ -19670,6 +19739,7 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
@@ -20723,6 +20793,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
     }
 }
@@ -23670,7 +23741,8 @@ fn scan_expr_for_call_shape(
         // Leaf / no-sub-expression variants: Literal, RegexLiteralRef,
         // BindingRef, ContextReader, AwaitTask, Yield { value: None },
         // MachineVariantCtor { payload: None }, MachineFieldAccess,
-        // MachineEventFieldAccess, Continue, Unsupported. Nothing to recurse into.
+        // MachineEventFieldAccess, Continue, ActorSelf, Unsupported. Nothing to
+        // recurse into.
         HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
@@ -23681,6 +23753,7 @@ fn scan_expr_for_call_shape(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
     }
 }

@@ -1164,6 +1164,17 @@ pub enum HirExprKind {
         timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
+    /// `this` inside an actor `receive fn` — the actor's own handle.
+    ///
+    /// A zero-payload leaf: the `LocalPid<Self>` type recorded by the checker
+    /// at the `this` span (`Expr::This` synthesis) rides on the wrapping
+    /// `HirExpr.ty`, so this variant carries no fields. MIR lowers it via the
+    /// `hew_actor_self()` runtime primitive — the same self-handle synthesis
+    /// `link`/`monitor`/`unlink` already use implicitly — yielding the borrowed
+    /// `*mut HewActor` the current actor runs on. A self-send (`this.go()`)
+    /// flows through the existing `ActorSend` machinery once the receiver
+    /// lowers to this handle.
+    ActorSelf,
     Block(HirBlock),
     If {
         condition: Box<HirExpr>,

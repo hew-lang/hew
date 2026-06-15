@@ -325,6 +325,14 @@ pub struct EmitOptions<'a> {
     /// the deployment-target form (`<arch>-apple-macosx<version>`) so the
     /// object's minimum-OS tag matches the link step.
     pub target_triple: Option<&'a str>,
+    /// Whether to emit DWARF debug info (`hew build -g`). When `false` the
+    /// emitted module carries zero debug metadata (the legacy behaviour).
+    pub debug: bool,
+    /// Path to the originating Hew source file, used as the DWARF
+    /// `DICompileUnit`/`DIFile` and to build the byte-offset → line index for
+    /// function-entry locations. `None` (or `debug == false`) emits no debug
+    /// info. Only consulted when `debug` is `true`.
+    pub source_path: Option<&'a Path>,
 }
 
 /// Result of an emit: the paths of every produced artefact, for the CLI to
@@ -42142,6 +42150,8 @@ mod tests {
             native: true,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let host_artefacts = emit_module(&pipeline, &host_opts).expect("host emit");
         let host_obj = std::fs::read(
@@ -42180,6 +42190,8 @@ mod tests {
             native: true,
             wasm: false,
             target_triple: Some(cross_triple),
+            debug: false,
+            source_path: None,
         };
         let cross_artefacts = emit_module(&pipeline, &cross_opts).expect("cross emit");
         let cross_obj = std::fs::read(
@@ -47469,6 +47481,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let artefacts = emit_module(&pipeline, &options)
             .expect("CoerceToDynTrait must lower cleanly with the registry populated");
@@ -47609,6 +47623,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let err = emit_module(&pipeline, &options).expect_err(
             "CoerceToDynTrait must fail closed when the registry has no matching entry",
@@ -47987,6 +48003,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let err = emit_module(&pipeline, &options)
             .expect_err("FrameOwned trait-object drop with drop_fn=Some must fail closed");

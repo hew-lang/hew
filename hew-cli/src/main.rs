@@ -375,6 +375,8 @@ fn emit_module(
         emit_target,
         None,
         link_freestanding_wasm,
+        false,
+        None,
     )
 }
 
@@ -391,6 +393,8 @@ fn emit_module_with_triple(
     emit_target: CompileEmitTarget,
     target_triple: Option<&str>,
     link_freestanding_wasm: bool,
+    debug: bool,
+    source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let options = hew_codegen_rs::EmitOptions {
         module_name,
@@ -398,6 +402,8 @@ fn emit_module_with_triple(
         native: emit_target == CompileEmitTarget::Native,
         wasm: emit_target == CompileEmitTarget::Wasm,
         target_triple,
+        debug,
+        source_path,
     };
     let result = if emit_target == CompileEmitTarget::Wasm && !link_freestanding_wasm {
         hew_codegen_rs::emit_module_objects(pipeline, &options)
@@ -433,6 +439,8 @@ fn emit_module_for_target(
     emit_target: CompileEmitTarget,
     target: &target::TargetSpec,
     link_freestanding_wasm: bool,
+    debug: bool,
+    source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let codegen_triple = match emit_target {
         CompileEmitTarget::Native => Some(target.linker_triple()),
@@ -445,6 +453,8 @@ fn emit_module_for_target(
         emit_target,
         codegen_triple.as_deref(),
         link_freestanding_wasm,
+        debug,
+        source_path,
     )
 }
 
@@ -672,6 +682,8 @@ fn compile_build_binary(
         // Link freestanding wasm so `hew build --target wasm32-unknown-unknown`
         // yields a runnable `.wasm`; the native branch links separately below.
         emit_target == CompileEmitTarget::Wasm,
+        debug,
+        Some(input),
     )?;
 
     match emit_target {
@@ -729,7 +741,8 @@ fn emit_obj_only(
         CompileEmitTarget::Native
     };
     // Emit objects only — never link (no freestanding wasm link either).
-    let artefacts = emit_module_for_target(&pipeline, stem, out_dir, emit_target, target, false)?;
+    let artefacts =
+        emit_module_for_target(&pipeline, stem, out_dir, emit_target, target, false, false, None)?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
         CompileEmitTarget::Wasm => artefacts.wasm_obj_path,
@@ -978,6 +991,8 @@ fn compile_temp_wasi_module(
             CompileEmitTarget::Wasm,
             &target_spec,
             false,
+            false,
+            None,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
             eprintln!("E_NOT_YET_IMPLEMENTED: WASM codegen did not produce an object");

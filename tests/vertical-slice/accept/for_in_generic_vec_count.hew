@@ -1,0 +1,39 @@
+// #1929 Stage 2: pure-iteration proof for `for x in items` over a `Vec<T>`
+// where `T` is a type parameter.
+//
+// `count<T>` iterates a generic `Vec<T>` and increments an `i64` accumulator
+// once per element. The body never touches the element value, so the result is
+// purely a function of how many times the generic for-in yields — isolating the
+// Stage 2 VecIter desugar from the Stage 1 element-write path. Proven across
+// three element ABIs (`i64`, `string`, and the Copy value-record `Point`): the
+// loop runs exactly once per element for each (`3`, `4`, `2`).
+
+type Point { x: i64; y: i64 }
+
+fn count<T>(items: Vec<T>) -> i64 {
+    var c: i64 = 0;
+    for _x in items {
+        c = c + 1;
+    }
+    c
+}
+
+fn main() {
+    let a: Vec<i64> = Vec::new();
+    a.push(1);
+    a.push(2);
+    a.push(3);
+    println(count(a));
+
+    let b: Vec<string> = Vec::new();
+    b.push("w");
+    b.push("x");
+    b.push("y");
+    b.push("z");
+    println(count(b));
+
+    let c: Vec<Point> = Vec::new();
+    c.push(Point { x: 1, y: 1 });
+    c.push(Point { x: 2, y: 2 });
+    println(count(c));
+}

@@ -6051,15 +6051,20 @@ impl Checker {
         Some(TypeError::unresolved_import(span, import_target, &detail))
     }
 
-    /// Determine whether a name should be imported unqualified based on the `ImportSpec`.
+    /// Determine whether a SOURCE export named `name` is opted in by the
+    /// `ImportSpec`. Matching is by SOURCE NAME only: in `import m::{ T as U }`,
+    /// the export `T` is opted in and `U` is the binding it publishes under — a
+    /// DISTINCT source export literally named `U` is NOT opted in by that alias.
+    /// Matching `alias == name` here would falsely opt a real `U` in and publish
+    /// it under `U` too, conflating two distinct nominal types. The alias affects
+    /// only the binding name (`resolve_import_name`), never which source item the
+    /// spec selects.
     #[expect(clippy::ref_option, reason = "avoids cloning the option contents")]
     pub(super) fn should_import_name(name: &str, spec: &Option<ImportSpec>) -> bool {
         match spec {
             None => false,                  // bare import → qualified only
             Some(ImportSpec::Glob) => true, // import foo::*; → everything
-            Some(ImportSpec::Names(names)) => names
-                .iter()
-                .any(|n| n.name == name || n.alias.as_deref() == Some(name)),
+            Some(ImportSpec::Names(names)) => names.iter().any(|n| n.name == name),
         }
     }
 

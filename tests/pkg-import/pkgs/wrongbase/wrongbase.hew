@@ -1,0 +1,13 @@
+//! Same-name supertrait collision source for the re-export case.
+//!
+//! Declares a trait literally named `Base` whose `base` returns `bool` —
+//! DIVERGENT from `hew::reexbase::Base` (whose `base` returns `i64`). A final
+//! importer that brings `hew::reexsub::Sub` (whose super edge points at
+//! `reexbase.Base`) AND this `Base` into scope makes the bare name `Base`
+//! ambiguous. An inline `base` provided in `impl Sub for T` must be checked
+//! against `Sub`'s re-exported supertrait (`reexbase.Base`, returning `i64`),
+//! never this same-named `bool` `Base`.
+
+pub trait Base {
+    fn base(val: Self) -> bool;
+}

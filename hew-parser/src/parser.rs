@@ -4686,6 +4686,7 @@ impl<'src> Parser<'src> {
             return Some(ImportDecl {
                 path: Vec::new(),
                 spec: None,
+                module_alias: None,
                 file_path: Some(file_path),
                 resolved_items: None,
                 resolved_item_source_paths: Vec::new(),
@@ -4741,11 +4742,30 @@ impl<'src> Parser<'src> {
             None
         };
 
+        // Whole-module alias: `import path::to::mod as alias;`. Legal only for
+        // the whole-module form; `import m::{ A } as f` and `import m::* as f`
+        // have no meaning and are rejected, so `as` is only consumed when no
+        // brace/glob spec was parsed.
+        let module_alias = if self.eat(&Token::As) {
+            if spec.is_some() {
+                self.error(
+                    "`as` cannot alias a `::{ }` or `::*` import; alias the whole module \
+                     instead (`import path as alias;`)"
+                        .to_string(),
+                );
+                return None;
+            }
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+
         self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
             path,
             spec,
+            module_alias,
             file_path: None,
             resolved_items: None,
             resolved_item_source_paths: Vec::new(),
@@ -10086,6 +10106,56 @@ fn demo() {}
         } else {
             panic!("expected import item");
         }
+    }
+
+    #[test]
+    fn parse_import_whole_module_alias() {
+        // `import path::to::mod as alias;` sets module_alias; spec stays None.
+        let source = r"import std::net as n;";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Import(imp) = &result.program.items[0].0 {
+            assert_eq!(imp.path, vec!["std", "net"]);
+            assert!(imp.spec.is_none(), "whole-module alias keeps spec None");
+            assert_eq!(imp.module_alias.as_deref(), Some("n"));
+        } else {
+            panic!("expected import item");
+        }
+    }
+
+    #[test]
+    fn parse_import_no_module_alias_is_none() {
+        // A plain whole-module import leaves module_alias unset.
+        let source = r"import std::net;";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Item::Import(imp) = &result.program.items[0].0 {
+            assert!(imp.module_alias.is_none());
+        } else {
+            panic!("expected import item");
+        }
+    }
+
+    #[test]
+    fn parse_import_alias_of_brace_rejected() {
+        // Aliasing a `::{ }` spec has no meaning and is a parse error.
+        let source = r"import mymod::{ Foo } as f;";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for aliasing a brace import"
+        );
+    }
+
+    #[test]
+    fn parse_import_alias_of_glob_rejected() {
+        // Aliasing a glob has no meaning and is a parse error.
+        let source = r"import mymod::* as g;";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for aliasing a glob import"
+        );
     }
 
     #[test]

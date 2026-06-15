@@ -22,6 +22,7 @@ fn module_import(path: &[&str], source: &str) -> Spanned<Item> {
     let decl = ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(items),
         resolved_item_source_paths: Vec::new(),

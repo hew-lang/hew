@@ -1,0 +1,9 @@
+[package]
+name = "hew::reexsub"
+version = "0.1.0"
+description = "Re-imports hew::reexbase's `Base` and declares `Sub: Base`. The supertrait edge must resolve through this module's own import to reexbase.Base, not the final importer's same-named Base."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::reexbase" = { version = "0.1.0", path = "../reexbase" }

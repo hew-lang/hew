@@ -249,6 +249,7 @@ mod tests {
         let decl = hew_parser::ast::ImportDecl {
             path: path.iter().map(ToString::to_string).collect(),
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: None,
             resolved_item_source_paths: Vec::new(),
@@ -261,6 +262,7 @@ mod tests {
         let decl = hew_parser::ast::ImportDecl {
             path: vec![],
             spec: None,
+            module_alias: None,
             file_path: Some(file.to_string()),
             resolved_items: None,
             resolved_item_source_paths: Vec::new(),

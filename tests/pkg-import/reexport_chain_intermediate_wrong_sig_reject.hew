@@ -1,0 +1,28 @@
+// Reject fixture: wrong signature at an INTERMEDIATE level of a re-export chain.
+// `Top` is imported from `hew::reexchaina` (`Top: Mid`, `Mid: Base`, both re-
+// exported). The impl provides the inherited `mid` inline with the WRONG return
+// type (`-> bool` where `reexmid.Mid::mid -> i64`). The intermediate super edge
+// `Mid` must follow `reexchaina`'s import binding to `reexmid.Mid`, so `mid`'s
+// signature is checked against the i64 origin and the impl is REJECTED with
+// `TraitImplSignatureMismatch`. Guards the chain fix one hop down from the apex.
+import hew::reexchaina::{Top};
+
+type W {
+    id: i64;
+}
+
+impl Top for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+    fn mid(w: W) -> bool {
+        true
+    }
+    fn top(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

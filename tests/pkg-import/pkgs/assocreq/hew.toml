@@ -1,0 +1,6 @@
+[package]
+name = "hew::assocreq"
+version = "0.1.0"
+description = "Declares `Source` with a REQUIRED associated type `Item`. A same-named `Source` with no associated types lives in hew::assocempty; an impl of THIS `Source` must define `Item` regardless of which same-named trait another module imports."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

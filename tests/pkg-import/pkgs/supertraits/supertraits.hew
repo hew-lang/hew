@@ -1,0 +1,63 @@
+//! Imported-supertrait conformance fixture.
+//!
+//! An `impl <Sub> for T` may provide an inherited SUPERTRAIT method inline. The
+//! checker owner-qualifies each supertrait edge (a `trait Sub: Base` declaration
+//! spells `Base` bare, but under qualified-by-default that names THIS module's
+//! `Base`, i.e. `supertraits.Base`), so:
+//!   * an importer that brings only `Sub` into scope still resolves `Base`'s
+//!     method set through `Base`'s owner — an inline `base` is KNOWN, not extra;
+//!   * the inline `base`'s SIGNATURE is checked against `supertraits.Base`'s
+//!     declaration, not whatever bare `Base` the importer happens to bind.
+//!
+//! `base -> i64` here; a sibling package (`hew::supertraitsb`) declares a
+//! same-name `Base` with `base -> bool` to exercise the collision dimension.
+
+/// Root of the chain. `base` returns `i64`.
+pub trait Base {
+    fn base(val: Self) -> i64;
+}
+
+/// Direct sub-trait of `Base`. The canonical import-only case: an importer that
+/// brings ONLY `Sub` into scope must still resolve `Base`'s methods through
+/// `Sub`'s owner-qualified supertrait edge (`supertraits.Base`).
+pub trait Sub: Base {
+    fn tag(val: Self) -> i64;
+}
+
+/// One level above `Base`.
+pub trait Mid: Base {
+    fn mid(val: Self) -> i64;
+}
+
+/// Two levels above `Base` (a multi-level chain: Deep -> Mid -> Base).
+pub trait Deep: Mid {
+    fn deep(val: Self) -> i64;
+}
+
+/// Left diamond branch over `Base`.
+pub trait Left: Base {
+    fn left(val: Self) -> i64;
+}
+
+/// Right diamond branch over `Base`.
+pub trait Right: Base {
+    fn right(val: Self) -> i64;
+}
+
+/// Diamond apex: inherits `Base` through two distinct branches.
+pub trait Diamond: Left + Right {
+    fn diamond(val: Self) -> i64;
+}
+
+/// A trait with one required method and one default-bodied method, so an impl
+/// may omit `provided` (default) while `req` stays required.
+pub trait Defaulty {
+    fn req(val: Self) -> i64;
+    fn provided(val: Self) -> i64 {
+        7
+    }
+}
+
+/// A marker trait (no methods).
+pub trait Marker {
+}

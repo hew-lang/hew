@@ -1,0 +1,16 @@
+//! Re-exporting sub-trait module.
+//!
+//! Re-imports `hew::reexbase::{ Base }` and declares `Sub: Base`. The supertrait
+//! edge `Base` is spelled bare in this module's source, but it must resolve to
+//! `reexbase.Base` (reached through THIS module's own import) — never the
+//! same-named `Base` a final importer may also bring into scope. An
+//! `impl Sub for T` in a final importer that provides the inherited `base`
+//! inline must have that `base` checked against `reexbase.Base` (`-> i64`).
+
+import hew::reexbase::{Base};
+
+/// Sub-trait of the re-imported `Base`. The super edge must follow the
+/// re-export chain back to `reexbase.Base`.
+pub trait Sub: Base {
+    fn tag(val: Self) -> i64;
+}

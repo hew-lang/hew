@@ -1,0 +1,34 @@
+// Reject fixture: a wrong-signature inline super method inherited through BOTH
+// diamond branches. `hew::supertraits` declares `Diamond: Left + Right`, both
+// `Left: Base` and `Right: Base`. The impl provides `base` (reachable via two
+// distinct branches) with the WRONG signature (`-> bool` where `Base::base ->
+// i64`). The declaring-trait walk dedups the two branch paths and rejects the
+// mismatch against `supertraits.Base` — the diamond does not double-count or
+// mask the signature defect.
+import hew::supertraits::{ Diamond };
+
+type DM {
+    id: i64;
+}
+
+impl Diamond for DM {
+    fn base(w: DM) -> bool {
+        true
+    }
+
+    fn left(w: DM) -> i64 {
+        w.id + 10
+    }
+
+    fn right(w: DM) -> i64 {
+        w.id + 20
+    }
+
+    fn diamond(w: DM) -> i64 {
+        w.id + 30
+    }
+}
+
+fn main() -> i64 {
+    0
+}

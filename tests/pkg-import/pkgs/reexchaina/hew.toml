@@ -1,0 +1,9 @@
+[package]
+name = "hew::reexchaina"
+version = "0.1.0"
+description = "Apex of a two-hop re-export chain: re-imports hew::reexmid's Mid (itself re-imported from reexbase as Base) and declares `Top: Mid`. A final importer of Top provides base/mid/top inline; each inherited method's signature is checked against its original owner across two re-export hops."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::reexmid" = { version = "0.1.0", path = "../reexmid" }

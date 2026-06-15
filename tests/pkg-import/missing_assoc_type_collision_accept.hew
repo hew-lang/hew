@@ -1,0 +1,13 @@
+// ACCEPT control: `hew::assocreqimplok` impls `assocreq.Source` for `W` WITH the
+// required `type Item = i64`, under the same same-name `Source` collision the
+// reject fixture exercises (`hew::assocemptyuse` imports the empty `Source`). A
+// complete impl must still be accepted — the owner-qualified check must not
+// over-reject a correct impl just because an empty same-named `Source` is in
+// the graph.
+import hew::assocreqimplok;
+
+import hew::assocemptyuse;
+
+fn main() -> i64 {
+    0
+}

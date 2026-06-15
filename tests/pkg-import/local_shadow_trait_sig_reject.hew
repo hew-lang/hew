@@ -1,0 +1,46 @@
+// Local-shadow trait-signature REJECT oracle (side-specific carve-out).
+//
+// `hew::closableerr` exports the trait `Closable` whose `close` returns
+// `Result<(), CloseError>` (the error type spelled bare inside the defining
+// module, so the trait requires `closableerr.CloseError`). This importer opts
+// only the trait into scope (`::{ Closable }`) and defines its OWN LOCAL
+// `CloseError` — a DISTINCT nominal type that merely shares the bare name.
+//
+// The `impl Closable for MonitorRef` returns the LOCAL `CloseError` (bare).
+// The signature comparison must REJECT this with `TraitImplSignatureMismatch`:
+// the trait side's bare `CloseError` qualifies to the trait owner
+// (`closableerr.CloseError`), while the impl side's bare `CloseError` shadows a
+// local type and keeps its local identity. They are different types, so the
+// wrong-module impl must NOT be accepted.
+//
+// This is the fail-open the side-specific carve-out closes: a SHARED
+// local-shadow filter would also leave the TRAIT side's bare `CloseError` bare
+// when the importer has a local `CloseError`, conflating the two and falsely
+// accepting the impl. The carve-out only preserves local shadows on the
+// IMPL/actual side.
+//
+// Harness verb: hew check (negative — see run.sh).
+import hew::closableerr::{ Closable };
+
+pub type MonitorRef {
+    id: i64;
+}
+
+// Local type shadowing the trait owner's sibling error type by bare name.
+pub type CloseError {
+    detail: i64;
+}
+
+impl Closable for MonitorRef {
+    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
+        Ok(())
+    }
+}
+
+fn main() {
+    let m = MonitorRef { id: 1 };
+    match m.close() {
+        Ok(_) => println("ok"),
+        Err(_) => println("err"),
+    }
+}

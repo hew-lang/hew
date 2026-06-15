@@ -1,0 +1,12 @@
+//! Pub same-bare-name type fixture (narrow layout). Exports a public `Gadget`
+//! record whose sole field is an `i8`. Its sibling `hew::widgetpub64` exports a
+//! public `Gadget` of the same bare name carrying an `i64` — a divergent
+//! layout. Used by the published-bare-name ambiguity oracle: an importer that
+//! opts `Gadget` in from THIS module (`::{ Gadget }`) and plain-imports the
+//! sibling must resolve a bare `Gadget` to THIS module's identity (the
+//! published owner), not error ambiguous and not bind the sibling's layout.
+
+/// Narrow `Gadget`: a single `i8` field.
+pub type Gadget {
+    v: i8;
+}

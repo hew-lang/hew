@@ -1,0 +1,9 @@
+[package]
+name = "hew::reexmid"
+version = "0.1.0"
+description = "Intermediate of a re-export chain: re-imports hew::reexbase's Base and declares `Mid: Base` (mid -> i64). A downstream package re-imports this Mid; the super edge from the apex must follow the chain through reexmid.Mid down to reexbase.Base."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::reexbase" = { version = "0.1.0", path = "../reexbase" }

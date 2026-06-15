@@ -1,0 +1,12 @@
+// REJECT (reversed import order): identical to
+// missing_assoc_type_collision_reject but with the empty-`Source` importer
+// listed FIRST. A bare last-write-wins `trait_defs["Source"]` would make the
+// verdict order-dependent; the owner-qualified required-associated-type check
+// is stable, so this must reject on every run regardless of registration order.
+import hew::assocemptyuse;
+
+import hew::assocreqimplbad;
+
+fn main() -> i64 {
+    0
+}

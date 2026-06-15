@@ -1,0 +1,25 @@
+// Reject fixture: an ALIASED sub-trait (`import hew::supertraits::{ Sub as S }`)
+// provides the inherited `base` inline with the WRONG signature (`-> bool` where
+// `supertraits.Base::base -> i64`). The alias must not let the inline super
+// method bypass the signature comparison: `S` resolves to `supertraits.Sub`,
+// whose owner-qualified super edge anchors `base` at `supertraits.Base`. Must
+// REJECT with `TraitImplSignatureMismatch`.
+import hew::supertraits::{ Sub as S };
+
+type W {
+    id: i64;
+}
+
+impl S for W {
+    fn base(w: W) -> bool {
+        true
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

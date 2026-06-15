@@ -1,0 +1,37 @@
+// Cross-module same-bare-name trait-signature REJECT oracle (negative case).
+//
+// `hew::closableerr` exports the trait `Closable` whose `close` returns
+// `Result<(), CloseError>` (the error type spelled bare inside the defining
+// module, so the trait records `closableerr.CloseError`'s identity). A second
+// module `hew::closableerr2` exports a DISTINCT type that merely shares the
+// bare name `CloseError`.
+//
+// This `impl Closable for MonitorRef` returns the wrong module's type
+// (`closableerr2.CloseError`). It must be REJECTED with
+// `TraitImplSignatureMismatch` at the type boundary, NOT silently accepted by
+// an over-strip that shortens both qualifiers to bare `CloseError` and compares
+// equal, NOT deferred to a downstream `E_CODEGEN_FRONT` / D10 fall-through.
+//
+// Harness verb: hew check (negative — see run.sh). Asserts the mismatch fires
+// at type-check time and names both spellings, and that the positive
+// `qualified_trait_sig` oracle (same-module spelling) still passes.
+import hew::closableerr::{ Closable };
+import hew::closableerr2;
+
+pub type MonitorRef {
+    id: i64;
+}
+
+impl Closable for MonitorRef {
+    fn close(monitor_ref: MonitorRef) -> Result<(), closableerr2.CloseError> {
+        Ok(())
+    }
+}
+
+fn main() {
+    let m = MonitorRef { id: 1 };
+    match m.close() {
+        Ok(_) => println("ok"),
+        Err(_) => println("err"),
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "hew::assocreqimplbad"
+version = "0.1.0"
+description = "Opts in hew::assocreq's `Source` and impls it for `W` while OMITTING the required `type Item`. Must be rejected regardless of whether hew::assocempty's same-named `Source` is also imported."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::assocreq" = { version = "0.1.0", path = "../assocreq" }

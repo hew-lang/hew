@@ -1,0 +1,16 @@
+// Negative oracle: two opt-ins of the same bare name from divergent-layout
+// modules is a GENUINE ambiguity that must fail closed at the type boundary.
+//
+// Both `widgetpub8` and `widgetpub64` publish `Gadget` bare (each via
+// `::{ Gadget }`), so a bare `Gadget` is ambiguous between two distinct
+// nominal identities. The checker must emit `ambiguous type` naming both
+// published candidates rather than silently first-winning a layout.
+//
+// Harness verb: hew check (negative — see run.sh).
+import hew::widgetpub8::{ Gadget };
+import hew::widgetpub64::{ Gadget };
+
+fn main() {
+    let a = Gadget { v: 7 };
+    println(f"a={a.v}");
+}

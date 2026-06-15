@@ -1,0 +1,6 @@
+[package]
+name = "hew::assocempty"
+version = "0.1.0"
+description = "Declares a same-named `Source` trait with NO associated types. Imported alongside hew::assocreq to collide on the bare `Source` name in trait_defs."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

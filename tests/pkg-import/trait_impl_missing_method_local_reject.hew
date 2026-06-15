@@ -1,0 +1,37 @@
+// Reject fixture: a LOCAL multi-method trait impl that OMITS a required method,
+// while imported same-named traits are also in scope. The program declares its
+// OWN two-method `Proc` (`tick`, `close`) and ALSO brings two imported `Proc`
+// traits into scope (`hew::multitrait` aliased, `hew::multitraitb` plain), so the
+// bare `Proc::close` key is polluted by the imports. The local `Proc` shadows
+// both. The impl provides only `tick`, omitting the required `close`, so it must
+// be REJECTED against the LOCAL trait's required method set — never accepted by
+// reading an imported neighbour's method set.
+import hew::multitrait::{ Proc as P, Tally as MTally, ProcErr as MErr };
+import hew::multitraitb;
+
+pub type Tally {
+    code: i64;
+}
+
+pub type ProcErr {
+    code: i64;
+}
+
+pub trait Proc {
+    fn tick(val: Self) -> i64;
+    fn close(val: Self) -> Result<Tally, ProcErr>;
+}
+
+type W {
+    id: i64;
+}
+
+impl Proc for W {
+    fn tick(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

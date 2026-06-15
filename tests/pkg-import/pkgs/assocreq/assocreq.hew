@@ -1,0 +1,13 @@
+//! Required-associated-type origin module.
+//!
+//! Declares `Source` with a required associated type `Item`. A different
+//! same-named `Source` (no associated types) lives in `hew::assocempty`. An
+//! `impl Source for T` that opts in THIS `Source` must define `type Item`, and
+//! the required-associated-type check must key off this trait's OWNER-qualified
+//! identity — never the global bare `trait_defs["Source"]`, which another module
+//! importing the empty `Source` can overwrite (last-write-wins, order-dependent).
+
+/// Source with a required associated type. An impl must define `Item`.
+pub trait Source {
+    type Item;
+}

@@ -1,0 +1,11 @@
+//! Same-name supertrait collision fixture (module B).
+//!
+//! Declares a trait literally named `Base` whose `base` returns `bool` —
+//! DIVERGENT from `hew::supertraits::Base` (whose `base` returns `i64`). When an
+//! importer brings `hew::supertraits::Sub` into scope and ALSO this `Base`, the
+//! bare name `Base` is ambiguous. An inline `base` provided in an
+//! `impl Sub for T` must be checked against `Sub`'s owner-qualified supertrait
+//! (`supertraits.Base`, returning `i64`), never this same-named `bool` `Base`.
+pub trait Base {
+    fn base(val: Self) -> bool;
+}

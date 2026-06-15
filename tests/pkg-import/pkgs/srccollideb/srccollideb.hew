@@ -1,0 +1,11 @@
+//! Same-name trait collision fixture (module B). Exports a DISTINCT trait that
+//! shares the bare name `Source` with `hew::srccollidea` but whose `close`
+//! returns a plain `i64` instead of a `Result`. An impl that aliases
+//! `srccollidea::Source` but supplies THIS module's `i64` signature must be
+//! REJECTED: the bare `Source::close` key collides, so trait-conformance must
+//! key off the aliased trait's source owner, never the same-named neighbour.
+
+/// A closable source whose `close` returns a bare status code.
+pub trait Source {
+    fn close(val: Self) -> i64;
+}

@@ -2160,6 +2160,22 @@ pub struct Checker {
     pub(super) trait_defs: HashMap<String, TraitInfo>,
     /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
     pub(super) trait_super: HashMap<String, Vec<String>>,
+    /// A declaring module's trait import bindings:
+    /// `(declaring_module_short, name_as_spelled)` → owner-qualified SOURCE
+    /// identity (`{owner_short}.{Source}`), always a registered `trait_defs` key.
+    ///
+    /// This is what resolves a RE-EXPORTED supertrait edge. A supertrait spelled
+    /// `Base` inside a module that itself imported `Base` (`import other::{ Base }`)
+    /// names `other`'s trait, not the same-named `Base` a downstream importer may
+    /// also have in scope. The same-module qualified key (`{declaring}.Base`) only
+    /// covers a supertrait declared in the SAME module; when the super was
+    /// re-imported there is no `{declaring}.Base` def, and resolving the bare name
+    /// in the final importer's namespace binds the wrong owner (the H11 fail-open).
+    /// For `reexsub` (`import reexbase::{ Base }`) this records
+    /// `("reexsub", "Base") → "reexbase.Base"`; for an aliased re-import
+    /// (`import reexbase::{ Base as B }`) it records `("reexsub", "B") → "reexbase.Base"`,
+    /// so the alias renames the binding without losing the source identity.
+    pub(super) trait_import_bindings: HashMap<(String, String), String>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     pub(super) trait_impls_set: HashSet<(String, String)>,
     /// Trait impls keyed by canonical receiver kind for primitives and
@@ -2240,7 +2256,44 @@ pub struct Checker {
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
+    ///
+    /// Single-valued: with two opt-ins of the same bare name it retains only the
+    /// last writer. For deciding *whether* a bare reference is ambiguous, use
+    /// `published_bare_type_owners` instead, which keeps the full set.
     pub(super) unqualified_to_module: HashMap<(Option<String>, String), String>,
+    /// Maps (`importer_module`, `bare_type_binding`) to the full set of SOURCE
+    /// identities (`owner.OriginalName`) published under that bare binding into
+    /// the importer's scope (via a named / glob / aliased opt-in, or a prelude
+    /// bootstrap surface).
+    ///
+    /// The value is the SOURCE identity, not merely the owner module, so an
+    /// aliased import (`import m::{ T as U }`) records `U -> { "m.T" }`: a use of
+    /// bare `U` resolves to the type `m` exports under `T`, never a phantom
+    /// `m.U`.
+    ///
+    /// Drives the use-time ambiguity decision: a bare reference is ambiguous only
+    /// when more than one source identity is published under the binding — a
+    /// plain `import` that exported but did not publish the name does not
+    /// contribute, so it cannot poison an explicit named import of the same bare
+    /// name from another module.
+    pub(super) published_bare_type_owners:
+        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
+    /// Maps (`importer_module`, `trait_binding`) to the full set of SOURCE
+    /// trait identities (`owner.OriginalTrait`) published under that binding into
+    /// the importer's scope. The trait-namespace analogue of
+    /// `published_bare_type_owners`.
+    ///
+    /// An aliased trait import (`import m::{ Trait as T }`) records
+    /// `T -> { "m.Trait" }`. The trait-conformance check (`check_impl_method_
+    /// against_trait`) reads this to recover the SOURCE identity for an aliased
+    /// trait so it can (a) look up the trait's method signatures under the
+    /// source/qualified key (`m.Trait::method`) instead of missing on the alias
+    /// key (`T::method`) and accepting the impl unchecked, and (b) qualify bare
+    /// type names written in the trait declaration against the SOURCE owner
+    /// (`m`), not the alias. A single source identity is the well-formed case;
+    /// zero or an ambiguous set falls back to the alias-keyed behaviour.
+    pub(super) published_bare_trait_owners:
+        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
@@ -2588,6 +2641,7 @@ impl Checker {
             type_aliases: HashMap::new(),
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
+            trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
@@ -2607,6 +2661,8 @@ impl Checker {
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
             unqualified_to_module: HashMap::new(),
+            published_bare_type_owners: HashMap::new(),
+            published_bare_trait_owners: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,

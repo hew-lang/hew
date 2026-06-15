@@ -1,0 +1,12 @@
+//! Re-exported-supertrait origin module.
+//!
+//! Declares the trait `Base` whose `base` returns `i64`. A downstream package
+//! (`hew::reexsub`) re-imports this `Base` and declares `Sub: Base`. The
+//! supertrait edge written in `reexsub` spells `Base` bare, but it names THIS
+//! module's `Base` (`reexbase.Base`), reached through `reexsub`'s own import —
+//! never the same-named `Base` a final importer may also have in scope.
+
+/// Origin of the re-exported super chain. `base` returns `i64`.
+pub trait Base {
+    fn base(val: Self) -> i64;
+}

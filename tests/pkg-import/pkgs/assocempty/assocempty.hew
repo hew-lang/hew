@@ -1,0 +1,12 @@
+//! Empty same-named `Source` module.
+//!
+//! Declares a `Source` trait with NO associated types. It shares the bare name
+//! `Source` with `hew::assocreq`'s trait (which DOES require `type Item`). When
+//! both are imported, the global bare `trait_defs["Source"]` is last-write-wins;
+//! the required-associated-type enforcement must not read that bare entry, or an
+//! impl of `assocreq.Source` that omits `Item` is accepted whenever this empty
+//! `Source` happens to win the write.
+
+/// A same-named `Source` with no associated types.
+pub trait Source {
+}

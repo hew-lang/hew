@@ -741,6 +741,11 @@ fn fmt_import_alias_roundtrip() {
 }
 
 #[test]
+fn fmt_import_whole_module_alias_roundtrip() {
+    exact_roundtrip("import std::net as n;\n");
+}
+
+#[test]
 fn fmt_import_file() {
     let src = r#"import "helpers.hew";"#;
     let out = roundtrip(src);

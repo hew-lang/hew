@@ -1,0 +1,21 @@
+//! Impl that DEFINES the required associated type (accept control).
+//!
+//! Opts in `hew::assocreq::{ Source }` and impls it for `W` with the required
+//! `type Item = i64`. Under the same same-name `Source` collision that the
+//! reject fixture exercises, this complete impl must still be ACCEPTED — the
+//! owner-qualified required-associated-type check must not over-reject a correct
+//! impl just because an empty same-named `Source` is in the graph.
+
+import hew::assocreq::{Source};
+
+pub type W {
+    id: i64;
+}
+
+impl Source for W {
+    type Item = i64;
+}
+
+pub fn make() -> W {
+    W { id: 1 }
+}

@@ -2471,6 +2471,52 @@ impl Checker {
                 actual
             }
 
+            // Generic sibling of the arm above: a bare GENERIC construction
+            // (`Holder { … }`) constrained by a module-qualified generic expected
+            // type (`qualshapes.Holder<qualshapes.Box>`). The bare outer name is
+            // legitimate here because the annotation pins the identity, so route
+            // the construction through the QUALIFIED expected name (which carries
+            // a `.` and so bypasses the bare-scope gate in `check_struct_init`)
+            // and let the existing generic-coercion handling below resolve the
+            // field type args from `expected`. Only fires for a generic
+            // struct/record whose short name matches the bare construction name.
+            (
+                Expr::StructInit {
+                    name,
+                    fields,
+                    type_args,
+                    base,
+                },
+                Ty::Named {
+                    name: expected_name,
+                    args: expected_args,
+                    ..
+                },
+            ) if name != expected_name
+                && !expected_args.is_empty()
+                && !name.contains('.')
+                && !name.contains("::")
+                && expected_name
+                    .rsplit_once('.')
+                    .is_some_and(|(_, short)| short == name.as_str())
+                && self.lookup_type_def(expected_name).is_some_and(|td| {
+                    !td.type_params.is_empty()
+                        && matches!(td.kind, TypeDefKind::Struct | TypeDefKind::Record)
+                }) =>
+            {
+                // Re-dispatch against the same expected type with the qualified
+                // construction name, so the generic-struct coercion arm below
+                // pins the field type args without the bare-name scope gate
+                // rejecting the legitimate annotated construction.
+                let qualified_init = Expr::StructInit {
+                    name: expected_name.clone(),
+                    fields: fields.clone(),
+                    type_args: type_args.clone(),
+                    base: base.clone(),
+                };
+                self.check_against(&qualified_init, span, expected)
+            }
+
             // Struct init coercion: propagate expected type args into field checking
             (
                 Expr::StructInit {
@@ -5278,6 +5324,37 @@ impl Checker {
                 }
             }
         }
+        // Fail closed under qualified-by-default before binding a bare record
+        // constructor: a bare name published by more than one module is
+        // ambiguous, and one exported but published by none is not in scope.
+        // Without this gate the construction falls through to `lookup_type_def`
+        // and silently binds a last-write-wins bare def, then trips a confusing
+        // downstream MIR field-order failure. The `::` enum-variant and
+        // explicitly module-qualified spellings already routed above are left
+        // untouched (they carry a `.` or `::` and never match a bare name).
+        if !name.contains('.')
+            && !name.contains("::")
+            && self.report_bare_type_scope_error(name, span)
+        {
+            return Ty::Error;
+        }
+        // A bare construction (`Gadget { … }`) of a type published by exactly
+        // one imported module binds to that owner's QUALIFIED identity, so the
+        // constructed value carries `owner.Gadget` rather than the bare
+        // last-write-wins key. This keeps two modules' same-bare-name records
+        // from colliding in the downstream MIR record-layout / field-order
+        // registry (the same identity discipline `samename_type_layout` proves
+        // for explicitly qualified constructions).
+        let qualified_owned = self.published_bare_type_qualified(name);
+        if let Some(qualified) = qualified_owned.as_deref() {
+            if let Some((module, _)) = qualified.split_once('.') {
+                self.used_modules.borrow_mut().insert(ImportKey::new(
+                    self.current_module.clone(),
+                    module.to_string(),
+                ));
+            }
+        }
+        let name = qualified_owned.as_deref().unwrap_or(name);
         if let Some(td) = self.lookup_type_def(name) {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),

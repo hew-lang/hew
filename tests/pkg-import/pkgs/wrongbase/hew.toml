@@ -1,0 +1,6 @@
+[package]
+name = "hew::wrongbase"
+version = "0.1.0"
+description = "Same-name supertrait collision source for the re-export case: declares its own trait `Base` whose `base` returns `bool`, colliding on the bare trait name with hew::reexbase's `Base` (whose `base` returns `i64`). A final importer that brings reexsub.Sub and this Base into scope must check an inline `base` against reexbase.Base (i64), never this bool Base."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

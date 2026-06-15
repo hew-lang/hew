@@ -712,6 +712,19 @@ impl Ty {
         }
     }
 
+    /// Whether two type-name spellings refer to the same nominal type for the
+    /// purposes of unification and constructor/variant resolution.
+    ///
+    /// Two distinct module-qualified names never match — module identity is
+    /// authoritative (`a.Reply` ≠ `b.Reply`). A bare name matches a qualified
+    /// name with the same final segment only when at most one side is
+    /// qualified: this is the same-module bare↔qualified equivalence (a type's
+    /// own bare spelling and its `{module}.{name}` alias resolve to one def, and
+    /// builtin handles such as `HashSet`/`Sender` match their qualified
+    /// stdlib-carrier spelling). Cross-module bare references that could have
+    /// matched the *wrong* module's qualified type are rejected upstream at
+    /// resolution under qualified-by-default, so a bare name reaching this
+    /// comparison has already been validated to a single owning module.
     #[must_use]
     pub fn names_match_qualified(a: &str, b: &str) -> bool {
         if a == b {
@@ -719,6 +732,7 @@ impl Ty {
         }
         let a_qualified = a.contains('.');
         let b_qualified = b.contains('.');
+        // Distinct module-qualified names are distinct nominal types.
         if a_qualified && b_qualified {
             return false;
         }
@@ -2024,6 +2038,30 @@ mod tests {
     #[test]
     fn test_display_empty_tuple() {
         assert_eq!(format!("{}", Ty::Tuple(vec![])), "()");
+    }
+
+    #[test]
+    fn names_match_qualified_distinct_modules_never_match() {
+        // Two distinct module-qualified names are distinct nominal types —
+        // the cross-module identity guarantee under qualified-by-default.
+        assert!(!Ty::names_match_qualified("mod_a.Reply", "mod_b.Reply"));
+        assert!(!Ty::names_match_qualified("std.fs.Conn", "net.Conn"));
+    }
+
+    #[test]
+    fn names_match_qualified_same_module_bare_and_qualified_match() {
+        // A type's own bare spelling matches its `{module}.{name}` alias (the
+        // same def), and a builtin handle matches its qualified carrier name.
+        assert!(Ty::names_match_qualified("Reply", "mod_a.Reply"));
+        assert!(Ty::names_match_qualified("mod_a.Reply", "Reply"));
+        assert!(Ty::names_match_qualified("HashSet", "collections.HashSet"));
+        assert!(Ty::names_match_qualified("Reply", "Reply"));
+    }
+
+    #[test]
+    fn names_match_qualified_different_bare_suffix_never_matches() {
+        assert!(!Ty::names_match_qualified("Reply", "Request"));
+        assert!(!Ty::names_match_qualified("mod_a.Reply", "mod_a.Request"));
     }
 
     #[test]

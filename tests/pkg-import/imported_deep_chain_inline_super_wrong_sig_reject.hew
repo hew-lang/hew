@@ -1,0 +1,30 @@
+// Reject fixture: a wrong-signature inline super method at an INTERMEDIATE level
+// of a multi-level chain. `hew::supertraits` declares `Deep: Mid`, `Mid: Base`.
+// The impl provides `mid` (declared on `Mid`, an intermediate supertrait of
+// `Deep`) with the WRONG signature (`-> bool` where `Mid::mid -> i64`). The
+// declaring-trait walk must reach `Mid` through the owner-qualified chain and
+// reject the mismatch — proving the signature check covers EVERY level, not just
+// the direct super.
+import hew::supertraits::{ Deep };
+
+type DW {
+    id: i64;
+}
+
+impl Deep for DW {
+    fn base(w: DW) -> i64 {
+        w.id
+    }
+
+    fn mid(w: DW) -> bool {
+        true
+    }
+
+    fn deep(w: DW) -> i64 {
+        w.id + 2
+    }
+}
+
+fn main() -> i64 {
+    0
+}

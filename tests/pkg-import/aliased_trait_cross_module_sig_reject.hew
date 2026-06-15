@@ -1,0 +1,41 @@
+// Aliased-trait cross-module trait-signature REJECT oracle (negative case).
+//
+// `hew::closableerr` exports the trait `Closable` whose `close` returns
+// `Result<(), CloseError>` (the error type spelled bare inside the defining
+// module, so the trait requires `closableerr.CloseError`). This importer brings
+// the trait into scope under an ALIAS (`Closable as C`), then impls `close`
+// returning a DISTINCT type that merely shares the bare name from a second
+// module (`closableerr2.CloseError`).
+//
+// The alias must NOT let the impl bypass the signature comparison. Resolving the
+// aliased trait `C` to its SOURCE identity (`closableerr.Closable`) is required
+// for BOTH the trait-method-signature lookup (the signatures live under
+// `closableerr.Closable::close`, never the alias `C::close`) and the trait-owner
+// qualification (the trait's bare `CloseError` qualifies to `closableerr`). With
+// either missing, `check_impl_method_against_trait` returns early on a missed
+// alias-keyed lookup and the wrong-module impl is silently accepted (fail-open).
+//
+// Must be REJECTED with `TraitImplSignatureMismatch` at the type boundary, NOT
+// deferred to a downstream `E_CODEGEN_FRONT` / D10 fall-through.
+//
+// Harness verb: hew check (negative — see run.sh).
+import hew::closableerr::{ Closable as C };
+import hew::closableerr2;
+
+pub type MonitorRef {
+    id: i64;
+}
+
+impl C for MonitorRef {
+    fn close(monitor_ref: MonitorRef) -> Result<(), closableerr2.CloseError> {
+        Ok(())
+    }
+}
+
+fn main() {
+    let m = MonitorRef { id: 1 };
+    match m.close() {
+        Ok(_) => println("ok"),
+        Err(_) => println("err"),
+    }
+}

@@ -1,0 +1,33 @@
+// Reject fixture: a LOCAL `impl Sub for W` (where `trait Sub: Super`) provides
+// the inherited supertrait method `base` inline with the WRONG signature
+// (`-> bool` where `Super::base -> i64`). The same fail-open the imported path
+// closes also applies to local traits: the per-method check must resolve the
+// declaring trait through the (bare, local) super chain — not stop at the
+// sub-trait's direct methods — and reject the mismatch with
+// `TraitImplSignatureMismatch`. Guards the local declaring-trait fallback that
+// keys on the supertrait's source name, not the sub-trait written in the impl.
+trait Super {
+    fn base(val: Self) -> i64;
+}
+
+trait Sub: Super {
+    fn tag(val: Self) -> i64;
+}
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> bool {
+        true
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

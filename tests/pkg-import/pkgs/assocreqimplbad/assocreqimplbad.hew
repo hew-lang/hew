@@ -1,0 +1,21 @@
+//! Impl that OMITS the required associated type.
+//!
+//! Opts in `hew::assocreq::{ Source }` (which requires `type Item`) and impls it
+//! for `W` without defining `Item`. This must be rejected with "must define
+//! associated type `Item`". The verdict must be stable even when a final
+//! importer also brings `hew::assocempty`'s same-named empty `Source` into the
+//! module graph — the required-associated-type check keys off the impl's
+//! OWNER-qualified trait identity, not the poison-prone bare `trait_defs` entry.
+
+import hew::assocreq::{Source};
+
+pub type W {
+    id: i64;
+}
+
+impl Source for W {
+}
+
+pub fn make() -> W {
+    W { id: 1 }
+}

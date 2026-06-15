@@ -1,0 +1,6 @@
+[package]
+name = "hew::widgetpub64"
+version = "0.1.0"
+description = "Pub same-bare-name type fixture (wide i64 layout) for the published-bare-name ambiguity oracle"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

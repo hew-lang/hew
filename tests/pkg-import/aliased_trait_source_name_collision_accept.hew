@@ -1,0 +1,38 @@
+// Positive oracle: ALIASED trait + same-name trait collision, CORRECT signature.
+//
+// Companion to `aliased_trait_source_name_collision_reject`. Two imported
+// packages each export a same-named trait `Source`:
+//   - `hew::srccollidea::Source` requires `close(Self) -> Result<Payload, ErrA>`
+//   - `hew::srccollideb::Source` requires `close(Self) -> i64`
+//
+// The importer aliases module A's trait (`Source as A`) and its payload/error
+// types, then plain-imports module B (whose same-named `Source` also lands in the
+// registration set). The impl supplies A's CORRECT `Result<Payload, ErrA>`
+// signature. Trait-conformance must resolve `A` to its source owner
+// (`srccollidea.Source`) and compare against the owner-qualified signature key,
+// which is collision-free — so the correct impl is ACCEPTED even while module B's
+// `Source::close` (the `i64` shape) is also registered. Run end-to-end so the
+// aliased impl is exercised through codegen + receiver dispatch.
+//
+// Harness verb: hew run
+// Expected: conformance passes, `close` returns Ok, the match prints `ok`.
+import hew::srccollidea::{ Source as A, Payload, ErrA };
+import hew::srccollideb;
+
+type W {
+    id: i64;
+}
+
+impl A for W {
+    fn close(w: W) -> Result<Payload, ErrA> {
+        Ok(Payload { code: w.id })
+    }
+}
+
+fn main() {
+    let w = W { id: 7 };
+    match w.close() {
+        Ok(p) => println(f"ok {p.code}"),
+        Err(e) => println(f"err {e.code}"),
+    }
+}

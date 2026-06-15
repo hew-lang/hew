@@ -1,0 +1,12 @@
+//! Imports the empty same-named `Source` (the collision poisoner).
+//!
+//! Brings `hew::assocempty::{ Source }` (no associated types) into the graph.
+//! When this module and `hew::assocreqimplbad` are both imported, the global
+//! bare `trait_defs["Source"]` is last-write-wins between the two `Source`
+//! traits; this module exists to force that collision in the oracle.
+
+import hew::assocempty::{Source};
+
+pub fn touch() -> i64 {
+    0
+}

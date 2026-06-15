@@ -1,0 +1,29 @@
+// Accept fixture: a LOCAL trait shadows an imported same-name trait, and a
+// correct impl of the LOCAL trait must ACCEPT and run end-to-end. The program
+// declares its own `Source` (`close` returns `i64`) while `hew::srccollidea`
+// (aliased as `A`, whose `Source::close` returns `Result<Payload, ErrA>`) and
+// `hew::srccollideb` are also in scope, polluting the bare `Source::close` key.
+// Conformance must resolve `Source` to the LOCAL trait — NOT the imported sig
+// leaked into the bare key — so the local `i64` impl is valid. Run e2e so the
+// accepted impl is exercised through codegen + receiver dispatch.
+import hew::srccollidea::{ Source as A };
+import hew::srccollideb;
+
+pub trait Source {
+    fn close(val: Self) -> i64;
+}
+
+type W {
+    id: i64;
+}
+
+impl Source for W {
+    fn close(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() {
+    let w = W { id: 13 };
+    println(f"local {w.close()}");
+}

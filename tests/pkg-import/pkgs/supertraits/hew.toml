@@ -1,0 +1,6 @@
+[package]
+name = "hew::supertraits"
+version = "0.1.0"
+description = "Imported-supertrait conformance fixture: a multi-level super chain (Base <- Mid <- Deep), a diamond (Base <- Left/Right <- Diamond), a default-bodied trait, and a marker. Each supertrait edge is owner-qualified so an importer that brings only a sub-trait into scope still resolves the inherited methods against THIS module, not the importer namespace."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

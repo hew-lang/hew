@@ -1,0 +1,15 @@
+// Negative oracle: two plain imports both export `Gadget` but neither publishes
+// it bare, so a bare `Gadget` is not in scope under qualified-by-default and
+// must fail closed at the type boundary (NOT bind a last-write-wins layout).
+//
+// The diagnostic must name both exporting modules and offer the qualifier and
+// opt-in forms.
+//
+// Harness verb: hew check (negative — see run.sh).
+import hew::widgetpub8;
+import hew::widgetpub64;
+
+fn main() {
+    let a = Gadget { v: 7 };
+    println(f"a={a.v}");
+}

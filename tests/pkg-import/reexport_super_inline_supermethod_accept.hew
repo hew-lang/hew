@@ -1,0 +1,28 @@
+// Accept fixture: a final importer brings ONLY `Sub` into scope from
+// `hew::reexsub` (where `trait Sub: Base`, and `Base` is itself re-imported by
+// `reexsub` from `hew::reexbase`). The importer provides the inherited
+// supertrait method `base` inline alongside `Sub`'s own `tag`. The supertrait
+// edge must follow the re-export chain to `reexbase.Base`, so `base`'s methods
+// are folded into the KNOWN set through `Base`'s OWNER — `base` is not flagged
+// as extra even though neither `Base` nor `reexbase` was imported here — and the
+// inline `base`'s signature is checked against `reexbase.Base` (`-> i64`). Run
+// e2e so both the inherited `base` and the sub's own `tag` are dispatched.
+import hew::reexsub::{Sub};
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+    fn tag(w: W) -> i64 {
+        w.id + 100
+    }
+}
+
+fn main() {
+    let w = W { id: 5 };
+    println(f"tag {w.tag()} base {w.base()}");
+}

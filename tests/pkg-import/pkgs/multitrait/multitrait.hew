@@ -1,0 +1,24 @@
+//! Multi-method trait collision fixture (module A). Exports a TWO-method trait
+//! `Proc` whose `close` returns `Result<Tally, ProcErr>` and whose `tick`
+//! returns `i64`. A SECOND module (`hew::multitraitb`) exports a DISTINCT trait
+//! also named `Proc` whose `close` returns a plain `i64`. The bare trait-method
+//! key `Proc::close` is therefore ambiguous across the two modules; trait
+//! conformance must resolve the trait reference to its owner-qualified identity
+//! and validate BOTH the method set and each signature against THIS module's
+//! `Proc`, never whichever same-named trait registered its bare key first.
+
+/// Error type returned on the failure arm of `Proc::close`.
+pub type ProcErr {
+    code: i64;
+}
+
+/// Success payload returned by `Proc::close`.
+pub type Tally {
+    code: i64;
+}
+
+/// A two-method process trait: `tick` advances and `close` surfaces a Result.
+pub trait Proc {
+    fn tick(val: Self) -> i64;
+    fn close(val: Self) -> Result<Tally, ProcErr>;
+}

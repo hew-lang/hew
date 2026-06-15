@@ -18672,10 +18672,84 @@ impl LowerCtx {
                     })
                 }
             }
-            // Constructor (tuple-payload) patterns inside an or-pattern are
-            // complex and rare in v0.5; fall back to fail-closed.
-            Pattern::Constructor { .. }
-            | Pattern::Struct { .. }
+            // Flat tuple-payload constructor leaf, e.g. `.A(x)` / `A(x)` inside
+            // an or-pattern. The checker already validated the leaf and unified
+            // the binding types across the or alternatives
+            // (`or_pattern_bindings_match`), but intentionally records no
+            // side-table resolution for or-pattern arms, so we resolve the
+            // variant and payload types here using the SAME registries the
+            // unit-variant arm above and the non-or constructor path use:
+            // `machine_ctor_registry` for the qualified variant key,
+            // `enum_variants_by_name` for the declared payload field types, and
+            // `enum_type_params` + the scrutinee's concrete args for generic
+            // substitution. v0.5 scope: only plain-binding / wildcard payload
+            // sub-patterns; anything richer (nested constructor, literal,
+            // struct, tuple, or-pattern in payload position) stays fail-closed.
+            Pattern::Constructor { name, patterns } => {
+                let (type_name, scrutinee_args) = match scrutinee_ty {
+                    ResolvedTy::Named { name: n, args, .. } => (n.clone(), args.as_slice()),
+                    _ => return None,
+                };
+                let short_name = name.rsplit("::").next().unwrap_or(name);
+                let qualified = format!("{type_name}::{short_name}");
+                // Validate the variant is registered; bail fail-closed if not.
+                let (_, idx) = self.machine_ctor_registry.get(&qualified)?.clone();
+                // Resolve the variant's declared payload field types, then
+                // substitute the enum's type params with the scrutinee's
+                // concrete args so a bound payload lands at its concrete type
+                // even for a generic enum instantiation.
+                let variant = self.enum_variants_by_name.get(&type_name)?.get(idx)?;
+                let raw_field_tys = variant.field_tys();
+                // Arity must match exactly — a constructor pattern with a
+                // different field count than the variant declares is a checker
+                // contract violation; fail closed rather than mis-index.
+                if raw_field_tys.len() != patterns.len() {
+                    return None;
+                }
+                let type_params = self
+                    .enum_type_params
+                    .get(&type_name)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut payload_bindings = Vec::with_capacity(patterns.len());
+                for (field_idx, ((sub_pat, _sub_span), raw_ty)) in
+                    patterns.iter().zip(raw_field_tys.iter()).enumerate()
+                {
+                    // v0.5 scope limit: only plain bindings and wildcards. Any
+                    // other sub-pattern shape (nested constructor, literal,
+                    // struct, tuple, or-pattern) is not yet lowered inside an
+                    // or-pattern leaf — fail closed, never half-build.
+                    match sub_pat {
+                        Pattern::Wildcard => {}
+                        Pattern::Identifier(binding_name)
+                            if !binding_name.contains("::")
+                                && !binding_name.chars().next().is_some_and(char::is_uppercase) =>
+                        {
+                            let subst_ty =
+                                substitute_type_params(raw_ty, &type_params, scrutinee_args);
+                            payload_bindings.push(hew_types::PayloadBinding {
+                                field_idx,
+                                binding_name: binding_name.clone(),
+                                ty: subst_ty.to_ty(),
+                            });
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(ArmResolution {
+                    pattern_kind: PatternKind::VariantCtor,
+                    variant_match: Some(VariantMatch {
+                        type_name,
+                        variant_name: short_name.to_owned(),
+                    }),
+                    payload_bindings,
+                    payload_variant_patterns: vec![],
+                })
+            }
+            // Struct / tuple / nested-or / regex leaves inside an or-pattern
+            // remain fail-closed: they require deeper destructure lowering the
+            // v0.5 substrate does not yet provide.
+            Pattern::Struct { .. }
             | Pattern::Tuple(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. } => None,

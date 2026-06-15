@@ -1,0 +1,26 @@
+// Acceptance fixture: payload or-patterns with wildcard sub-patterns.
+// `.Click(_) | .Scroll(_)` discards the payload across both variants; the arm
+// body needs no binding. Confirms the wildcard payload slot lowers (no
+// PayloadBinding emitted) alongside the unit-variant arm.
+// Oracle: "active" for the two payload variants, "idle" for the unit.
+enum Event {
+    Click(i64);
+    Scroll(i64);
+    Idle;
+}
+
+fn kind(e: Event) -> string {
+    match e {
+        .Click(_) | .Scroll(_) => "active",
+        .Idle => "idle",
+    }
+}
+
+fn main() {
+    print(kind(Event::Click(1)));
+    print("\n");
+    print(kind(Event::Scroll(2)));
+    print("\n");
+    print(kind(Event::Idle));
+    print("\n");
+}

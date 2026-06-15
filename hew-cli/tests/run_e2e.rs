@@ -574,6 +574,64 @@ fn run_generic_vec_element_owned_element_fails_closed() {
     );
 }
 
+/// #1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type
+/// parameter. `copy_all<T>` drives the generic for-in (the Stage 2 target) and
+/// re-collects each yielded element into a fresh `Vec<T>` via `out.push(x)`.
+/// The synthetic `VecIter<elem>` layout is registered per monomorphisation so
+/// the iterator's record-field access resolves for each concrete element. The
+/// iterate-and-collect round-trip is summed at the concrete call site for a
+/// scalar element (i64 → 60) and a Copy value-record element (Point → 10).
+#[test]
+fn run_generic_vec_for_in_collect_scalar_and_record() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.expected"),
+    )
+    .expect("read for_in_generic_vec_collect.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec<T> for-in collect should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
+/// increments an `i64` accumulator once per yielded element without touching
+/// the element value, isolating the `VecIter` desugar from the element-write
+/// path. The loop runs exactly once per element across three element ABIs —
+/// `i64` (3), `string` (4), and the Copy value-record `Point` (2).
+#[test]
+fn run_generic_vec_for_in_count_across_element_abis() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.expected"),
+    )
+    .expect("read for_in_generic_vec_count.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec<T> for-in count should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 #[test]
 fn var_self_countdown_loop_writes_receiver_back() {
     require_codegen();

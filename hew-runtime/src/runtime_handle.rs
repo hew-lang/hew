@@ -344,7 +344,8 @@ pub extern "C" fn hew_runtime_new() -> *mut HewRuntime {
 /// # Safety
 ///
 /// `handle`, if non-null, must be a valid `*mut HewRuntime` from
-/// [`hew_runtime_new`] that has not been freed.
+/// [`hew_runtime_new`]. The handle is the process-static singleton and is never
+/// freed, so it stays valid to pass after a prior teardown.
 #[no_mangle]
 pub unsafe extern "C" fn hew_runtime_retain(handle: *mut HewRuntime) {
     if handle.is_null() {
@@ -514,7 +515,8 @@ pub unsafe extern "C" fn hew_runtime_shutdown(handle: *mut HewRuntime) {
 /// # Safety
 ///
 /// `handle`, if non-null, must be a valid `*mut HewRuntime` from
-/// [`hew_runtime_new`] that has not been freed.
+/// [`hew_runtime_new`]. The handle is the process-static singleton and is never
+/// freed, so it stays valid to pass after a prior teardown.
 #[no_mangle]
 pub unsafe extern "C" fn hew_runtime_id_of(handle: *mut HewRuntime) -> u64 {
     if handle.is_null() {
@@ -547,7 +549,8 @@ pub unsafe extern "C" fn hew_runtime_id_of(handle: *mut HewRuntime) -> u64 {
 /// # Safety
 ///
 /// - `handle`, if non-null, must be a valid `*mut HewRuntime` from
-///   [`hew_runtime_new`] that has not been freed.
+///   [`hew_runtime_new`]. The handle is the process-static singleton and is
+///   never freed, so it stays valid to pass after a prior teardown.
 /// - `name`, if non-null, must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_registry_lookup_with_runtime(

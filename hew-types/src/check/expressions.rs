@@ -2870,6 +2870,20 @@ impl Checker {
                     actual
                 } else {
                     let actual = self.synthesize(expr, span);
+                    // Function-tail Ok-coercion for a bare call tail (e.g.
+                    // `fn f() -> Result<i64, E> { value() }` where `value(): i64`).
+                    // `tail_ok_armed` is true only at a genuine tail position —
+                    // the recursive operand/argument checks disarm it — so a call
+                    // appearing as an argument or non-tail sub-expression never
+                    // reaches here armed. Probe the same sound two-step as the
+                    // default arm: full-`Result` tail → no wrap; `Ok`-payload tail
+                    // → `Ok(call)`. Both miss → fall through to the normal
+                    // unify-and-diagnose below.
+                    if tail_ok_armed {
+                        if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
+                            return coerced;
+                        }
+                    }
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
                     if self.errors.len() > n {
@@ -2909,6 +2923,18 @@ impl Checker {
                 } else {
                     // Not a unit variant of this type — synthesize and unify.
                     let actual = self.synthesize(expr, span);
+                    // Function-tail Ok-coercion for a bare identifier tail (e.g.
+                    // `fn f(x: i64) -> Result<i64, E> { x }`, including the
+                    // generic `fn g<T>(x: T) -> Result<T, E> { x }`). `tail_ok_armed`
+                    // is true only at a genuine tail — recursive checks disarm it —
+                    // so an identifier used as an argument or non-tail
+                    // sub-expression never reaches here armed. Same two-step probe
+                    // as the default arm.
+                    if tail_ok_armed {
+                        if let Some(coerced) = self.try_tail_ok_coercion(expected, &actual, span) {
+                            return coerced;
+                        }
+                    }
                     let n = self.errors.len();
                     self.expect_type(expected, &actual, span);
                     if self.errors.len() > n {

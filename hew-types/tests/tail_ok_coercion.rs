@@ -215,6 +215,148 @@ fn non_result_fn_tail_is_unaffected() {
 }
 
 #[test]
+fn bare_identifier_tail_typed_as_ok_payload_is_ok_wrapped() {
+    // The most common tail shape: a bare identifier whose type is the Ok
+    // payload. `fn f(x: i64) -> Result<i64, E> { x }` must Ok-wrap `x`. This
+    // tail is an `Expr::Identifier`, handled by the identifier arm of
+    // `check_against` (not the default arm), so it exercises the arm-level
+    // coercion fix.
+    let src = r"
+        enum E { Bad; }
+        fn f(x: i64) -> Result<i64, E> { x }
+    ";
+    let output = typecheck(src);
+    assert!(
+        output.errors.is_empty(),
+        "bare identifier Ok-payload tail should type-check, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.tail_ok_coercions.len(),
+        1,
+        "a bare identifier tail typed as the Ok payload should Ok-wrap"
+    );
+}
+
+#[test]
+fn generic_identifier_tail_is_ok_wrapped() {
+    // The generic form `fn g<T>(x: T) -> Result<T, E> { x }`: the tail
+    // identifier `x` has type `T`, the Ok payload of the declared return, so it
+    // Ok-wraps.
+    let src = r"
+        enum E { Bad; }
+        fn g<T>(x: T) -> Result<T, E> { x }
+    ";
+    let output = typecheck(src);
+    assert!(
+        output.errors.is_empty(),
+        "generic identifier tail should type-check, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.tail_ok_coercions.len(),
+        1,
+        "a generic identifier tail typed as the Ok payload should Ok-wrap"
+    );
+}
+
+#[test]
+fn bare_call_tail_typed_as_ok_payload_is_ok_wrapped() {
+    // A bare call whose return type is the Ok payload:
+    // `fn f() -> Result<i64, E> { value() }` where `value(): i64`. This tail is
+    // an `Expr::Call`, handled by the call arm of `check_against` (not the
+    // default arm), so it exercises the call-arm coercion fix.
+    let src = r"
+        enum E { Bad; }
+        fn value() -> i64 { 23 }
+        fn f() -> Result<i64, E> { value() }
+    ";
+    let output = typecheck(src);
+    assert!(
+        output.errors.is_empty(),
+        "bare call Ok-payload tail should type-check, got: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.tail_ok_coercions.len(),
+        1,
+        "a bare call tail typed as the Ok payload should Ok-wrap"
+    );
+}
+
+#[test]
+fn bare_call_tail_returning_full_result_is_not_double_wrapped() {
+    // A bare call already producing the FULL Result must return directly — the
+    // call arm's probe takes the no-coercion path, no double-wrap.
+    let src = r"
+        enum E { Bad; }
+        fn g() -> Result<i64, E> { Ok(5) }
+        fn passthrough() -> Result<i64, E> { g() }
+    ";
+    let output = typecheck(src);
+    assert!(
+        output.errors.is_empty(),
+        "bare call passthrough should type-check, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.tail_ok_coercions.is_empty(),
+        "a bare call tail already producing the full Result must NOT coerce"
+    );
+}
+
+#[test]
+fn non_tail_call_argument_does_not_coerce() {
+    // Over-coercion guard for the call arm: a call of the Ok-payload type in a
+    // NON-tail argument position (where a Result is expected) must NOT Ok-wrap —
+    // it must still error. The coercion is strictly tail-only.
+    let src = r"
+        enum E { Bad; }
+        fn value() -> i64 { 23 }
+        fn takes_result(r: Result<i64, E>) -> i64 {
+            match r { Ok(v) => v, Err(_) => 0 }
+        }
+        fn caller() -> i64 { takes_result(value()) }
+    ";
+    let output = typecheck(src);
+    assert_eq!(
+        mismatch_count(&output),
+        1,
+        "a non-tail call argument must NOT be Ok-coerced, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.tail_ok_coercions.is_empty(),
+        "no coercion should fire for a call in a non-tail argument position"
+    );
+}
+
+#[test]
+fn non_tail_identifier_argument_does_not_coerce() {
+    // Over-coercion guard for the identifier arm: an identifier of the
+    // Ok-payload type in a NON-tail argument position (where a Result is
+    // expected) must NOT Ok-wrap — it must still error.
+    let src = r"
+        enum E { Bad; }
+        fn takes_result(r: Result<i64, E>) -> i64 {
+            match r { Ok(v) => v, Err(_) => 0 }
+        }
+        fn caller(x: i64) -> i64 { takes_result(x) }
+    ";
+    let output = typecheck(src);
+    assert_eq!(
+        mismatch_count(&output),
+        1,
+        "a non-tail identifier argument must NOT be Ok-coerced, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.tail_ok_coercions.is_empty(),
+        "no coercion should fire for an identifier in a non-tail argument position"
+    );
+}
+
+#[test]
 fn non_tail_let_binding_does_not_coerce() {
     // The coercion is tail-ONLY: a `let r: Result<i64, E> = <i64>` binding must
     // NOT auto-wrap — it must still error. This is the over-coercion guard.

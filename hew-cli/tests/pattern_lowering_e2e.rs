@@ -101,3 +101,50 @@ fn literal_payload_discriminates_specific_value() {
         "literal payload output mismatch; stdout: {stdout}"
     );
 }
+
+/// Payload or-patterns with leading-dot variants:
+/// `.UnclosedBlock(m) | .UnknownDirective(m) => m` binds the same payload name
+/// across two tuple-payload variants written in the implicit-enum (leading-dot)
+/// form. The bound payload must flow to the body for each alternative; the unit
+/// arm covers exhaustiveness.
+#[test]
+fn payload_or_pattern_binds_across_variants() {
+    require_codegen();
+
+    let output = run_fixture("pattern_payload_or.hew");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        ["block-msg", "dir-msg", "empty"],
+        "payload or-pattern output mismatch; stdout: {stdout}"
+    );
+}
+
+/// Payload or-patterns with wildcard sub-patterns:
+/// `.Click(_) | .Scroll(_)` discards the payload across both variants. Confirms
+/// a wildcard payload slot lowers without emitting a binding and routes to the
+/// shared arm body for each alternative.
+#[test]
+fn payload_or_pattern_wildcard_discards_payload() {
+    require_codegen();
+
+    let output = run_fixture("pattern_payload_or_wildcard.hew");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines,
+        ["active", "active", "idle"],
+        "wildcard payload or-pattern output mismatch; stdout: {stdout}"
+    );
+}

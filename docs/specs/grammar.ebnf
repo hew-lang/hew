@@ -354,6 +354,7 @@ Pattern        = "_"
                | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)
                | Ident "{" PatternFieldList? "}"       (* Struct pattern *)
+               | "." Ident ( "(" PatternList? ")" | "{" PatternFieldList? "}" )?  (* Leading-dot variant pattern: enum inferred from scrutinee type *)
                | "(" PatternList ")"                   (* Tuple pattern *)
                | Pattern "|" Pattern ;                 (* Or-pattern *)
 

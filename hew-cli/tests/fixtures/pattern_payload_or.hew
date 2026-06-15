@@ -1,0 +1,26 @@
+// Acceptance fixture: payload-carrying or-patterns with leading-dot variants.
+// A single arm binds the same payload name across two tuple-payload variants
+// using the leading-dot (implicit-enum) form; the bound payload flows to the
+// body. A third unit variant covers exhaustiveness.
+// Oracle: the bound message for each payload variant, "empty" for the unit.
+enum ParseError {
+    UnclosedBlock(string);
+    UnknownDirective(string);
+    Empty;
+}
+
+fn describe(e: ParseError) -> string {
+    match e {
+        .UnclosedBlock(m) | .UnknownDirective(m) => m,
+        .Empty => "empty",
+    }
+}
+
+fn main() {
+    print(describe(ParseError::UnclosedBlock("block-msg")));
+    print("\n");
+    print(describe(ParseError::UnknownDirective("dir-msg")));
+    print("\n");
+    print(describe(ParseError::Empty));
+    print("\n");
+}

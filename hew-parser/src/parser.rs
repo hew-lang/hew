@@ -7967,6 +7967,54 @@ impl<'src> Parser<'src> {
                     _ => unreachable!(),
                 }
             }
+            // Leading-dot variant pattern: `.Variant`, `.Variant(p, ..)`, or
+            // `.Variant { f: p }`. The enum type is left implicit — the
+            // type-checker resolves the bare short name against the match
+            // scrutinee's type (`resolve_variant_match`), exactly as it does for
+            // a leading-dot constructor expression. Fires only when the dot is
+            // immediately followed by an identifier, so `..` range patterns
+            // (a distinct `Token::DotDot`) are untouched. Emits the SAME
+            // `Pattern::Constructor` / `Pattern::Struct` / `Pattern::Identifier`
+            // a bare (unqualified) name would, so downstream resolution and HIR
+            // lowering need no new pattern variant.
+            Some(Token::Dot)
+                if matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
+            {
+                self.advance(); // consume '.'
+                let name = self.expect_ident()?;
+                if self.eat(&Token::LeftParen) {
+                    let mut patterns = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                        patterns.push(self.parse_pattern()?);
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightParen)?;
+                    Pattern::Constructor { name, patterns }
+                } else if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        let pattern = if self.eat(&Token::Colon) {
+                            Some(self.parse_pattern()?)
+                        } else {
+                            None
+                        };
+                        fields.push(PatternField {
+                            name: field_name,
+                            pattern,
+                        });
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    Pattern::Struct { name, fields }
+                } else {
+                    Pattern::Identifier(name)
+                }
+            }
             Some(Token::Identifier(name)) => {
                 let mut name = name.to_string();
                 self.advance();
@@ -12146,5 +12194,90 @@ wire type Msg {
             !result.errors.is_empty(),
             "malformed `#[extern_symbol]` argument list must produce a parser error"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Leading-dot variant patterns (`.Variant` implicit-enum form)
+    // ---------------------------------------------------------------------------
+
+    /// Extract the arm patterns of the first `match` expression in the first
+    /// function's body. Panics if the shape does not match.
+    fn first_match_arm_patterns(source: &str) -> Vec<Pattern> {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        // A value-producing `match` lands in the block's `trailing_expr`; a
+        // statement-position `match` is a `Stmt::Match`. Check both.
+        if let Some(tail) = &f.body.trailing_expr {
+            if let Expr::Match { arms, .. } = &tail.0 {
+                return arms.iter().map(|a| a.pattern.0.clone()).collect();
+            }
+        }
+        for (stmt, _) in &f.body.stmts {
+            if let Stmt::Match { arms, .. } = stmt {
+                return arms.iter().map(|a| a.pattern.0.clone()).collect();
+            }
+            if let Stmt::Expression(e) | Stmt::Return(Some(e)) = stmt {
+                if let Expr::Match { arms, .. } = &e.0 {
+                    return arms.iter().map(|a| a.pattern.0.clone()).collect();
+                }
+            }
+        }
+        panic!("no match expression found in function body");
+    }
+
+    /// A leading-dot tuple-payload variant pattern parses to the SAME
+    /// `Pattern::Constructor` a bare (unqualified) name would, with the short
+    /// variant name and its payload sub-patterns.
+    #[test]
+    fn leading_dot_constructor_pattern_parses_as_bare_constructor() {
+        let source = "fn f(e: E) -> i64 { match e { .Some(x) => x, _ => 0 } }";
+        let patterns = first_match_arm_patterns(source);
+        match &patterns[0] {
+            Pattern::Constructor { name, patterns } => {
+                assert_eq!(name, "Some");
+                assert_eq!(patterns.len(), 1);
+                assert!(matches!(&patterns[0].0, Pattern::Identifier(n) if n == "x"));
+            }
+            other => panic!("expected Pattern::Constructor, got {other:?}"),
+        }
+    }
+
+    /// A leading-dot unit variant pattern parses to a bare-name
+    /// `Pattern::Identifier`, matching the unqualified unit-variant spelling.
+    #[test]
+    fn leading_dot_unit_variant_pattern_parses_as_identifier() {
+        let source = "fn f(e: E) -> i64 { match e { .None => 0, _ => 1 } }";
+        let patterns = first_match_arm_patterns(source);
+        assert!(matches!(&patterns[0], Pattern::Identifier(n) if n == "None"));
+    }
+
+    /// Leading-dot variants compose with or-patterns: `.A(x) | .B(x)` parses to
+    /// a `Pattern::Or` over two bare-name constructor leaves.
+    #[test]
+    fn leading_dot_or_pattern_parses() {
+        let source = "fn f(e: E) -> i64 { match e { .A(x) | .B(x) => x, _ => 0 } }";
+        let patterns = first_match_arm_patterns(source);
+        let Pattern::Or(left, right) = &patterns[0] else {
+            panic!("expected Pattern::Or, got {:?}", patterns[0]);
+        };
+        assert!(matches!(&left.0, Pattern::Constructor { name, .. } if name == "A"));
+        assert!(matches!(&right.0, Pattern::Constructor { name, .. } if name == "B"));
+    }
+
+    /// Adding the leading-dot arm does not disturb the existing qualified-name
+    /// (`Type::Variant`) constructor-pattern path: both spellings still parse,
+    /// and the qualified form keeps its fully-qualified name.
+    #[test]
+    fn leading_dot_arm_leaves_qualified_pattern_path_intact() {
+        let source = "fn f(e: E) -> i64 { match e { E::Some(x) => x, .None => 0, _ => 1 } }";
+        let patterns = first_match_arm_patterns(source);
+        match &patterns[0] {
+            Pattern::Constructor { name, .. } => assert_eq!(name, "E::Some"),
+            other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
+        }
+        assert!(matches!(&patterns[1], Pattern::Identifier(n) if n == "None"));
     }
 } // mod tests

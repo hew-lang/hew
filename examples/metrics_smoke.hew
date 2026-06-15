@@ -1,0 +1,61 @@
+//! Status: runnable
+//! Description: metrics_smoke.hew — declare user metrics and read them back from the observe scrape
+
+// Declares a counter, a gauge, and a histogram through std::metrics, mutates
+// each, then reads the values back out of the shared observe scrape surface and
+// asserts the exact emitted values. The same scrape that carries the runtime
+// built-ins now also carries developer-defined metrics.
+import std::metrics;
+
+import std::observe;
+
+fn main() {
+    // Counter: register, increment five times, add four more → 9.
+    let requests = metrics.counter("app.requests");
+    requests.inc();
+    requests.inc();
+    requests.inc();
+    requests.inc();
+    requests.inc();
+    requests.add(4);
+
+    // Counters are monotonic: a negative add is rejected by the runtime and
+    // does not change the value.
+    requests.add(-100);
+
+    // Gauge: set to 10, then +1 -1 -1 → 9.
+    let active = metrics.gauge("app.active_connections");
+    active.set(10);
+    active.inc();
+    active.dec();
+    active.dec();
+
+    // Histogram: three observations against the running count.
+    let durations = metrics.histogram("app.request_duration");
+    durations.observe(5.0);
+    durations.observe(42.0);
+    durations.observe(500.0);
+
+    // try_* recovers a structured error instead of panicking. Re-registering
+    // an existing name returns a handle to the same slot.
+    match metrics.try_counter("app.requests") {
+        Ok(again) => again.inc(), // app.requests → 10
+        Err(_) => println("unexpected counter rejection"),
+    }
+    let scrape = observe.scrape();
+    println(scrape);
+
+    // The user metrics render alongside the runtime built-ins, dots mapped to
+    // underscores for the Prometheus name.
+    assert(scrape.contains("# TYPE app_requests counter"));
+    assert(scrape.contains("app_requests 10"));
+    assert(scrape.contains("# TYPE app_active_connections gauge"));
+    assert(scrape.contains("app_active_connections 9"));
+    // A histogram exposes valid `_count` / `_sum` samples under its base name,
+    // never a bare sample (which Prometheus rejects). Three observations of
+    // 5 + 42 + 500 → count 3, sum 547.
+    assert(scrape.contains("# TYPE app_request_duration histogram"));
+    assert(scrape.contains("app_request_duration_count 3"));
+    assert(scrape.contains("app_request_duration_sum 547"));
+    println("metrics_smoke: OK");
+}

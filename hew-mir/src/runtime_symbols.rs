@@ -243,6 +243,26 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // drain, 1 = timed out). Always safe to call: returns immediately
     // when no lambda actors have ever been spawned.
     "hew_lambda_drain_all",
+    // --- user metrics (#1862) ------------------------------------------------
+    // std::metrics emit path: register-or-get a counter/gauge/histogram (and
+    // their labelled `*Vec` forms), then mutate by integer handle. Symbols are
+    // declared via `extern "C"` in `std/metrics.hew` (the semaphore/observe
+    // model) and are also producer-emittable through this allowlist so codegen
+    // may lower the calls directly. Bodies live in `hew-runtime/src/metrics.rs`.
+    "hew_metric_counter_add",
+    "hew_metric_counter_inc",
+    "hew_metric_counter_register",
+    "hew_metric_gauge_add",
+    "hew_metric_gauge_dec",
+    "hew_metric_gauge_inc",
+    "hew_metric_gauge_register",
+    "hew_metric_gauge_set",
+    "hew_metric_histogram_record",
+    "hew_metric_histogram_register",
+    "hew_metric_histogram_register_simple",
+    "hew_metric_vec_register",
+    "hew_metric_vec_with",
+    // --- end user metrics (#1862) --------------------------------------------
     // --- Observe read surface ------------------------------------------------
     "hew_observe_barrier",
     "hew_observe_read_u64",

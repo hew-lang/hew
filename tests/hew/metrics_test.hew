@@ -1,0 +1,114 @@
+//! Tests for std::metrics — developer-defined counters, gauges, and
+//! histograms, read back from the shared observe scrape surface.
+//!
+//! The user-metric registry is process-global with no per-test reset, so each
+//! test uses a uniquely named metric to stay independent of the others.
+
+import std::metrics;
+
+import std::observe;
+
+import std::testing;
+
+// ── Counter: exact value renders in the scrape ───────────────────────
+#[test]
+fn test_counter_exact_value_in_scrape() {
+    let c = metrics.counter("test.counter_exact");
+    c.inc();
+    c.inc();
+    c.inc();
+    c.inc();
+    c.inc();
+    let scrape = observe.scrape();
+    testing.assert_true(scrape.contains("# TYPE test_counter_exact counter"));
+    testing.assert_true(scrape.contains("test_counter_exact 5"));
+}
+
+#[test]
+fn test_counter_add_accumulates() {
+    let c = metrics.counter("test.counter_add");
+    c.inc();
+    c.add(9);
+    let scrape = observe.scrape();
+    testing.assert_true(scrape.contains("test_counter_add 10"));
+}
+
+#[test]
+fn test_counter_rejects_negative_add() {
+    let c = metrics.counter("test.counter_neg");
+    c.add(7);
+    c.add(-100);
+    let scrape = observe.scrape();
+    // The negative add is dropped; the value stays at 7.
+    testing.assert_true(scrape.contains("test_counter_neg 7"));
+}
+
+// ── Gauge: bidirectional, exact value ─────────────────────────────────
+#[test]
+fn test_gauge_set_inc_dec_exact() {
+    let g = metrics.gauge("test.gauge_value");
+    g.set(10);
+    g.inc();
+    g.dec();
+    g.dec();
+    let scrape = observe.scrape();
+    testing.assert_true(scrape.contains("# TYPE test_gauge_value gauge"));
+    testing.assert_true(scrape.contains("test_gauge_value 9"));
+}
+
+// ── Histogram: valid _count / _sum exposition ─────────────────────────
+#[test]
+fn test_histogram_count_and_sum_exposition() {
+    let h = metrics.histogram("test.histogram_count");
+    h.observe(1.0);
+    h.observe(50.0);
+    h.observe(900.0);
+    let scrape = observe.scrape();
+    // A histogram renders valid `_count` and `_sum` samples under its base
+    // name, never a bare sample (Prometheus rejects that and drops the sum).
+    testing.assert_true(scrape.contains("# TYPE test_histogram_count histogram"));
+    testing.assert_true(scrape.contains("test_histogram_count_count 3"));
+    testing.assert_true(scrape.contains("test_histogram_count_sum 951"));
+}
+
+// ── try_* recovers a structured result ────────────────────────────────
+#[test]
+fn test_try_counter_ok_for_valid_name() {
+    match metrics.try_counter("test.try_ok") {
+        Ok(c) => {
+            c.inc();
+            let scrape = observe.scrape();
+            testing.assert_true(scrape.contains("test_try_ok 1"));
+        },
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_try_counter_rejects_builtin_collision() {
+    // `heap.live_bytes` is a runtime built-in; a user metric may not shadow it.
+    match metrics.try_counter("heap.live_bytes") {
+        Ok(_) => testing.assert_true(false),
+        Err(_) => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_try_counter_rejects_rendered_builtin_collision() {
+    // `heap_live_bytes` is a distinct name from the built-in `heap.live_bytes`,
+    // but both render to the same `heap_live_bytes` Prometheus series. The
+    // registry rejects it so a user metric cannot shadow the built-in's scrape
+    // output.
+    match metrics.try_counter("heap_live_bytes") {
+        Ok(_) => testing.assert_true(false),
+        Err(_) => testing.assert_true(true),
+    }
+}
+
+// ── self-metrics render alongside user metrics ────────────────────────
+#[test]
+fn test_self_metrics_present_in_scrape() {
+    let scrape = observe.scrape();
+    testing.assert_true(scrape.contains("# TYPE hew_metrics_names_dropped_total counter"));
+    testing.assert_true(scrape.contains("# TYPE hew_metrics_series_dropped_total counter"));
+}

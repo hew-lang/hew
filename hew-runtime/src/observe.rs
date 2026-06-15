@@ -674,6 +674,86 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
+/// Rendered Prometheus series names of the per-handler attributed-turn series
+/// the scrape emits from [`push_attributed_turn_series`]. These are already in
+/// rendered form (`_`, never `.`); they are the base names of the labelled
+/// `{dispatch,msg_type,handler}` series. A user metric whose rendered name
+/// equals one of these would emit a duplicate `# TYPE` block and shadow the
+/// runtime's per-handler telemetry, so the registry rejects it.
+const ATTRIBUTED_TURN_SERIES_NAMES: [&str; 2] = [
+    "actors_attributed_turns_by_handler_total",
+    "actors_attributed_turn_duration_ns_by_handler_total",
+];
+
+/// Canonical (dotted) names of the attributed-turn series, for `series_text`.
+const ATTRIBUTED_TURN_SERIES_CANONICAL: [&str; 2] = [
+    "actors.attributed_turns_by_handler_total",
+    "actors.attributed_turn_duration_ns_by_handler_total",
+];
+
+/// Rendered Prometheus series names of the user-metric registry self-metrics
+/// the scrape emits from [`push_user_metric_self_series`]. Already in rendered
+/// form. A user metric that shadowed one of these would mask the very
+/// fail-closed drop/reject counters that tell an operator data was dropped, so
+/// the registry rejects it.
+const SELF_METRIC_NAMES: [&str; 4] = [
+    "hew_metrics_names_dropped_total",
+    "hew_metrics_series_dropped_total",
+    "hew_metrics_invalid_ops_total",
+    "hew_metrics_collision_rejected_total",
+];
+
+/// Render a metric name into its Prometheus series name. Prometheus names
+/// cannot contain `.`, so the scrape maps every `.` to `_`. This is the single
+/// source of truth for that mapping: both the scrape render and the registry's
+/// collision check must agree on it, or a user metric whose rendered name
+/// equals a built-in's (`heap.live_bytes` vs `heap_live_bytes`) could slip
+/// past a canonical-name check and corrupt the built-in's scrape output.
+#[must_use]
+pub fn render_prometheus_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// Every rendered Prometheus series name the scrape owns. This is the single
+/// authoritative set the registry's collision check consults so that *no*
+/// scrape-owned name can be shadowed by a user metric — the `observe_series()`
+/// built-ins (rendered), the per-handler attributed-turn series, and the
+/// user-metric registry self-metrics.
+///
+/// Returning rendered names keeps the collision check on the rendered form (see
+/// [`rendered_name_collides_with_builtin`]): the scrape render is non-injective,
+/// so a distinct dotted canonical name can still collapse onto a reserved
+/// rendered series.
+fn reserved_rendered_names() -> impl Iterator<Item = String> {
+    observe_series()
+        .iter()
+        .map(|(builtin, _)| render_prometheus_name(builtin))
+        .chain(
+            ATTRIBUTED_TURN_SERIES_NAMES
+                .iter()
+                .map(|s| (*s).to_string()),
+        )
+        .chain(SELF_METRIC_NAMES.iter().map(|s| (*s).to_string()))
+}
+
+/// True when `name`'s *rendered* Prometheus series name collides with any
+/// scrape-owned reserved rendered name.
+///
+/// The user-metric registry (`crate::metrics`) rejects any registration whose
+/// rendered name collides with a reserved name so a user metric cannot shadow
+/// runtime telemetry in the shared scrape output. The reserved set covers every
+/// series the scrape emits itself — the `observe_series()` built-ins, the
+/// per-handler attributed-turn series, and the registry self-metrics. The check
+/// is on the rendered form (`.` → `_`) rather than the canonical name because
+/// the scrape render is non-injective: `heap_live_bytes` and `heap.live_bytes`
+/// are distinct canonical names but render to the same series, and the second
+/// is the built-in.
+#[must_use]
+pub fn rendered_name_collides_with_builtin(name: &str) -> bool {
+    let rendered = render_prometheus_name(name);
+    reserved_rendered_names().any(|reserved| reserved == rendered)
+}
+
 fn prometheus_label_value(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -704,10 +784,13 @@ fn push_attributed_turn_series(out: &mut String) {
         return;
     }
 
-    out.push_str("# TYPE actors_attributed_turns_by_handler_total counter\n");
+    out.push_str("# TYPE ");
+    out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[0]);
+    out.push_str(" counter\n");
     for ((dispatch_ptr, msg_type), turn) in &turns {
         let handler = handler_name(*dispatch_ptr, *msg_type).unwrap_or_default();
-        out.push_str("actors_attributed_turns_by_handler_total{dispatch=\"0x");
+        out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[0]);
+        out.push_str("{dispatch=\"0x");
         write!(out, "{dispatch_ptr:x}").expect("write to String cannot fail");
         out.push_str("\",msg_type=\"");
         out.push_str(&msg_type.to_string());
@@ -718,10 +801,13 @@ fn push_attributed_turn_series(out: &mut String) {
         out.push('\n');
     }
 
-    out.push_str("# TYPE actors_attributed_turn_duration_ns_by_handler_total counter\n");
+    out.push_str("# TYPE ");
+    out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[1]);
+    out.push_str(" counter\n");
     for ((dispatch_ptr, msg_type), turn) in &turns {
         let handler = handler_name(*dispatch_ptr, *msg_type).unwrap_or_default();
-        out.push_str("actors_attributed_turn_duration_ns_by_handler_total{dispatch=\"0x");
+        out.push_str(ATTRIBUTED_TURN_SERIES_NAMES[1]);
+        out.push_str("{dispatch=\"0x");
         write!(out, "{dispatch_ptr:x}").expect("write to String cannot fail");
         out.push_str("\",msg_type=\"");
         out.push_str(&msg_type.to_string());
@@ -733,12 +819,92 @@ fn push_attributed_turn_series(out: &mut String) {
     }
 }
 
+/// Append the developer-defined metrics (`std::metrics`) to the scrape, in
+/// Prometheus text form, alongside the runtime built-ins. Metric names already
+/// have dots mapped to underscores by the registry snapshot; label values are
+/// escaped through [`prometheus_label_value`] so a value carrying `"`, `\`, or
+/// a newline cannot break the line format.
+fn push_user_metric_series(out: &mut String) {
+    for metric in crate::metrics::render_snapshot() {
+        out.push_str("# TYPE ");
+        out.push_str(&metric.prometheus_name);
+        out.push(' ');
+        out.push_str(metric.type_token);
+        out.push('\n');
+        if let Some(sum) = metric.histogram_sum {
+            // A histogram must expose `_count` and `_sum` under the base name;
+            // a bare sample under `# TYPE name histogram` is invalid exposition
+            // and drops the sum. The Phase A scalar histogram carries no `le`
+            // buckets, so emit the count and sum lines only. (Bucketed `_bucket`
+            // lines arrive with the bucketed/labelled follow-on.)
+            let count = metric.series.first().map_or(0, |(_, v)| *v);
+            out.push_str(&metric.prometheus_name);
+            out.push_str("_count ");
+            out.push_str(&count.to_string());
+            out.push('\n');
+            out.push_str(&metric.prometheus_name);
+            out.push_str("_sum ");
+            out.push_str(&sum.to_string());
+            out.push('\n');
+            continue;
+        }
+        for (label_values, value) in &metric.series {
+            out.push_str(&metric.prometheus_name);
+            if !metric.label_keys.is_empty() {
+                out.push('{');
+                for (i, (key, val)) in metric
+                    .label_keys
+                    .iter()
+                    .zip(label_values.iter())
+                    .enumerate()
+                {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(key);
+                    out.push_str("=\"");
+                    out.push_str(&prometheus_label_value(val));
+                    out.push('"');
+                }
+                out.push('}');
+            }
+            out.push(' ');
+            out.push_str(&value.to_string());
+            out.push('\n');
+        }
+    }
+    push_user_metric_self_series(out);
+}
+
+/// Append the registry self-metrics — the fail-closed drop/reject counters — so
+/// a user discovers dropped data by reading the same scrape.
+fn push_user_metric_self_series(out: &mut String) {
+    let self_metrics = crate::metrics::self_metrics();
+    // Values are paired with `SELF_METRIC_NAMES` positionally, so the rendered
+    // names stay the single source the reserved-name set also consults.
+    let values = [
+        self_metrics.names_dropped,
+        self_metrics.series_dropped,
+        self_metrics.invalid_ops,
+        self_metrics.collision_rejected,
+    ];
+    for (name, value) in SELF_METRIC_NAMES.iter().zip(values) {
+        out.push_str("# TYPE ");
+        out.push_str(name);
+        out.push_str(" counter\n");
+        out.push_str(name);
+        out.push(' ');
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+}
+
 #[must_use]
 pub fn scrape_text() -> String {
     let mut out = String::new();
     for (name, kind) in observe_series() {
         if let Some(value) = read_u64(name) {
-            let prometheus_name = name.replace('.', "_");
+            let prometheus_name = render_prometheus_name(name);
             out.push_str("# TYPE ");
             out.push_str(&prometheus_name);
             out.push(' ');
@@ -751,6 +917,7 @@ pub fn scrape_text() -> String {
         }
     }
     push_attributed_turn_series(&mut out);
+    push_user_metric_series(&mut out);
     out
 }
 
@@ -761,8 +928,20 @@ pub fn series_text() -> String {
         out.push_str(name);
         out.push('\n');
     }
-    out.push_str("actors.attributed_turns_by_handler_total\n");
-    out.push_str("actors.attributed_turn_duration_ns_by_handler_total\n");
+    for name in ATTRIBUTED_TURN_SERIES_CANONICAL {
+        out.push_str(name);
+        out.push('\n');
+    }
+    // Developer-defined metrics (`std::metrics`), by canonical name, plus the
+    // registry self-metrics — the same names the scrape renders.
+    for metric in crate::metrics::render_snapshot() {
+        out.push_str(&metric.canonical_name);
+        out.push('\n');
+    }
+    for name in SELF_METRIC_NAMES {
+        out.push_str(name);
+        out.push('\n');
+    }
     out
 }
 
@@ -847,6 +1026,9 @@ pub(crate) fn reset_all() {
             map.clear();
         }
     });
+    // Clear the developer-defined metric registry on the same session
+    // boundary so a fresh session never observes a prior session's metrics.
+    crate::metrics::session_reset_metrics();
     #[cfg(not(target_arch = "wasm32"))]
     {
         let _guard = dispatch_barrier_lock();
@@ -888,6 +1070,141 @@ mod tests {
         let scrape = scrape_text();
         assert!(scrape.contains("heap_live_bytes"));
         assert!(scrape.contains("scheduler_queue_depth"));
+    }
+
+    #[test]
+    fn reserved_rendered_names_cover_every_scrape_owned_family() {
+        let reserved: std::collections::HashSet<String> = reserved_rendered_names().collect();
+        // A representative built-in (rendered) is reserved.
+        assert!(
+            reserved.contains("heap_live_bytes"),
+            "observe_series built-ins must be reserved"
+        );
+        // Both per-handler attributed-turn series are reserved.
+        for name in ATTRIBUTED_TURN_SERIES_NAMES {
+            assert!(
+                reserved.contains(name),
+                "attributed-turn series `{name}` must be reserved"
+            );
+        }
+        // All four registry self-metrics are reserved.
+        for name in SELF_METRIC_NAMES {
+            assert!(
+                reserved.contains(name),
+                "self-metric `{name}` must be reserved"
+            );
+        }
+        // The collision check agrees: each reserved name is rejected, including
+        // the dotted canonical form of a built-in that renders onto a reserved
+        // series.
+        assert!(rendered_name_collides_with_builtin("heap.live_bytes"));
+        assert!(rendered_name_collides_with_builtin(
+            "actors_attributed_turns_by_handler_total"
+        ));
+        assert!(rendered_name_collides_with_builtin(
+            "hew_metrics_collision_rejected_total"
+        ));
+        // A genuinely user-owned name is not reserved.
+        assert!(!rendered_name_collides_with_builtin("app.requests"));
+    }
+
+    #[test]
+    fn scrape_renders_user_metrics_with_exact_values() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        // A developer counter incremented five times, then a labelled gauge.
+        let requests = crate::metrics::register_counter("app.requests");
+        assert!(requests >= 0);
+        for _ in 0..5 {
+            crate::metrics::inc(requests);
+        }
+
+        let scrape = scrape_text();
+
+        // The user counter renders with its exact value, dots → underscores,
+        // and the correct # TYPE line — not `> 0`, the exact emitted bytes.
+        assert!(
+            scrape.contains("# TYPE app_requests counter"),
+            "missing user-counter TYPE line:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_requests 5\n") || scrape.starts_with("app_requests 5\n"),
+            "user counter must render the exact value `app_requests 5`:\n{scrape}"
+        );
+
+        // The registry self-metrics are present so a user can discover drops.
+        assert!(scrape.contains("# TYPE hew_metrics_names_dropped_total counter"));
+
+        // A built-in metric name is not corrupted by appending user metrics.
+        assert!(scrape.contains("# TYPE heap_live_bytes gauge"));
+        assert!(scrape.contains("scheduler_queue_depth"));
+
+        // series() lists the canonical user-metric name alongside built-ins.
+        let series = series_text();
+        assert!(series.contains("\napp.requests\n") || series.contains("app.requests\n"));
+        assert!(series.contains("heap.live_bytes"));
+    }
+
+    #[test]
+    fn scrape_escapes_user_label_values() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        let base = crate::metrics::register_labelled(
+            "app.routed",
+            crate::metrics::MetricKind::Counter,
+            &["path".to_string()],
+        );
+        assert!(base >= 0);
+        // A label value carrying a quote must be escaped so the line stays
+        // well-formed Prometheus text.
+        let series = crate::metrics::resolve_series(base, &["a\"b".to_string()]);
+        assert!(series >= 0);
+        crate::metrics::inc(series);
+
+        let scrape = scrape_text();
+        assert!(
+            scrape.contains("app_routed{path=\"a\\\"b\"} 1"),
+            "label value must be quote-escaped and carry the exact value:\n{scrape}"
+        );
+    }
+
+    #[test]
+    fn scrape_renders_histogram_as_valid_count_and_sum() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        // A scalar histogram with three observations: 5 + 42 + 500 = 547.
+        let durations = crate::metrics::register_histogram("app.request_duration", &[]);
+        assert!(durations >= 0);
+        crate::metrics::histogram_record(durations, 5);
+        crate::metrics::histogram_record(durations, 42);
+        crate::metrics::histogram_record(durations, 500);
+
+        let scrape = scrape_text();
+
+        // Valid Prometheus histogram exposition: a `# TYPE ... histogram` line
+        // followed by `_count` and `_sum` samples under the base name — not a
+        // bare sample, which Prometheus rejects and which drops the sum.
+        assert!(
+            scrape.contains("# TYPE app_request_duration histogram"),
+            "missing histogram TYPE line:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_request_duration_count 3\n"),
+            "histogram must emit an exact _count sample:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_request_duration_sum 547\n"),
+            "histogram must emit an exact _sum sample:\n{scrape}"
+        );
+        // The invalid bare sample (`name <value>` under TYPE histogram) must NOT
+        // appear: every histogram line carries the `_count` / `_sum` suffix.
+        assert!(
+            !scrape.contains("\napp_request_duration 3\n"),
+            "histogram must not emit a bare sample under TYPE histogram:\n{scrape}"
+        );
     }
 
     unsafe extern "C-unwind" fn fake_dispatch(

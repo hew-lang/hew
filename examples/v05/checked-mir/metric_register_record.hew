@@ -1,0 +1,21 @@
+// MIR-corpus fixture: developer metric register + record surface.
+//
+// Pins the lowering of the user-callable metric runtime-call families:
+// the registry constructors (`hew_metric_counter_register`,
+// `hew_metric_gauge_register`, `hew_metric_histogram_register_simple`)
+// and the mutators reached through the handle methods — counter
+// inc/add, gauge inc/dec/set/add, and histogram record.
+import std::metrics;
+
+fn main() {
+    let hits = metrics.counter("app.cache_hits");
+    hits.inc();
+    hits.add(4);
+    let active = metrics.gauge("app.active_connections");
+    active.inc();
+    active.dec();
+    active.set(3);
+    active.add(2);
+    let latency = metrics.histogram("app.request_latency");
+    latency.observe(12.5);
+}

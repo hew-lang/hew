@@ -6897,17 +6897,40 @@ impl Builder {
             let value_place = self.lower_value(tail);
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
-            // Secure the tail value into the return slot BEFORE running
-            // function-scope defers. Q205-B: defer bodies observe their
-            // referenced bindings at scope-exit execution time — a defer
-            // that mutates a `var` named by the tail expression must not
-            // be able to corrupt the returned value. Materialising the
-            // Move first locks in the value the caller observes.
-            if let Some(src) = value_place {
-                self.instructions.push(Instr::Move {
-                    dest: Place::ReturnSlot,
-                    src,
-                });
+            // A divergent tail leaves the cursor at an unreachable join block.
+            // The canonical shape is a tail `match` whose arms ALL diverge
+            // (every arm `return`s or `panic`s): each arm body already emitted
+            // its own `Move { ReturnSlot <- value }` and `Return` before
+            // control reached the join, and the match-lowering helpers flag
+            // the join unreachable (`cursor_unreachable`) because no arm fell
+            // through with a value. Such a `match` is checker-typed `Unit`
+            // (each diverging arm-block is `Unit`), so its result place is the
+            // `Unit` i8 stand-in — moving THAT into a non-scalar return slot
+            // (ptr/struct) is the `Move type mismatch` the codegen verifier
+            // rejects (#1907).
+            //
+            // Skip ONLY the secure Move when the cursor is unreachable. The
+            // implicit `Return` marker + terminator must still be emitted: the
+            // join block has live predecessors (the arm-end `Goto`s, dead at
+            // runtime but present in the CFG), so it must keep a terminator —
+            // dropping it would dangle those gotos. The bare `Return` over an
+            // unwritten return slot is unreachable at runtime and DCE'd. A
+            // value-yielding tail `match` (at least one arm falls through with
+            // a value) leaves the cursor reachable and secures its result into
+            // the return slot exactly as before.
+            if !self.cursor_unreachable {
+                // Secure the tail value into the return slot BEFORE running
+                // function-scope defers. Q205-B: defer bodies observe their
+                // referenced bindings at scope-exit execution time — a defer
+                // that mutates a `var` named by the tail expression must not
+                // be able to corrupt the returned value. Materialising the
+                // Move first locks in the value the caller observes.
+                if let Some(src) = value_place {
+                    self.instructions.push(Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src,
+                    });
+                }
             }
             self.emit_pending_defers(func.body.scope);
             self.statements.push(MirStatement::Return {
@@ -10458,6 +10481,18 @@ impl Builder {
             else_target: else_bb,
         });
 
+        // Track whether either arm falls through to the join with a value.
+        // When BOTH arms diverge (each `return`s/`panic`s, possibly through a
+        // further nested CFG expression) the join has no live predecessor and
+        // `result_place` is never written; the cursor must stay unreachable so
+        // a tail `if` does not feed the dead `Unit` i8 stand-in into a
+        // non-scalar return slot (the #1907 `Move type mismatch` abort). The
+        // reachability flag — not the value `Option` — is the load-bearing
+        // signal: a reachable Unit arm (`if c { return } else {}`) yields
+        // `None` but leaves the cursor reachable, while a divergent-through-if
+        // arm also yields `None` yet leaves the cursor unreachable.
+        let mut join_reachable = false;
+
         // Then arm.
         self.start_block(then_bb);
         let then_value = self.lower_value(then_expr);
@@ -10467,10 +10502,15 @@ impl Builder {
                 src,
             });
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Else arm. `else_expr: None` (the HIR-types-as-Unit case)
-        // emits a Goto-only block — no Move, no value contributed.
+        // emits a Goto-only block — no Move, no value contributed. That
+        // Goto-only block always falls through, so the join stays reachable
+        // for a one-armed `if c { return }`.
         self.start_block(else_bb);
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_value(else_expr);
@@ -10481,12 +10521,20 @@ impl Builder {
                 });
             }
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Join. Subsequent lowering continues in this block; the If
         // expression's value Place is the result_local (loads happen
-        // through the same Place that both arms wrote into).
+        // through the same Place that both arms wrote into). `start_block`
+        // resets `cursor_unreachable`, so re-flag the dead join AFTER opening
+        // it when both arms diverged.
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -11324,6 +11372,10 @@ impl Builder {
     ) -> Option<Place> {
         let result_place = self.alloc_local(result_ty.clone());
         let join_bb = self.alloc_block();
+        // Track whether any arm falls through to the join with a value; when
+        // every arm diverges the join is unreachable (see `lower_match_enum_tag`
+        // for the full rationale — #1907).
+        let mut join_reachable = false;
 
         let scrutinee_place = self.lower_value(scrutinee)?;
         let scrutinee_local = match scrutinee_place {
@@ -11406,6 +11458,9 @@ impl Builder {
                     src,
                 });
             }
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
 
             // Emit the fallthrough trap for the last arm (if no next arm).
@@ -11418,6 +11473,9 @@ impl Builder {
         }
 
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -11864,8 +11922,14 @@ impl Builder {
                 src,
             });
         }
+        // The single irrefutable arm: if its body diverges the join is
+        // unreachable (see `lower_match_enum_tag` for the rationale — #1907).
+        let join_reachable = !self.cursor_unreachable;
         self.finish_current_block(Terminator::Goto { target: join_bb });
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -11915,6 +11979,10 @@ impl Builder {
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
         let result_place = self.alloc_local(result_ty.clone());
+        // Track whether any arm falls through to the join with a value; when
+        // every arm diverges the join is unreachable (see `lower_match_enum_tag`
+        // for the full rationale — #1907).
+        let mut join_reachable = false;
 
         // Validate arm predicates up front; the checker guarantees a
         // homogeneous literal scrutinee, so the only legal arms are Literal
@@ -12022,6 +12090,9 @@ impl Builder {
                     src,
                 });
             }
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 
@@ -12033,6 +12104,9 @@ impl Builder {
         });
 
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -12169,6 +12243,10 @@ impl Builder {
     ) -> Option<Place> {
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
+        // Track whether any arm falls through to the join with a value; when
+        // every arm diverges the join is unreachable (see `lower_match_enum_tag`
+        // for the full rationale — #1907).
+        let mut join_reachable = false;
 
         // Partition into ordered non-wildcard arms and the optional wildcard.
         // All non-wildcard arms must be Regex here; EnumVariant in a regex match
@@ -12543,6 +12621,9 @@ impl Builder {
                     src,
                 });
             }
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         } else {
             // Belt-and-braces runtime guard (LESSONS `match-fail-closed` P0).
@@ -12598,11 +12679,20 @@ impl Builder {
                     src,
                 });
             }
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 
-        // Join. Subsequent lowering continues here.
+        // Join. Subsequent lowering continues here. When every arm diverged
+        // (no arm fell through with a value) the join has no live predecessor;
+        // flag the cursor unreachable so the caller skips the Move/Return that
+        // would read the never-written `result_place` (#1907).
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -12657,6 +12747,19 @@ impl Builder {
     ) -> Option<Place> {
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
+
+        // Track whether ANY arm falls through to the join with a value. A
+        // diverging body (`return`/`panic`) leaves the cursor unreachable (the
+        // `return` statement lowering flags `cursor_unreachable`); a
+        // non-diverging body leaves it reachable. When every arm diverges the
+        // join block has no live predecessor and `result_place` is never
+        // written, so the cursor is flagged unreachable below and the caller
+        // (`function_body`) skips emitting a Move/Return that would read the
+        // dead i8 `Unit` stand-in into a non-scalar slot (#1907). A
+        // non-diverging body's `lower_value` may itself yield `None` (an empty
+        // `Unit` block), so the reachability flag — not the value `Option` — is
+        // the load-bearing signal.
+        let mut join_reachable = false;
 
         // Partition arms: ordered non-wildcard checks followed by an
         // optional wildcard. The exhaustiveness checker prevents two
@@ -12823,6 +12926,13 @@ impl Builder {
                     dest: result_place,
                     src,
                 });
+            }
+            // A body that does not diverge leaves the cursor reachable and
+            // flows to the join with the arm's value (which may be a Unit
+            // no-op for an empty block). A diverging body (`return`/`panic`)
+            // leaves the cursor in a dead block, so this Goto seals dead code.
+            if !self.cursor_unreachable {
+                join_reachable = true;
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
 
@@ -13162,11 +13272,26 @@ impl Builder {
                     site,
                 );
             }
+            // A non-diverging arm body leaves the cursor reachable: this Goto
+            // links a live predecessor into the join. A diverging body
+            // (`return`/`panic`) leaves the cursor in a dead block (the
+            // statement lowering for `return` flagged `cursor_unreachable`),
+            // so the Goto seals dead code and contributes no live edge.
+            if !self.cursor_unreachable {
+                join_reachable = true;
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }
 
-        // Join. Subsequent lowering continues here.
+        // Join. Subsequent lowering continues here. When every arm diverged
+        // (no arm fell through with a value), the join has no live predecessor:
+        // flag the cursor unreachable so the caller does not emit a Move/Return
+        // reading the never-written `result_place`. `start_block` resets the
+        // flag, so set it AFTER opening the join.
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -13671,6 +13796,16 @@ impl Builder {
         let else_bb = self.alloc_block();
         let join_bb = self.alloc_block();
 
+        // Track whether either arm falls through to the join with a value.
+        // When BOTH arms diverge (each `return`s/`panic`s, possibly through a
+        // further nested CFG expression) the join has no live predecessor and
+        // `result_place` is never written; the cursor must stay unreachable so
+        // a tail `if let` does not feed the dead `Unit` i8 stand-in into a
+        // non-scalar return slot (the #1907 `Move type mismatch` abort). The
+        // reachability flag — not the value `Option` — is the load-bearing
+        // signal (see `lower_if`/`lower_match_enum_tag` for the rationale).
+        let mut join_reachable = false;
+
         self.finish_current_block(Terminator::Branch {
             cond: cond_local,
             then_target: then_bb,
@@ -13733,9 +13868,16 @@ impl Builder {
                 self.binding_locals.remove(&binding);
             }
         }
+        // Binding restore does not touch `cursor_unreachable`; the flag still
+        // reflects whether the then-body diverged.
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Else arm: lower else_body (if present), move result into result_place.
+        // `else_body: None` emits a Goto-only block that always falls through,
+        // so a one-armed `if let ... { return }` keeps the join reachable.
         self.start_block(else_bb);
         if let Some(eb) = else_body {
             self.active_scopes.push(eb.scope);
@@ -13756,10 +13898,18 @@ impl Builder {
             self.emit_pending_defers(eb.scope);
             self.active_scopes.pop();
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
-        // Join: subsequent lowering continues here.
+        // Join: subsequent lowering continues here. `start_block` resets
+        // `cursor_unreachable`, so re-flag the dead join AFTER opening it when
+        // both arms diverged.
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 

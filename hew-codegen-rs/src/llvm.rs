@@ -72,7 +72,7 @@ use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
     HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
 };
 
 use inkwell::builder::Builder;
@@ -15185,6 +15185,44 @@ fn lower_wire_codec_instr<'ctx>(
                     CodegenError::FailClosed("wire deserialize thunk returned void".into())
                 })?
                 .into_pointer_value();
+            // FAIL CLOSED on malformed/adversarial input. The deserialize thunk
+            // returns null when the bytes are not a valid encoding of the type
+            // (after dropping its partial reconstruction and freeing the malloc
+            // shell — see `emit_wire_codec_call_thunks`' `de_fail` block). The
+            // null return MUST NOT be loaded or freed: loading dereferences null
+            // (SIGSEGV) and freeing double-frees the already-freed shell. Branch
+            // on null and trap `HEW_TRAP_WIRE_DECODE_FAILED` so bad input aborts
+            // cleanly instead of segfaulting (LESSONS: fail-closed-not-pretend).
+            let de_is_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    value_ptr,
+                    ptr_ty.const_null(),
+                    "wire_decode_is_null",
+                )
+                .llvm_ctx("wire decode null compare")?;
+            let parent_fn = builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm(
+                        "wire decode block has no parent function for the null branch".into(),
+                    )
+                })?;
+            let fail_bb = ctx.append_basic_block(parent_fn, "wire_decode_fail");
+            let ok_bb = ctx.append_basic_block(parent_fn, "wire_decode_ok");
+            builder
+                .build_conditional_branch(de_is_null, fail_bb, ok_bb)
+                .llvm_ctx("wire decode null branch")?;
+            // null path: the thunk already freed the partial state; only trap.
+            builder.position_at_end(fail_bb);
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_WIRE_DECODE_FAILED as u64,
+                "wire_decode_fail",
+            )?;
+            // non-null path: the existing load-into-dest + free-the-shell.
+            builder.position_at_end(ok_bb);
             // Load the reconstructed value out of the malloc'd struct into dest.
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
             let loaded = builder

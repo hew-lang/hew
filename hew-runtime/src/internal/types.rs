@@ -416,6 +416,18 @@ pub const HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH: i32 = 208;
 /// imports this constant so a renumber here fails the codegen build closed.
 pub const HEW_TRAP_MODULE_INIT_REGEX_FAILED: i32 = 209;
 
+/// Error code recorded when a wire-type `Type.decode(bytes)` is handed bytes
+/// that are not a valid encoding of the type. The deserialize thunk frees its
+/// partial reconstruction and returns null; the codegen call site branches on
+/// that null and emits `hew_trap_with_code(210)` so malformed/adversarial input
+/// fails CLOSED (a clean trap) instead of dereferencing the null return and
+/// segfaulting. Per LESSONS `fail-closed-not-pretend` (P0): the boundary refuses
+/// loudly rather than crashing on a null deref.
+///
+/// The single source of truth for the codegen literal: `hew-codegen-rs` imports
+/// this constant so a renumber here fails the codegen build closed.
+pub const HEW_TRAP_WIRE_DECODE_FAILED: i32 = 210;
+
 /// Convert a canonical Hew trap discriminator into the WASI process exit code
 /// used when a trap escapes outside actor dispatch.
 ///
@@ -434,7 +446,8 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_ACTOR_SEND_FAILED
         | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE
         | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
-        | HEW_TRAP_MODULE_INIT_REGEX_FAILED => Some(code),
+        | HEW_TRAP_MODULE_INIT_REGEX_FAILED
+        | HEW_TRAP_WIRE_DECODE_FAILED => Some(code),
         _ => None,
     }
 }
@@ -475,6 +488,12 @@ pub enum ExitReason {
     /// opaque-handle-bearing variant. Dead in correctly-compiled programs;
     /// reaching this trap indicates a producer-side regression.
     ModuleInitRegexFailed,
+    /// Actor crashed because a wire-type `Type.decode(bytes)` was handed bytes
+    /// that are not a valid encoding of the type (error code 210). The
+    /// deserialize thunk freed its partial reconstruction and returned null;
+    /// the decode call site traps on that null. Reachable on malformed or
+    /// adversarial input — the fail-closed boundary, not a producer regression.
+    WireDecodeFailed,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -503,6 +522,7 @@ impl ExitReason {
             ExitReason::MachineDispatchUnreachable => "MachineDispatchUnreachable",
             ExitReason::ExhaustivenessFallthrough => "ExhaustivenessFallthrough",
             ExitReason::ModuleInitRegexFailed => "ModuleInitRegexFailed",
+            ExitReason::WireDecodeFailed => "WireDecodeFailed",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -524,6 +544,7 @@ impl ExitReason {
             HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE => ExitReason::MachineDispatchUnreachable,
             HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH => ExitReason::ExhaustivenessFallthrough,
             HEW_TRAP_MODULE_INIT_REGEX_FAILED => ExitReason::ModuleInitRegexFailed,
+            HEW_TRAP_WIRE_DECODE_FAILED => ExitReason::WireDecodeFailed,
             sig => ExitReason::Signal(sig),
         }
     }

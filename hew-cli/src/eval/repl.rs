@@ -189,8 +189,8 @@ enum CompiledEvalError {
 pub(crate) fn describe_runtime_failure(exit_code: i32, signal: Option<i32>) -> String {
     if let Some(sig) = signal {
         let detail = match sig {
-            4 => "SIGILL (illegal instruction; for a Hew program usually a runtime safety trap such as divide-by-zero or integer overflow)",
-            5 => "SIGTRAP (runtime trap; for a Hew program usually divide-by-zero, integer overflow, or a bounds check)",
+            4 => "SIGILL (illegal instruction; for a Hew program usually a runtime safety trap such as divide-by-zero, integer overflow, a bounds check, or a failed wire decode of malformed bytes)",
+            5 => "SIGTRAP (runtime trap; for a Hew program usually divide-by-zero, integer overflow, a bounds check, or a failed wire decode of malformed bytes)",
             6 => "SIGABRT (abort)",
             8 => "SIGFPE (arithmetic exception, e.g. divide-by-zero)",
             10 => "SIGBUS (bus error)",

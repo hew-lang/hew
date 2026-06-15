@@ -117,6 +117,33 @@ if grep -q "D10 violation" <<<"${reject_out}"; then
 fi
 echo "PASS ${reject_fixture}"
 
+# Reject fixture: cross-module same-bare-name trait-signature mismatch. The
+# trait `Closable` (from `hew::closableerr`) requires `close` to return
+# `closableerr.CloseError`; this impl returns the DISTINCT
+# `closableerr2.CloseError` (a different type from a different module that
+# shares the bare name). The signature comparison must reject this at the type
+# boundary with `TraitImplSignatureMismatch` — NOT accept it via an over-strip
+# that collapses both qualifiers to bare `CloseError`, and NOT defer to a
+# downstream `E_CODEGEN_FRONT` / D10 codegen fall-through. The positive
+# `qualified_trait_sig` oracle above (same-module spelling) must still pass.
+trait_sig_reject="cross_module_trait_sig_reject"
+trait_sig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${trait_sig_reject}.hew" 2>&1)" && {
+  echo "FAIL ${trait_sig_reject}: hew check unexpectedly succeeded (wrong-module return type slipped the trait-sig gate)" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+}
+if ! grep -q "but trait \`Closable\` requires" <<<"${trait_sig_out}"; then
+  echo "FAIL ${trait_sig_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${trait_sig_out}"; then
+  echo "FAIL ${trait_sig_reject}: wrong-module return type fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+fi
+echo "PASS ${trait_sig_reject}"
+
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).
 if [[ "$(uname -s)" == "Darwin" ]]; then

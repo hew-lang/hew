@@ -5,6 +5,24 @@
 use super::*;
 use crate::BuiltinType;
 
+/// Context for canonicalizing trait-vs-impl signature types to a single
+/// defining-module-qualified identity before comparison
+/// (`check_impl_method_against_trait`). Carries only borrowed predicates so the
+/// recursion holds no `&self` borrow across the later mutable error reporting.
+struct TraitSigCanonCtx<'a> {
+    /// In-scope module short names; a `module.Name` whose `module` is here is an
+    /// explicit, unambiguous identity that keeps its qualifier.
+    modules: &'a std::collections::HashSet<String>,
+    /// The trait's defining module, used to qualify a bare type name written in
+    /// the trait declaration. `None` for a root/local trait.
+    trait_owner: Option<&'a str>,
+    /// Whether a `{owner}.{bare}` spelling is a registered type def.
+    defines_qualified: &'a dyn Fn(&str) -> bool,
+    /// Whether a bare name shadows one of the impl scope's own types (then it
+    /// keeps the bare identity rather than being qualified to the trait owner).
+    is_local: &'a dyn Fn(&str) -> bool,
+}
+
 /// Embedded source for `std/io/closable.hew`.
 ///
 /// Parsed at import-registration time for `std::io::closable` so the
@@ -5014,53 +5032,80 @@ impl Checker {
         // Re-derive the tag from the name on both sides so trait-conformance
         // compares nominal identity rather than the incidental resolution path.
         //
-        // Under qualified-by-default the impl side resolves the SAME error type
-        // through its module-qualified spelling (`closable.CloseError`) while
-        // the trait declaration carries the bare `CloseError`. These name the
-        // one type, so strip a known-module prefix from every `Named` name
-        // before re-deriving the tag, using the module-aware `strip_module_prefix`
-        // authority (a `Foo.Bar` whose `Foo` is not an in-scope module is left
-        // untouched). The user-facing diagnostics still render the original,
-        // untouched types.
-        fn canonicalize_builtin_tags(ty: &Ty, modules: &std::collections::HashSet<String>) -> Ty {
-            let recurse = |t: &Ty| canonicalize_builtin_tags(t, modules);
+        // Under qualified-by-default the trait declaration records its sibling
+        // types by their BARE name (as written inside the defining module) while
+        // an importer's `impl` spells the same type through its module qualifier
+        // (`closable.CloseError`). These name the one type, so both spellings
+        // must canonicalize to a single DEFINING-MODULE-qualified identity before
+        // the comparison — never to a bare name. Stripping any known-module
+        // prefix and comparing bare names is unsound: it collapses two distinct
+        // nominal types that merely share a bare name across modules
+        // (`closableerr.CloseError` vs `closableerr2.CloseError`), accepting an
+        // impl that returns the wrong module's type. Instead:
+        //   * an already module-qualified name keeps its qualifier (it is an
+        //     explicit, unambiguous identity);
+        //   * a bare name written in the trait declaration denotes the trait's
+        //     own defining module's type, so it is qualified against that module
+        //     when the module defines it — unless the bare name shadows a local
+        //     type in the impl's scope, in which case it stays bare and the
+        //     local identity is preserved (and so a local `CloseError` correctly
+        //     mismatches the trait's `closableerr.CloseError`).
+        // The user-facing diagnostics still render the original, untouched types.
+        //
+        // `trait_owner` is the trait's defining module (`Some("closableerr")`)
+        // or `None` for a root/local trait. `ctx` carries the in-scope module
+        // set, the registered-type predicate, and the local-shadow predicate so
+        // the recursion needs no `&self` borrow held across the later mutable
+        // error-reporting calls.
+        fn canonicalize_type_identity(ty: &Ty, ctx: &TraitSigCanonCtx) -> Ty {
+            let rec = |t: &Ty| canonicalize_type_identity(t, ctx);
             match ty {
-                Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(recurse).collect()),
-                Ty::Array(elem, n) => Ty::Array(Box::new(recurse(elem)), *n),
-                Ty::Slice(elem) => Ty::Slice(Box::new(recurse(elem))),
+                Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(rec).collect()),
+                Ty::Array(elem, n) => Ty::Array(Box::new(rec(elem)), *n),
+                Ty::Slice(elem) => Ty::Slice(Box::new(rec(elem))),
                 Ty::Named { name, args, .. } => {
-                    // Shorten a known-module qualifier so `closable.CloseError`
-                    // and the bare `CloseError` canonicalize to the same name.
-                    let short = name
-                        .split_once('.')
-                        .filter(|(module, _)| modules.contains(*module))
-                        .map_or_else(|| name.clone(), |(_, bare)| bare.to_string());
-                    Ty::normalize_named(short, args.iter().map(recurse).collect())
+                    let canonical = match name.split_once('.') {
+                        // Already module-qualified by a known module: keep the
+                        // qualifier as the type identity.
+                        Some((module, _)) if ctx.modules.contains(module) => name.clone(),
+                        // Bare name: qualify against the trait's defining module
+                        // when that module defines it AND it is not shadowed by a
+                        // local type in the impl scope. Otherwise (builtin, type
+                        // param, or a genuine local) leave it bare so its identity
+                        // is preserved.
+                        _ => ctx
+                            .trait_owner
+                            .filter(|_| !(ctx.is_local)(name))
+                            .map(|owner| format!("{owner}.{name}"))
+                            .filter(|qualified| (ctx.defines_qualified)(qualified))
+                            .unwrap_or_else(|| name.clone()),
+                    };
+                    Ty::normalize_named(canonical, args.iter().map(rec).collect())
                 }
                 Ty::Function { params, ret } => Ty::Function {
-                    params: params.iter().map(recurse).collect(),
-                    ret: Box::new(recurse(ret)),
+                    params: params.iter().map(rec).collect(),
+                    ret: Box::new(rec(ret)),
                 },
                 Ty::Closure {
                     params,
                     ret,
                     captures,
                 } => Ty::Closure {
-                    params: params.iter().map(recurse).collect(),
-                    ret: Box::new(recurse(ret)),
-                    captures: captures.iter().map(recurse).collect(),
+                    params: params.iter().map(rec).collect(),
+                    ret: Box::new(rec(ret)),
+                    captures: captures.iter().map(rec).collect(),
                 },
                 Ty::Pointer {
                     is_mutable,
                     pointee,
                 } => Ty::Pointer {
                     is_mutable: *is_mutable,
-                    pointee: Box::new(recurse(pointee)),
+                    pointee: Box::new(rec(pointee)),
                 },
                 Ty::Borrow { pointee } => Ty::Borrow {
-                    pointee: Box::new(recurse(pointee)),
+                    pointee: Box::new(rec(pointee)),
                 },
-                Ty::Task(inner) => Ty::Task(Box::new(recurse(inner))),
+                Ty::Task(inner) => Ty::Task(Box::new(rec(inner))),
                 other => other.clone(),
             }
         }
@@ -5088,6 +5133,29 @@ impl Checker {
             .cloned()
         else {
             return;
+        };
+
+        // The trait's defining module anchors how a bare type name written in
+        // the trait declaration is canonicalized. Recover it from the qualified
+        // `{module}.{trait_name}` alias the registration paths author alongside
+        // the bare `trait_defs` entry. Exactly one owner is the well-formed
+        // case; with zero (a root/local trait) or an ambiguous set we leave
+        // bare names untouched and fall back to the bare-name comparison rather
+        // than guess a module.
+        let trait_owner_module: Option<String> = {
+            let suffix = format!(".{trait_name}");
+            let mut owners: Vec<&str> = self
+                .trait_defs
+                .keys()
+                .filter_map(|k| k.strip_suffix(&suffix))
+                .filter(|module| !module.is_empty() && self.modules.contains(*module))
+                .collect();
+            owners.sort_unstable();
+            owners.dedup();
+            match owners.as_slice() {
+                [single] => Some((*single).to_string()),
+                _ => None,
+            }
         };
 
         // Build trait-type-param substitution map.
@@ -5239,14 +5307,50 @@ impl Checker {
             return;
         }
 
+        // Canonicalize every comparison type to a defining-module-qualified
+        // identity up front, holding the read-only `self` borrow only for this
+        // block so the later mutable error reporting is unencumbered. The owned
+        // canonical `Ty` values then drive the comparisons; the diagnostics
+        // still render the original, un-canonicalized spellings.
+        let (
+            canon_expected_params,
+            canon_actual_params,
+            canon_expected_return,
+            canon_actual_return,
+        ) = {
+            let ctx = TraitSigCanonCtx {
+                modules: &self.modules,
+                trait_owner: trait_owner_module.as_deref(),
+                defines_qualified: &|qualified: &str| self.type_defs.contains_key(qualified),
+                is_local: &|name: &str| {
+                    self.local_type_defs.contains(name) || self.source_type_defs.contains(name)
+                },
+            };
+            let canon_expected_params: Vec<Ty> = expected_params
+                .iter()
+                .map(|t| canonicalize_type_identity(t, &ctx))
+                .collect();
+            let canon_actual_params: Vec<Ty> = impl_sig
+                .params
+                .iter()
+                .map(|t| canonicalize_type_identity(t, &ctx))
+                .collect();
+            let canon_expected_return = canonicalize_type_identity(&expected_return, &ctx);
+            let canon_actual_return = canonicalize_type_identity(&impl_sig.return_type, &ctx);
+            (
+                canon_expected_params,
+                canon_actual_params,
+                canon_expected_return,
+                canon_actual_return,
+            )
+        };
+
         for (i, (expected, actual)) in expected_params
             .iter()
             .zip(impl_sig.params.iter())
             .enumerate()
         {
-            if canonicalize_builtin_tags(expected, &self.modules)
-                != canonicalize_builtin_tags(actual, &self.modules)
-            {
+            if canon_expected_params[i] != canon_actual_params[i] {
                 let param_label = impl_sig.param_names.get(i).map_or_else(
                     || format!("parameter {}", i + 1),
                     |n| format!("parameter `{n}`"),
@@ -5275,9 +5379,7 @@ impl Checker {
             }
         }
 
-        if canonicalize_builtin_tags(&expected_return, &self.modules)
-            != canonicalize_builtin_tags(&impl_sig.return_type, &self.modules)
-        {
+        if canon_expected_return != canon_actual_return {
             self.report_error_with_note(
                 TypeErrorKind::TraitImplSignatureMismatch {
                     trait_name: trait_name.clone(),

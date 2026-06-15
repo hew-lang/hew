@@ -1,0 +1,12 @@
+//! Second module exporting a DISTINCT type that happens to share the bare name
+//! `CloseError` with `hew::closableerr`. Used by the cross-module trait-sig
+//! reject oracle: an `impl Closable` whose `close` returns
+//! `closableerr2.CloseError` does NOT satisfy a trait that requires
+//! `closableerr.CloseError` — two distinct nominal types from two modules, not
+//! one type spelled two ways. The signature comparison must reject this at the
+//! type boundary rather than collapse both bare names and accept it.
+
+/// A distinct error type with the same bare name as `closableerr.CloseError`.
+pub type CloseError {
+    detail: i64;
+}

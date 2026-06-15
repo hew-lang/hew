@@ -112,6 +112,10 @@ pub struct HewActor {
     pub pending_wake: AtomicBool,
     pub suspended_reply_channel: AtomicPtr<c_void>,
     pub suspended_cancel_token: AtomicPtr<c_void>,
+    // ── Runtime identity (appended; matches native exactly) ─────────────────
+    // Same always-compiled `RuntimeId` type the native struct uses, so the
+    // layout assert below is type-identical, not merely size-identical.
+    pub runtime_id: crate::runtime_id::RuntimeId,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -170,6 +174,8 @@ const _: () = {
     assert!(offset_of!(W, cont_tag) == offset_of!(N, cont_tag));
     assert!(offset_of!(W, pending_wake) == offset_of!(N, pending_wake));
     assert!(offset_of!(W, suspended_reply_channel) == offset_of!(N, suspended_reply_channel));
+    assert!(offset_of!(W, suspended_cancel_token) == offset_of!(N, suspended_cancel_token));
+    assert!(offset_of!(W, runtime_id) == offset_of!(N, runtime_id));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -1913,6 +1919,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         }
     }
 
@@ -4817,6 +4824,7 @@ mod tests {
             pending_wake: AtomicBool::new(false),
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

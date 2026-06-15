@@ -603,6 +603,14 @@ pub mod mpsc;
 /// cooperative scheduler keeps its own state model).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime;
+/// Public host/embedder handle to a Hew runtime — the external, refcounted
+/// owner token for the runtime lifecycle (native-only; no wasm host ABI).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runtime_handle;
+/// Process-wide runtime-instance identity (`RuntimeId`). Compiled on every
+/// target so `HewActor` and its wasm mirror can stamp the same type, even
+/// though the native-only `runtime` module below is configured out on wasm.
+pub mod runtime_id;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scheduler;
 #[cfg(any(target_arch = "wasm32", test))]

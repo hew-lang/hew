@@ -167,6 +167,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         pending_wake: AtomicBool::new(false),
         suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
         suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
+        runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
     })
 }
 

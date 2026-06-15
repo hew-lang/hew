@@ -44,20 +44,11 @@ use crate::registry::ShardedRegistry;
 use crate::scheduler::Scheduler;
 use crate::shutdown::SupervisorPtr;
 
-/// Process-wide runtime identity.
-///
-/// Distinct from a PID's `node_id`: a `RuntimeId` tags the runtime instance
-/// that owns an actor/timer/capability, so that — once more than one runtime
-/// can exist — cross-runtime routing can fail closed on an id mismatch without
-/// dereferencing any handle. In M1 there is exactly one runtime, always
-/// [`RuntimeId::DEFAULT`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct RuntimeId(pub u64);
-
-impl RuntimeId {
-    /// The id of the single default runtime used by AOT and JIT programs.
-    pub const DEFAULT: RuntimeId = RuntimeId(0);
-}
+// `RuntimeId` is defined in the always-compiled `runtime_id` module (it must
+// exist on wasm too, where this native `runtime` module is configured out, so
+// `HewActor` and its wasm mirror can stamp the same type). Re-exported here so
+// native callers keep using `crate::runtime::RuntimeId`.
+pub use crate::runtime_id::RuntimeId;
 
 /// The owned state of one Hew runtime instance.
 ///
@@ -110,11 +101,18 @@ impl RuntimeInner {
     }
 
     /// This runtime's identity.
+    ///
+    /// The actor spawn path stamps every actor with its spawning runtime's id
+    /// (`build_spawned_actor` reads `rt_current().runtime_id()`), and the
+    /// cross-runtime send/ask/by-id check compares the calling runtime's id
+    /// against the target actor's stamped id. Named `runtime_id` rather than
+    /// `id` to disambiguate from the actor PID, which is also an `id`.
+    #[inline]
     #[allow(
         dead_code,
-        reason = "read by cross-runtime routing once >1 runtime exists (M3/M4)"
+        reason = "consumed by the actor spawn stamp and cross-runtime send check in the following commit"
     )]
-    pub(crate) fn id(&self) -> RuntimeId {
+    pub(crate) fn runtime_id(&self) -> RuntimeId {
         self.id
     }
 }
@@ -237,6 +235,31 @@ pub(crate) fn rt_current() -> &'static RuntimeInner {
         // on scheduler workers (worker-loop `enter()`) and in the actor
         // terminate body (terminate `enter()`).
         unsafe { &*p }
+    }
+}
+
+/// Resolve the id of the runtime bound on this thread, without panicking when
+/// none is installed.
+///
+/// Same TLS-first → default-slot resolution order as [`rt_current`], but
+/// returns `None` instead of trapping when neither is installed. The
+/// cross-runtime send boundary uses this so it can run on a thread that has no
+/// runtime bound (an alias send issued before `hew_sched_init`, or in a unit
+/// test that drives a send path without a runtime guard): with no runtime
+/// installed there is no second runtime an actor could be foreign to, so the
+/// boundary treats the pointer as in-runtime rather than fabricating a trap the
+/// pre-check never used to take. Reads only the id discriminant, never a
+/// borrowed authority.
+#[inline]
+pub(crate) fn rt_current_id() -> Option<RuntimeId> {
+    let p = CURRENT_RUNTIME.with(Cell::get);
+    if p.is_null() {
+        rt_default().map(RuntimeInner::runtime_id)
+    } else {
+        // SAFETY: a non-null TLS pointer was installed by `enter()` against a
+        // `RuntimeInner` that outlives the installing guard on this thread,
+        // exactly as in `rt_current`.
+        Some(unsafe { (*p).runtime_id() })
     }
 }
 

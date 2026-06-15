@@ -1087,6 +1087,10 @@ mod tests {
     // no-registration (plain ask) reply must each set it TRUE (the legitimate,
     // sole waker still fires).
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-line over the pedantic limit after the mandatory runtime_id field append; the test is a coherent two-case scenario"
+    )]
     fn loser_reply_does_not_wake_caller_winner_and_plain_ask_do() {
         use crate::internal::types::{ContTag, HewActorState};
         use std::sync::atomic::{AtomicI32, AtomicU64};
@@ -1130,6 +1134,7 @@ mod tests {
                 pending_wake: AtomicBool::new(false),
                 suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
                 suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+                runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             })
         }
 

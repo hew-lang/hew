@@ -139,3 +139,121 @@ fn test_value_yielding_tail_match_still_returns_arm_value() {
     testing.assert_eq_str(loud(Action::Right), "right");
     testing.assert_eq_str(loud(Action::Wait), "wait");
 }
+
+// ── divergence THROUGH a nested if/else (both branches return) ─────────────
+// The original fix tracked cursor reachability in the match-lowering helpers,
+// but `lower_if`/`lower_if_let` unconditionally reopened the join block and so
+// reset the cursor to reachable. A tail `match` whose arm diverges through a
+// nested `if`/`else` (both branches `return`) therefore looked reachable, and
+// the dead `Unit` i8 stand-in was moved into the non-scalar return slot — the
+// same `Move type mismatch` abort #1907 fixes, reached one CFG layer deeper.
+// `lower_if` now keeps the cursor unreachable when both branches diverge.
+fn routed(a: Action, c: bool) -> string {
+    match a {
+        Action::Move => {
+            if c {
+                return "MOVE-C";
+            } else {
+                return "MOVE-NC";
+            }
+        },
+        Action::Left => {
+            if c {
+                return "LEFT-C";
+            } else {
+                return "LEFT-NC";
+            }
+        },
+        Action::Right => {
+            return "RIGHT";
+        },
+        Action::Wait => {
+            return "WAIT";
+        },
+    }
+}
+
+#[test]
+fn test_return_through_nested_if_in_every_arm() {
+    testing.assert_eq_str(routed(Action::Move, true), "MOVE-C");
+    testing.assert_eq_str(routed(Action::Move, false), "MOVE-NC");
+    testing.assert_eq_str(routed(Action::Left, true), "LEFT-C");
+    testing.assert_eq_str(routed(Action::Left, false), "LEFT-NC");
+    testing.assert_eq_str(routed(Action::Right, true), "RIGHT");
+    testing.assert_eq_str(routed(Action::Wait, false), "WAIT");
+}
+
+// ── Vec return through a nested if in every diverging arm ──────────────────
+// The aggregate return class is where the i8→ptr mismatch has teeth.
+fn routed_codes(a: Action, c: bool) -> Vec<i64> {
+    match a {
+        Action::Move => {
+            if c {
+                let v: Vec<i64> = Vec::new();
+                v.push(1);
+                v.push(2);
+                return v;
+            } else {
+                let v: Vec<i64> = Vec::new();
+                v.push(9);
+                return v;
+            }
+        },
+        Action::Left => {
+            return Vec::new();
+        },
+        Action::Right => {
+            return Vec::new();
+        },
+        Action::Wait => {
+            return Vec::new();
+        },
+    }
+}
+
+#[test]
+fn test_vec_return_through_nested_if() {
+    let a = routed_codes(Action::Move, true);
+    testing.assert_eq(a.len(), 2);
+    testing.assert_eq(a.get(0), 1);
+    testing.assert_eq(a.get(1), 2);
+    let b = routed_codes(Action::Move, false);
+    testing.assert_eq(b.len(), 1);
+    testing.assert_eq(b.get(0), 9);
+    let w = routed_codes(Action::Wait, true);
+    testing.assert_eq(w.len(), 0);
+}
+
+// ── NORMAL value-returning tail if must still secure the Move (no regression)
+// At least one branch falls through with a value, so the join stays reachable
+// and the return slot is written exactly as before — the secure path the fix
+// must not disturb.
+fn pick(c: bool) -> string {
+    if c {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+#[test]
+fn test_normal_value_returning_tail_if_unaffected() {
+    testing.assert_eq_str(pick(true), "yes");
+    testing.assert_eq_str(pick(false), "no");
+}
+
+// ── NORMAL guarded one-armed if: diverging then-branch, value tail after ────
+// The implicit else falls through, so the join is reachable and the trailing
+// `"late"` is the function's value. The fix must not treat this as divergent.
+fn guarded(c: bool) -> string {
+    if c {
+        return "early";
+    }
+    "late"
+}
+
+#[test]
+fn test_guarded_one_armed_if_keeps_reachable_join() {
+    testing.assert_eq_str(guarded(true), "early");
+    testing.assert_eq_str(guarded(false), "late");
+}

@@ -10481,6 +10481,18 @@ impl Builder {
             else_target: else_bb,
         });
 
+        // Track whether either arm falls through to the join with a value.
+        // When BOTH arms diverge (each `return`s/`panic`s, possibly through a
+        // further nested CFG expression) the join has no live predecessor and
+        // `result_place` is never written; the cursor must stay unreachable so
+        // a tail `if` does not feed the dead `Unit` i8 stand-in into a
+        // non-scalar return slot (the #1907 `Move type mismatch` abort). The
+        // reachability flag — not the value `Option` — is the load-bearing
+        // signal: a reachable Unit arm (`if c { return } else {}`) yields
+        // `None` but leaves the cursor reachable, while a divergent-through-if
+        // arm also yields `None` yet leaves the cursor unreachable.
+        let mut join_reachable = false;
+
         // Then arm.
         self.start_block(then_bb);
         let then_value = self.lower_value(then_expr);
@@ -10490,10 +10502,15 @@ impl Builder {
                 src,
             });
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Else arm. `else_expr: None` (the HIR-types-as-Unit case)
-        // emits a Goto-only block — no Move, no value contributed.
+        // emits a Goto-only block — no Move, no value contributed. That
+        // Goto-only block always falls through, so the join stays reachable
+        // for a one-armed `if c { return }`.
         self.start_block(else_bb);
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_value(else_expr);
@@ -10504,12 +10521,20 @@ impl Builder {
                 });
             }
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Join. Subsequent lowering continues in this block; the If
         // expression's value Place is the result_local (loads happen
-        // through the same Place that both arms wrote into).
+        // through the same Place that both arms wrote into). `start_block`
+        // resets `cursor_unreachable`, so re-flag the dead join AFTER opening
+        // it when both arms diverged.
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 
@@ -13771,6 +13796,16 @@ impl Builder {
         let else_bb = self.alloc_block();
         let join_bb = self.alloc_block();
 
+        // Track whether either arm falls through to the join with a value.
+        // When BOTH arms diverge (each `return`s/`panic`s, possibly through a
+        // further nested CFG expression) the join has no live predecessor and
+        // `result_place` is never written; the cursor must stay unreachable so
+        // a tail `if let` does not feed the dead `Unit` i8 stand-in into a
+        // non-scalar return slot (the #1907 `Move type mismatch` abort). The
+        // reachability flag — not the value `Option` — is the load-bearing
+        // signal (see `lower_if`/`lower_match_enum_tag` for the rationale).
+        let mut join_reachable = false;
+
         self.finish_current_block(Terminator::Branch {
             cond: cond_local,
             then_target: then_bb,
@@ -13833,9 +13868,16 @@ impl Builder {
                 self.binding_locals.remove(&binding);
             }
         }
+        // Binding restore does not touch `cursor_unreachable`; the flag still
+        // reflects whether the then-body diverged.
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
         // Else arm: lower else_body (if present), move result into result_place.
+        // `else_body: None` emits a Goto-only block that always falls through,
+        // so a one-armed `if let ... { return }` keeps the join reachable.
         self.start_block(else_bb);
         if let Some(eb) = else_body {
             self.active_scopes.push(eb.scope);
@@ -13856,10 +13898,18 @@ impl Builder {
             self.emit_pending_defers(eb.scope);
             self.active_scopes.pop();
         }
+        if !self.cursor_unreachable {
+            join_reachable = true;
+        }
         self.finish_current_block(Terminator::Goto { target: join_bb });
 
-        // Join: subsequent lowering continues here.
+        // Join: subsequent lowering continues here. `start_block` resets
+        // `cursor_unreachable`, so re-flag the dead join AFTER opening it when
+        // both arms diverged.
         self.start_block(join_bb);
+        if !join_reachable {
+            self.cursor_unreachable = true;
+        }
         Some(result_place)
     }
 

@@ -104,6 +104,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # Format-check std/ and examples/ .hew sources with the in-tree hew
+      # formatter. The hew-fmt-check target builds the debug hew binary first;
+      # the workspace is already compiled for clippy here, so this is just the
+      # final-link cost. Without this, an unformatted .hew file passes CI (which
+      # only checks Rust formatting) while failing local `make lint`.
+      - name: Check .hew formatting
+        run: make hew-fmt-check
+
       - name: Install SARIF tools
         run: |
           gh release download clippy-sarif-latest --repo psastras/sarif-rs \

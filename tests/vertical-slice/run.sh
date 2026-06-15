@@ -92,18 +92,6 @@ run_check_run_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
-expect_wasm_actor_runtime_reject() {
-  local fixture="$1"
-  local target="$2"
-  if "${HEW}" compile --target "${target}" \
-      "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
-      >"${reject_output}" 2>&1; then
-    echo "expected ${fixture} to fail closed for ${target}: actor runtime ABI is unavailable" >&2
-    exit 1
-  fi
-  grep -q 'actor runtime ABI' "${reject_output}"
-}
-
 expect_check_fail_contains() {
   local fixture_path="$1"
   local expected_substr="$2"
@@ -381,14 +369,15 @@ expect_check_fail_contains \
 # step=7 applied twice: exit 14.
 run_accept_expect_status "actor_let_field_read" 14
 
-# Actor runtime ABI fail-closed smoke: `actor_counter` is an accept fixture on
-# native targets, but actors require the production scheduler/mailbox ABI. Bare
-# `wasm32-unknown-unknown` has no runtime ABI at all, and the current Tier-2
-# `wasm32-wasip1` path is also gated at HIR until the actor ABI is ported. Keep
-# wasm-capable fixtures in the compile-positive smoke above; actor fixtures must
-# reject explicitly instead of accidentally failing an accept compile.
-expect_wasm_actor_runtime_reject "actor_counter" "wasm32-unknown-unknown"
-expect_wasm_actor_runtime_reject "actor_counter" "wasm32-wasip1"
+# Actors on wasm32: the cooperative scheduler/mailbox ABI (`scheduler_wasm`) is
+# present on `target_arch = "wasm32"`, so an actor program now compiles through the
+# shared wasm codegen pipeline (previously rejected at HIR). This pins the gate
+# lift; behavioural parity on the WASI run path is proven by the hew-sandbox-wasm
+# actor parity suite. (`hew compile` supports only `wasm32-unknown-unknown`.)
+"${HEW}" compile --target wasm32-unknown-unknown \
+  "${ROOT}/tests/vertical-slice/accept/actor_counter.hew" \
+  >"${accept_output}" 2>&1
+test -s "${ROOT}/.tmp/compile-out/actor_counter.wasm"
 
 # Q87 slice 1 regression: same actor body as `actor_counter`, but the two
 # `receive fn`s appear in reversed source order. Pre-Q87 the source-order

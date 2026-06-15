@@ -1,0 +1,141 @@
+//! Regression for returning a non-scalar (string / Vec / record) directly
+//! from an all-diverging tail `match` — every arm `return`s, so the match is
+//! the function's tail and produces no value of its own.
+//!
+//! Before the fix, MIR lowering moved the `Unit` (i8) match-result stand-in
+//! into the non-scalar return slot in the (runtime-unreachable) join block,
+//! which the codegen verifier rejected with `Move type mismatch: src=i8
+//! dest=ptr` (string/Vec) or `src=i8 dest=%struct` (record). The arm bodies
+//! already secure their own value into the return slot, so the join-block
+//! move was dead code that must never be emitted. Scalar returns were
+//! unaffected (the i8 stand-in benign-zexts into the scalar slot), so the
+//! teeth here are the heap/aggregate return classes.
+
+import std::string;
+
+import std::testing;
+
+enum Action {
+    Move;
+    Left;
+    Right;
+    Wait;
+}
+
+type Pt {
+    x: i64;
+    y: i64;
+}
+
+// ── string return from an all-diverging tail match ────────────────────────
+fn action_name(a: Action) -> string {
+    match a {
+        Action::Move => {
+            return "MOVE";
+        },
+        Action::Left => {
+            return "LEFT";
+        },
+        Action::Right => {
+            return "RIGHT";
+        },
+        Action::Wait => {
+            return "WAIT";
+        },
+    }
+}
+
+#[test]
+fn test_string_return_from_all_diverging_tail_match() {
+    testing.assert_eq_str(action_name(Action::Move), "MOVE");
+    testing.assert_eq_str(action_name(Action::Left), "LEFT");
+    testing.assert_eq_str(action_name(Action::Right), "RIGHT");
+    testing.assert_eq_str(action_name(Action::Wait), "WAIT");
+}
+
+// ── Vec return from an all-diverging tail match ───────────────────────────
+fn action_codes(a: Action) -> Vec<i64> {
+    match a {
+        Action::Move => {
+            let v: Vec<i64> = Vec::new();
+            v.push(10);
+            v.push(11);
+            return v;
+        },
+        Action::Left => {
+            let v: Vec<i64> = Vec::new();
+            v.push(20);
+            return v;
+        },
+        Action::Right => {
+            let v: Vec<i64> = Vec::new();
+            v.push(30);
+            v.push(31);
+            v.push(32);
+            return v;
+        },
+        Action::Wait => {
+            let v: Vec<i64> = Vec::new();
+            return v;
+        },
+    }
+}
+
+#[test]
+fn test_vec_return_from_all_diverging_tail_match() {
+    let m = action_codes(Action::Move);
+    testing.assert_eq(m.len(), 2);
+    testing.assert_eq(m.get(0), 10);
+    testing.assert_eq(m.get(1), 11);
+    let r = action_codes(Action::Right);
+    testing.assert_eq(r.len(), 3);
+    testing.assert_eq(r.get(0), 30);
+    testing.assert_eq(r.get(1), 31);
+    testing.assert_eq(r.get(2), 32);
+    let w = action_codes(Action::Wait);
+    testing.assert_eq(w.len(), 0);
+}
+
+// ── record return from an all-diverging tail match ────────────────────────
+fn action_point(a: Action) -> Pt {
+    match a {
+        Action::Move => {
+            return Pt { x: 1, y: 2 };
+        },
+        Action::Left => {
+            return Pt { x: 3, y: 4 };
+        },
+        Action::Right => {
+            return Pt { x: 5, y: 6 };
+        },
+        Action::Wait => {
+            return Pt { x: 7, y: 8 };
+        },
+    }
+}
+
+#[test]
+fn test_record_return_from_all_diverging_tail_match() {
+    let p = action_point(Action::Right);
+    testing.assert_eq(p.x, 5);
+    testing.assert_eq(p.y, 6);
+    let q = action_point(Action::Move);
+    testing.assert_eq(q.x, 1);
+    testing.assert_eq(q.y, 2);
+}
+
+// ── value-yielding tail match must keep working (guard does not fire) ──────
+fn loud(a: Action) -> string {
+    match a {
+        Action::Move => "move",
+        Action::Left => "left",
+        Action::Right => "right",
+        Action::Wait => "wait",
+    }
+}
+
+#[test]
+fn test_value_yielding_tail_match_still_returns_arm_value() {
+    testing.assert_eq_str(loud(Action::Right), "right");
+    testing.assert_eq_str(loud(Action::Wait), "wait");
+}

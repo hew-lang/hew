@@ -100,9 +100,13 @@ fn ensure_hew_runtime_lib(repo: &Path) {
         // On Windows MSVC the static library is hew.lib; on Unix it is libhew.a.
         let lib_name = if cfg!(windows) { "hew.lib" } else { "libhew.a" };
         let lib = target_dir(repo).join("debug").join(lib_name);
-        if lib.exists() {
-            return;
-        }
+        // Always ask cargo to (re)build libhew.a rather than short-circuiting on
+        // its mere presence. Cargo's own fingerprint makes this a fast no-op when
+        // the archive is current and regenerates it when the toolchain (rustc /
+        // bundled LLVM) or the runtime/stdlib sources changed. A bare
+        // `lib.exists()` early-return reused a stale archive after a toolchain
+        // upgrade, linking a freshly-rebuilt `hew` against old object code and
+        // failing the link.
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let status = Command::new(cargo)
             .current_dir(repo)
@@ -112,6 +116,11 @@ fn ensure_hew_runtime_lib(repo: &Path) {
         assert!(
             status.success(),
             "cargo build -p hew-lib failed: {status:?}"
+        );
+        assert!(
+            lib.exists(),
+            "{lib_name} missing after build: {}",
+            lib.display()
         );
     });
 }

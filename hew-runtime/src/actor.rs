@@ -3491,6 +3491,12 @@ pub unsafe extern "C" fn hew_actor_register_type(
 ///       WHEN: Remove if we add a build-system mechanism to communicate the profiler
 ///       feature flag to the codegen.
 ///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+///
+/// # Safety
+///
+/// This stub never dereferences its arguments, so any pointer values are
+/// accepted. The signature stays `unsafe extern "C"` to match the
+/// profiler-enabled variant that codegen links against.
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_register_type(
@@ -3544,6 +3550,12 @@ pub unsafe extern "C" fn hew_register_handler_name(
 ///       whether the body does anything.
 ///       WHEN: Remove if a build-system mechanism can communicate feature flags to codegen.
 ///       REAL: Pass a feature flag to the codegen so it can omit the call entirely.
+///
+/// # Safety
+///
+/// This stub never dereferences its arguments, so any pointer values are
+/// accepted. The signature stays `unsafe extern "C"` to match the
+/// profiler-enabled variant that codegen links against.
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "profiler")))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_register_handler_name(

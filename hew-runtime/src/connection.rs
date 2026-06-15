@@ -46,12 +46,17 @@ use rand::rng;
 use rand::RngExt;
 
 use crate::cluster::HewCluster;
+// `encode_envelope_frame_from_raw_parts` is used only by the encryption-gated
+// `encode_envelope`; import it conditionally so non-encryption builds don't
+// carry an unused import.
+#[cfg(feature = "encryption")]
+use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
     decode_registry_gossip_payload, decode_swim_payload, decode_wire_frame, encode_control_frame,
-    encode_envelope_frame_from_raw_parts, encode_registry_gossip_payload, encode_swim_payload,
-    ControlFrame, RegistryGossipPayload, SwimControlPayload, SwimGossipEntry, WireFrame,
-    CTRL_REGISTRY_GOSSIP, CTRL_SWIM, FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE,
-    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, WIRE_VERSION,
+    encode_registry_gossip_payload, encode_swim_payload, ControlFrame, RegistryGossipPayload,
+    SwimControlPayload, SwimGossipEntry, WireFrame, CTRL_REGISTRY_GOSSIP, CTRL_SWIM,
+    FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
+    WIRE_VERSION,
 };
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
@@ -76,6 +81,9 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 const HEW_HANDSHAKE_SIZE: usize = 48;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
 const HEW_PROTOCOL_VERSION: u16 = 1;
+// Advertised only when the `encryption` feature is compiled in; both consumers
+// (`local_feature_flags` and `supports_encryption`) are encryption-gated.
+#[cfg(feature = "encryption")]
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 // Bit 2 (HEW_FEATURE_SUPPORTS_REMOTE_SPAWN) is reserved; not advertised until a
@@ -644,6 +652,13 @@ fn reconnect_worker_loop(
 }
 
 fn local_feature_flags() -> u32 {
+    #[cfg_attr(
+        not(feature = "encryption"),
+        allow(
+            unused_mut,
+            reason = "mut is only exercised by the encryption-gated flags |= below"
+        )
+    )]
     let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_ASK_REJECTION;
     #[cfg(feature = "encryption")]
     {
@@ -866,6 +881,8 @@ fn install_connection_actor(
     install
 }
 
+// Sole caller is the encryption-gated send path in `hew_connmgr_send`.
+#[cfg(feature = "encryption")]
 unsafe fn encode_envelope(
     target_actor_id: u64,
     msg_type: i32,
@@ -1424,10 +1441,16 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
     clippy::needless_pass_by_value,
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "reader_loop captures all per-connection state; splitting into a struct \
-              would require unsafe Send impls for the contained raw pointers"
+// The 8th argument (`noise_transport`) only exists under the `encryption`
+// feature; without it the arg list is under the lint threshold, so the
+// expectation must be conditional or it goes unfulfilled.
+#[cfg_attr(
+    feature = "encryption",
+    expect(
+        clippy::too_many_arguments,
+        reason = "reader_loop captures all per-connection state; splitting into a struct \
+                  would require unsafe Send impls for the contained raw pointers"
+    )
 )]
 fn reader_loop(
     mgr: SendConnMgr,
@@ -1467,10 +1490,11 @@ fn reader_loop(
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
 
-        let mut payload_ptr = buf.as_mut_ptr();
-        let mut payload_len = read_len;
+        // Decrypt in place when encryption is on; `buf.as_mut_ptr()` is stable
+        // across the in-place copy, so only the length can change.
         #[cfg(feature = "encryption")]
-        {
+        let payload_len = {
+            let mut len = read_len;
             let mut decrypted = vec![0u8; read_len];
             let mut guard = noise_transport.lock_or_recover();
             if let Some(noise) = guard.as_mut() {
@@ -1479,11 +1503,14 @@ fn reader_loop(
                     reader_cleanup(mgr, conn_id, &stop_flag);
                     break;
                 };
-                payload_len = n;
-                buf[..payload_len].copy_from_slice(&decrypted[..payload_len]);
-                payload_ptr = buf.as_mut_ptr();
+                len = n;
+                buf[..len].copy_from_slice(&decrypted[..len]);
             }
-        }
+            len
+        };
+        #[cfg(not(feature = "encryption"))]
+        let payload_len = read_len;
+        let payload_ptr = buf.as_mut_ptr();
 
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.
@@ -1836,6 +1863,13 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     }
 
+    #[cfg_attr(
+        not(feature = "encryption"),
+        allow(
+            unused_mut,
+            reason = "filled by copy_from_slice only in the encryption-gated keypair block"
+        )
+    )]
     let mut local_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
     #[cfg(feature = "encryption")]
     let local_noise_private = {
@@ -2150,20 +2184,16 @@ pub unsafe extern "C" fn hew_connmgr_send(
         #[cfg(feature = "encryption")]
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
         let ok = mgr_ref.connections.access(|conns| {
-            let conn = conns.iter().find(|c| c.conn_id == conn_id);
-            match conn {
-                Some(c)
-                    if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
-                        && (target_node_id == 0 || c.peer_node_id == target_node_id) =>
-                {
-                    #[cfg(feature = "encryption")]
-                    {
-                        noise_out = Some(Arc::clone(&c.noise_transport));
-                    }
-                    true
-                }
-                _ => false,
+            let active = conns.iter().find(|c| {
+                c.conn_id == conn_id
+                    && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && (target_node_id == 0 || c.peer_node_id == target_node_id)
+            });
+            #[cfg(feature = "encryption")]
+            if let Some(c) = active {
+                noise_out = Some(Arc::clone(&c.noise_transport));
             }
+            active.is_some()
         });
         if !ok {
             return -1;
@@ -2260,19 +2290,16 @@ unsafe fn send_preencoded_on_manager(
     {
         #[cfg(feature = "encryption")]
         let mut noise_out = None::<Arc<Mutex<Option<snow::TransportState>>>>;
-        let ok =
-            mgr_ref
-                .connections
-                .access(|conns| match conns.iter().find(|c| c.conn_id == conn_id) {
-                    Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
-                        #[cfg(feature = "encryption")]
-                        {
-                            noise_out = Some(Arc::clone(&c.noise_transport));
-                        }
-                        true
-                    }
-                    _ => false,
-                });
+        let ok = mgr_ref.connections.access(|conns| {
+            let active = conns.iter().find(|c| {
+                c.conn_id == conn_id && c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+            });
+            #[cfg(feature = "encryption")]
+            if let Some(c) = active {
+                noise_out = Some(Arc::clone(&c.noise_transport));
+            }
+            active.is_some()
+        });
         if !ok {
             return -1;
         }

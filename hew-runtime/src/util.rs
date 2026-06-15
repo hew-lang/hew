@@ -10,7 +10,10 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 /// Build a JSON array by writing each element directly into the output string.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Consumed only by the profiler's JSON snapshot endpoints; gated to the
+/// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "profiler", test)))]
 pub(crate) fn json_array<I, F>(items: I, mut write_item: F) -> String
 where
     I: IntoIterator,
@@ -31,7 +34,10 @@ where
 }
 
 /// Push a JSON string value into `out`, escaping control characters as needed.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Consumed only by the profiler's JSON snapshot endpoints; gated to the
+/// `profiler` feature (plus `test`) so non-profiler builds don't carry it dead.
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "profiler", test)))]
 pub(crate) fn push_json_string(out: &mut String, s: &str) {
     use std::fmt::Write as _;
 

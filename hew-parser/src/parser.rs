@@ -483,6 +483,21 @@ impl Drop for RecursionGuard {
     }
 }
 
+/// Restores the `no_struct_literal` restriction to its previous value on drop.
+/// Holds the shared cell directly (not a `&mut Parser`) so it survives every
+/// early `return`/`?` path inside a delimited-expression arm without borrowing
+/// the parser for its whole lifetime.
+struct NoStructLiteralGuard {
+    cell: Rc<Cell<bool>>,
+    prev: bool,
+}
+
+impl Drop for NoStructLiteralGuard {
+    fn drop(&mut self) {
+        self.cell.set(self.prev);
+    }
+}
+
 /// Snapshot of parser position for speculative (backtracking) parses.
 struct SavedPos {
     pos: usize,
@@ -536,6 +551,20 @@ pub struct Parser<'src> {
     scope_expr_depth: usize,
     /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
     fork_block_depth: usize,
+    /// True while parsing an `if`/`while` condition or `match` scrutinee at the
+    /// top level (outside any bracketing delimiter). In that position a bare
+    /// identifier immediately followed by `{` must NOT be read as a struct
+    /// literal — the `{` opens the then-block / loop body / match arms. Without
+    /// this, `if flag { }` parses `flag { }` as an empty struct literal and the
+    /// real block goes missing. The flag is cleared the moment we descend into a
+    /// delimited sub-expression (`(...)`, `[...]`, call args, index, struct
+    /// body) so a struct literal nested there — e.g. `if (Foo { a: 1 }).b {…}`
+    /// — still parses.
+    ///
+    /// Held in an `Rc<Cell<bool>>` (like `depth`) so a `NoStructLiteralGuard`
+    /// can restore the previous value on drop without borrowing the parser for
+    /// its whole lifetime.
+    no_struct_literal: Rc<Cell<bool>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,6 +671,7 @@ impl<'src> Parser<'src> {
             allow_implicit_self_params: false,
             scope_expr_depth: 0,
             fork_block_depth: 0,
+            no_struct_literal: Rc::new(Cell::new(false)),
         }
     }
 
@@ -5753,7 +5783,7 @@ impl<'src> Parser<'src> {
                         else_body,
                     }
                 } else {
-                    let condition = self.parse_expr()?;
+                    let condition = self.parse_cond_expr()?;
                     let then_block = self.parse_block()?;
 
                     let else_block = if self.eat(&Token::Else) {
@@ -5787,7 +5817,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Match) => {
                 self.advance();
-                let scrutinee = self.parse_expr()?;
+                let scrutinee = self.parse_cond_expr()?;
                 self.expect(&Token::LeftBrace)?;
 
                 let mut arms = Vec::new();
@@ -5818,7 +5848,7 @@ impl<'src> Parser<'src> {
                         body,
                     }
                 } else {
-                    let condition = self.parse_expr()?;
+                    let condition = self.parse_cond_expr()?;
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: None,
@@ -5926,7 +5956,7 @@ impl<'src> Parser<'src> {
                         body,
                     }
                 } else {
-                    let condition = self.parse_expr()?;
+                    let condition = self.parse_cond_expr()?;
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: Some(label),
@@ -6018,6 +6048,45 @@ impl<'src> Parser<'src> {
     fn parse_expr(&mut self) -> Option<Spanned<Expr>> {
         let _guard = self.enter_recursion()?;
         self.parse_expr_bp(0)
+    }
+
+    /// True while a bare identifier directly followed by `{` must be read as an
+    /// identifier (block opener) rather than a struct literal — i.e. inside an
+    /// `if`/`while` condition or `match` scrutinee at the top level.
+    fn no_struct_literal(&self) -> bool {
+        self.no_struct_literal.get()
+    }
+
+    /// Set `no_struct_literal` to `value` and return a guard that restores the
+    /// previous value on drop. Survives every early `return`/`?` path.
+    fn set_no_struct_literal(&self, value: bool) -> NoStructLiteralGuard {
+        let prev = self.no_struct_literal.get();
+        self.no_struct_literal.set(value);
+        NoStructLiteralGuard {
+            cell: Rc::clone(&self.no_struct_literal),
+            prev,
+        }
+    }
+
+    /// Parse an `if`/`while` condition or `match` scrutinee. In this position a
+    /// bare identifier directly followed by `{` opens the block, never a struct
+    /// literal, so the `no_struct_literal` restriction is set for the duration
+    /// of the parse. The restriction is lifted again inside any bracketing
+    /// delimiter (see the `(...)`, `[...]`, call-args, index, and struct-body
+    /// parse sites), so `if (Foo { a: 1 }).b {…}` and other delimited struct
+    /// literals in the condition still parse.
+    fn parse_cond_expr(&mut self) -> Option<Spanned<Expr>> {
+        let _guard = self.set_no_struct_literal(true);
+        self.parse_expr()
+    }
+
+    /// Run `f` with the `no_struct_literal` restriction lifted. Used when the
+    /// parser descends through an unambiguous delimiter (`(...)`, `[...]`, call
+    /// args, index, struct body): the enclosing `{` is no longer the condition's
+    /// block, so a struct literal there is no longer ambiguous.
+    fn with_struct_literals_allowed<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let _guard = self.set_no_struct_literal(false);
+        f(self)
     }
 
     #[expect(
@@ -6607,16 +6676,21 @@ impl<'src> Parser<'src> {
                     };
 
                 if explicit_type_args.is_some() || self.peek() == Some(&Token::LeftBrace) {
-                    // Look ahead to disambiguate struct init vs block (only when no
-                    // explicit type args; with type args we already know it's a struct).
-                    // Uses the shared probe helper — identical disambiguation at every
-                    // call site including the dot-postfix struct-literal arm.
-                    let is_struct_init =
-                        explicit_type_args.is_some() || self.probe_struct_init_brace();
+                    // In `if`/`while` condition or `match` scrutinee position a
+                    // bare identifier followed by `{` opens the block, not a
+                    // struct literal — so the probe is suppressed there. The
+                    // restriction only applies to the bare-identifier form; the
+                    // explicit-type-arg form (`Name<T> { ... }`) is already gated
+                    // on `>{` and is unambiguous, so it is left intact.
+                    let is_struct_init = explicit_type_args.is_some()
+                        || (!self.no_struct_literal() && self.probe_struct_init_brace());
 
                     if is_struct_init {
                         self.advance(); // consume {
-                        let (fields, base) = self.parse_struct_init_body()?;
+                                        // Inside the struct body the `{` is consumed, so any
+                                        // nested bare-ident struct literal is unambiguous again.
+                        let (fields, base) =
+                            self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
                         Expr::StructInit {
                             name,
                             fields,
@@ -6689,6 +6763,11 @@ impl<'src> Parser<'src> {
             }
             Token::LeftParen => {
                 self.advance();
+                // Inside `(...)` the enclosing `{` is no longer the condition's
+                // block, so a struct literal here is unambiguous — lift the
+                // restriction for the parenthesised sub-expression (e.g.
+                // `if (Foo { a: 1 }).b {…}`). Restored on arm exit.
+                let _allow_struct = self.set_no_struct_literal(false);
 
                 // Detect and reject old `(params) => body` parenthesized lambda syntax.
                 // This form was removed in v0.5; the current form is `|params| body`.
@@ -6750,6 +6829,9 @@ impl<'src> Parser<'src> {
             }
             Token::LeftBracket => {
                 self.advance();
+                // Inside `[...]` the enclosing `{` is no longer the condition's
+                // block, so struct literals in array elements are unambiguous.
+                let _allow_struct = self.set_no_struct_literal(false);
                 if self.eat(&Token::RightBracket) {
                     return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
                 }
@@ -6812,7 +6894,7 @@ impl<'src> Parser<'src> {
                         else_body,
                     }
                 } else {
-                    let condition = Box::new(self.parse_expr()?);
+                    let condition = Box::new(self.parse_cond_expr()?);
                     let then_block = Box::new(self.parse_expr()?);
                     let else_block = if self.eat(&Token::Else) {
                         Some(Box::new(self.parse_expr()?))
@@ -6828,7 +6910,7 @@ impl<'src> Parser<'src> {
             }
             Token::Match => {
                 self.advance();
-                let scrutinee = Box::new(self.parse_expr()?);
+                let scrutinee = Box::new(self.parse_cond_expr()?);
                 self.expect(&Token::LeftBrace)?;
 
                 let mut arms = Vec::new();
@@ -7487,12 +7569,11 @@ impl<'src> Parser<'src> {
             // Disambiguate via the shared probe: `{ field: val }` → struct init;
             // `{ stmt; }` or `{ expr }` → not a struct literal, fall through.
             //
-            // Known parser-substrate gap (not introduced here): Hew has no
-            // no-struct-literal expression mode for `if`/`while` conditions, so
-            // `if m.E::V { x: 1 }` is ambiguous in the same way it would be in
-            // Rust without the brace-suppression mode.  That is a pre-existing
-            // condition; no fix in this slice.
-            if self.probe_struct_init_brace() {
+            // In `if`/`while` condition or `match` scrutinee position the
+            // `no_struct_literal` restriction is active, so `if m.E::V { }` opens
+            // the block rather than starting a struct literal — consistent with
+            // the bare-identifier form above.
+            if !self.no_struct_literal() && self.probe_struct_init_brace() {
                 // Build the qualified type name: `module.Type::Variant`.
                 // `lhs` is the module identifier; `method` is `Type::Variant`.
                 // Non-identifier receivers (e.g. chained `a.b.C::D { }`) fall
@@ -7513,7 +7594,8 @@ impl<'src> Parser<'src> {
                 };
                 let qualified_name = format!("{module_name}.{method}");
                 self.advance(); // consume {
-                let (fields, base) = self.parse_struct_init_body()?;
+                let (fields, base) =
+                    self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
                 let end = self.peek_span().start;
                 Some((
                     Expr::StructInit {
@@ -7598,6 +7680,9 @@ impl<'src> Parser<'src> {
     ///
     /// Named args must come after all positional args.
     fn parse_call_args(&mut self) -> Option<Vec<CallArg>> {
+        // Call arguments sit inside `(...)`, so a struct literal here is
+        // unambiguous even in condition position (`if f(Foo { a: 1 }) {…}`).
+        let _allow_struct = self.set_no_struct_literal(false);
         let mut args = Vec::new();
         let mut seen_named = false;
 
@@ -7666,6 +7751,9 @@ impl<'src> Parser<'src> {
     fn parse_index_postfix(&mut self, lhs: Spanned<Expr>) -> Option<Spanned<Expr>> {
         let start = lhs.1.start;
         self.advance(); // consume [
+                        // Index contents sit inside `[...]`, so a struct literal here is
+                        // unambiguous even in condition position (`if xs[Foo { a: 1 }.k] {…}`).
+        let _allow_struct = self.set_no_struct_literal(false);
 
         // C-3 range-slice support: detect the five range forms in index
         // position and emit `Expr::Range` (with the inclusive flag) so the

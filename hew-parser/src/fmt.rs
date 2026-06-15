@@ -2634,6 +2634,12 @@ impl<'a> Formatter<'a> {
     /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
     /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
     /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
+    ///
+    /// A `StructInit` receiver also needs parens: in `if`/`while` condition or
+    /// `match` scrutinee position a bare struct literal is suppressed (the `{`
+    /// opens the block), so `(Foo { a: 1 }).b` must keep its parens to re-parse
+    /// as a field access. Emitting them unconditionally is always correct — in
+    /// non-condition position the parens are merely redundant, not wrong.
     fn needs_receiver_parens(expr: &Expr) -> bool {
         matches!(
             expr,
@@ -2643,6 +2649,7 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
+                | Expr::StructInit { .. }
         )
     }
 

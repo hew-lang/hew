@@ -1,0 +1,81 @@
+//! Regression: an `if`/`while` condition or `match` scrutinee that is a bare
+//! identifier directly followed by an EMPTY `{ }` block must open the block,
+//! not start a struct literal. Before the fix, `if flag { } else { ... }`
+//! parsed `flag { }` as an empty struct literal and the real then-block went
+//! missing ("expected `{`, found `else`").
+
+import std::testing;
+
+// Empty then-block with a bare-identifier condition: the canonical repro.
+fn pick(flag: bool) -> i64 {
+    if flag {} else {
+        return 1;
+    }
+    return 0;
+}
+
+#[test]
+fn test_if_empty_then_block_bare_ident_true() {
+    testing.assert_eq(pick(true), 0);
+}
+
+#[test]
+fn test_if_empty_then_block_bare_ident_false() {
+    testing.assert_eq(pick(false), 1);
+}
+
+// Empty body `while` with a bare-identifier condition runs the loop and exits.
+fn drain(start: bool) -> i64 {
+    var flag = start;
+    var ticks = 0;
+    while flag {
+        ticks = ticks + 1;
+        flag = false;
+    }
+    // An empty-body `while` with a bare-ident condition must also parse.
+    while flag {}
+    return ticks;
+}
+
+#[test]
+fn test_while_bare_ident_empty_body_parses() {
+    testing.assert_eq(drain(true), 1);
+    testing.assert_eq(drain(false), 0);
+}
+
+// A parenthesised struct literal in the condition must still parse — the
+// no-struct-literal restriction is lifted inside `(...)`, and the formatter
+// keeps the parens so the form round-trips.
+type Flags {
+    on: bool;
+}
+
+fn paren_struct_cond() -> i64 {
+    if (Flags { on: true }).on {
+        return 7;
+    }
+    return 0;
+}
+
+#[test]
+fn test_paren_struct_literal_in_condition() {
+    testing.assert_eq(paren_struct_cond(), 7);
+}
+
+// No regression: a normal struct literal in expression (non-condition) position
+// still parses and evaluates.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn make_point() -> Point {
+    return Point { x: 3, y: 4 };
+}
+
+#[test]
+fn test_struct_literal_expression_position_unaffected() {
+    let p = make_point();
+    testing.assert_eq(p.x, 3);
+    testing.assert_eq(p.y, 4);
+}

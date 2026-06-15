@@ -1058,16 +1058,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             start,
             end,
             inclusive,
+            step,
+            descending,
             body,
         } => {
             writeln!(
                 out,
-                "{pad}  for-range {} (inclusive={inclusive}, label={label:?})",
+                "{pad}  for-range {} (inclusive={inclusive}, descending={descending}, label={label:?})",
                 binding.name
             )
             .expect("write to string");
             dump_expr(out, start, indent + 4);
             dump_expr(out, end, indent + 4);
+            dump_expr(out, step, indent + 4);
             dump_block(out, body, indent + 4);
         }
         HirExprKind::Match { scrutinee, arms } => {

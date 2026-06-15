@@ -4432,10 +4432,15 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             collect_unknown_self_fields_in_expr(start, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(end, state_fields, seen, unknown);
+            collect_unknown_self_fields_in_expr(step, state_fields, seen, unknown);
             collect_unknown_self_fields_in_block(body, state_fields, seen, unknown);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -6884,10 +6889,15 @@ impl Builder {
                 self.collect_vec_owned_element_keys_from_block(body);
             }
             HirExprKind::ForRange {
-                start, end, body, ..
+                start,
+                end,
+                step,
+                body,
+                ..
             } => {
                 self.collect_vec_owned_element_keys_from_expr(start);
                 self.collect_vec_owned_element_keys_from_expr(end);
+                self.collect_vec_owned_element_keys_from_expr(step);
                 self.collect_vec_owned_element_keys_from_block(body);
             }
             // Remaining variants either carry no owned-Vec sub-expression in
@@ -9528,8 +9538,19 @@ impl Builder {
                 start,
                 end,
                 inclusive,
+                step,
+                descending,
                 body,
-            } => self.lower_for_range(label.as_deref(), binding, start, end, *inclusive, body),
+            } => self.lower_for_range(
+                label.as_deref(),
+                binding,
+                start,
+                end,
+                *inclusive,
+                step,
+                *descending,
+                body,
+            ),
             HirExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms, &expr.ty),
             HirExprKind::WhileLet {
                 label,
@@ -14011,6 +14032,32 @@ impl Builder {
     /// `TrapKind::IntegerOverflow` guard.  A loop iterating to `i64::MAX`
     /// would try to increment past it and trap rather than silently wrapping
     /// — fail-closed per the reliability tenet.
+    ///
+    /// ## Adapters: `step` and `descending`
+    ///
+    /// `step` is the per-iteration stride (default literal `1`, set by
+    /// `.step_by(k)`); `descending` is set by `.rev()`.  The two compose:
+    ///
+    ///   - **Ascending** (`descending == false`): counter starts at `start`,
+    ///     the header tests `counter < end_val` (with `end_val = end (+1 if
+    ///     inclusive)`), and each iteration adds `step` (checked → trap on
+    ///     overflow).
+    ///   - **Descending** (`descending == true`): counter starts at the high
+    ///     element (`end` if inclusive, `end - 1` if exclusive), the header
+    ///     tests `counter >= start`, and each iteration subtracts `step`.  A
+    ///     checked subtract that underflows the counter's type (e.g.
+    ///     `0u32 - 1`) is the natural loop terminus and branches to the exit
+    ///     rather than trapping, so a descending unsigned range to `0` does
+    ///     not wrap.  This makes `(0..5).rev()` yield `4 3 2 1 0` and
+    ///     `(0..=10).rev().step_by(3)` yield `10 7 4 1`.
+    ///
+    /// A statically-zero step is rejected by the checker; a runtime-zero step
+    /// (`step_by(n)` with `n == 0`) traps as `DivideByZero` before the loop
+    /// header so the loop can never spin forever — fail-closed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ForRange node's fields (label, binding, start, end, inclusive, step, descending, body) are threaded individually; bundling them into a struct would only re-spread them here"
+    )]
     fn lower_for_range(
         &mut self,
         label: Option<&str>,
@@ -14018,6 +14065,8 @@ impl Builder {
         start: &HirExpr,
         end: &HirExpr,
         inclusive: bool,
+        step: &HirExpr,
+        descending: bool,
         body: &hew_hir::HirBlock,
     ) -> Option<Place> {
         // The loop counter and bound use the checker-resolved element type from
@@ -14033,79 +14082,178 @@ impl Builder {
         } else {
             ResolvedTy::I64
         };
+        // Signedness drives the checked-arithmetic intrinsic family for the
+        // counter advance.  Falls back to Signed for a non-integer counter_ty
+        // (already canonicalised to I64 above), matching the historical
+        // ascending behaviour.
+        let counter_signedness = integer_signedness(&counter_ty).unwrap_or(IntSignedness::Signed);
+
         let counter = self.alloc_local(counter_ty.clone());
-        let end_val = self.alloc_local(counter_ty.clone());
+        // For an ascending loop `bound` is the exclusive upper bound the header
+        // compares the counter against; for a descending loop it is the low
+        // bound (the `start` of the range) the counter must stay `>=`.
+        let bound = self.alloc_local(counter_ty.clone());
 
-        // Initialise counter = start.
-        let start_place = self.lower_value(start)?;
+        // Lower the stride into a local once; both directions reuse it.
+        let step_place = self.lower_value(step)?;
+        let step_val = self.alloc_local(counter_ty.clone());
         self.instructions.push(Instr::Move {
-            dest: counter,
-            src: start_place,
+            dest: step_val,
+            src: step_place,
         });
-
-        // Compute the exclusive upper bound.
-        // Exclusive (`a..b`)  → end_val = raw_end (simple move).
-        // Inclusive (`a..=b`) → end_val = raw_end + 1 (checked; trap on
-        //                       overflow so `a..=i64::MAX` fails closed).
-        let raw_end = self.lower_value(end)?;
-        if inclusive {
-            let one = self.alloc_local(counter_ty.clone());
+        // Runtime fail-closed guard: a zero step would never advance the
+        // counter and spin forever.  The checker rejects a statically-zero
+        // literal step; this covers a dynamic `step_by(n)` with `n == 0`.
+        // (A negative step is impossible for an unsigned width and is rejected
+        // by the checker for a signed literal; a dynamic negative signed step
+        // is caught by the same `<= 0` test against zero below.)
+        {
+            let zero = self.alloc_local(counter_ty.clone());
             self.instructions.push(Instr::ConstI64 {
-                dest: one,
-                value: 1,
+                dest: zero,
+                value: 0,
             });
-            let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntArithChecked {
-                op: IntArithOp::Add,
-                signed: IntSignedness::Signed,
-                dest: end_val,
-                lhs: raw_end,
-                rhs: one,
-                overflow_flag,
+            let bad_step = self.alloc_local(ResolvedTy::Bool);
+            self.instructions.push(Instr::IntCmp {
+                dest: bad_step,
+                pred: CmpPred::SignedLessEq,
+                lhs: step_val,
+                rhs: zero,
             });
-            // On overflow: trap.  On success: fall through to header.
-            let trap_bb = self.alloc_block();
-            let pre_header_bb = self.alloc_block();
+            let bad_step_trap = self.alloc_block();
+            let step_ok_bb = self.alloc_block();
             self.finish_current_block(Terminator::Branch {
-                cond: overflow_flag,
-                then_target: trap_bb,
-                else_target: pre_header_bb,
+                cond: bad_step,
+                then_target: bad_step_trap,
+                else_target: step_ok_bb,
             });
-            self.start_block(trap_bb);
+            self.start_block(bad_step_trap);
             self.finish_current_block(Terminator::Trap {
-                kind: TrapKind::IntegerOverflow,
+                kind: TrapKind::DivideByZero,
             });
-            // Continue building in pre_header_bb; the loop header is
-            // allocated below and we Goto it from here.
-            self.start_block(pre_header_bb);
-        } else {
-            self.instructions.push(Instr::Move {
-                dest: end_val,
-                src: raw_end,
-            });
+            self.start_block(step_ok_bb);
         }
 
-        // Allocate loop structure blocks. `inc_bb` is a dedicated increment
+        let raw_start = self.lower_value(start)?;
+        let raw_end = self.lower_value(end)?;
+
+        if descending {
+            // Descending: counter starts at the high element and the header
+            // gates on `counter >= start`.  `bound` holds `start`.
+            self.instructions.push(Instr::Move {
+                dest: bound,
+                src: raw_start,
+            });
+            if inclusive {
+                // `a..=b` reversed starts at `b`.
+                self.instructions.push(Instr::Move {
+                    dest: counter,
+                    src: raw_end,
+                });
+            } else {
+                // `a..b` reversed starts at `b - 1` (checked; trap on
+                // underflow so `a..MIN` fails closed rather than wrapping).
+                let one = self.alloc_local(counter_ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest: one,
+                    value: 1,
+                });
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntArithChecked {
+                    op: IntArithOp::Sub,
+                    signed: counter_signedness,
+                    dest: counter,
+                    lhs: raw_end,
+                    rhs: one,
+                    overflow_flag,
+                });
+                let trap_bb = self.alloc_block();
+                let pre_header_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: trap_bb,
+                    else_target: pre_header_bb,
+                });
+                self.start_block(trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                self.start_block(pre_header_bb);
+            }
+        } else {
+            // Ascending: counter starts at `start`; `bound` is the exclusive
+            // upper bound.
+            self.instructions.push(Instr::Move {
+                dest: counter,
+                src: raw_start,
+            });
+            // Exclusive (`a..b`)  → bound = raw_end (simple move).
+            // Inclusive (`a..=b`) → bound = raw_end + 1 (checked; trap on
+            //                       overflow so `a..=i64::MAX` fails closed).
+            if inclusive {
+                let one = self.alloc_local(counter_ty.clone());
+                self.instructions.push(Instr::ConstI64 {
+                    dest: one,
+                    value: 1,
+                });
+                let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+                self.instructions.push(Instr::IntArithChecked {
+                    op: IntArithOp::Add,
+                    signed: counter_signedness,
+                    dest: bound,
+                    lhs: raw_end,
+                    rhs: one,
+                    overflow_flag,
+                });
+                // On overflow: trap.  On success: fall through to header.
+                let trap_bb = self.alloc_block();
+                let pre_header_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: overflow_flag,
+                    then_target: trap_bb,
+                    else_target: pre_header_bb,
+                });
+                self.start_block(trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IntegerOverflow,
+                });
+                // Continue building in pre_header_bb; the loop header is
+                // allocated below and we Goto it from here.
+                self.start_block(pre_header_bb);
+            } else {
+                self.instructions.push(Instr::Move {
+                    dest: bound,
+                    src: raw_end,
+                });
+            }
+        }
+
+        // Allocate loop structure blocks. `inc_bb` is a dedicated advance
         // block: the body falls through to it AND `continue` jumps to it, so
         // the counter advance happens on every path that re-enters the header.
-        // Threading `continue` straight to the header would skip the Add and
-        // spin forever (Risk 1).
+        // Threading `continue` straight to the header would skip the advance
+        // and spin forever (Risk 1).
         let header_bb = self.alloc_block();
         let body_bb = self.alloc_block();
         let inc_bb = self.alloc_block();
         let exit_bb = self.alloc_block();
 
-        // Jump from entry (or post-inclusive-overflow-check) to the header.
+        // Jump from entry (or post-bound-adjust-overflow-check) to the header.
         self.finish_current_block(Terminator::Goto { target: header_bb });
 
-        // Header: if counter < end_val then body else exit.
+        // Header: ascending tests `counter < bound`; descending tests
+        // `counter >= bound` (bound == start).  Either way, false → exit.
         self.start_block(header_bb);
         let cond = self.alloc_local(ResolvedTy::Bool);
         self.instructions.push(Instr::IntCmp {
             dest: cond,
-            pred: CmpPred::SignedLess,
+            pred: if descending {
+                CmpPred::SignedGreaterEq
+            } else {
+                CmpPred::SignedLess
+            },
             lhs: counter,
-            rhs: end_val,
+            rhs: bound,
         });
         self.finish_current_block(Terminator::Branch {
             cond,
@@ -14167,38 +14315,51 @@ impl Builder {
         // Body fall-through → increment block.
         self.finish_current_block(Terminator::Goto { target: inc_bb });
 
-        // Increment: counter = counter + 1 (checked; trap on overflow).
-        // WHY checked: a loop that reaches i64::MAX and tries to step past it
-        // should trap as IntegerOverflow rather than silently wrapping to the
-        // minimum and potentially running forever.
-        // WHEN obsolete: when Hew introduces explicit wrapping loops or
-        // explicit index-type annotations that allow unsigned indices.
+        // Advance the counter by `step` (checked).
+        //
+        // Ascending: `counter += step`.  Overflow past the type max traps as
+        // IntegerOverflow rather than silently wrapping and running forever
+        // — fail-closed per the reliability tenet.
+        //
+        // Descending: `counter -= step`.  An underflow past the type min is the
+        // natural loop terminus for a descending range that reaches its low
+        // bound (e.g. `(0u32..5).rev()` decrementing past `0`), so it branches
+        // to the loop exit instead of trapping.  The header's `counter >= start`
+        // guard handles every non-underflowing terminus.
         self.start_block(inc_bb);
-        let one = self.alloc_local(counter_ty.clone());
-        self.instructions.push(Instr::ConstI64 {
-            dest: one,
-            value: 1,
-        });
-        let overflow_flag = self.alloc_local(ResolvedTy::Bool);
+        let advance_flag = self.alloc_local(ResolvedTy::Bool);
         self.instructions.push(Instr::IntArithChecked {
-            op: IntArithOp::Add,
-            signed: IntSignedness::Signed,
+            op: if descending {
+                IntArithOp::Sub
+            } else {
+                IntArithOp::Add
+            },
+            signed: counter_signedness,
             dest: counter,
             lhs: counter,
-            rhs: one,
-            overflow_flag,
+            rhs: step_val,
+            overflow_flag: advance_flag,
         });
-        let overflow_trap = self.alloc_block();
-        // On overflow → trap; otherwise loop back to the header (re-check bound).
-        self.finish_current_block(Terminator::Branch {
-            cond: overflow_flag,
-            then_target: overflow_trap,
-            else_target: header_bb,
-        });
-        self.start_block(overflow_trap);
-        self.finish_current_block(Terminator::Trap {
-            kind: TrapKind::IntegerOverflow,
-        });
+        if descending {
+            // Underflow on the descending decrement → loop is exhausted; exit.
+            self.finish_current_block(Terminator::Branch {
+                cond: advance_flag,
+                then_target: exit_bb,
+                else_target: header_bb,
+            });
+        } else {
+            let overflow_trap = self.alloc_block();
+            // On overflow → trap; otherwise loop back to the header (re-check bound).
+            self.finish_current_block(Terminator::Branch {
+                cond: advance_flag,
+                then_target: overflow_trap,
+                else_target: header_bb,
+            });
+            self.start_block(overflow_trap);
+            self.finish_current_block(Terminator::Trap {
+                kind: TrapKind::IntegerOverflow,
+            });
+        }
 
         // Exit: subsequent lowering continues here.
         self.start_block(exit_bb);

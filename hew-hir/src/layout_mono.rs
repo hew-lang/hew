@@ -558,10 +558,15 @@ fn walk_expr(
             walk_block(body, subst, residual_domain, disc);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             walk_expr(start, subst, residual_domain, disc);
             walk_expr(end, subst, residual_domain, disc);
+            walk_expr(step, subst, residual_domain, disc);
             walk_block(body, subst, residual_domain, disc);
         }
         HirExprKind::Match { scrutinee, arms } => {

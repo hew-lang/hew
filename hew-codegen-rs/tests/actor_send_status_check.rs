@@ -74,6 +74,7 @@ fn send_status_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "send_probe".to_string(),
@@ -140,6 +141,8 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("send_status pipeline must emit successfully");

@@ -43,6 +43,8 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("stdlib builtin pipeline must emit successfully");

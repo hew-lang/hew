@@ -64,6 +64,7 @@ fn trivial_main() -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     }
 }
 
@@ -133,6 +134,8 @@ fn try_emit_to_string(pipeline: &IrPipeline, slug: &str) -> Result<String, Codeg
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(pipeline, &options)?;
     let ll = tmp.join("probe.ll");

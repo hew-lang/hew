@@ -84,6 +84,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -142,6 +143,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("elab drop plan pipeline must emit successfully");
@@ -194,6 +197,8 @@ fn elab_drop_plan_duplex_close_blocks_wasm_emission() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -250,6 +255,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -299,6 +305,8 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {

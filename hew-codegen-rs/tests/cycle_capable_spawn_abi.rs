@@ -56,6 +56,7 @@ fn spawn_pipeline(
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
 
     let actor_layout = ActorLayout {
@@ -112,6 +113,8 @@ fn emit_ll(pipeline: &IrPipeline, slug: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("cycle spawn pipeline must emit");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("ll path");

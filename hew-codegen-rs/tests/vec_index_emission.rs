@@ -137,6 +137,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -289,6 +290,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -441,6 +443,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -512,6 +515,8 @@ fn emit_ll(module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("C-2 Vec-index pipeline must emit successfully");
@@ -531,6 +536,8 @@ fn emit_bool_ll(module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("C-2 Vec<bool>-index pipeline must emit successfully");
@@ -550,6 +557,8 @@ fn emit_char_ll(module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("C-2 Vec<char>-index pipeline must emit successfully");

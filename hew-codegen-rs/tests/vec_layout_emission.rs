@@ -54,6 +54,7 @@ fn base_pipeline(
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -118,6 +119,8 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("layout Vec pipeline must emit successfully");
@@ -632,6 +635,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -837,6 +841,8 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     // Accept either a clean emit (wasm32 indirect call worked) or a

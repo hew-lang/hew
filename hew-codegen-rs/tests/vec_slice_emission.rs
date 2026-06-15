@@ -176,6 +176,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -253,6 +254,8 @@ fn emit_ll(module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("C-3 Vec-slice pipeline must emit successfully");

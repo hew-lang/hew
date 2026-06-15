@@ -192,6 +192,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     }
 }
 

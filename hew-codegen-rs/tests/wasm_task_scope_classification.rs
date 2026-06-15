@@ -62,6 +62,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -145,6 +146,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -207,6 +209,8 @@ fn task_scope_new_call_blocks_wasm_emission() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -238,6 +242,8 @@ fn task_scope_spawn_call_blocks_wasm_emission() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -271,6 +277,8 @@ fn task_scope_wasm_diagnostic_message_names_scope_construct() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let err =
         emit_module(&pipeline, &options).expect_err("expected WasmUnsupportedSubstrate; got Ok(_)");
@@ -303,6 +311,8 @@ fn task_scope_native_emission_unaffected() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options)
         .expect("native (no-wasm) emission of hew_task_scope_new must succeed");

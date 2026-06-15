@@ -24,6 +24,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("emit_module must succeed for user-enum fixture");
@@ -100,6 +102,7 @@ fn colour_red_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -173,6 +176,8 @@ fn enum_unit_ctor_module_verifies() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options)
         .expect("emit_module with user-enum layout must verify cleanly");

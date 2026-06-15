@@ -93,6 +93,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![],
         elaborated_mir: vec![],
@@ -125,6 +126,8 @@ fn compile_to_ll(pipeline: &IrPipeline, module_name: &str) -> PathBuf {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(pipeline, &options)
         .unwrap_or_else(|e| panic!("emit_module for {module_name}: {e}"))

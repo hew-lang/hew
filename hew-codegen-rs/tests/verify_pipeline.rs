@@ -48,6 +48,7 @@ fn pipeline_const_42() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -96,6 +97,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),

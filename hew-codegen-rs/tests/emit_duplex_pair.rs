@@ -118,6 +118,7 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -171,6 +172,8 @@ fn emit_textual_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("E4 exemplar pipeline must emit successfully");
@@ -274,6 +277,8 @@ fn duplex_exemplar_module_verifies() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("the duplex exemplar must pass `Module::verify()`");
 }

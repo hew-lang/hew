@@ -352,6 +352,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "bad_fn".into(),
@@ -403,6 +404,8 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
 
     let result = emit_module(&pipeline, &options);

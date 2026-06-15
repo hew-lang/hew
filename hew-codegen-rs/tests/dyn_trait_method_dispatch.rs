@@ -102,6 +102,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("emit_module ll_path");
@@ -188,6 +190,7 @@ fn caller_with_dispatch(
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     }
 }
 
@@ -387,6 +390,7 @@ fn call_trait_method_fails_closed_when_receiver_not_fat_pointer() {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     let p = empty_pipeline(vec![bogus]);
     let err = try_emit(&p).expect_err("non-fat-pointer receiver must fail closed");

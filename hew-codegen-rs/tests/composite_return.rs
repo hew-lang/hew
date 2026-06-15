@@ -25,6 +25,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options)
         .expect("emit_module must succeed for composite-return fixture");
@@ -104,6 +106,7 @@ fn option_some_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -195,6 +198,7 @@ fn option_string_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -243,6 +247,8 @@ fn option_i64_return_module_verifies() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options)
         .expect("emit_module with Option<i64> return must verify cleanly");
@@ -319,6 +325,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -393,6 +400,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -460,6 +468,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),
@@ -540,6 +549,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
     IrPipeline {
         thir: Vec::new(),

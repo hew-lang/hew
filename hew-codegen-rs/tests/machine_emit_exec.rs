@@ -135,6 +135,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
 
     // `caller()` invokes the step stub with zeroed locals and returns.
@@ -179,6 +180,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
 
     IrPipeline {
@@ -216,6 +218,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path = artefacts
@@ -315,6 +319,8 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");
     let ll_path = artefacts

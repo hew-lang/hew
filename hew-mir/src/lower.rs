@@ -3307,6 +3307,7 @@ fn synthesize_machine_step_fn(
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
     };
 
     let thir = ThirFunction {
@@ -4739,6 +4740,7 @@ fn lower_function(
         intrinsic_id: func.intrinsic_id.clone(),
         await_deadline_ns: builder.await_deadline_ns.clone(),
         lambda_actor_user_param_locals: Vec::new(),
+        span: Some((func.span.start as u32, func.span.end as u32)),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -15670,6 +15672,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         };
         let builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
@@ -16074,6 +16077,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         };
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
         // locals are positional, not HIR bindings).
@@ -19777,6 +19781,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -19924,6 +19929,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -20398,6 +20404,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: user_param_local_ids.clone(),
+            span: None,
         };
 
         let thir_statements: Vec<MirStatement> = body_blocks
@@ -21074,6 +21081,7 @@ impl Builder {
             intrinsic_id: None,
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.

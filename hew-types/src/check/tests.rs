@@ -7733,6 +7733,92 @@ fn named_import_type_alias_publishes_alias_binding() {
     );
 }
 
+/// P3-alias-identity — an aliased opt-in (`import m::{ Reply as R }`) makes the
+/// bare binding `R` resolve to the SOURCE identity `m.Reply`, not a phantom
+/// `m.R`. This is the resolver half of the aliased-import fix: the published-bare
+/// map carries the owner-qualified source name, so `published_bare_type_qualified`
+/// returns the type `m` actually exports under `Reply`.
+#[test]
+fn alias_import_resolves_bare_binding_to_source_identity() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("R".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert_eq!(
+        checker.published_bare_type_qualified("R"),
+        Some("mod_a.Reply".to_string()),
+        "aliased binding `R` must resolve to the source identity `mod_a.Reply`, not `mod_a.R`"
+    );
+    // The reconstructed `mod_a.R` must never exist as a registered def — the bug
+    // was binding it (or failing closed) instead of the real source type.
+    assert!(
+        !checker.type_defs.contains_key("mod_a.R"),
+        "no `mod_a.R` def should exist; the alias binds the source `Reply`"
+    );
+}
+
+/// P3-alias-no-conflation — `import m::{ Reply as Other }` where `m` ALSO exports
+/// a DISTINCT `Other` must bind the alias to the SOURCE `m.Reply`, never the
+/// same-named export `m.Other`. Source-name matching opts in only `Reply`; the
+/// real `Other` is not opted in by the alias, and the published-bare map records
+/// the source identity so the binding cannot conflate the two nominal types.
+#[test]
+fn alias_import_does_not_conflate_with_same_named_export() {
+    let reply = make_pub_struct("Reply", "code");
+    let other = make_pub_struct("Other", "tag");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("Other".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0), (Item::TypeDecl(other), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    // Both distinct source types keep their own qualified identity.
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "source `Reply` must register its qualified identity"
+    );
+    assert!(
+        output.type_defs.contains_key("mod_a.Other"),
+        "the distinct source `Other` must register its own qualified identity"
+    );
+    // The bare binding `Other` denotes the ALIASED source `mod_a.Reply`, NOT the
+    // same-named export `mod_a.Other`.
+    assert_eq!(
+        checker.published_bare_type_qualified("Other"),
+        Some("mod_a.Reply".to_string()),
+        "aliased binding `Other` must resolve to `mod_a.Reply`, not the same-named export `mod_a.Other`"
+    );
+    // The real `Other` export is not opted in by the alias, so it is not itself
+    // published under its own bare name.
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "the source name `Reply` is not published bare (only the alias binding `Other` is)"
+    );
+}
+
 /// P7 — a glob import publishes every exported type bare (intentional opt-in).
 #[test]
 fn glob_import_type_publishes_bare_binding() {

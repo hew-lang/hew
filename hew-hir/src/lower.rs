@@ -4049,6 +4049,13 @@ struct LowerCtx {
     /// the inner method-call span (NEW-2). HIR's `Expr::Await` arm consumes this
     /// to emit `ListenerAwaitAccept` — the sibling of `conn_await_reads`.
     listener_await_accepts: std::collections::HashSet<SpanKey>,
+    /// Checker-owned function-tail Ok-coercion sites keyed by the tail
+    /// expression's span. Each entry marks a `Result<Ok, Err>`-returning
+    /// function tail whose value is the `Ok` payload; `lower_expr` wraps the
+    /// lowered expression at this span in a synthetic `Ok(..)` variant
+    /// constructor so it returns the declared `Result`. See
+    /// `TypeCheckOutput::tail_ok_coercions`.
+    tail_ok_coercions: std::collections::HashSet<SpanKey>,
     /// Checker-owned method-call receiver classifications. Used only to fail
     /// closed when the checker classified a receiver as actor-dispatchable but
     /// omitted the corresponding `actor_method_dispatch` discriminator.
@@ -4513,6 +4520,7 @@ impl LowerCtx {
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             conn_await_reads: tc_output.conn_await_reads.clone(),
             listener_await_accepts: tc_output.listener_await_accepts.clone(),
+            tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
@@ -10392,11 +10400,27 @@ impl LowerCtx {
         }
     }
 
+    fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        let lowered = self.lower_expr_inner(expr, intent);
+        // Function-tail Ok-coercion: the checker marked this tail expression's
+        // span when a `Result<Ok, Err>`-returning function's tail yields the
+        // `Ok` payload (e.g. `db.find(id)?` typed `User` under
+        // `-> Result<User, E>`). Wrap the lowered value in `Ok(..)` so the
+        // function returns the declared `Result`. The marker is keyed by the
+        // tail span and is set only at genuine tail positions, so this fires
+        // exactly once per coerced tail and never on a non-tail sub-expression.
+        if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
+            self.wrap_tail_ok(lowered, &expr.1)
+        } else {
+            lowered
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
-    fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+    fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         // Consume the statement-position flag atomically. Every recursive call
         // to `lower_expr` (for arguments, operands, return values, block tails,
         // etc.) therefore sees `false`. Only the `Stmt::Expression` arm in
@@ -17002,6 +17026,44 @@ impl LowerCtx {
         (
             HirExprKind::Unsupported("unsupported `?` expression".into()),
             ResolvedTy::Unit,
+        )
+    }
+
+    /// Wrap a function-tail expression in `Ok(value)` for the checker-marked
+    /// tail Ok-coercion (`TypeCheckOutput::tail_ok_coercions`). `value` is the
+    /// lowered tail, typed as the `Ok` payload; the result is the enclosing
+    /// function's declared `Result<Ok, Err>` return type, taken from
+    /// `current_return_type` (the same authority the `?` desugar uses to build
+    /// its `Err(..)` return). Fails closed if the `Result::Ok` variant is
+    /// missing from the ctor registry or the return type is not a `Result`.
+    fn wrap_tail_ok(&mut self, value: HirExpr, span: &std::ops::Range<usize>) -> HirExpr {
+        let Some(return_ty) = self.current_return_type.clone() else {
+            self.unsupported(
+                span.clone(),
+                "tail Ok-coercion without an enclosing return type",
+                "tail-ok-coercion",
+            );
+            return value;
+        };
+        if Self::resolved_result_parts(&return_ty).is_none() {
+            self.unsupported(
+                span.clone(),
+                "tail Ok-coercion on a non-Result return type",
+                "tail-ok-coercion",
+            );
+            return value;
+        }
+        let Some((_, ok_idx)) = self.builtin_variant_predicate("Result", "Ok", span) else {
+            // `builtin_variant_predicate` already recorded a diagnostic.
+            return value;
+        };
+        self.try_register_enum_instantiation_ty(&return_ty, span);
+        self.synthetic_variant_ctor(
+            "Result",
+            ok_idx,
+            Some(vec![("0".to_string(), value)]),
+            return_ty,
+            span,
         )
     }
 

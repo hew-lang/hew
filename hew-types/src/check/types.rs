@@ -182,6 +182,18 @@ pub struct TypeCheckOutput {
     /// instead of the blocking method call — the listener-readiness sibling of
     /// [`TypeCheckOutput::conn_await_reads`].
     pub listener_await_accepts: HashSet<SpanKey>,
+    /// Function tail expressions the checker Ok-wraps to satisfy an explicit
+    /// `-> Result<Ok, Err>` return, keyed by the tail expression's span. A
+    /// `Result`-returning function whose tail yields the `Ok` payload type
+    /// (e.g. `fn f() -> Result<User, E> { db.find(id)? }`, where `db.find(id)?`
+    /// is typed `User`) is coerced to `Ok(tail)` here so the body type-checks.
+    /// The coercion is type-directed and strictly tail-only: it fires only at
+    /// the function tail and the if/match arm tails that flow to it, and only
+    /// when the tail type unifies with the `Ok` payload but NOT with the full
+    /// `Result` (so a tail already typed `Result<Ok, Err>` is returned
+    /// directly — no double-wrap). HIR lowering consumes this set to wrap the
+    /// lowered tail in a synthetic `Ok(..)` variant constructor.
+    pub tail_ok_coercions: HashSet<SpanKey>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -940,6 +952,7 @@ impl Default for TypeCheckOutput {
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
+            tail_ok_coercions: HashSet::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
@@ -2068,6 +2081,18 @@ pub struct Checker {
     /// `await listener.accept()` suspending-accept sites. Mirrors
     /// [`TypeCheckOutput::listener_await_accepts`].
     pub(super) listener_await_accepts: HashSet<SpanKey>,
+    /// Function-tail Ok-coercion sites. Mirrors
+    /// [`TypeCheckOutput::tail_ok_coercions`].
+    pub(super) tail_ok_coercions: HashSet<SpanKey>,
+    /// `true` while checking an expression that is the tail of a
+    /// `Result`-returning function (and the if/match arm tails that flow to
+    /// the function return). Armed in `check_fn_decl` only when the declared
+    /// return is `Result<_, _>`, threaded through `check_block` /
+    /// `check_stmt_as_expr` tail positions, and disarmed on entry to
+    /// `synthesize` and around every non-tail sub-expression in
+    /// `check_against`. Gates the tail Ok-coercion so it never fires in a
+    /// non-tail expression position.
+    pub(super) tail_ok_armed: bool,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
@@ -2650,6 +2675,8 @@ impl Checker {
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
             listener_await_accepts: HashSet::new(),
+            tail_ok_coercions: HashSet::new(),
+            tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),

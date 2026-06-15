@@ -111,6 +111,13 @@ impl Checker {
         let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
         let num_stmts = block.stmts.len();
         let mut terminated = false;
+        // Tail Ok-coercion is armed by the enclosing `check_fn_decl` only when
+        // this block sits in function-return tail position. Every non-tail
+        // statement in this block (and any sub-block reached for a non-tail
+        // statement) must NOT coerce, so clear the flag for the statement loop
+        // and restore it only for the block's own tail computation (the
+        // `is_last` If/Match/Return arm and the trailing expression).
+        let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
             // If a previous statement was terminal, warn about this unreachable code
             if terminated {
@@ -137,6 +144,12 @@ impl Checker {
 
             let is_last = i + 1 == num_stmts && block.trailing_expr.is_none();
             if is_last {
+                // The final statement is the block's tail: re-arm so a tail
+                // If/Match (whose arm bodies flow to the function return) can
+                // Ok-coerce. `synthesize` (the `Stmt::Expression` arm) clears
+                // the flag itself, and a trailing-`;` expression statement is
+                // not a value-producing tail, so no coercion fires there.
+                self.tail_ok_armed = tail_ok_armed;
                 let ty = match stmt {
                     Stmt::If { .. }
                     | Stmt::IfLet { .. }
@@ -203,6 +216,12 @@ impl Checker {
             // materialization. For all other expressions check_against falls
             // through to synthesize + expect_type, producing the same result as
             // before.
+            //
+            // Re-arm the tail Ok-coercion: a trailing expression is this block's
+            // value-producing tail, so it inherits the enclosing function's
+            // armed state. `check_against` is the type-directed propagation site
+            // that performs the actual Ok-wrap.
+            self.tail_ok_armed = tail_ok_armed;
             if let Some(exp) = expected {
                 self.check_against(&expr.0, &expr.1, exp)
             } else {

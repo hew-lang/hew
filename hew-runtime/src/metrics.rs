@@ -348,18 +348,29 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
     })
 }
 
-/// Canonical `k1=v1,k2=v2` series key in label-declaration order.
+/// Canonical, injection-safe series key in label-declaration order.
+///
+/// Each label key and value is length-prefixed (`<byte_len>:<bytes>`), so a
+/// label value that itself contains the join characters `,` / `=` cannot alias
+/// onto a different series or corrupt the decode. Prometheus length-caps label
+/// values but does not charset-restrict them, so `{a="x,b=y"}` is a legal,
+/// distinct series from `{a="x",b="y"}` — joining raw values with unescaped
+/// delimiters would collapse them onto one slot and break the render
+/// round-trip. The length prefix makes the key a faithful, reversible identity.
 fn canonical_series_key(keys: &[String], values: &[String]) -> String {
     let mut out = String::new();
-    for (i, (k, v)) in keys.iter().zip(values.iter()).enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(k);
-        out.push('=');
-        out.push_str(v);
+    for (k, v) in keys.iter().zip(values.iter()) {
+        push_len_prefixed(&mut out, k);
+        push_len_prefixed(&mut out, v);
     }
     out
+}
+
+/// Append `<byte_len>:<bytes>` to `out`.
+fn push_len_prefixed(out: &mut String, s: &str) {
+    out.push_str(&s.len().to_string());
+    out.push(':');
+    out.push_str(s);
 }
 
 /// Convert a slot index into the `i64` handle ABI value (always `>= 0`).
@@ -551,15 +562,45 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
     })
 }
 
-/// Split a `k1=v1,k2=v2` canonical key back into its value list.
+/// Decode a [`canonical_series_key`] back into its label-value list.
+///
+/// The key is a flat sequence of length-prefixed `<byte_len>:<bytes>` fields,
+/// alternating key, value, key, value, …; this returns the value fields in
+/// order. A malformed key (only possible from a corrupted registry) yields an
+/// empty list rather than panicking.
 fn split_series_values(canon: &str) -> Vec<String> {
-    if canon.is_empty() {
-        return Vec::new();
+    let mut values = Vec::new();
+    let mut rest = canon;
+    let mut field_index: usize = 0;
+    while !rest.is_empty() {
+        let Some((field, tail)) = take_len_prefixed(rest) else {
+            return Vec::new();
+        };
+        // Even fields are keys, odd fields are values.
+        if field_index % 2 == 1 {
+            values.push(field.to_string());
+        }
+        field_index += 1;
+        rest = tail;
     }
-    canon
-        .split(',')
-        .map(|kv| kv.split_once('=').map_or("", |x| x.1).to_string())
-        .collect()
+    values
+}
+
+/// Read one `<byte_len>:<bytes>` field from the front of `s`, returning the
+/// field bytes and the remaining suffix, or `None` on a malformed prefix.
+fn take_len_prefixed(s: &str) -> Option<(&str, &str)> {
+    let (len_str, after_colon) = s.split_once(':')?;
+    let len: usize = len_str.parse().ok()?;
+    if after_colon.len() < len {
+        return None;
+    }
+    // `len` counts bytes; the field boundary must land on a char boundary for
+    // the slice to be valid UTF-8 (it always does, since we encoded whole
+    // strings, but guard rather than panic on a corrupted key).
+    if !after_colon.is_char_boundary(len) {
+        return None;
+    }
+    Some(after_colon.split_at(len))
 }
 
 /// Current values of the registry self-metrics, for the scrape's
@@ -1004,6 +1045,50 @@ mod tests {
         assert_eq!(m.series.len(), 1);
         assert_eq!(m.series[0].0, vec!["h1".to_string()]);
         assert_eq!(m.series[0].1, 42);
+    }
+
+    #[test]
+    fn series_key_is_injection_safe() {
+        let _g = guard();
+        // A two-label metric whose first value embeds the join characters
+        // `,` and `=` must NOT alias onto the single-label series whose value
+        // happens to render to the same raw bytes, and the value must survive
+        // the render round-trip intact.
+        let two = register_labelled(
+            "app.inj",
+            MetricKind::Counter,
+            &["a".to_string(), "b".to_string()],
+        );
+        assert!(two >= 0);
+        // `{a="x,b=y", b="z"}` — the first value contains the delimiters.
+        let injected = resolve_series(two, &["x,b=y".to_string(), "z".to_string()]);
+        // `{a="x", b="y"}` on the SAME metric — a naive `k=v,` join would
+        // collapse both onto the key `a=x,b=y` and the second would alias the
+        // first. The length-prefixed key keeps them distinct.
+        let plain = resolve_series(two, &["x".to_string(), "y".to_string()]);
+        assert_ne!(
+            injected, plain,
+            "delimiter-bearing value must not alias a distinct series"
+        );
+        inc(injected);
+        gauge_set(plain, 7); // gauge_set works on any slot; sets plain to 7
+
+        let snap = render_snapshot();
+        let m = snap.iter().find(|m| m.canonical_name == "app.inj").unwrap();
+        assert_eq!(m.series.len(), 2, "two distinct series");
+        // The injected value round-trips byte-for-byte.
+        let injected_series = m
+            .series
+            .iter()
+            .find(|(vals, _)| vals == &vec!["x,b=y".to_string(), "z".to_string()])
+            .expect("injected series must round-trip its raw value");
+        assert_eq!(injected_series.1, 1);
+        let plain_series = m
+            .series
+            .iter()
+            .find(|(vals, _)| vals == &vec!["x".to_string(), "y".to_string()])
+            .expect("plain series present and distinct");
+        assert_eq!(plain_series.1, 7);
     }
 
     #[test]

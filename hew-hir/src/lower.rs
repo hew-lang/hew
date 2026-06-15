@@ -3310,6 +3310,14 @@ struct RangeAdapterChain<'a> {
     /// The `.step_by(k)` stride argument when present; `None` defaults to a
     /// stride of `1`.
     step_expr: Option<&'a Spanned<Expr>>,
+    /// `true` when a `.step_by(k)` precedes a `.rev()` in the chain
+    /// (`(a..b).step_by(k).rev()`).  That order is unsupported: `.rev()` and
+    /// `.step_by(k)` do not commute, so folding them into an order-insensitive
+    /// `{descending, step}` pair would silently miscompile (the descending
+    /// counter would start at the raw high bound rather than the last strided
+    /// element).  The caller rejects the chain fail-closed instead of emitting
+    /// a wrong sequence.  Only `(a..b).rev()?.step_by(k)?` is supported.
+    step_before_rev: bool,
 }
 
 /// A `CallTraitMethodStatic` site discovered inside a function body.
@@ -6348,10 +6356,15 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::ForRange {
-                start, end, body, ..
+                start,
+                end,
+                step,
+                body,
+                ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(start, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::WhileLet {
@@ -9968,6 +9981,37 @@ impl LowerCtx {
                 // misread as a range adapter.
                 let peeled = Self::peel_range_adapter_chain(&iterable.0);
                 let kind = match (peeled, &pattern.0) {
+                    (Some(spec), Pattern::Identifier(var_name)) if spec.step_before_rev => {
+                        // `.step_by(k)` before `.rev()` does not commute with the
+                        // supported `.rev()`-then-`.step_by(k)` order and cannot
+                        // be expressed by the order-insensitive ForRange fold
+                        // (the descending counter would start at the raw high
+                        // bound instead of the last strided element, silently
+                        // emitting a wrong sequence).  Reject fail-closed rather
+                        // than miscompile; the user can write the supported
+                        // order `(a..b).rev().step_by(k)`.
+                        self.unsupported(
+                            iterable.1.clone(),
+                            "`step_by` before `rev` is unsupported; \
+                             write `(a..b).rev().step_by(k)`",
+                            "for-range-adapter-lowering",
+                        );
+                        // Bind the loop variable (the range element is an
+                        // integer; the checker already typed it `Range<T>`) and
+                        // lower the body so its diagnostics still flow and the
+                        // body does not cascade into spurious unresolved-symbol
+                        // errors for the loop variable.  The primary diagnostic
+                        // above is the actionable one.
+                        self.push_scope();
+                        let _ =
+                            self.bind(var_name.clone(), ResolvedTy::I64, false, pattern.1.clone());
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported(
+                            "for-in over `(a..b).step_by(k).rev()` (unsupported adapter order)"
+                                .into(),
+                        )
+                    }
                     (Some(spec), Pattern::Identifier(var_name)) => {
                         let RangeAdapterChain {
                             range_start,
@@ -9975,6 +10019,7 @@ impl LowerCtx {
                             inclusive,
                             descending,
                             step_expr,
+                            step_before_rev: _,
                         } = spec;
 
                         // Lower start and end expressions first so their
@@ -15469,6 +15514,14 @@ impl LowerCtx {
     /// a descending range and at the low bound otherwise, advancing by `step`
     /// each iteration.  This makes `(0..5).rev()` yield `4 3 2 1 0` and
     /// `(0..=10).rev().step_by(3)` yield `10 7 4 1`.
+    ///
+    /// `.rev()` and `.step_by(k)` do **not** commute, so only `.rev()` before
+    /// `.step_by(k)` (`(a..b).rev()?.step_by(k)?`) is supported: descend from
+    /// the high bound, then stride.  A `.step_by(k)` *before* a `.rev()` would
+    /// have to start the descending sequence at the last strided element, which
+    /// the order-insensitive `{descending, step}` fold cannot express; the
+    /// chain records `step_before_rev` and the caller rejects it fail-closed
+    /// rather than emit a wrong sequence.
     fn peel_range_adapter_chain(iterable: &Expr) -> Option<RangeAdapterChain<'_>> {
         match iterable {
             Expr::Binary {
@@ -15481,6 +15534,7 @@ impl LowerCtx {
                 inclusive: matches!(op, BinaryOp::RangeInclusive),
                 descending: false,
                 step_expr: None,
+                step_before_rev: false,
             }),
             Expr::MethodCall {
                 receiver,
@@ -15493,6 +15547,14 @@ impl LowerCtx {
                         // `.rev()` carries no arguments (the checker rejects any).
                         // Reversing twice is the forward direction again.
                         chain.descending = !chain.descending;
+                        // `.step_by(k)` before `.rev()` does not commute with
+                        // the order-insensitive `{descending, step}` fold: the
+                        // descending counter would start at the raw high bound
+                        // instead of the last strided element.  Flag it so the
+                        // caller rejects fail-closed rather than miscompile.
+                        if chain.step_expr.is_some() {
+                            chain.step_before_rev = true;
+                        }
                         Some(chain)
                     }
                     "step_by" => {

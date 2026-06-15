@@ -2060,6 +2060,48 @@ fn for_range_rev_and_step_by_print_exact_sequences() {
     }
 }
 
+/// `.step_by(k)` before `.rev()` does not commute with the supported
+/// `.rev()`-then-`.step_by(k)` order and is rejected fail-closed at check time
+/// rather than silently miscompiled.
+///
+/// `.rev()` and `.step_by(k)` fold into an order-insensitive
+/// `{descending, step}` pair on the `ForRange` primitive.  That fold is correct
+/// only for `.rev()` first (descend from the high bound, then stride); a
+/// `.step_by(k)` *before* a `.rev()` would have to start the descending
+/// sequence at the last strided element (`8` for `(0..10).step_by(2)`), not the
+/// raw high bound (`9`).  Before the fail-closed guard, `(0..10).step_by(2).rev()`
+/// silently printed `9 7 5 3 1` instead of the correct `8 6 4 2 0`.  The
+/// compiler now rejects the unsupported order with an actionable diagnostic.
+#[test]
+fn for_range_step_by_before_rev_is_rejected() {
+    let fixture = repo_root().join("tests/vertical-slice/reject/for_range_step_by_before_rev.hew");
+    assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(&fixture)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew check");
+
+    assert!(
+        !output.status.success(),
+        "expected `hew check` to reject `step_by().rev()`; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        combined.contains("`step_by` before `rev` is unsupported"),
+        "expected the actionable diagnostic; got: {combined}",
+    );
+}
+
 /// Named functions used as first-class values: passed as arguments,
 /// stored in let bindings, and called through a local binding.
 /// Also guards that lambda literals continue to work (regression guard).

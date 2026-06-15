@@ -1,7 +1,7 @@
 //! Status: aspirational (Hew roadmap: v0.7+ distributed Node API and transport stabilization)
 //! Description: Chat Client example.
 
-import std::net;
+import std::net::{Connection};
 
 import std::io;
 

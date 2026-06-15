@@ -1,4 +1,4 @@
-import std::net;
+import std::net::{Listener, Connection};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;

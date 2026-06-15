@@ -7,7 +7,7 @@
 // retained sender ref and the creator ref so the driver reply channel is
 // reclaimed exactly once (no leaked sender reference). Running it under both
 // pools proves the unit path suspends, resumes, and completes cleanly.
-import std::net;
+import std::net::{Listener};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;

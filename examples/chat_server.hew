@@ -12,7 +12,7 @@
 // TCP I/O is confined to ClientHandler; ChatRoom never touches sockets directly.
 // The ChatRoom broadcasts by calling h.deliver(msg) on each handler actor —
 // pure actor-to-actor communication with no raw socket I/O leaking out.
-import std::net;
+import std::net::{Connection};
 
 import std::os;
 

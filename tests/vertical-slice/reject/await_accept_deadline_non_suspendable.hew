@@ -5,7 +5,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "non-suspendable context"
-import std::net;
+import std::net::{Listener};
 
 fn helper(ln: Listener) {
     let _ = await ln.accept() | after 50ms;

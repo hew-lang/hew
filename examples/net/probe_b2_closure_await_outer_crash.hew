@@ -17,7 +17,7 @@
 // resolves to `Err` (the empty crash fallback) and the program completes. The
 // `trigger` parameter is a runtime value so the panic is not statically
 // unreachable ahead of the await (the closure still classifies as suspending).
-import std::net;
+import std::net::{Listener};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;

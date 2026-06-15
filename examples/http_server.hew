@@ -7,7 +7,7 @@
 //
 // Usage: http_server [port] [root_dir]
 // Defaults: port=8080, root_dir="."
-import std::net::http::http;
+import std::net::http::http::{Request};
 
 import std::fs;
 

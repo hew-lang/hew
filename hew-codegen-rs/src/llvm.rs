@@ -1441,8 +1441,12 @@ fn intern_runtime_decl<'ctx>(
         // the current actor's reductions budget and yields when exhausted.
         // The return value is a scheduler signal; cooperate-site injection
         // discards it.
+        // hew_actor_ask(actor: *mut HewActor, msg_type: i32,
+        //               data: *mut c_void, size: usize) -> *mut c_void
+        // The `size` param is `usize` in the runtime C ABI: i32 on wasm32,
+        // i64 on native 64-bit targets. Use `size_ty` to match exactly.
         "hew_actor_ask" => ptr_ty.fn_type(
-            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), i64_ty.into()],
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), size_ty.into()],
             false,
         ),
         // hew_actor_ask_with_channel(actor: *mut HewActor, msg_type: i32,
@@ -1454,12 +1458,13 @@ fn intern_runtime_decl<'ctx>(
         // failure the runtime releases the queued retain but the
         // caller-provided creator ref remains live so the select caller
         // can still free it via `hew_reply_channel_free`).
+        // The `size` param is `usize` — use `size_ty` for correct width.
         "hew_actor_ask_with_channel" => i32_ty.fn_type(
             &[
                 ptr_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
-                i64_ty.into(),
+                size_ty.into(),
                 ptr_ty.into(),
             ],
             false,
@@ -1945,9 +1950,11 @@ fn intern_runtime_decl<'ctx>(
         // waiter; the thread-local read stays valid across a suspend/resume,
         // unlike the spilled `ctx` parameter.
         "hew_actor_self" => ptr_ty.fn_type(&[], false),
+        // hew_reply(ch: *mut HewReplyChannel, value: *mut c_void, size: usize) -> bool
+        // `size` is `usize` — use `size_ty` for correct width on wasm32 vs native.
         "hew_reply" => ctx
             .bool_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), size_ty.into()], false),
         "hew_sched_init" => i32_ty.fn_type(&[], false),
         // hew_sched_run() -> void (`hew-runtime/src/scheduler_wasm.rs`).
         // Host/re-entrant cooperative drain: runs runnable actors to completion
@@ -29551,6 +29558,15 @@ fn emit_suspending_ask_terminator<'ctx>(
         "hew_actor_ask_with_channel",
     )?;
     let msg_type_val = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
+    // `payload_size` is built as i64; the `size` param is `usize`/`size_t`
+    // (i32 on wasm32). Reconcile to the target-correct width.
+    let suspending_ask_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let payload_size = reconcile_int_width_signed(
+        fn_ctx,
+        payload_size.into(),
+        suspending_ask_size_ty.into(),
+        "suspending ask payload size",
+    )?;
     let rc = fn_ctx
         .builder
         .build_call(
@@ -33266,6 +33282,15 @@ fn lower_terminator<'ctx>(
                 "hew_actor_ask",
             )?;
             let msg_type_val = fn_ctx.ctx.i32_type().const_int(*msg_type as u64, false);
+            // `payload_size` is built as i64; the `size` param is `usize`/
+            // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
+            let ask_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+            let payload_size = reconcile_int_width_signed(
+                fn_ctx,
+                payload_size.into(),
+                ask_size_ty.into(),
+                "actor ask payload size",
+            )?;
             let reply_ptr = fn_ctx
                 .builder
                 .build_call(
@@ -33696,6 +33721,9 @@ fn get_or_create_select_stream_callback<'ctx>(
     let ctx = fn_ctx.ctx;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
+    // Target-correct `usize`/`size_t`: i32 on wasm32, i64 on native.
+    // Used to reconcile the `size` parameter of `hew_reply` to its actual ABI width.
+    let reply_size_ty = runtime_size_ty(ctx, fn_ctx.llvm_mod);
     let item_size = item_ty.size_of().ok_or_else(|| {
         CodegenError::FailClosed(format!(
             "stream callback item type has no static size: {item_ty:?}"
@@ -33746,7 +33774,8 @@ fn get_or_create_select_stream_callback<'ctx>(
             &[
                 ch.into(),
                 ptr_ty.const_null().into(),
-                i64_ty.const_zero().into(),
+                // null-item path: size is zero; use the target-correct zero width.
+                reply_size_ty.const_zero().into(),
             ],
             "stream_reply_null_item",
         )
@@ -33765,11 +33794,17 @@ fn get_or_create_select_stream_callback<'ctx>(
     builder
         .build_store(item_slot, item_value)
         .llvm_ctx("stream callback item store")?;
-    let item_size = if item_size.get_type() == i64_ty {
+    // Reconcile item_size (always i64 from LLVM size_of) to the target-correct
+    // `usize`/`size_t` width required by `hew_reply`'s `size` parameter.
+    let item_size = if item_size.get_type() == reply_size_ty {
         item_size
+    } else if reply_size_ty.get_bit_width() < i64_ty.get_bit_width() {
+        builder
+            .build_int_truncate(item_size, reply_size_ty, "stream_item_size_trunc")
+            .llvm_ctx("stream callback item size trunc")?
     } else {
         builder
-            .build_int_z_extend(item_size, i64_ty, "stream_item_size")
+            .build_int_z_extend(item_size, reply_size_ty, "stream_item_size_zext")
             .llvm_ctx("stream callback item size zext")?
     };
     let delivered = builder
@@ -34118,6 +34153,15 @@ fn emit_select_terminator<'ctx>(
                 let (payload_ptr, payload_size) =
                     actor_payload_ptr_size(fn_ctx, *value, "select_ask_payload")?;
                 let msg_type_val = i32_ty.const_int(*msg_type as u64, false);
+                // `payload_size` is built as i64; the `size` param is `usize`/
+                // `size_t` (i32 on wasm32). Reconcile to the target-correct width.
+                let select_ask_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+                let payload_size = reconcile_int_width_signed(
+                    fn_ctx,
+                    payload_size.into(),
+                    select_ask_size_ty.into(),
+                    "select ask payload size",
+                )?;
                 let status = fn_ctx
                     .builder
                     .build_call(
@@ -36752,9 +36796,9 @@ fn lower_function<'ctx>(
     // program has no scheduler driver or runtime-owned atexit hook, so `main`
     // must drain and clean up the cooperative runtime itself via
     // `hew_wasm_runtime_exit()`. Same gate as the native epilogue but for the
-    // wasm target (`emit_wasm_entry_alias`). Supervisors are HIR-gated off
-    // wasm32, so `!has_supervisors` is always true here; it is kept for
-    // symmetry with the native condition.
+    // wasm target (`emit_wasm_entry_alias`). Supervisors remain HIR-gated off
+    // wasm32 (#1475), so `!has_supervisors` is always true for wasm32 programs;
+    // it is kept for symmetry with the native drain condition.
     let emit_wasm_runtime_exit = func.name == "main"
         && !actor_layouts.is_empty()
         && !has_supervisors
@@ -37076,14 +37120,15 @@ fn lower_function<'ctx>(
                         "coroutine reply type has no static size: {logical_ty:?}"
                     ))
                 })?;
-                let size = if size.get_type() == fn_ctx.ctx.i64_type() {
-                    size
-                } else {
-                    fn_ctx
-                        .builder
-                        .build_int_z_extend(size, fn_ctx.ctx.i64_type(), "coro_reply_size")
-                        .llvm_ctx("coro reply size zext")?
-                };
+                // Reconcile LLVM size_of (always i64) to the target-correct
+                // `usize`/`size_t` width (`hew_reply` third param). i32 on wasm32.
+                let coro_reply_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+                let size = reconcile_int_width_signed(
+                    &fn_ctx,
+                    size.into(),
+                    coro_reply_size_ty.into(),
+                    "coro reply size",
+                )?;
                 fn_ctx
                     .builder
                     .build_call(
@@ -37766,11 +37811,17 @@ fn emit_actor_dispatch_trampoline<'ctx>(
                         handler.symbol
                     ))
                 })?;
-                let size = if size.get_type() == i64_ty {
+                // Reconcile LLVM size_of (always i64) to the target-correct
+                // `usize`/`size_t` (i32 on wasm32) for `hew_reply`'s `size` param.
+                let size = if size.get_type() == size_ty {
                     size
+                } else if size_ty.get_bit_width() < i64_ty.get_bit_width() {
+                    builder
+                        .build_int_truncate(size, size_ty, "actor_reply_size_trunc")
+                        .llvm_ctx("reply size trunc")?
                 } else {
                     builder
-                        .build_int_z_extend(size, i64_ty, "actor_reply_size")
+                        .build_int_z_extend(size, size_ty, "actor_reply_size_zext")
                         .llvm_ctx("reply size zext")?
                 };
                 builder
@@ -39234,10 +39285,12 @@ fn get_or_declare_deserialize_thunk<'ctx>(
         return fv;
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.i64_type();
+    // `len: usize` is i32 on wasm32. The runtime's `DeserializeThunk` type
+    // (xnode_serial.rs) uses `usize` for this param; match via `runtime_size_ty`.
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
     llvm_mod.add_function(
         &sym,
-        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        ptr_ty.fn_type(&[ptr_ty.into(), size_ty.into(), ptr_ty.into()], false),
         Some(Linkage::Internal),
     )
 }
@@ -40363,11 +40416,14 @@ fn emit_xnode_codec_thunks<'ctx>(
                 CodegenError::FailClosed("deserialize thunk missing out_struct_size".into())
             })?
             .into_pointer_value();
+        // `hew_de_reader_new(data: *const u8, len: usize)` — `len` is `usize`,
+        // i.e. i32 on wasm32. Use `runtime_size_ty` for correct ABI width.
+        let de_reader_size_ty = runtime_size_ty(ctx, llvm_mod);
         let reader_new = declare_codec_prim(
             ctx,
             llvm_mod,
             "hew_de_reader_new",
-            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+            ptr_ty.fn_type(&[ptr_ty.into(), de_reader_size_ty.into()], false),
         );
         let reader = builder
             .build_call(reader_new, &[data.into(), len.into()], "de_reader")

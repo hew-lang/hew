@@ -631,12 +631,14 @@ impl Verifier {
                 binding,
                 start,
                 end,
+                step,
                 body,
                 ..
             } => {
                 self.binding(binding.id, binding.span.clone());
                 self.expr(start);
                 self.expr(end);
+                self.expr(step);
                 self.block(body);
             }
             HirExprKind::WhileLet {

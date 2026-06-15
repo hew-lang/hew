@@ -1740,7 +1740,11 @@ fn walk_expr(
             );
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             walk_expr(
                 start,
@@ -1755,6 +1759,17 @@ fn walk_expr(
             );
             walk_expr(
                 end,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            walk_expr(
+                step,
                 subst,
                 machine_decls,
                 residual_domain,

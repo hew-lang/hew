@@ -1,0 +1,6 @@
+// `(0..5).rev()` yields the forward range in reverse: 4 3 2 1 0.
+fn main() {
+    for i in (0 .. 5).rev() {
+        println(i);
+    }
+}

@@ -1825,6 +1825,17 @@ pub enum HirExprKind {
         end: Box<HirExpr>,
         /// `true` for `..=` (inclusive upper bound).
         inclusive: bool,
+        /// Per-iteration stride magnitude (always positive).  Defaults to a
+        /// literal `1`; set to `k` by the `(a..b).step_by(k)` adapter.  MIR
+        /// lowering advances the counter by this value each iteration (adding
+        /// it ascending, subtracting it descending).
+        step: Box<HirExpr>,
+        /// `true` when the loop iterates from the high bound down to the low
+        /// bound — produced by the `(a..b).rev()` adapter.  MIR lowering
+        /// initialises the counter at the high bound, decrements by `step`, and
+        /// flips the header comparison so the sequence is the forward range's
+        /// reverse (e.g. `(0..5).rev()` yields `4 3 2 1 0`).
+        descending: bool,
         /// Loop body.
         body: HirBlock,
     },

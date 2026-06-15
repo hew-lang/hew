@@ -3295,6 +3295,31 @@ fn finalize_user_record_value_classes(
 /// hit. Skips inner calls whose substituted args still contain any
 /// abstract type-parameter symbol (no monomorphisation is possible
 /// without a concrete instantiation).
+/// The base range plus resolved iteration adapters peeled from a for-loop
+/// iterable by [`LowerCtx::peel_range_adapter_chain`].  Borrows the AST
+/// sub-expressions; lowered into a single `HirExprKind::ForRange`.
+struct RangeAdapterChain<'a> {
+    /// Left bound of the base `..` / `..=` range literal.
+    range_start: &'a Spanned<Expr>,
+    /// Right bound of the base range literal.
+    range_end: &'a Spanned<Expr>,
+    /// `true` for an inclusive (`..=`) upper bound.
+    inclusive: bool,
+    /// `true` when the chain reverses iteration direction (`.rev()`).
+    descending: bool,
+    /// The `.step_by(k)` stride argument when present; `None` defaults to a
+    /// stride of `1`.
+    step_expr: Option<&'a Spanned<Expr>>,
+    /// `true` when a `.step_by(k)` precedes a `.rev()` in the chain
+    /// (`(a..b).step_by(k).rev()`).  That order is unsupported: `.rev()` and
+    /// `.step_by(k)` do not commute, so folding them into an order-insensitive
+    /// `{descending, step}` pair would silently miscompile (the descending
+    /// counter would start at the raw high bound rather than the last strided
+    /// element).  The caller rejects the chain fail-closed instead of emitting
+    /// a wrong sequence.  Only `(a..b).rev()?.step_by(k)?` is supported.
+    step_before_rev: bool,
+}
+
 /// A `CallTraitMethodStatic` site discovered inside a function body.
 /// Carries enough info to derive the impl-method monomorphisation once the
 /// surrounding function's type params have been substituted.
@@ -3720,10 +3745,15 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             collect_call_sites_in_expr(start, out, trait_out);
             collect_call_sites_in_expr(end, out, trait_out);
+            collect_call_sites_in_expr(step, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -6326,10 +6356,15 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::ForRange {
-                start, end, body, ..
+                start,
+                end,
+                step,
+                body,
+                ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(start, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::WhileLet {
@@ -9935,21 +9970,57 @@ impl LowerCtx {
                 // Only simple identifier patterns (`for i in …`) are supported;
                 // tuple or struct patterns over a range are rejected the same
                 // way.
-                let kind = match (&iterable.0, &pattern.0) {
-                    (
-                        Expr::Binary {
-                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
-                            left: range_start,
-                            right: range_end,
-                        },
-                        Pattern::Identifier(var_name),
-                    ) => {
-                        // `for i in a..b` / `for i in a..=b` — the parser
-                        // represents range literals as `Expr::Binary` with
-                        // `BinaryOp::Range` or `BinaryOp::RangeInclusive`,
-                        // NOT as `Expr::Range` (which is the slice-index form
-                        // `xs[a..b]` inside bracket expressions only).
-                        let inclusive = *op == BinaryOp::RangeInclusive;
+                // Peel any `(a..b).rev()` / `.step_by(k)` adapter chain off the
+                // iterable down to its base range literal.  A plain `a..b`
+                // iterable peels to itself with no adapters.  The checker has
+                // already validated that `rev`/`step_by` are `Range<T>` methods
+                // (returning `Range<T>`), so an adapter chain that survives here
+                // is a real strided/descending range — gated below on the
+                // checker-recorded `Range<T>` type at the iterable span so a
+                // user-defined `rev`/`step_by` on a non-range type does not get
+                // misread as a range adapter.
+                let peeled = Self::peel_range_adapter_chain(&iterable.0);
+                let kind = match (peeled, &pattern.0) {
+                    (Some(spec), Pattern::Identifier(var_name)) if spec.step_before_rev => {
+                        // `.step_by(k)` before `.rev()` does not commute with the
+                        // supported `.rev()`-then-`.step_by(k)` order and cannot
+                        // be expressed by the order-insensitive ForRange fold
+                        // (the descending counter would start at the raw high
+                        // bound instead of the last strided element, silently
+                        // emitting a wrong sequence).  Reject fail-closed rather
+                        // than miscompile; the user can write the supported
+                        // order `(a..b).rev().step_by(k)`.
+                        self.unsupported(
+                            iterable.1.clone(),
+                            "`step_by` before `rev` is unsupported; \
+                             write `(a..b).rev().step_by(k)`",
+                            "for-range-adapter-lowering",
+                        );
+                        // Bind the loop variable (the range element is an
+                        // integer; the checker already typed it `Range<T>`) and
+                        // lower the body so its diagnostics still flow and the
+                        // body does not cascade into spurious unresolved-symbol
+                        // errors for the loop variable.  The primary diagnostic
+                        // above is the actionable one.
+                        self.push_scope();
+                        let _ =
+                            self.bind(var_name.clone(), ResolvedTy::I64, false, pattern.1.clone());
+                        let _ = self.lower_block(body, &ResolvedTy::Unit);
+                        self.pop_scope();
+                        HirExprKind::Unsupported(
+                            "for-in over `(a..b).step_by(k).rev()` (unsupported adapter order)"
+                                .into(),
+                        )
+                    }
+                    (Some(spec), Pattern::Identifier(var_name)) => {
+                        let RangeAdapterChain {
+                            range_start,
+                            range_end,
+                            inclusive,
+                            descending,
+                            step_expr,
+                            step_before_rev: _,
+                        } = spec;
 
                         // Lower start and end expressions first so their
                         // checker-resolved types are available for the loop
@@ -9962,10 +10033,13 @@ impl LowerCtx {
                         // iterable expression.  This is the single source of
                         // truth: the checker already chose the common integer
                         // width (e.g. `i64` for a `i32..i64` range) and stored
-                        // `Range<i64>` at the iterable span.  Reading it here
-                        // avoids the "prefer-start-bound" heuristic that picked
-                        // the wrong width when the two bounds had different
-                        // signed widths.
+                        // `Range<i64>` at the iterable span.  For an adapter
+                        // chain the outer iterable span is the outermost
+                        // `MethodCall`, which the checker also typed `Range<T>`
+                        // (the adapters return `Range<T>`), so the same lookup
+                        // recovers the element width.  Reading it here avoids the
+                        // "prefer-start-bound" heuristic that picked the wrong
+                        // width when the two bounds had different signed widths.
                         //
                         // WHY: the old heuristic (start_hir.ty then end_hir.ty)
                         //   gave the wrong answer for mixed-width bounds such as
@@ -9999,6 +10073,15 @@ impl LowerCtx {
                                 .unwrap_or(ResolvedTy::I64)
                         };
 
+                        // Lower the stride expression (or synthesise a literal
+                        // `1` at the element type for a non-strided range) before
+                        // binding the loop variable, so a captured `step_by(n)`
+                        // resolves against the enclosing scope.
+                        let step_hir = match step_expr {
+                            Some(step) => self.lower_expr(step, IntentKind::Read),
+                            None => self.make_int_literal(1, elem_ty.clone(), iterable.1.clone()),
+                        };
+
                         // Bind the loop variable inside a fresh scope so it is
                         // scoped to the body but visible during body lowering.
                         self.push_scope();
@@ -10013,6 +10096,8 @@ impl LowerCtx {
                             start: Box::new(start_hir),
                             end: Box::new(end_hir),
                             inclusive,
+                            step: Box::new(step_hir),
+                            descending,
                             body: body_block,
                         }
                     }
@@ -13948,6 +14033,7 @@ impl LowerCtx {
             }
         };
 
+        let step = self.make_i64_literal(1, span.clone());
         let for_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: None,
@@ -13955,6 +14041,8 @@ impl LowerCtx {
                 start: Box::new(start),
                 end: Box::new(end),
                 inclusive: false,
+                step: Box::new(step),
+                descending: false,
                 body,
             },
             ResolvedTy::Unit,
@@ -14750,6 +14838,18 @@ impl LowerCtx {
         }
     }
 
+    /// Build a typed integer-literal HIR expression.  Used to synthesise the
+    /// default stride `1` for a non-strided `ForRange` so MIR always sees a
+    /// concrete step operand at the loop's element width.
+    fn make_int_literal(&mut self, value: i64, ty: ResolvedTy, span: Span) -> HirExpr {
+        self.make_expr(
+            HirExprKind::Literal(HirLiteral::Integer(value)),
+            ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
     fn is_vec_iter_ty(ty: &ResolvedTy) -> bool {
         matches!(
             ty,
@@ -15392,6 +15492,83 @@ impl LowerCtx {
             },
             result_ty,
         )
+    }
+
+    /// Peel a `(a..b).rev()` / `.step_by(k)` adapter chain off a for-loop
+    /// iterable down to its base range literal.
+    ///
+    /// Returns `Some` for a plain range (`a..b` / `a..=b`, no adapters) and for
+    /// any chain of `.rev()` / `.step_by(k)` adapters terminating in a range
+    /// literal; returns `None` for any other iterable shape (Vec, a bare
+    /// identifier, a user method that is not a range adapter, …), which then
+    /// flows to `lower_for_iter_desugar`.
+    ///
+    /// Adapter semantics are left-to-right as written and well-defined on the
+    /// `ForRange` primitive:
+    ///
+    /// - `.rev()` flips the iteration direction (`descending`).
+    /// - `.step_by(k)` sets the stride magnitude (`step`); the *last* stride
+    ///   in the chain wins.
+    ///
+    /// The MIR counting loop then initialises the counter at the high bound for
+    /// a descending range and at the low bound otherwise, advancing by `step`
+    /// each iteration.  This makes `(0..5).rev()` yield `4 3 2 1 0` and
+    /// `(0..=10).rev().step_by(3)` yield `10 7 4 1`.
+    ///
+    /// `.rev()` and `.step_by(k)` do **not** commute, so only `.rev()` before
+    /// `.step_by(k)` (`(a..b).rev()?.step_by(k)?`) is supported: descend from
+    /// the high bound, then stride.  A `.step_by(k)` *before* a `.rev()` would
+    /// have to start the descending sequence at the last strided element, which
+    /// the order-insensitive `{descending, step}` fold cannot express; the
+    /// chain records `step_before_rev` and the caller rejects it fail-closed
+    /// rather than emit a wrong sequence.
+    fn peel_range_adapter_chain(iterable: &Expr) -> Option<RangeAdapterChain<'_>> {
+        match iterable {
+            Expr::Binary {
+                op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                left,
+                right,
+            } => Some(RangeAdapterChain {
+                range_start: left,
+                range_end: right,
+                inclusive: matches!(op, BinaryOp::RangeInclusive),
+                descending: false,
+                step_expr: None,
+                step_before_rev: false,
+            }),
+            Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let mut chain = Self::peel_range_adapter_chain(&receiver.0)?;
+                match method.as_str() {
+                    "rev" => {
+                        // `.rev()` carries no arguments (the checker rejects any).
+                        // Reversing twice is the forward direction again.
+                        chain.descending = !chain.descending;
+                        // `.step_by(k)` before `.rev()` does not commute with
+                        // the order-insensitive `{descending, step}` fold: the
+                        // descending counter would start at the raw high bound
+                        // instead of the last strided element.  Flag it so the
+                        // caller rejects fail-closed rather than miscompile.
+                        if chain.step_expr.is_some() {
+                            chain.step_before_rev = true;
+                        }
+                        Some(chain)
+                    }
+                    "step_by" => {
+                        // The last stride in the chain wins; the checker has
+                        // already validated arity (exactly one argument).
+                        let step = args.first()?;
+                        chain.step_expr = Some(step.expr());
+                        Some(chain)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     #[expect(
@@ -19405,10 +19582,15 @@ fn collect_captures_walk(
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             collect_captures_walk(start, param_ids, seen, captures, self_id);
             collect_captures_walk(end, param_ids, seen, captures, self_id);
+            collect_captures_walk(step, param_ids, seen, captures, self_id);
             collect_captures_walk_block(body, param_ids, seen, captures, self_id);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -19712,10 +19894,15 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(step, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -20332,10 +20519,15 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             }
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             collect_hir_emitted_events_walk(start, event_names, out);
             collect_hir_emitted_events_walk(end, event_names, out);
+            collect_hir_emitted_events_walk(step, event_names, out);
             for stmt in &body.statements {
                 match &stmt.kind {
                     HirStmtKind::Expr(e)
@@ -22470,7 +22662,13 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
             // Operand sub-expressions are still scanned without the
             // exemption (a nested range in `for i in (1..foo(2..3))` is
             // still value-position).
-            scan_expr_for_binop_gates(&iterable.0, &iterable.1, true, ctx);
+            //
+            // A `(a..b).rev()` / `.step_by(k)` adapter chain also lowers via
+            // `ForRange`, so the base range under the adapters is likewise
+            // exempt.  Peel the `rev`/`step_by` wrappers and scan the base range
+            // with the exemption while still scanning each `step_by` argument as
+            // a value-position sub-expression.
+            scan_for_iterable_for_binop_gates(iterable, ctx);
             scan_block_for_binop_gates(body, ctx);
         }
         Stmt::While {
@@ -22491,6 +22689,33 @@ fn scan_else_block_for_binop_gates(eb: &hew_parser::ast::ElseBlock, ctx: &mut Bi
     }
     if let Some(b) = &eb.block {
         scan_block_for_binop_gates(b, ctx);
+    }
+}
+
+/// Scan a `for`-loop iterable for binop-gate violations, exempting the base
+/// range of a `(a..b).rev()` / `.step_by(k)` adapter chain.
+///
+/// A plain `a..b` iterable is exempted one-deep (the for-loop lowering handles
+/// it).  An adapter chain over a range is also lowered via `ForRange`, so the
+/// base range is exempt too; the `step_by` arguments are ordinary value-position
+/// sub-expressions and are scanned without the exemption.
+fn scan_for_iterable_for_binop_gates(iterable: &Spanned<Expr>, ctx: &mut BinopGateCtx) {
+    match &iterable.0 {
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } if matches!(method.as_str(), "rev" | "step_by") => {
+            // Recurse into the receiver as a for-iterable (peeling further
+            // adapters / reaching the base range); scan the adapter arguments
+            // as plain value-position expressions.
+            scan_for_iterable_for_binop_gates(receiver, ctx);
+            for arg in args {
+                let a = arg.expr();
+                scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
+            }
+        }
+        _ => scan_expr_for_binop_gates(&iterable.0, &iterable.1, true, ctx),
     }
 }
 
@@ -23396,10 +23621,15 @@ fn scan_expr_for_call_shape(
             scan_block_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             scan_expr_for_call_shape(start, callable, diagnostics);
             scan_expr_for_call_shape(end, callable, diagnostics);
+            scan_expr_for_call_shape(step, callable, diagnostics);
             scan_block_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::Match { scrutinee, arms } => {

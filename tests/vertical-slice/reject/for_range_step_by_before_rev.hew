@@ -1,0 +1,12 @@
+// `.step_by(k)` before `.rev()` does not commute with the supported
+// `.rev()`-then-`.step_by(k)` order: a descending strided range must start at
+// the last strided element (8 for `(0..10).step_by(2)`), not the raw high
+// bound. The order-insensitive ForRange fold cannot express that, so the chain
+// is rejected fail-closed rather than silently emitting `9 7 5 3 1` (the
+// correct left-to-right sequence is `8 6 4 2 0`). Write `(0..10).rev().step_by(2)`.
+fn main() -> i64 {
+    for i in (0..10).step_by(2).rev() {
+        println(i);
+    }
+    0
+}

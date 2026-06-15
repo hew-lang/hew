@@ -470,10 +470,15 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_block_for_suspend(body, found);
         }
         HirExprKind::ForRange {
-            start, end, body, ..
+            start,
+            end,
+            step,
+            body,
+            ..
         } => {
             walk_expr_for_suspend(start, found);
             walk_expr_for_suspend(end, found);
+            walk_expr_for_suspend(step, found);
             walk_block_for_suspend(body, found);
         }
         HirExprKind::Match { scrutinee, arms } => {

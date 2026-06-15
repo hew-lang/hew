@@ -232,12 +232,15 @@ path = "junit.xml"
 #   eval_e2e     — spawns `hew` binary, needs pre-built runtimes, slow
 #   test_runner_e2e — same (subprocess-intensive)
 #   parity        — needs Node runner + npm install
+#   live_gate_matches_declared_coverage — lives in the `parity_ratchet` binary
+#     (which `binary(parity)` does NOT match), spawns the Node VM and asserts
+#     npm-provisioned coverage; excluded by test name, like the default-filter.
 #   hew-wasm      — requires wasmtime
 #
 # Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
 # (test-rust / make test) still runs on smoke pass and provides full coverage.
 # The smoke tier does NOT replace the ci profile — it precedes it.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "60s", terminate-after = 2 }
 

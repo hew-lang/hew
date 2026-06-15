@@ -339,6 +339,7 @@ stable = [
   "hew_metric_gauge_set",
   "hew_metric_histogram_record",
   "hew_metric_histogram_register",
+  "hew_metric_histogram_register_simple",
   "hew_metric_vec_register",
   "hew_metric_vec_with",
   # --- end user metrics (#1862) ---

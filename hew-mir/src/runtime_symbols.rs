@@ -259,6 +259,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_metric_gauge_set",
     "hew_metric_histogram_record",
     "hew_metric_histogram_register",
+    "hew_metric_histogram_register_simple",
     "hew_metric_vec_register",
     "hew_metric_vec_with",
     // --- end user metrics (#1862) --------------------------------------------

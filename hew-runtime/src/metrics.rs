@@ -749,6 +749,26 @@ pub unsafe extern "C" fn hew_metric_histogram_register(
     register_histogram(name, bucket_slice)
 }
 
+/// Register (or get) a bucketless histogram by name. Returns the handle, or -1
+/// on failure.
+///
+/// The bucketed [`hew_metric_histogram_register`] takes a raw `(*const i64,
+/// len)` bucket array that a Hew `extern "C"` declaration cannot express, so
+/// `std::metrics` reaches this name-only entry point instead. The registered
+/// histogram carries the running observation count with no `le` buckets.
+///
+/// # Safety
+///
+/// `name` must be null or a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_metric_histogram_register_simple(name: *const c_char) -> i64 {
+    // SAFETY: forwarded contract on `name`.
+    match unsafe { cstr_opt(name) } {
+        Some(name) => register_histogram(name, &[]),
+        None => REGISTER_FAILED,
+    }
+}
+
 /// Record one histogram observation. `value` is floored to the registered
 /// integer bucket scale.
 #[no_mangle]

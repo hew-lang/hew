@@ -330,6 +330,12 @@ pub enum RuntimeCallFamily {
     MetricGaugeDec,
     MetricGaugeAdd,
     MetricHistogramRegister,
+    /// Bucketless histogram register (name-only ABI). The bucketed
+    /// `MetricHistogramRegister` takes a raw `(*const i64, len)` array that a
+    /// Hew `extern "C"` declaration cannot express, so the stdlib reaches this
+    /// scalar entry point instead; it registers a histogram with no buckets
+    /// (just the running observation count).
+    MetricHistogramRegisterSimple,
     MetricHistogramRecord,
     MetricVecRegister,
     MetricVecWith,
@@ -603,6 +609,7 @@ impl RuntimeCallFamily {
             Self::MetricGaugeDec => "hew_metric_gauge_dec",
             Self::MetricGaugeAdd => "hew_metric_gauge_add",
             Self::MetricHistogramRegister => "hew_metric_histogram_register",
+            Self::MetricHistogramRegisterSimple => "hew_metric_histogram_register_simple",
             Self::MetricHistogramRecord => "hew_metric_histogram_record",
             Self::MetricVecRegister => "hew_metric_vec_register",
             Self::MetricVecWith => "hew_metric_vec_with",
@@ -847,6 +854,7 @@ impl RuntimeCallFamily {
             "hew_metric_gauge_dec" => Self::MetricGaugeDec,
             "hew_metric_gauge_add" => Self::MetricGaugeAdd,
             "hew_metric_histogram_register" => Self::MetricHistogramRegister,
+            "hew_metric_histogram_register_simple" => Self::MetricHistogramRegisterSimple,
             "hew_metric_histogram_record" => Self::MetricHistogramRecord,
             "hew_metric_vec_register" => Self::MetricVecRegister,
             "hew_metric_vec_with" => Self::MetricVecWith,
@@ -1107,6 +1115,7 @@ impl RuntimeCallFamily {
             | F::MetricGaugeDec
             | F::MetricGaugeAdd
             | F::MetricHistogramRegister
+            | F::MetricHistogramRegisterSimple
             | F::MetricHistogramRecord
             | F::MetricVecRegister
             | F::MetricVecWith

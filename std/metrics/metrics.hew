@@ -1,0 +1,271 @@
+//! Developer-defined application metrics.
+//!
+//! Declare your own counters, gauges, and histograms; their live values flow
+//! into the same scrape surface as the runtime built-ins, readable through
+//! `std::observe`.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::metrics;
+//! import std::observe;
+//!
+//! fn main() {
+//!     let requests = metrics.counter("app.requests");
+//!     requests.inc();
+//!     requests.add(4);
+//!
+//!     let active = metrics.gauge("app.active_connections");
+//!     active.set(3);
+//!     active.dec();
+//!
+//!     print(observe.scrape());
+//! }
+//! ```
+//!
+//! # Handles
+//!
+//! `Counter`, `Gauge`, and `Histogram` are `Copy` handles — each wraps the
+//! `i64` slot index the runtime registry hands back. They own no heap memory,
+//! so there is no `free()` or `close()`: copying a handle is just copying the
+//! index, and the registry value lives for the session.
+//!
+//! A name is registered once. Calling `metrics.counter("x")` a second time with
+//! the same name returns a handle to the same slot, so the same metric can be
+//! reached from anywhere in a program without threading the handle through.
+//!
+//! # Names
+//!
+//! Metric names follow the Prometheus charset `[a-zA-Z_:][a-zA-Z0-9_:.]*`. A
+//! name that is malformed, that exceeds the registry's caps, or that collides
+//! with a runtime built-in is rejected. The fail-fast constructors
+//! (`counter`/`gauge`/`histogram`) panic on rejection; the `try_*` variants
+//! return a [`MetricsError`] so the caller can recover.
+
+/// Why a metric registration was rejected.
+pub enum MetricsError {
+    /// The name was malformed, exceeded a registry cap, or collided with a
+    /// runtime built-in metric. The registry counts the rejection in its
+    /// `hew_metrics_*_dropped_total` self-metrics, visible in the scrape.
+    Rejected(string);
+}
+
+/// A monotonic counter handle.
+///
+/// Created by `metrics.counter(name)`. `Copy`: the handle is the registry slot
+/// index, not an owning pointer.
+pub type Counter {
+    id: i64;
+}
+
+/// A bidirectional gauge handle.
+///
+/// Created by `metrics.gauge(name)`. `Copy`: the handle is the registry slot
+/// index, not an owning pointer.
+pub type Gauge {
+    id: i64;
+}
+
+/// A histogram handle.
+///
+/// Created by `metrics.histogram(name)`. `Copy`: the handle is the registry
+/// slot index, not an owning pointer.
+///
+/// This handle records observations against the running observation count.
+/// Bucketed histograms (custom `le` upper bounds) are not yet expressible from
+/// the stdlib surface and arrive in a later release.
+pub type Histogram {
+    id: i64;
+}
+
+/// Methods on a `Counter`.
+trait CounterMethods {
+    /// Increment the counter by one.
+    fn inc(self);
+
+    /// Add `n` to the counter. A negative `n` is rejected by the runtime and
+    /// counted in the registry self-metrics (counters are monotonic).
+    fn add(self, n: i64);
+}
+
+impl CounterMethods for Counter {
+    /// Increment the counter by one.
+    fn inc(c: Counter) {
+        unsafe {
+            hew_metric_counter_inc(c.id)
+        };
+    }
+    /// Add `n` to the counter. A negative `n` is rejected and counted.
+    fn add(c: Counter, n: i64) {
+        unsafe {
+            hew_metric_counter_add(c.id, n)
+        };
+    }
+}
+
+/// Methods on a `Gauge`.
+trait GaugeMethods {
+    /// Increment the gauge by one.
+    fn inc(self);
+
+    /// Decrement the gauge by one.
+    fn dec(self);
+
+    /// Set the gauge to `n`.
+    fn set(self, n: i64);
+
+    /// Add `n` (any sign) to the gauge.
+    fn add(self, n: i64);
+}
+
+impl GaugeMethods for Gauge {
+    /// Increment the gauge by one.
+    fn inc(g: Gauge) {
+        unsafe {
+            hew_metric_gauge_inc(g.id)
+        };
+    }
+    /// Decrement the gauge by one.
+    fn dec(g: Gauge) {
+        unsafe {
+            hew_metric_gauge_dec(g.id)
+        };
+    }
+    /// Set the gauge to `n`.
+    fn set(g: Gauge, n: i64) {
+        unsafe {
+            hew_metric_gauge_set(g.id, n)
+        };
+    }
+    /// Add `n` (any sign) to the gauge.
+    fn add(g: Gauge, n: i64) {
+        unsafe {
+            hew_metric_gauge_add(g.id, n)
+        };
+    }
+}
+
+/// Methods on a `Histogram`.
+trait HistogramMethods {
+    /// Record one observation of value `v`.
+    fn observe(self, v: f64);
+}
+
+impl HistogramMethods for Histogram {
+    /// Record one observation of value `v`.
+    fn observe(h: Histogram, v: f64) {
+        unsafe {
+            hew_metric_histogram_record(h.id, v)
+        };
+    }
+}
+
+// ── Module-level constructors ─────────────────────────────────────────
+/// Register (or get) a counter named `name`.
+///
+/// Panics if the name is rejected by the registry. Use [`try_counter`] for a
+/// recoverable result.
+///
+/// # Examples
+///
+/// ```
+/// let hits = metrics.counter("app.cache_hits");
+/// hits.inc();
+/// ```
+pub fn counter(name: string) -> Counter {
+    let id = unsafe {
+        hew_metric_counter_register(name)
+    };
+    if id < 0 {
+        panic(f"metrics.counter: registration rejected for `{name}`");
+    }
+    Counter { id: id }
+}
+
+/// Register (or get) a counter named `name`, returning a structured error if
+/// the registry rejects the name.
+pub fn try_counter(name: string) -> Result<Counter, MetricsError> {
+    let id = unsafe {
+        hew_metric_counter_register(name)
+    };
+    if id < 0 {
+        Err(MetricsError::Rejected(name))
+    } else {
+        Ok(Counter { id: id })
+    }
+}
+
+/// Register (or get) a gauge named `name`.
+///
+/// Panics if the name is rejected by the registry. Use [`try_gauge`] for a
+/// recoverable result.
+pub fn gauge(name: string) -> Gauge {
+    let id = unsafe {
+        hew_metric_gauge_register(name)
+    };
+    if id < 0 {
+        panic(f"metrics.gauge: registration rejected for `{name}`");
+    }
+    Gauge { id: id }
+}
+
+/// Register (or get) a gauge named `name`, returning a structured error if the
+/// registry rejects the name.
+pub fn try_gauge(name: string) -> Result<Gauge, MetricsError> {
+    let id = unsafe {
+        hew_metric_gauge_register(name)
+    };
+    if id < 0 {
+        Err(MetricsError::Rejected(name))
+    } else {
+        Ok(Gauge { id: id })
+    }
+}
+
+/// Register (or get) a histogram named `name`.
+///
+/// Panics if the name is rejected by the registry. Use [`try_histogram`] for a
+/// recoverable result.
+///
+/// The histogram records observations against the running observation count.
+/// Custom bucket upper bounds arrive in a later release.
+pub fn histogram(name: string) -> Histogram {
+    let id = unsafe {
+        hew_metric_histogram_register_simple(name)
+    };
+    if id < 0 {
+        panic(f"metrics.histogram: registration rejected for `{name}`");
+    }
+    Histogram { id: id }
+}
+
+/// Register (or get) a histogram named `name`, returning a structured error if
+/// the registry rejects the name.
+pub fn try_histogram(name: string) -> Result<Histogram, MetricsError> {
+    let id = unsafe {
+        hew_metric_histogram_register_simple(name)
+    };
+    if id < 0 {
+        Err(MetricsError::Rejected(name))
+    } else {
+        Ok(Histogram { id: id })
+    }
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+// The scalar emit path into the bounded user-metric registry
+// (`hew-runtime/src/metrics.rs`). A name registers to an i64 slot handle
+// (>= 0 valid, -1 on a cap / charset / collision rejection); the mutators
+// take that handle plus an i64 delta or an f64 observation.
+extern "C" {
+    fn hew_metric_counter_register(name: string) -> i64;
+    fn hew_metric_counter_inc(handle: i64);
+    fn hew_metric_counter_add(handle: i64, n: i64);
+    fn hew_metric_gauge_register(name: string) -> i64;
+    fn hew_metric_gauge_inc(handle: i64);
+    fn hew_metric_gauge_dec(handle: i64);
+    fn hew_metric_gauge_set(handle: i64, n: i64);
+    fn hew_metric_gauge_add(handle: i64, n: i64);
+    fn hew_metric_histogram_register_simple(name: string) -> i64;
+    fn hew_metric_histogram_record(handle: i64, v: f64);
+}

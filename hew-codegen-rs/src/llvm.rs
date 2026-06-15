@@ -819,6 +819,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::MetricGaugeDec
         | F::MetricGaugeAdd
         | F::MetricHistogramRegister
+        | F::MetricHistogramRegisterSimple
         | F::MetricHistogramRecord
         | F::MetricVecRegister
         | F::MetricVecWith
@@ -1490,6 +1491,25 @@ fn intern_runtime_decl<'ctx>(
         "hew_observe_scrape" => ptr_ty.fn_type(&[], false),
         "hew_observe_series" => ptr_ty.fn_type(&[], false),
         "hew_observe_barrier" => i64_ty.fn_type(&[], false),
+        // User-metric scalar emit path (#1862). Bodies in
+        // `hew-runtime/src/metrics.rs`. A name comes in as `*const c_char` and
+        // the slot handle goes out as `i64` (>= 0 valid, -1 on failure); the
+        // mutators take an `i64` handle (plus an `i64` delta or an `f64`
+        // observation) and return void. The labelled `*Vec` and bucketed
+        // histogram registration take raw C arrays and are not reached through
+        // this declared-call path.
+        "hew_metric_counter_register"
+        | "hew_metric_gauge_register"
+        | "hew_metric_histogram_register_simple" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        "hew_metric_counter_inc" | "hew_metric_gauge_inc" | "hew_metric_gauge_dec" => {
+            ctx.void_type().fn_type(&[i64_ty.into()], false)
+        }
+        "hew_metric_counter_add" | "hew_metric_gauge_set" | "hew_metric_gauge_add" => {
+            ctx.void_type().fn_type(&[i64_ty.into(), i64_ty.into()], false)
+        }
+        "hew_metric_histogram_record" => ctx
+            .void_type()
+            .fn_type(&[i64_ty.into(), ctx.f64_type().into()], false),
         // hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         // (`hew-runtime/src/reply_channel.rs:296`). Blocks until a reply
         // is deposited; returns the malloc'd reply pointer (caller frees
@@ -21986,6 +22006,104 @@ fn lower_call_runtime_abi(
             }
             let _ = i32_ty;
         }
+        // User-metric scalar emit path (#1862). `std::metrics` reaches these
+        // through its `extern "C"` block; the bodies live in
+        // `hew-runtime/src/metrics.rs`. The register entry points take a
+        // `*const c_char` name and return the `i64` slot handle; the mutators
+        // take an `i64` handle plus an `i64` delta or an `f64` observation and
+        // return void.
+        F::MetricCounterRegister | F::MetricGaugeRegister | F::MetricHistogramRegisterSimple => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (name), got {}",
+                    args.len()
+                )));
+            }
+            let name_ptr = load_duplex_handle(fn_ctx, args[0], "metric register name")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[name_ptr.into()], "metric_register_call")
+                .llvm_ctx("metric register call")?;
+            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!("{symbol} returned void"))
+            })?;
+            if let Some(dest_place) = dest {
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result_val)
+                    .llvm_ctx("metric register store")?;
+            }
+            let _ = i32_ty;
+        }
+        F::MetricCounterInc | F::MetricGaugeInc | F::MetricGaugeDec => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (handle), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[handle.into()], "metric_mutate_call")
+                .llvm_ctx("metric mutate call")?;
+            let _ = i32_ty;
+        }
+        F::MetricCounterAdd | F::MetricGaugeSet | F::MetricGaugeAdd => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (handle, n), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
+            let n = load_int_arg(fn_ctx, args[1], i64_ty, "metric mutate value")?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[handle.into(), n.into()], "metric_mutate2_call")
+                .llvm_ctx("metric mutate2 call")?;
+            let _ = i32_ty;
+        }
+        F::MetricHistogramRecord => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (handle, value), got {}",
+                    args.len()
+                )));
+            }
+            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "histogram record handle")?;
+            let value = load_math_f64_arg(fn_ctx, args[1], "histogram record value", symbol)?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            fn_ctx
+                .builder
+                .build_call(fv, &[handle.into(), value.into()], "histogram_record_call")
+                .llvm_ctx("histogram record call")?;
+            let _ = i32_ty;
+        }
         F::StringCharCount => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
@@ -22831,19 +22949,13 @@ fn lower_call_runtime_abi(
         | F::LambdaActorWeakClone
         | F::LambdaActorWeakDrop
         | F::MathIntrinsic(_)
-        // User metrics (#1862): allowlisted + typed, but reached via the
-        // declared-`extern "C"` call path from std/metrics.hew, not a direct
-        // MIR `Instr::CallRuntimeAbi` lowering. No per-family arm here yet.
-        | F::MetricCounterRegister
-        | F::MetricCounterInc
-        | F::MetricCounterAdd
-        | F::MetricGaugeRegister
-        | F::MetricGaugeSet
-        | F::MetricGaugeInc
-        | F::MetricGaugeDec
-        | F::MetricGaugeAdd
+        // User metrics (#1862): the labelled `*Vec` registration and the
+        // bucketed histogram registration take raw C arrays (`*const i64` /
+        // `*const *const c_char` plus a length). A Hew `extern "C"` declaration
+        // marshals a `Vec<T>` to a single `*mut HewVec`, which does not match
+        // that `(ptr, len)` ABI, so these stay fail-closed until a HewVec-shaped
+        // ABI lands. The scalar surface has a real arm below.
         | F::MetricHistogramRegister
-        | F::MetricHistogramRecord
         | F::MetricVecRegister
         | F::MetricVecWith
         | F::NodeLookup

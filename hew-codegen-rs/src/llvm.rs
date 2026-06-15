@@ -48883,6 +48883,61 @@ fn main() {
              never a direct `mangle(...)`; offending line(s): {offending:?}"
         );
     }
+
+    /// `record_struct_for` resolves a record's LLVM struct from
+    /// `fn_ctx.record_layouts`, which registration keys on the BARE (short)
+    /// outer name. A record reached through a module-qualified spelling
+    /// (`shapes.Point` under qualified-by-default) misses the primary key, so
+    /// the lookup MUST retry under `short_name(name)`. This guard brace-matches
+    /// the function body and asserts the short-name fallback survives — a future
+    /// edit that drops it re-opens the qualified-spine record-layout miss class
+    /// for `RecordInit` / `RecordFieldLoad`, the codegen mirror of the lower.rs
+    /// field-store / field-read shortening.
+    #[test]
+    fn record_struct_for_retries_under_short_name() {
+        let src = include_str!("llvm.rs");
+        let sig = "fn record_struct_for<'ctx>(";
+        let sig_at = src.find(sig).expect("record_struct_for signature present");
+        let body_open = src[sig_at..]
+            .find('{')
+            .map(|o| sig_at + o)
+            .expect("record_struct_for opening brace");
+        let mut depth = 0usize;
+        let mut body_end = body_open;
+        for (i, ch) in src[body_open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            body_end > body_open,
+            "failed to brace-match record_struct_for body"
+        );
+        let body = &src[body_open..=body_end];
+        // The body must route the outer name through `short_name` on the
+        // fallback path — both the monomorphic retry and the generic retry that
+        // also shortens the type-arg spine.
+        assert!(
+            body.contains("short_name(name)"),
+            "record_struct_for must retry the record-layout lookup under \
+             `short_name(name)` so a module-qualified record resolves its \
+             bare-keyed layout; the short-name fallback is missing"
+        );
+        assert!(
+            body.contains("mangle_with_shortened_args(short_name(name), args)"),
+            "record_struct_for's generic fallback must shorten BOTH the outer \
+             name and the type-arg spine via \
+             `mangle_with_shortened_args(short_name(name), args)`"
+        );
+    }
 }
 
 // Make `StubErr` `Clone` so we can re-use the same error in multiple

@@ -304,6 +304,31 @@ pub fn run_layout_mono_pass(
         }
     }
 
+    // Seed the synthetic `VecIter<T>` record (the `for x in vec` / `into_iter`
+    // desugar target) into `record_decls`, mirroring the Option/Result enum
+    // seeding above. `VecIter` is NOT a `HirItem::Record`/`TypeDecl` — the HIR
+    // for-in desugar (`lower::LowerCtx::make_vec_iter_init`) synthesises its
+    // `StructInit` and registers its layout directly — so the item-loop never
+    // adds it. Under a generic body the origin-site `register_vec_iter_layout`
+    // only registers the ABSTRACT `VecIter<T>`; the concrete element becomes
+    // observable only once the enclosing fn is substituted (`iterate$$i64`),
+    // exactly mirroring how a user `record Box<T>` constructed inside a generic
+    // fn body is discovered here. Seeding the decl lets `visit_ty` register the
+    // concrete `VecIter$$<elem>` layout per monomorphisation, so MIR's
+    // field-order lookup (StructInit + FieldAccess) resolves it. The field
+    // shape is sourced from the single `vec_iter_field_shape` authority the
+    // origin-site path also consumes, so the two registrations can never
+    // disagree. `or_insert_with` honours a user type that shadows the name.
+    let ty_t_vec_iter = ResolvedTy::named_user("T", vec![]);
+    record_decls
+        .entry("VecIter".to_string())
+        .or_insert_with(|| RecordDecl {
+            id: crate::lower::SYNTHETIC_VEC_ITER_ITEM,
+            type_params: vec!["T".to_string()],
+            fields: crate::lower::vec_iter_field_shape(&ty_t_vec_iter),
+        });
+    all_type_params.insert("T".to_string());
+
     let mut disc = Discovery {
         record_decls: &record_decls,
         enum_decls: &enum_decls,

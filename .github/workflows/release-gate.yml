@@ -436,7 +436,7 @@ jobs:
       - name: Build and test on FreeBSD
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
         with:
-          release: "15.1"
+          release: "15.0"
           mem: 8192
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
@@ -480,7 +480,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — full build + workspace tests
-  # Runs inside a FreeBSD 15.1 aarch64 VM under QEMU emulation on a standard
+  # Runs inside a FreeBSD 15.0 aarch64 VM under QEMU emulation on a standard
   # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
   # but needs no new host infra. This job cannot be reproduced locally; CI is
   # the proving gate for the FreeBSD aarch64 toolchain.
@@ -495,7 +495,7 @@ jobs:
       - name: Build and test on FreeBSD aarch64
         uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
         with:
-          release: "15.1"
+          release: "15.0"
           arch: aarch64
           mem: 8192
           prepare: |

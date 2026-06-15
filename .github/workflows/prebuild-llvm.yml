@@ -9,7 +9,7 @@
 # The publish step is idempotent — it skips if the versioned asset already
 # exists (immutable once published; bump TOOLCHAIN_TAG to republish).
 #
-# FreeBSD: no longer builds LLVM — FreeBSD 15.1 provides llvm22 via pkg.
+# FreeBSD: no longer builds LLVM — FreeBSD 15.0 provides llvm22 via pkg.
 #
 # Runs weekly on Sunday 04:00 UTC and can be triggered manually.
 # Can also be triggered automatically when this workflow file changes.

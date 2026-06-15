@@ -1,0 +1,11 @@
+//! Multi-method trait collision fixture (module B). Exports a DISTINCT trait
+//! that shares the bare name `Proc` with `hew::multitrait` but whose `close`
+//! returns a plain `i64` instead of a `Result`, and which declares only the one
+//! method. An impl that resolves to module A's `Proc` but supplies THIS module's
+//! `i64` `close` signature must be REJECTED; the bare `Proc::close` key collides,
+//! so conformance must key off the resolved trait's owner-qualified identity.
+
+/// A single-method process trait whose `close` returns a bare status code.
+pub trait Proc {
+    fn close(val: Self) -> i64;
+}

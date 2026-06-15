@@ -1,0 +1,32 @@
+// Reject fixture: an ALIASED multi-method trait impl that declares an EXTRA
+// method the trait does not define, under a same-name collision. The importer
+// aliases `hew::multitrait`'s `Proc` (`Proc as P`) and plain-imports
+// `hew::multitraitb` (a same-named `Proc`). The impl provides both required
+// methods PLUS an `extra` method that is not on the trait. Conformance must
+// resolve `P` to its owner-qualified identity, read THAT trait's known method
+// set, and REJECT the extraneous method — never accept it by reading the
+// polluted bare/neighbour method set.
+import hew::multitrait::{ Proc as P, Tally, ProcErr };
+import hew::multitraitb;
+
+type W {
+    id: i64;
+}
+
+impl P for W {
+    fn tick(w: W) -> i64 {
+        w.id
+    }
+
+    fn close(w: W) -> Result<Tally, ProcErr> {
+        Ok(Tally { code: w.id })
+    }
+
+    fn extra(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

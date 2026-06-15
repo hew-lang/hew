@@ -118,6 +118,24 @@ fixtures=(
   # shape) is also registered. Run end-to-end so the aliased impl is exercised
   # through codegen + receiver dispatch.
   aliased_trait_source_name_collision_accept
+  # A LOCAL trait `Source` shadows an imported same-name trait. The program
+  # declares its own `Source` (`close` → `i64`) while `hew::srccollidea` (aliased
+  # `Source as A`, whose `close` → `Result<Payload, ErrA>`) and `hew::srccollideb`
+  # are also in scope, polluting the bare `Source::close` key (first-write-wins).
+  # Trait conformance must resolve `Source` to the LOCAL trait — not the imported
+  # signature leaked into the bare key — so the local `i64` impl is valid and runs.
+  local_trait_shadows_imported_collision_accept
+  # A correct ALIASED multi-method trait impl (`Proc as P` from `hew::multitrait`,
+  # `tick` + `close` → `Result<Tally, ProcErr>`) under a same-name collision with
+  # `hew::multitraitb`'s one-method `Proc`. Conformance resolves `P` to its
+  # owner-qualified identity and ACCEPTs — exercising BOTH method-set membership
+  # and per-method signature comparison against the collision-free owner key.
+  aliased_multimethod_trait_collision_accept
+  # An `impl Sub for W` (where `trait Sub: Super`) provides a SUPER-trait method
+  # (`base`) inline alongside the sub-trait's own method. The impl-site method-set
+  # check must fold the whole super-trait chain into the KNOWN set, so the inline
+  # super-method is not flagged as extraneous. ACCEPT + run e2e.
+  subtrait_inline_supermethod_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -296,6 +314,44 @@ if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${samename_trait_collision_out}"
   exit 1
 fi
 echo "PASS ${samename_trait_collision_reject}"
+
+# --- Method-SET membership reject fixtures ----------------------------------
+# An `impl <Trait> for <Type>` must provide EXACTLY the trait's method set:
+# every required (bodyless) method present, and no method that is not on the
+# trait. The required/known method set is resolved through the trait's
+# owner-qualified identity, so a same-name trait collision can never leak a
+# neighbour's method set into the comparison (the previous fail-open: the
+# conformance pass iterated only the impl's methods, so a missing or extra
+# method slipped through and `record_trait_impl` ran unconditionally).
+# Shared assertion: each fixture must REJECT with the method-set diagnostic and
+# NOT fall through to a codegen-front / D10 gate.
+assert_method_set_reject() { # <fixture> <needle>
+  local fixture="$1" needle="$2" out
+  out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+    echo "FAIL ${fixture}: hew check unexpectedly succeeded (method-set defect slipped the gate)" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  if ! grep -q "${needle}" <<<"${out}"; then
+    echo "FAIL ${fixture}: expected a method-set diagnostic matching '${needle}'" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${out}"; then
+    echo "FAIL ${fixture}: method-set defect fell through to codegen-front/D10" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
+# Missing required method, resolved through each trait kind's owner-qualified
+# identity under a same-name collision (aliased / imported-bare / local-shadow).
+assert_method_set_reject trait_impl_missing_method_aliased_reject "is missing required method(s): close"
+assert_method_set_reject trait_impl_missing_method_bare_reject "is missing required method(s): close"
+assert_method_set_reject trait_impl_missing_method_local_reject "is missing required method(s): close"
+# Extra method not declared on the trait, under a same-name collision.
+assert_method_set_reject trait_impl_extra_method_reject "declares method(s) not on the trait: extra"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
 # modules is a genuine ambiguity. The checker must fail closed with `ambiguous

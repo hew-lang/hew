@@ -42,6 +42,26 @@ impl StdlibBarePublication<'_> {
     }
 }
 
+/// A trait reference (`impl <Trait> for ...`) resolved to its OWNER-QUALIFIED
+/// identity, so trait conformance never keys off the bare `Trait::method` name
+/// (which is first-write-wins and polluted under same-name collisions). Produced
+/// by `resolve_trait_conformance_identity`.
+pub(super) struct ResolvedTraitIdentity {
+    /// The trait's defining module (`Some("srccollidea")` for an
+    /// aliased/imported-bare/single-owner-import trait), or `None` for a
+    /// local/root trait or a reference that did not resolve to a single owner.
+    owner: Option<String>,
+    /// The trait's source name (the name as declared in its defining module,
+    /// recovering through an alias: `import m::{ Trait as C }` resolves `C` to
+    /// source name `Trait`).
+    source_trait_name: String,
+    /// `true` when the reference binds to a LOCAL trait declaration, which
+    /// shadows any imported same-name trait. Callers source the required-method
+    /// set and signatures from the local `TraitInfo`, never the polluted bare
+    /// `fn_sigs` key.
+    is_local: bool,
+}
+
 /// Context for canonicalizing trait-vs-impl signature types to a single
 /// defining-module-qualified identity before comparison
 /// (`check_impl_method_against_trait`). Carries only borrowed predicates so the
@@ -3982,6 +4002,17 @@ impl Checker {
                         Self::canonical_primitive_or_builtin_key_from_name(type_name)
                     });
 
+                    // Validate the impl provides EXACTLY the trait's method set
+                    // (every required method present, no extraneous method),
+                    // resolved through the trait's owner-qualified identity. Runs
+                    // ONCE per impl, before the per-method loop, so an impl with
+                    // ZERO methods (an empty `impl A for W { }` missing every
+                    // required method) is still validated. Per-method signature
+                    // equivalence is checked separately inside the loop.
+                    if let Some(tb) = id.trait_bound.as_ref() {
+                        self.check_impl_method_set_against_trait(type_name, tb, &id.methods, span);
+                    }
+
                     for method in &id.methods {
                         let sig = self.register_impl_method(
                             type_name,
@@ -5048,6 +5079,251 @@ impl Checker {
         ty.substitute_named_params_parallel(&subst_map)
     }
 
+    /// Resolve a trait reference as written in an `impl ... for ...` block to
+    /// its OWNER-QUALIFIED identity, so trait conformance never keys off the
+    /// bare `Trait::method` name. The bare name is polluted under same-name
+    /// collisions: `register_trait_method_sig` writes the bare `fn_sigs` key
+    /// first-write-wins, so when two imported modules (or an import plus a
+    /// local declaration) share a trait name, the bare key holds whichever
+    /// registered first and silently shadows the others. Resolution covers all
+    /// three reference kinds uniformly:
+    ///
+    ///   * **aliased / imported-bare** — `published_bare_trait_owners` maps the
+    ///     in-scope binding to its source identity `{module}.{Trait}`. The
+    ///     owner-qualified `fn_sigs` key `{module}.{Trait}::{method}` is
+    ///     collision-free (always registered for module traits).
+    ///   * **local / root** — a trait declared in the importing program shadows
+    ///     any imported same-name trait. The local `trait_defs[bare]` entry is
+    ///     authoritative (last-write-wins), so its required method set and
+    ///     signatures are derived from that `TraitInfo` directly, never from the
+    ///     polluted bare `fn_sigs` key.
+    ///   * **unambiguous single-owner import** — recovered by scanning
+    ///     `trait_defs` for a single `{module}.{Trait}` qualified key.
+    ///
+    /// `trait_name` is the name as written (`A`, `Source`). Returns the resolved
+    /// identity; `owner` is the defining module (`None` for a local/root trait
+    /// or an unresolved name), and `is_local` records the local-shadow case so
+    /// callers source the required-method set from the local `TraitInfo`.
+    pub(super) fn resolve_trait_conformance_identity(
+        &self,
+        trait_name: &str,
+    ) -> ResolvedTraitIdentity {
+        // A locally-declared trait shadows every imported same-name trait. This
+        // must be checked FIRST: the importer may also bring same-named traits
+        // into scope (publishing `published_bare_trait_owners` entries or
+        // qualified `{module}.{Trait}` defs), and the suffix-scan below would
+        // otherwise resolve the reference to one of those instead of the local
+        // declaration the user actually wrote `impl ... for ...` against.
+        if self.local_trait_defs.contains(trait_name) {
+            return ResolvedTraitIdentity {
+                owner: None,
+                source_trait_name: trait_name.to_string(),
+                is_local: true,
+            };
+        }
+
+        // Aliased / imported-bare: the published-bare-trait map records the
+        // source identity `{module}.{Trait}` under the in-scope binding. Exactly
+        // one published identity is the well-formed case.
+        if let Some((owner, name)) = self
+            .published_bare_trait_owners
+            .get(&(self.current_module.clone(), trait_name.to_string()))
+            .filter(|identities| identities.len() == 1)
+            .and_then(|identities| identities.iter().next())
+            .and_then(|qualified| {
+                qualified
+                    .split_once('.')
+                    .filter(|(module, _)| self.modules.contains(*module))
+                    .map(|(module, name)| (module.to_string(), name.to_string()))
+            })
+        {
+            return ResolvedTraitIdentity {
+                owner: Some(owner),
+                source_trait_name: name,
+                is_local: false,
+            };
+        }
+
+        // Unambiguous single-owner import: a non-aliased name whose binding == the
+        // source name. Recover the owner from the single `{module}.{Trait}`
+        // qualified key in `trait_defs`. With zero or an ambiguous set, leave the
+        // owner unresolved and fall back to the bare comparison.
+        let suffix = format!(".{trait_name}");
+        let mut owners: Vec<&str> = self
+            .trait_defs
+            .keys()
+            .filter_map(|k| k.strip_suffix(&suffix))
+            .filter(|module| !module.is_empty() && self.modules.contains(*module))
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        let owner = match owners.as_slice() {
+            [single] => Some((*single).to_string()),
+            _ => None,
+        };
+        ResolvedTraitIdentity {
+            owner,
+            source_trait_name: trait_name.to_string(),
+            is_local: false,
+        }
+    }
+
+    /// The set of method names a trait requires an impl to provide, resolved
+    /// through the trait's OWNER-QUALIFIED identity so a same-name collision
+    /// cannot leak a neighbouring trait's method set. A method with a default
+    /// body is optional (impls may omit it), so only bodyless methods of the
+    /// resolved trait ITSELF are "required". The "known" set additionally
+    /// includes the trait's whole super-trait chain: an impl of a sub-trait may
+    /// legitimately provide a super-trait method inline (`trait Sub: Super` →
+    /// `impl Sub for T { fn <super-method> … }`), so such a method must not be
+    /// flagged as extraneous. Super-trait REQUIRED methods are NOT folded into
+    /// `required` here — they are satisfied by a separate `impl Super for T` (the
+    /// idiomatic form) or enforced at the bound site, and folding them in would
+    /// falsely reject that separate-impl pattern.
+    ///
+    /// Returns `(required, known)`, or `None` when the trait reference does not
+    /// resolve to a known trait (a separate diagnostic covers an unknown bound).
+    fn trait_required_and_known_methods(
+        &self,
+        identity: &ResolvedTraitIdentity,
+        trait_name: &str,
+    ) -> Option<(HashSet<String>, HashSet<String>)> {
+        // Prefer the owner-qualified `trait_defs` key; it is collision-free even
+        // when a same-name trait registered the bare key first. The local-shadow
+        // and unresolved paths fall back to the bare key (authoritative for a
+        // local trait, best-effort for an unresolved reference).
+        let qualified = identity
+            .owner
+            .as_ref()
+            .map(|owner| format!("{owner}.{}", identity.source_trait_name));
+        let lookup_key = qualified
+            .as_deref()
+            .filter(|q| self.trait_defs.contains_key(*q))
+            .unwrap_or(trait_name);
+        let info = self.trait_defs.get(lookup_key)?;
+
+        let mut required = HashSet::new();
+        let mut known = HashSet::new();
+        for m in &info.methods {
+            known.insert(m.name.clone());
+            if m.body.is_none() {
+                required.insert(m.name.clone());
+            }
+        }
+        // Fold every (transitive) super-trait's declared methods into `known`
+        // so an inline super-trait method is permitted, not flagged as extra.
+        let mut visited: HashSet<String> = HashSet::new();
+        self.collect_super_trait_method_names(lookup_key, &mut known, &mut visited);
+        Some((required, known))
+    }
+
+    /// Walk the (transitive) super-trait chain of `trait_key`, inserting every
+    /// super-trait's declared method name into `known`. `visited` guards against
+    /// cycles. Super-trait names are resolved against `trait_super` (keyed by the
+    /// same bare/qualified spelling the registration paths author) and their
+    /// methods against `trait_defs`.
+    fn collect_super_trait_method_names(
+        &self,
+        trait_key: &str,
+        known: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+    ) {
+        if !visited.insert(trait_key.to_string()) {
+            return;
+        }
+        let Some(supers) = self.trait_super.get(trait_key) else {
+            return;
+        };
+        for super_name in supers.clone() {
+            if let Some(super_info) = self.trait_defs.get(&super_name) {
+                for m in &super_info.methods {
+                    known.insert(m.name.clone());
+                }
+            }
+            self.collect_super_trait_method_names(&super_name, known, visited);
+        }
+    }
+
+    /// Validate that an `impl <Trait> for <Type>` provides EXACTLY the trait's
+    /// method set: every required (bodyless) trait method present, and no method
+    /// that is not declared on the trait. Keyed off the trait's owner-qualified
+    /// identity (`resolve_trait_conformance_identity`), so a same-name trait
+    /// collision can never leak a neighbour's method set into the comparison.
+    /// Per-method signature equivalence is enforced separately by
+    /// `check_impl_method_against_trait`.
+    pub(super) fn check_impl_method_set_against_trait(
+        &mut self,
+        type_name: &str,
+        trait_bound: &TraitBound,
+        impl_methods: &[FnDecl],
+        impl_span: &Span,
+    ) {
+        let trait_name = &trait_bound.name;
+        let identity = self.resolve_trait_conformance_identity(trait_name);
+        let Some((required, known)) = self.trait_required_and_known_methods(&identity, trait_name)
+        else {
+            return;
+        };
+
+        let provided: HashSet<&str> = impl_methods.iter().map(|m| m.name.as_str()).collect();
+
+        // Missing: a required (bodyless) trait method the impl never provided.
+        let mut missing: Vec<String> = required
+            .iter()
+            .filter(|name| !provided.contains(name.as_str()))
+            .cloned()
+            .collect();
+        missing.sort_unstable();
+        if !missing.is_empty() {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplMissingMethods {
+                    trait_name: trait_name.clone(),
+                    type_name: type_name.to_string(),
+                    methods: missing.clone(),
+                },
+                impl_span,
+                format!(
+                    "impl `{trait_name}` for `{type_name}` is missing required method(s): {}",
+                    missing.join(", ")
+                ),
+                impl_span,
+                format!(
+                    "trait `{trait_name}` requires {}",
+                    if missing.len() == 1 {
+                        format!("method `{}`", missing[0])
+                    } else {
+                        format!("methods {}", missing.join(", "))
+                    }
+                ),
+            );
+        }
+
+        // Extra: an impl method that is not declared on the trait at all.
+        let mut extra: Vec<String> = impl_methods
+            .iter()
+            .map(|m| m.name.clone())
+            .filter(|name| !known.contains(name))
+            .collect();
+        extra.sort_unstable();
+        extra.dedup();
+        if !extra.is_empty() {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplExtraMethods {
+                    trait_name: trait_name.clone(),
+                    type_name: type_name.to_string(),
+                    methods: extra.clone(),
+                },
+                impl_span,
+                format!(
+                    "impl `{trait_name}` for `{type_name}` declares method(s) not on the trait: {}",
+                    extra.join(", ")
+                ),
+                impl_span,
+                format!("trait `{trait_name}` declares no such method(s)"),
+            );
+        }
+    }
+
     /// Enforce that an impl method's signature matches the declared trait
     /// method's signature, after substituting `Self`, trait type parameters,
     /// and the impl's associated-type aliases. Q004 / LESSONS
@@ -5056,9 +5332,10 @@ impl Checker {
     /// "type does not satisfy trait" cascaded from a later call site.
     ///
     /// Silent (no diagnostic) when:
-    /// * the trait method is not declared (a separate "extra method" check is
-    ///   future work; this lane only enforces equivalence of methods that are
-    ///   intended to satisfy a declared trait method);
+    /// * the trait method is not declared (the impl-site method-SET check in
+    ///   `check_impl_method_set_against_trait` reports an extra method; this
+    ///   per-method check only enforces equivalence of methods the trait
+    ///   declares);
     /// * the trait signature was not registered (already produced a
     ///   diagnostic, would double-fire);
     /// * any side of the comparison contains `Ty::Error` (cascading
@@ -5202,89 +5479,60 @@ impl Checker {
         };
 
         // Resolve the trait as written in the impl (`impl C for X`) to its
-        // SOURCE identity. An aliased trait import (`import m::{ Trait as C }`)
-        // binds `C` while the trait's method signatures and qualified
-        // `trait_defs` entry live under the source identity `m.Trait`. Recover
-        // `(owner_module, source_trait_name)` from the published-bare-trait map;
-        // exactly one published identity is the well-formed case. With zero (a
-        // local/root trait, or a non-aliased name whose binding == source name)
-        // or an ambiguous set, fall back to the name as written.
-        let source_trait_identity: Option<(String, String)> = self
-            .published_bare_trait_owners
-            .get(&(self.current_module.clone(), trait_name.clone()))
-            .filter(|identities| identities.len() == 1)
-            .and_then(|identities| identities.iter().next())
-            .and_then(|qualified| {
-                qualified
-                    .split_once('.')
-                    .filter(|(module, _)| self.modules.contains(*module))
-                    .map(|(module, name)| (module.to_string(), name.to_string()))
-            });
+        // OWNER-QUALIFIED identity, uniformly across all three reference kinds
+        // (aliased / imported-bare, local-root shadow, unambiguous single-owner
+        // import). The bare `Trait::method` key is first-write-wins and pollutes
+        // under same-name collisions, so it is NEVER the authority when the
+        // identity resolves to a real owner or a local trait. See
+        // `resolve_trait_conformance_identity`.
+        let identity = self.resolve_trait_conformance_identity(&trait_name);
 
-        // The method-signature key uses the SOURCE trait name when the impl
-        // referenced an alias: signatures are registered under
-        // `m.Trait::method` / the in-module `Trait::method`, never the alias
-        // `C::method`. Looking up the alias key misses and would return early,
-        // accepting the impl WITHOUT the signature comparison (fail-open).
-        let sig_trait_name = source_trait_identity
-            .as_ref()
-            .map_or(trait_name.as_str(), |(_, name)| name.as_str());
-        let trait_method_key = format!("{sig_trait_name}::{}", method.name);
-        let scoped_trait_key =
-            scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
-                .unwrap_or_else(|| trait_method_key.clone());
-        // Also try the SOURCE-owner-qualified key (`m.Trait::method`) directly,
-        // so an aliased import of a trait from another module resolves the
-        // signature registered under the owner's qualified key.
-        let owner_qualified_trait_key = source_trait_identity
-            .as_ref()
-            .map(|(owner, name)| format!("{owner}.{name}::{}", method.name));
-        // When the alias resolved to a known owner, the owner-qualified key
-        // `m.Trait::method` is AUTHORITATIVE: the bare `Trait::method` key can
-        // collide with a same-named trait imported from a different module and
-        // would silently compare the impl against the wrong signature
-        // (fail-open). Only consult the bare/scoped keys when there is NO
-        // resolved owner (a local/root trait, or a non-aliased name whose
-        // binding == source name — the existing fallback).
-        let trait_sig_lookup = match owner_qualified_trait_key.as_ref() {
-            Some(owner_key) => self.fn_sigs.get(owner_key),
-            None => self
+        // Materialise the trait method's required signature through the resolved
+        // identity, collision-free:
+        //   * a resolved owner reads the owner-qualified `fn_sigs` key
+        //     `m.Trait::method` (always registered for module traits);
+        //   * a LOCAL trait derives the signature from its own `TraitInfo`
+        //     method AST — the polluted bare `fn_sigs` key may hold an imported
+        //     same-name trait's signature (first-write-wins), so it must never be
+        //     consulted for a local trait;
+        //   * an unresolved reference falls back to the scoped/bare key (the
+        //     genuinely-unambiguous case, where no collision is possible).
+        let trait_sig = if let Some(owner) = identity.owner.as_ref() {
+            let owner_key = format!("{owner}.{}::{}", identity.source_trait_name, method.name);
+            match self.fn_sigs.get(&owner_key).cloned() {
+                Some(sig) => sig,
+                None => return,
+            }
+        } else if identity.is_local {
+            // A local/root trait resolves its required signature from its own
+            // `trait_defs[trait_name]` entry (last-write-wins → authoritative)
+            // rather than the polluted bare `fn_sigs` key. `lookup_trait_method`
+            // strips the receiver and projects `Self::Bar`, mirroring what
+            // `register_trait_method_sig` would have written.
+            match self.lookup_trait_method(&trait_name, &method.name) {
+                Some(sig) => sig,
+                None => return,
+            }
+        } else {
+            let trait_method_key = format!("{}::{}", trait_name, method.name);
+            let scoped_trait_key =
+                scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
+                    .unwrap_or_else(|| trait_method_key.clone());
+            match self
                 .fn_sigs
                 .get(&scoped_trait_key)
-                .or_else(|| self.fn_sigs.get(&trait_method_key)),
-        };
-        let Some(trait_sig) = trait_sig_lookup.cloned() else {
-            return;
+                .or_else(|| self.fn_sigs.get(&trait_method_key))
+                .cloned()
+            {
+                Some(sig) => sig,
+                None => return,
+            }
         };
 
         // The trait's defining module anchors how a bare type name written in
-        // the trait declaration is canonicalized. When the impl referenced an
-        // aliased trait, the owner is the SOURCE identity's module — the
-        // suffix-scan below keys on the name as written (`C`) and would find no
-        // `m.C` owner, so the resolved source owner must take precedence.
-        // Otherwise recover it from the qualified `{module}.{trait_name}` alias
-        // the registration paths author alongside the bare `trait_defs` entry.
-        // Exactly one owner is the well-formed case; with zero (a root/local
-        // trait) or an ambiguous set we leave bare names untouched and fall back
-        // to the bare-name comparison rather than guess a module.
-        let trait_owner_module: Option<String> = source_trait_identity
-            .as_ref()
-            .map(|(owner, _)| owner.clone())
-            .or_else(|| {
-                let suffix = format!(".{trait_name}");
-                let mut owners: Vec<&str> = self
-                    .trait_defs
-                    .keys()
-                    .filter_map(|k| k.strip_suffix(&suffix))
-                    .filter(|module| !module.is_empty() && self.modules.contains(*module))
-                    .collect();
-                owners.sort_unstable();
-                owners.dedup();
-                match owners.as_slice() {
-                    [single] => Some((*single).to_string()),
-                    _ => None,
-                }
-            });
+        // the trait declaration is canonicalized. A local/root trait has no
+        // owner module (`None`), so its bare sibling-type names stay bare.
+        let trait_owner_module: Option<String> = identity.owner.clone();
 
         // Build trait-type-param substitution map.
         let mut trait_param_map: HashMap<String, Ty> = HashMap::new();

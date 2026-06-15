@@ -959,12 +959,32 @@ mod tests {
     // single lock and reset at entry so they do not observe each other's state.
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn guard() -> std::sync::MutexGuard<'static, ()> {
-        let g = TEST_LOCK
+    /// Combined guard: holds the metrics `TEST_LOCK` *and* the scheduler test
+    /// lock for the test's duration.
+    ///
+    /// The observe-module scrape tests (`observe::tests`) read the same
+    /// process-global registry under `SchedTestLock`. Holding only `TEST_LOCK`
+    /// here would let a metrics test reset the registry concurrently with an
+    /// observe scrape test, corrupting the scrape under test. Acquiring both
+    /// locks gives metrics and observe tests one mutual-exclusion point over the
+    /// shared registry.
+    struct TestGuard {
+        _metrics: std::sync::MutexGuard<'static, ()>,
+        _sched: crate::scheduler::SchedTestLock,
+    }
+
+    fn guard() -> TestGuard {
+        // Acquire the scheduler lock first (observe tests acquire it via
+        // `runtime_test_guard`) to keep a single, consistent lock order.
+        let sched = crate::scheduler::SchedTestLock::acquire();
+        let metrics = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         session_reset_metrics();
-        g
+        TestGuard {
+            _metrics: metrics,
+            _sched: sched,
+        }
     }
 
     #[test]

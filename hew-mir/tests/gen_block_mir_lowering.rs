@@ -138,6 +138,63 @@ fn gen_block_with_two_yields_emits_two_terminator_yield() {
     );
 }
 
+/// Regression: an actor `receive gen fn` lowers its `yield`s through the
+/// same `GenBlock` → `Terminator::Yield` state-machine path a standalone
+/// `gen fn` uses, rather than bailing out of MIR lowering. The handler's
+/// gen-body function (`__hew_gen_body_<mangled_handler>_<id>`) must be present
+/// with one `Terminator::Yield` per source `yield`, and MIR lowering must emit
+/// no diagnostics. Before the fix, `lower_actor_receive_handlers` pushed an
+/// `UnsupportedNode` diagnostic ("generator MIR lowering is a separate lane")
+/// and skipped the handler entirely.
+#[test]
+fn actor_receive_gen_fn_emits_gen_body_with_terminator_yield() {
+    let pipeline = lower_checked(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn count_up() -> i64 { yield 1; yield 2; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "unexpected MIR diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+
+    // The handler's emit symbol is `Seq__recv__count_up`; the gen-body owner is
+    // that mangled name, so the gen-body fn is `__hew_gen_body_Seq__recv__count_up_<id>`.
+    let body = find_gen_body(&pipeline, "Seq__recv__count_up");
+    let sites = yield_sites(body);
+    assert_eq!(
+        sites.len(),
+        2,
+        "expected 2 Terminator::Yield in the actor generator body; got {sites:?}"
+    );
+
+    // The handler function itself must exist and materialise the generator via
+    // `Terminator::MakeGenerator` (the thin shell that returns the handle).
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Seq__recv__count_up")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected actor generator handler `Seq__recv__count_up`; available: {:?}",
+                pipeline.raw_mir.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::MakeGenerator { .. })),
+        "actor generator handler must emit Terminator::MakeGenerator to build the generator handle"
+    );
+}
+
 /// Structural assertion: each `Terminator::Yield` carries a `value` Place
 /// that is a `Place::Local(N)` bound to the lowered yield value.
 /// This test also confirms that the gen-body function is registered in the

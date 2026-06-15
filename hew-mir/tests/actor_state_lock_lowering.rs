@@ -233,13 +233,13 @@ fn non_generator_receive_handler_propagates_guard_to_layout() {
     }
 }
 
-/// Generator receive handlers are skipped by actor-body lowering (deferred
-/// to generator-specific MIR handling); they must NOT appear in
-/// `actor_layouts.handlers`.
-///
-/// This ensures the guard-propagation loop in `lower_actor_handler_layouts`
-/// is never reached for generators — the `UnsupportedNode` diagnostic fires
-/// in `lower_actor_receive_handlers` first, and the layout row is absent.
+/// Generator receive handlers (`receive gen fn`) are stream producers, not
+/// request/reply message handlers, so they must NOT appear in
+/// `actor_layouts.handlers` (the message-dispatch layout). Their MIR *body*
+/// now lowers (through the `GenBlock` state-machine path), but the
+/// guard-propagation loop in `lower_actor_handler_layouts` still skips them:
+/// the consumer-side stream-dispatch bridge that would route a message to a
+/// generator handler is a separate, not-yet-built piece.
 #[test]
 fn generator_handler_is_absent_from_actor_handler_layout() {
     let mut ids = ids();
@@ -289,26 +289,22 @@ fn generator_handler_is_absent_from_actor_handler_layout() {
 
     let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(actor)]));
 
-    // Exactly one UnsupportedNode diagnostic for the generator handler.
-    let generator_diag_count = pipeline
-        .diagnostics
-        .iter()
-        .filter(|d| {
+    // No "separate lane" UnsupportedNode diagnostic — the generator handler now
+    // lowers rather than bailing out.
+    assert!(
+        !pipeline.diagnostics.iter().any(|d| {
             matches!(
                 &d.kind,
                 MirDiagnosticKind::UnsupportedNode { reason }
-                    if reason.contains("generator")
+                    if reason == "actor receive fn declared as generator; generator MIR lowering is a separate lane"
             )
-        })
-        .count();
-    assert_eq!(
-        generator_diag_count, 1,
-        "exactly one UnsupportedNode diagnostic for the generator handler; got: {:?}",
+        }),
+        "generator handler must no longer emit the separate-lane diagnostic; got: {:?}",
         pipeline.diagnostics
     );
 
-    // The layout must contain only the non-generator handler, with the guard
-    // fact set.
+    // The message-dispatch layout must contain only the non-generator handler,
+    // with the guard fact set — the generator handler stays out of the layout.
     let layout = &pipeline.actor_layouts[0];
     assert_eq!(
         layout.handlers.len(),

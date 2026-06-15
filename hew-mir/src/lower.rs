@@ -1943,6 +1943,7 @@ pub fn lower_hir_module_with_facts(
                         &module_generic_fn_names,
                         &trait_impl_index,
                         &module.call_site_type_args,
+                        Some(&module.vec_generic_element_abi),
                         &module.supervisor_child_slots,
                         actor_send_aliasing,
                         pointer_width,
@@ -1991,6 +1992,7 @@ pub fn lower_hir_module_with_facts(
                     &module_generic_fn_names,
                     &trait_impl_index,
                     &module.call_site_type_args,
+                    Some(&module.vec_generic_element_abi),
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
                     pointer_width,
@@ -2209,6 +2211,7 @@ pub fn lower_hir_module_with_facts(
             &module_generic_fn_names,
             &trait_impl_index,
             &module.call_site_type_args,
+            Some(&module.vec_generic_element_abi),
             &module.supervisor_child_slots,
             actor_send_aliasing,
             pointer_width,
@@ -2455,6 +2458,7 @@ fn lower_actor_receive_handlers(
             module_generic_fn_names,
             &HashMap::new(),
             call_site_type_args,
+            None,
             supervisor_child_slots,
             actor_send_aliasing,
             pointer_width,
@@ -2618,6 +2622,7 @@ fn lower_actor_init_handler(
         module_generic_fn_names,
         &HashMap::new(),
         call_site_type_args,
+        None,
         supervisor_child_slots,
         actor_send_aliasing,
         pointer_width,
@@ -2701,6 +2706,7 @@ fn lower_actor_lifecycle_handlers(
                     module_generic_fn_names,
                     &HashMap::new(),
                     call_site_type_args,
+                    None,
                     supervisor_child_slots,
                     actor_send_aliasing,
                     pointer_width,
@@ -2748,6 +2754,7 @@ fn lower_actor_lifecycle_handlers(
                     module_generic_fn_names,
                     &HashMap::new(),
                     call_site_type_args,
+                    None,
                     supervisor_child_slots,
                     actor_send_aliasing,
                     pointer_width,
@@ -2933,6 +2940,7 @@ fn lower_actor_lifecycle_handlers(
                     module_generic_fn_names,
                     &HashMap::new(),
                     call_site_type_args,
+                    None,
                     supervisor_child_slots,
                     actor_send_aliasing,
                     pointer_width,
@@ -4171,6 +4179,7 @@ fn lower_supervisor_bootstrap(
         module_generic_fn_names,
         &HashMap::new(),
         call_site_type_args,
+        None,
         supervisor_child_slots,
         actor_send_aliasing,
         pointer_width,
@@ -4619,6 +4628,9 @@ fn lower_function(
         hew_hir::dispatch::TraitImplMethodEntry,
     >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    vec_generic_element_abi: Option<
+        &HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>,
+    >,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,
@@ -4661,6 +4673,7 @@ fn lower_function(
         trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
+        vec_generic_element_abi: vec_generic_element_abi.cloned().unwrap_or_default(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
         pointer_width,
@@ -5613,6 +5626,15 @@ struct Builder {
     /// substitutes these via `subst_ty` and dispatches to the
     /// per-monomorphisation mangled symbol.
     call_site_type_args: HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
+    /// Per-concrete-element `Vec<T>` runtime-ABI verdict table, cloned from
+    /// `HirModule.vec_generic_element_abi`. The `ResolvedImplCall` arm consults
+    /// it to re-resolve an element-typed `Vec<T>` method (`push`/`get`/`set`/
+    /// `pop`) whose checker dispatch left a `hew_vec_*_FAMILY` placeholder
+    /// because the element was a type parameter: the substituted concrete
+    /// element is looked up here per monomorphisation and `(method, token)` is
+    /// mapped to the concrete runtime symbol. Empty for lowering contexts that
+    /// never observe a polymorphic element (the placeholder then fails closed).
+    vec_generic_element_abi: HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>,
     /// Per-`FieldAccess` site-id → `ChildSlot` side-table, populated by HIR
     /// lowering from the checker's `supervisor_child_slots`. The `FieldAccess`
     /// arm checks this map BEFORE the `record_field_orders` lookup so that
@@ -7057,6 +7079,70 @@ impl Builder {
         };
         args.first()
             .is_some_and(|elem| self.is_owned_vec_element(elem))
+    }
+
+    /// Re-resolve the concrete runtime symbol for an element-typed `Vec<T>`
+    /// method whose checker dispatch left a `hew_vec_*_FAMILY` placeholder
+    /// because the element was a type parameter (#1929 Stage 1).
+    ///
+    /// Substitutes the receiver `Vec<T>` to its concrete `Vec<E>` for this
+    /// monomorphisation, then looks the element `E` up in the checker-exported
+    /// [`vec_generic_element_abi`] verdict table and maps `(method, token)` to
+    /// the symbol through the single [`hew_types::stdlib::vec_element_op_symbol`]
+    /// authority — the same `(method, token)` table the concrete constructor
+    /// path resolves through. Returns `None` (fail closed) when the call is not
+    /// an element-typed Vec op, the receiver is not a substituted `Vec`, or the
+    /// element is absent from the verdict table (deferred element ABI).
+    fn resolve_polymorphic_vec_element_symbol(
+        &self,
+        target_family: hew_types::MethodTargetFamily,
+        method_name: &str,
+        receiver_ty: &ResolvedTy,
+    ) -> Option<String> {
+        // Only the element-typed ops are re-resolved here; monomorphic Vec
+        // methods never carry the placeholder.
+        let hew_types::MethodTargetFamily::Vec(vec_method) = target_family else {
+            return None;
+        };
+        if !matches!(
+            vec_method,
+            hew_types::VecMethod::Push
+                | hew_types::VecMethod::Get
+                | hew_types::VecMethod::Set
+                | hew_types::VecMethod::Pop
+        ) {
+            return None;
+        }
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(receiver_ty)
+        else {
+            return None;
+        };
+        let elem_ty = args.first()?.to_ty();
+        let token = self.vec_generic_element_abi.get(&elem_ty).copied()?;
+        hew_types::stdlib::vec_element_op_symbol(method_name, token).map(str::to_string)
+    }
+
+    /// User-facing rendering of a `Vec<T>` receiver's substituted element type,
+    /// for the fail-closed diagnostic when a polymorphic element ABI is
+    /// deferred. Falls back to the whole receiver type when it is not a
+    /// substituted `Vec`.
+    fn vec_element_user_facing(&self, receiver_ty: &ResolvedTy) -> String {
+        let substituted = self.subst_ty(receiver_ty);
+        if let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = &substituted
+        {
+            if let Some(elem) = args.first() {
+                return elem.to_ty().user_facing().to_string();
+            }
+        }
+        substituted.to_ty().user_facing().to_string()
     }
 
     /// Recursively walk a block's statements + tail, harvesting owned-Vec
@@ -9422,7 +9508,42 @@ impl Builder {
                 // `_layout` from a real per-element-type symbol the checker
                 // resolved directly. Once the substrate enumerates the
                 // per-element Vec push variants, the second arm collapses.
-                let callee = if matches!(
+                let callee = if target_symbol.ends_with("_FAMILY") {
+                    // #1929 Stage 1: the checker kept the `hew_vec_*_FAMILY`
+                    // placeholder because the `Vec<T>` element was a declared
+                    // type parameter, so the per-ABI symbol could not be chosen
+                    // at check time. Re-resolve it now from the element this
+                    // monomorphisation substituted in, using the checker's
+                    // exported element→ABI verdict (`vec_generic_element_abi`)
+                    // and the single `(method, token)` symbol authority
+                    // (`vec_element_op_symbol`). An element absent from the
+                    // verdict table (non-`Copy`/owned/tuple/closure) fails
+                    // closed here rather than calling an undeclared symbol.
+                    let Some(sym) = self.resolve_polymorphic_vec_element_symbol(
+                        *target_family,
+                        method_name,
+                        &receiver.ty,
+                    ) else {
+                        let elem = self.vec_element_user_facing(&receiver.ty);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "`Vec::{method_name}` on the type-parameter \
+                                     element `{elem}`"
+                                ),
+                                site: expr.site,
+                            },
+                            note: "element-typed `Vec<T>` methods under a type \
+                                   parameter are supported for scalar (bool/i32/\
+                                   i64/f64), string, pointer, and Copy value-record \
+                                   element ABIs; non-Copy, owned, tuple, and closure \
+                                   elements are not yet supported and fail closed"
+                                .to_string(),
+                        });
+                        return None;
+                    };
+                    sym
+                } else if matches!(
                     target_family,
                     hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push)
                 ) && target_symbol == "hew_vec_push_layout"
@@ -30945,6 +31066,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                None,
                 &HashMap::new(),
                 &HashMap::new(),
                 PointerWidth::Bits64,
@@ -32563,6 +32685,7 @@ mod enum_layout_tests {
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),
+            vec_generic_element_abi: HashMap::default(),
             record_layouts: vec![],
             enum_layouts: vec![],
             machine_instantiations: vec![],

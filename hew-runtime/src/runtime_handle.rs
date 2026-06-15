@@ -83,8 +83,13 @@
 //! The fix serializes every init/teardown transition under [`LIFECYCLE`] so a
 //! teardown and an init can never interleave:
 //!
-//! - **Every `new`** runs its owner-take + `hew_sched_init` (re-)install — and,
-//!   if it is the reviver, its `shut`-clear — under `LIFECYCLE`. `new` is a host
+//! - **Every `new`** runs its owner-take + `shut`-clear + `hew_sched_init`
+//!   (re-)install under `LIFECYCLE`. The `shut`-clear is tied to the install,
+//!   not the owner-count transition: because `new` always reinstalls the
+//!   runtime, it always clears the tombstone, so a `new` after *any* teardown —
+//!   a count-0 last release *or* an explicit `hew_runtime_shutdown` that tore
+//!   the runtime down while owners remained — revives it and the next
+//!   last-release tears the re-inited runtime down once. `new` is a host
 //!   *lifecycle* call, invoked a handful of times per process by an embedder
 //!   (not a per-message hot path), so the lock is free in practice; in return it
 //!   guarantees no `new` installs a runtime concurrently with a teardown
@@ -101,8 +106,9 @@
 //! first runs to completion before the other observes the slot. If teardown
 //! wins, it empties the slot (`take_default`) before the reviver's
 //! `hew_sched_init` installs a *fresh* runtime — never aliasing the torn-down
-//! one; the reviver also re-clears `shut`, so its set's last release tears the
-//! re-inited runtime down once. If the reviver wins, the runtime stays live
+//! one; the reviving `new` also clears `shut` (every `new` does, in lock-step
+//! with its install), so its set's last release tears the re-inited runtime
+//! down once. If the reviver wins, the runtime stays live
 //! (count non-zero) and the teardown's under-lock re-read aborts. A second
 //! concurrent teardown cannot run: a boundary-crossing `release` would have to
 //! observe its own 1→0 CAS, but the count is pinned at 0 until a `new` revives
@@ -142,9 +148,13 @@ pub struct HewRuntime {
     /// Set once the runtime has been torn down (by `shutdown` or the last
     /// `release`). Makes teardown idempotent: a later `shutdown`, or the last
     /// `release` after an explicit `shutdown`, observes this and does not run
-    /// the teardown twice. Reset to `false` by [`hew_runtime_new`] when it
-    /// brings a previously-torn-down runtime back up (re-init), so the next
-    /// last-release tears the re-inited runtime down once more.
+    /// the teardown twice. Reset to `false` by [`hew_runtime_new`] whenever it
+    /// (re-)installs the runtime, so the flag tracks the runtime INSTALL state:
+    /// `new` always reinstalls via `hew_sched_init`, so a `new` after any
+    /// teardown — whether the count had reached zero or an explicit
+    /// `hew_runtime_shutdown` tore the runtime down while owners remained —
+    /// revives the runtime and the next last-release tears the re-inited runtime
+    /// down once more.
     shut: AtomicBool,
 }
 
@@ -170,8 +180,8 @@ static DEFAULT_HANDLE: HewRuntime = HewRuntime::new_singleton();
 /// Serializes the singleton's runtime init and teardown so the two can never
 /// interleave.
 ///
-/// Held by **every `hew_runtime_new`** across its owner-take + `hew_sched_init`
-/// (re-)install (and, for the reviver, its `shut`-clear), by the **last
+/// Held by **every `hew_runtime_new`** across its owner-take + `shut`-clear +
+/// `hew_sched_init` (re-)install, by the **last
 /// release** across its whole teardown (`teardown_once` → `take_default`/drop),
 /// and by an explicit `hew_runtime_shutdown` across its teardown. Because every
 /// install and every teardown take this one lock, a `new` can neither install a
@@ -291,10 +301,13 @@ fn run_runtime_teardown() {
 /// Never returns null: the handle is a process-static singleton, so there is no
 /// allocation that can fail.
 ///
-/// If a prior owner set tore the runtime down (count reached zero) and `new` is
-/// called again, this clears the tombstone `shut` flag in lock-step with
-/// bringing the runtime back up via `hew_sched_init`, so the next last-release
-/// of this fresh owner set tears the re-inited runtime down exactly once.
+/// If the runtime was previously torn down — either the count reached zero, or
+/// an explicit [`hew_runtime_shutdown`] tore it down while owners still held it
+/// — calling `new` again revives it: this clears the tombstone `shut` flag in
+/// lock-step with bringing the runtime back up via `hew_sched_init`, so the next
+/// last-release of the owning set tears the re-inited runtime down exactly once.
+/// The clear is tied to the (re-)install, not the owner-count transition, so it
+/// fires whether `new` increments 0→1 or N→N+1 over a tombstoned runtime.
 ///
 /// The returned handle must be released with [`hew_runtime_release`] (balanced
 /// against this `new` and any [`hew_runtime_retain`]).
@@ -321,14 +334,23 @@ pub extern "C" fn hew_runtime_new() -> *mut HewRuntime {
     //   could install a second worker-backed runtime concurrently with a
     //   teardown detaching the first.
     let _g = lifecycle_lock();
-    let prev = h.strong.fetch_add(1, Ordering::AcqRel);
-    if prev == 0 {
-        // First owner of a fresh (or revived) runtime: clear any tombstone left
-        // by the previous owner set's teardown so this set's last release tears
-        // the re-inited runtime down once, then (re-)install the default runtime
-        // into the now-guaranteed-empty slot.
-        h.shut.store(false, Ordering::Release);
-    }
+    h.strong.fetch_add(1, Ordering::AcqRel);
+    // Tie the tombstone to the runtime INSTALL state, not the owner-count
+    // transition: `new` always (re-)installs the runtime via `hew_sched_init`
+    // below, so it always clears `shut`. Gating the clear on the 0→1 transition
+    // alone was wrong — an explicit `hew_runtime_shutdown` tears the runtime
+    // down while the count is still nonzero, so a following `new` increments
+    // N→N+1 (not 0→1), reinstalls the runtime, yet would leave `shut` set; the
+    // final release's `teardown_once` would then short-circuit on the stale
+    // tombstone and leak the reinstalled runtime. Clearing unconditionally under
+    // the lock keeps the tombstone in lock-step with the install: every `new`
+    // that (re-)installs a torn-down runtime also revives it. (When `shut` was
+    // already false this is a harmless no-op store; when it was true — a revive
+    // over either a count-0 teardown or an explicit shutdown — it is the revive.)
+    // It is sound under `LIFECYCLE`: a concurrent last-release teardown either
+    // ran fully before this `new` took the lock (so we revive after it) or runs
+    // after and re-reads the now-nonzero count and aborts.
+    h.shut.store(false, Ordering::Release);
     // Bring the process default runtime up if it is not already (idempotent CAS:
     // a no-op when an owner already installed it). Under the lock this never
     // races a teardown's detach or another `new`'s install.
@@ -921,9 +943,12 @@ mod tests {
     }
 
     /// `new` after a torn-down owner set revives the runtime: it clears the
-    /// tombstone `shut` flag (0→1 owner transition) so the next last-release
-    /// tears the re-inited runtime down once more. Proves the singleton is
-    /// re-usable across owner-set boundaries, not a one-shot.
+    /// tombstone `shut` flag (here the count had reached zero first, the 0→1
+    /// revive case) so the next last-release tears the re-inited runtime down
+    /// once more. Proves the singleton is re-usable across owner-set boundaries,
+    /// not a one-shot. (The N→N+1 revive over an explicit `shutdown` — where the
+    /// count never reached zero — is covered by
+    /// `shutdown_then_new_revives_runtime_and_final_release_tears_down`.)
     #[test]
     fn new_after_teardown_revives_and_tears_down_again() {
         let _lock = HANDLE_TEST_LOCK
@@ -944,8 +969,8 @@ mod tests {
             "one teardown"
         );
 
-        // Second owner set: `new` clears the tombstone (0→1 owner) so the next
-        // last-release can tear down again.
+        // Second owner set: `new` clears the tombstone (here a 0→1 revive) so
+        // the next last-release can tear down again.
         let h2 = hew_runtime_new();
         assert_eq!(owner_count(), 1, "second set has one owner");
         assert!(
@@ -958,6 +983,100 @@ mod tests {
             TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
             2,
             "second set's last release tears the re-inited runtime down again"
+        );
+    }
+
+    /// `shutdown` then `new` revives the runtime over a NON-zero owner count,
+    /// and the final release tears the reinstalled runtime down exactly once
+    /// (never skipped). This is the shutdown-then-revive interleaving the
+    /// install-tied tombstone fix closes:
+    ///
+    /// 1. `h1 = new` → one owner, runtime installed, `shut == false`.
+    /// 2. `hew_runtime_shutdown(h1)` tears the runtime down while `h1` still
+    ///    owns it: `shut == true`, count STILL 1 (shutdown does not drop the
+    ///    owner).
+    /// 3. `h2 = new` increments the count 1→2 — NOT a 0→1 transition — and
+    ///    reinstalls the runtime via `hew_sched_init`. The fix clears `shut`
+    ///    here because `new` (re-)installed the runtime; the old 0→1-gated clear
+    ///    left `shut == true`.
+    /// 4. `release(h1)` drops 2→1: an owner remains, no teardown.
+    /// 5. `release(h2)` drops 1→0: the genuine last release. It must run
+    ///    teardown on the reinstalled runtime — which it does only because step
+    ///    3 cleared `shut`. With the old code `shut` was still set, so
+    ///    `teardown_once` short-circuited and the reinstalled runtime leaked.
+    ///
+    /// Teeth: teardown runs exactly TWICE total (once for the `shutdown`, once
+    /// for the final release of the revived runtime). On the pre-fix code the
+    /// final teardown is SKIPPED, so the count is 1 — that is the leak this test
+    /// catches. (The first `new` here is a 0→1 transition, so it does not depend
+    /// on the fix; the revive at step 3 is the N→N+1 case that does.)
+    #[test]
+    fn shutdown_then_new_revives_runtime_and_final_release_tears_down() {
+        let _lock = HANDLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::runtime_test_guard();
+        reset_singleton();
+
+        // h1: one owner, runtime installed.
+        let h1 = hew_runtime_new();
+        assert_eq!(owner_count(), 1, "first new → 1 owner");
+        assert!(
+            !DEFAULT_HANDLE.shut.load(Ordering::Acquire),
+            "fresh runtime not shut"
+        );
+
+        // Explicit deterministic shutdown WHILE h1 still owns the runtime: tears
+        // it down (teardown #1) and tombstones it, but does NOT drop the owner —
+        // the count stays at 1. This is the state the old 0→1-gated clear could
+        // not recover from on the next `new`.
+        // SAFETY: `h1` is the live process-static singleton.
+        unsafe { hew_runtime_shutdown(h1) };
+        assert_eq!(owner_count(), 1, "shutdown does not drop the owner");
+        assert!(
+            DEFAULT_HANDLE.shut.load(Ordering::Acquire),
+            "shutdown tombstoned the runtime"
+        );
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            1,
+            "shutdown ran teardown once"
+        );
+
+        // h2: revive over a NON-zero count (1→2). The install-tied clear must
+        // clear `shut` here even though this is not a 0→1 transition, because
+        // `new` reinstalled the runtime via `hew_sched_init`. On the pre-fix
+        // code this assertion fails (shut still true) — proving it caught the bug.
+        let h2 = hew_runtime_new();
+        assert_eq!(owner_count(), 2, "second new → 2 owners (count 1→2)");
+        assert!(
+            !DEFAULT_HANDLE.shut.load(Ordering::Acquire),
+            "new over a torn-down runtime cleared the tombstone (install-tied, \
+             not 0→1-gated)"
+        );
+
+        // release(h1): 2→1, an owner remains, no teardown.
+        // SAFETY: `h1` is the live process-static singleton.
+        unsafe { hew_runtime_release(h1) };
+        assert_eq!(owner_count(), 1, "release(h1) → 1 owner remains");
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            1,
+            "still only the shutdown teardown — an owner remains"
+        );
+
+        // release(h2): 1→0, the genuine last release. It MUST tear the
+        // reinstalled runtime down — teardown #2. On the pre-fix code `shut` is
+        // still set, so `teardown_once` short-circuits and this is SKIPPED,
+        // leaking the live reinstalled runtime.
+        // SAFETY: `h2` is the live process-static singleton.
+        unsafe { hew_runtime_release(h2) };
+        assert_eq!(owner_count(), 0, "release(h2) → 0 owners");
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            2,
+            "the final release tears the REINSTALLED runtime down (not skipped \
+             on the stale tombstone) — the leak the install-tied clear closes"
         );
     }
 

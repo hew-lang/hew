@@ -1,0 +1,30 @@
+// #1929 Stage 1: read-only generic algorithm over `Vec<T>` where `T: Show`,
+// instantiated with a Copy value-record element. `items.get(i)` is an
+// element-typed Vec method under the type parameter `T`; for the `Color`
+// instantiation it re-resolves to `hew_vec_get_layout` (the Copy value-record
+// ABI the concrete path already backs), then dispatches `.show()` statically.
+
+trait Show {
+    fn show(val: Self) -> string;
+}
+
+type Color { r: i64; g: i64; b: i64; }
+
+impl Show for Color {
+    fn show(c: Color) -> string { "Color" }
+}
+
+fn render_all<T: Show>(items: Vec<T>) -> string {
+    var out: string = "";
+    let n = items.len();
+    for i in 0 .. n {
+        out = items.get(i).show();
+    }
+    out
+}
+
+fn main() {
+    let v: Vec<Color> = Vec::new();
+    v.push(Color { r: 1, g: 2, b: 3 });
+    println(render_all(v));
+}

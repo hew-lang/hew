@@ -35452,6 +35452,16 @@ fn emit_join_terminator<'ctx>(
         let (payload_ptr, payload_size) =
             actor_payload_ptr_size(fn_ctx, branch.value, "join_ask_payload")?;
         let msg_type_val = i32_ty.const_int(branch.msg_type as u64, false);
+        // `payload_size` is built as i64; the `size` param of
+        // `hew_actor_ask_with_channel` is `usize`/`size_t` (i32 on wasm32).
+        // Reconcile to the target-correct width, matching every sibling emitter.
+        let join_ask_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+        let payload_size = reconcile_int_width_signed(
+            fn_ctx,
+            payload_size.into(),
+            join_ask_size_ty.into(),
+            "join ask payload size",
+        )?;
         let status = fn_ctx
             .builder
             .build_call(
@@ -49605,6 +49615,59 @@ fn main() {
             "record_struct_for's generic fallback must shorten BOTH the outer \
              name and the type-arg spine via \
              `mangle_with_shortened_args(short_name(name), args)`"
+        );
+    }
+
+    /// `emit_join_terminator` must route its `hew_actor_ask_with_channel` payload
+    /// size argument through `reconcile_int_width_signed`, matching every sibling
+    /// emitter (`send`, `suspending-ask`, `actor-send`, `actor-ask`, `select-ask`).
+    /// The size parameter is declared `usize`/`size_t` in the runtime ABI (i32 on
+    /// wasm32); passing the raw i64 built by `actor_payload_ptr_size` produces an
+    /// i64→i32 mismatched call that the LLVM verifier rejects on a 32-bit target.
+    /// On 64-bit hosts the reconcile is a no-op, so existing behaviour is unchanged.
+    ///
+    /// This guard brace-matches the function body and asserts the call survives.
+    /// Removing `reconcile_int_width_signed` from the join path re-opens the class
+    /// of ABI-width bug fixed in PR #1920 for the wasm32 actor ABI.
+    #[test]
+    fn emit_join_terminator_reconciles_payload_size_width() {
+        let src = include_str!("llvm.rs");
+        let sig = "fn emit_join_terminator<'ctx>(";
+        let sig_at = src
+            .find(sig)
+            .expect("emit_join_terminator signature present in llvm.rs");
+        let body_open = src[sig_at..]
+            .find('{')
+            .map(|o| sig_at + o)
+            .expect("emit_join_terminator opening brace");
+        let mut depth = 0usize;
+        let mut body_end = body_open;
+        for (i, ch) in src[body_open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        body_end = body_open + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            body_end > body_open,
+            "failed to brace-match emit_join_terminator body"
+        );
+        let body = &src[body_open..=body_end];
+        assert!(
+            body.contains("reconcile_int_width_signed"),
+            "emit_join_terminator must route the hew_actor_ask_with_channel payload \
+             size through `reconcile_int_width_signed` so the call is width-correct \
+             on 32-bit targets (usize/size_t is i32 on wasm32, not i64). Every \
+             sibling emitter (send, suspending-ask, actor-ask, select-ask) already \
+             does this. Removing the reconcile re-opens the wasm32 actor ABI-width \
+             bug class."
         );
     }
 }

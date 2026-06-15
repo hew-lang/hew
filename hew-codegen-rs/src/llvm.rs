@@ -1028,6 +1028,17 @@ struct CoroState<'ctx> {
     /// When `false` (a SuspendingAsk-only coroutine — no explicit final), the
     /// Return arm IS the natural completion and emits the single final suspend.
     has_explicit_final_suspend: bool,
+    /// The single shared block onto which EVERY `Terminator::Return` of a
+    /// SuspendingAsk-driven coroutine converges. Each `Return` block stores its
+    /// logical reply into `return_slot` (a memory alloca — no phi needed across
+    /// predecessors) then branches here; this block loads that reply once,
+    /// deposits it via `hew_get_reply_channel` + `hew_reply`, and emits the
+    /// coroutine's ONE `coro.suspend(is_final=true)`. A handler with two or more
+    /// `Return` paths thus emits exactly one final suspend (CoroSplit rejects
+    /// "Only one suspend point can be marked as final" if a per-`Return` final
+    /// were inlined). `None` for a coroutine that carries an explicit final
+    /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
+    final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
 }
 
 struct FnCtx<'a, 'ctx> {
@@ -31601,84 +31612,25 @@ fn lower_terminator<'ctx>(
                         .llvm_ctx("coro explicit-final return ret handle")?;
                     return Ok(());
                 }
-                if let Some(logical_ty) = coro.logical_return_ty {
-                    let loaded = fn_ctx
-                        .builder
-                        .build_load(logical_ty, fn_ctx.return_slot, "coro_ret_val")
-                        .llvm_ctx("coro return load")?;
-                    let ret_slot = fn_ctx
-                        .builder
-                        .build_alloca(logical_ty, "coro_reply_slot")
-                        .llvm_ctx("coro reply alloca")?;
-                    fn_ctx
-                        .builder
-                        .build_store(ret_slot, loaded)
-                        .llvm_ctx("coro reply store")?;
-                    let reply_channel = intern_runtime_decl(
-                        fn_ctx.ctx,
-                        fn_ctx.llvm_mod,
-                        &mut fn_ctx.runtime_decls.borrow_mut(),
-                        "hew_get_reply_channel",
-                    )?;
-                    let reply = intern_runtime_decl(
-                        fn_ctx.ctx,
-                        fn_ctx.llvm_mod,
-                        &mut fn_ctx.runtime_decls.borrow_mut(),
-                        "hew_reply",
-                    )?;
-                    let ch = fn_ctx
-                        .builder
-                        .build_call(reply_channel, &[], "coro_get_reply_channel_call")
-                        .llvm_ctx("coro get reply channel call")?
-                        .try_as_basic_value()
-                        .basic()
-                        .ok_or_else(|| {
-                            CodegenError::FailClosed("hew_get_reply_channel returned void".into())
-                        })?
-                        .into_pointer_value();
-                    let size = logical_ty.size_of().ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "coroutine reply type has no static size: {logical_ty:?}"
-                        ))
-                    })?;
-                    let size = if size.get_type() == fn_ctx.ctx.i64_type() {
-                        size
-                    } else {
-                        fn_ctx
-                            .builder
-                            .build_int_z_extend(size, fn_ctx.ctx.i64_type(), "coro_reply_size")
-                            .llvm_ctx("coro reply size zext")?
-                    };
-                    fn_ctx
-                        .builder
-                        .build_call(
-                            reply,
-                            &[ch.into(), ret_slot.into(), size.into()],
-                            "coro_reply_call",
-                        )
-                        .llvm_ctx("coro hew_reply call")?;
-                }
-                let cc = crate::coro::CoroContext {
-                    ctx: fn_ctx.ctx,
-                    llvm_mod: fn_ctx.llvm_mod,
-                    builder: &fn_ctx.builder,
-                    function: fn_ctx
-                        .builder
-                        .get_insert_block()
-                        .and_then(|bb| bb.get_parent())
-                        .ok_or_else(|| {
-                            CodegenError::Llvm("coro return block has no parent function".into())
-                        })?,
-                    handle: coro.handle,
-                    id_token: coro.id_token,
-                };
-                cc.emit_suspend(
-                    coro.cleanup_block,
-                    coro.cleanup_block,
-                    coro.suspend_return_block,
-                    true,
-                    "coro.final",
-                )?;
+                // SuspendingAsk-driven coroutine: this `Return` is a natural
+                // completion. EVERY `Return` block converges onto the single
+                // shared `final_suspend_block` instead of inlining its own reply
+                // deposit + `coro.suspend(is_final=true)`. The block's predecessor
+                // has already stored this path's logical reply into `return_slot`
+                // (a memory alloca, so no phi is needed); the shared block loads
+                // it, deposits it, and emits the ONE final suspend (filled in the
+                // coroutine epilogue). Inlining a per-`Return` final suspend is
+                // exactly what made CoroSplit reject multi-return handlers with
+                // "Only one suspend point can be marked as final".
+                let final_suspend_block = coro.final_suspend_block.ok_or_else(|| {
+                    CodegenError::Llvm(
+                        "SuspendingAsk coroutine `Return` has no shared final-suspend block".into(),
+                    )
+                })?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(final_suspend_block)
+                    .llvm_ctx("coro Return -> shared final suspend")?;
                 return Ok(());
             }
             if let Some(shape) = fn_ctx.lambda_actor_shape {
@@ -36095,6 +36047,20 @@ fn lower_function<'ctx>(
             .blocks
             .iter()
             .any(|b| matches!(b.terminator, Terminator::Suspend { is_final: true, .. }));
+        // A SuspendingAsk-driven coroutine (no explicit final Suspend) completes
+        // at its `Return` terminator(s). Reserve ONE shared final-suspend block
+        // that every `Return` branches to, so the body-side reply deposit + the
+        // synthesized `coro.suspend(is_final=true)` are emitted exactly once
+        // regardless of how many return paths the handler has — mirroring the
+        // shared `cleanup_block` / `suspend_return_block` plumbing. The body of
+        // this block is filled in the coroutine epilogue (where the reply value
+        // type and `return_slot` are settled). A generator (explicit final)
+        // needs no such block: its `Return` arm just `ret`s the handle.
+        let final_suspend_block = if has_explicit_final_suspend {
+            None
+        } else {
+            Some(ctx.append_basic_block(llvm_fn, "coro.final.suspend"))
+        };
         Some(CoroState {
             handle: cc.handle,
             id_token: cc.id_token,
@@ -36102,6 +36068,7 @@ fn lower_function<'ctx>(
             suspend_return_block,
             logical_return_ty,
             has_explicit_final_suspend,
+            final_suspend_block,
         })
     } else {
         None
@@ -36908,6 +36875,83 @@ fn lower_function<'ctx>(
             handle: coro.handle,
             id_token: coro.id_token,
         };
+        // Shared final-suspend block (SuspendingAsk-driven coroutine): EVERY
+        // `Terminator::Return` branches here instead of inlining its own reply
+        // deposit + final suspend. Emitting it once is what keeps a multi-return
+        // handler to a SINGLE `coro.suspend(is_final=true)` — CoroSplit rejects
+        // "Only one suspend point can be marked as final" when each `Return`
+        // inlines its own. The reply value has already been stored into
+        // `return_slot` by whichever `Return` predecessor branched here (a memory
+        // alloca, so the load reads the correct path's value with no phi). This
+        // is the body-side W6.010 value deposit, moved out of the per-`Return`
+        // arm so it runs exactly once at the convergence point.
+        if let Some(final_suspend_block) = coro.final_suspend_block {
+            fn_ctx.builder.position_at_end(final_suspend_block);
+            if let Some(logical_ty) = coro.logical_return_ty {
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(logical_ty, fn_ctx.return_slot, "coro_ret_val")
+                    .llvm_ctx("coro return load")?;
+                let ret_slot = fn_ctx
+                    .builder
+                    .build_alloca(logical_ty, "coro_reply_slot")
+                    .llvm_ctx("coro reply alloca")?;
+                fn_ctx
+                    .builder
+                    .build_store(ret_slot, loaded)
+                    .llvm_ctx("coro reply store")?;
+                let reply_channel = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_get_reply_channel",
+                )?;
+                let reply = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_reply",
+                )?;
+                let ch = fn_ctx
+                    .builder
+                    .build_call(reply_channel, &[], "coro_get_reply_channel_call")
+                    .llvm_ctx("coro get reply channel call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_get_reply_channel returned void".into())
+                    })?
+                    .into_pointer_value();
+                let size = logical_ty.size_of().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "coroutine reply type has no static size: {logical_ty:?}"
+                    ))
+                })?;
+                let size = if size.get_type() == fn_ctx.ctx.i64_type() {
+                    size
+                } else {
+                    fn_ctx
+                        .builder
+                        .build_int_z_extend(size, fn_ctx.ctx.i64_type(), "coro_reply_size")
+                        .llvm_ctx("coro reply size zext")?
+                };
+                fn_ctx
+                    .builder
+                    .build_call(
+                        reply,
+                        &[ch.into(), ret_slot.into(), size.into()],
+                        "coro_reply_call",
+                    )
+                    .llvm_ctx("coro hew_reply call")?;
+            }
+            cc.emit_suspend(
+                coro.cleanup_block,
+                coro.cleanup_block,
+                coro.suspend_return_block,
+                true,
+                "coro.final",
+            )?;
+        }
         // cleanup: free the frame, then join suspend_return. The frame-free
         // helper wants a `free` block (the dyn-free arm); allocate it and route
         // cleanup -> free-check -> suspend_return.

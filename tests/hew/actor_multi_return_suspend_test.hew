@@ -1,0 +1,100 @@
+//! Regression for an actor handler with multiple `return` paths plus a
+//! suspending op (an `await`). Before the shared-final-suspend fix, each
+//! `Return` block of a SuspendingAsk-driven coroutine emitted its own
+//! `coro.suspend(is_final=true)`; two-or-more return paths therefore produced
+//! two-or-more final suspends and LLVM CoroSplit aborted the compiler with
+//! "Only one suspend point can be marked as final" (exit 134, no diagnostic) on
+//! legal Hew. The fix converges every `Return` onto one shared final-suspend
+//! block, so a multi-return handler emits exactly one final suspend.
+//!
+//! Each handler here both awaits AND has >= 2 reachable `return` paths. The
+//! assertions pin EXACT per-path reply values, so a future regression that
+//! mis-routes a return's deposit (wrong value through the shared block) fails,
+//! not just a crash. `Counter.step()` returns 1, 2, 3, 4, ... across calls.
+
+import std::testing;
+
+actor Counter {
+    var n: i64 = 0;
+    receive fn step() -> i64 {
+        n = n + 1;
+        return n;
+    }
+}
+
+actor Classifier {
+    let counter: LocalPid<Counter>;
+
+    // Three distinct `return` paths reached through one `await`: the early
+    // `return 100` when the stepped value exceeds 3, the `return v`
+    // fall-through, and the ask-error `return -1`. Each path deposits its own
+    // value through the single shared final-suspend block.
+    receive fn classify() -> i64 {
+        match await counter.step() {
+            Ok(v) => {
+                if v > 3 {
+                    return 100;
+                }
+                return v;
+            },
+            Err(e) => {
+                return -1;
+            },
+        }
+    }
+
+    // The issue #1904 loop case: an `await` inside a `while`, an early
+    // `return v` once the stepped value reaches the limit, an early `return -1`
+    // on ask error, and the loop fall-through `return -2`. Three reachable
+    // `return` paths funnel through one suspending op — the exact
+    // multiple-final-suspend shape that aborted CoroSplit before.
+    receive fn scan_until(limit: i64) -> i64 {
+        var ticks = 0;
+        while ticks < 50 {
+            match await counter.step() {
+                Ok(v) => {
+                    if v >= limit {
+                        return v;
+                    }
+                },
+                Err(e) => {
+                    return -1;
+                },
+            }
+            ticks = ticks + 1;
+        }
+        return -2;
+    }
+}
+
+#[test]
+fn multi_return_value_handler_deposits_each_path() {
+    let counter = spawn Counter(n: 0);
+    let c = spawn Classifier(counter: counter);
+    // step() yields 1,2,3,4: the `return v` path for the first three calls,
+    // then the early `return 100` once the value exceeds 3.
+    expect_classify(c, 1);
+    expect_classify(c, 2);
+    expect_classify(c, 3);
+    expect_classify(c, 100);
+}
+
+fn expect_classify(c: LocalPid<Classifier>, want: i64) {
+    match await c.classify() {
+        Ok(got) => testing.assert_eq(got, want),
+        Err(e) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn early_return_out_of_loop_after_await_returns_stop_value() {
+    let counter = spawn Counter(n: 0);
+    let c = spawn Classifier(counter: counter);
+    // step() yields 1,2,3,...; scan returns the value the first time it reaches
+    // 3 (the early `return v` inside the loop), proving the in-loop early
+    // return deposits its value through the shared block.
+    match await c.scan_until(3) {
+        Ok(at) => testing.assert_eq(at, 3),
+        Err(e) => testing.assert_true(false),
+    }
+}

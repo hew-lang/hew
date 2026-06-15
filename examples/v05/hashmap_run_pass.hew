@@ -1,13 +1,15 @@
 // HashMap / HashSet layout-keyed run-pass exercise.
 //
-// This fixture pins the native layout-keyed `HashMap<Record, _>` /
+// This fixture pins the layout-keyed `HashMap<Record, _>` /
 // `HashSet<Record>` user surface end-to-end: checker rewrite → HIR/MIR →
-// native codegen → runtime ABI.
+// codegen → runtime ABI.
 //
-// WASM is intentionally not registered here. The codegen gate maps every
-// `hew_hashmap_*_layout` / `hew_hashset_*_layout` callee to a structured
-// `WasmUnsupportedSubstrate` diagnostic before lowering, which is the v0.5
-// fail-closed behaviour for this native-only runtime substrate.
+// The `hew_hashmap_*_layout` / `hew_hashset_*_layout` family is
+// target-agnostic: the runtime modules are not `cfg`-gated against wasm32 and
+// codegen lowers their callees directly (no `WasmUnsupportedSubstrate` arm).
+// The same program therefore compiles, links, and runs under
+// `wasm32-wasi`; the non-actor map/set WASI run-pass + native↔wasm parity are
+// pinned in `hew-cli/tests/wasi_run_e2e.rs`.
 //
 // What the checker does on this file:
 //   * Recognises `Point` as a Copy plain record with hash-eligible i64

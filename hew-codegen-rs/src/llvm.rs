@@ -15937,31 +15937,31 @@ fn layout_descriptor_ptr<'ctx>(
     elem_ty: BasicTypeEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
-    // WASM-TODO(#1819): `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`
-    // is synthesized here with native host-width layout. wasm32 has `usize = i32`,
-    // so this `abi_size_align(elem_ty, None)` fallback and the descriptor struct
-    // shape below must become target-aware before WASM parity is claimed.
-    let (size, align) = abi_size_align(elem_ty, None)?;
-    let layout_ty = fn_ctx.ctx.struct_type(
-        &[
-            fn_ctx.ctx.i64_type().into(),
-            fn_ctx.ctx.i64_type().into(),
-            fn_ctx.ctx.i8_type().into(),
-        ],
-        false,
-    );
+    // `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`. The two
+    // leading fields are target-width `usize`, not host-width `i64`: wasm32 has
+    // `usize = i32`, so the size/align measurements and the descriptor struct
+    // shape both flow from the active `TargetData` exactly as the
+    // `hashmap_*_layout_descriptor_ptr` width authority does. A host-width
+    // fallback here would be silent wrong-code on wasm32.
+    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
+    let ctx = fn_ctx.ctx;
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(&[usize_ty.into(), usize_ty.into(), i8_ty.into()], false);
+    // Dedup name mirrors the `hashmap_*_layout_descriptor_ptr` authority: a
+    // module only ever targets one machine, so a native (i64) and a wasm32
+    // (i32) descriptor for the same `(label, size, align)` never co-exist in
+    // one module. The `(size, align)` measurements already shift with the
+    // target width, so the name stays stable per target without a width suffix
+    // — native IR is unchanged, wasm32 emits its own `_4_4_`/`_16_8_` globals.
     let global_name = format!("__hew_layout_{label}_{size}_{align}_plain");
     if let Some(global) = fn_ctx.llvm_mod.get_global(&global_name) {
         return Ok(global.as_pointer_value());
     }
     let init = layout_ty.const_named_struct(&[
-        fn_ctx.ctx.i64_type().const_int(size, false).into(),
-        fn_ctx
-            .ctx
-            .i64_type()
-            .const_int(u64::from(align), false)
-            .into(),
-        fn_ctx.ctx.i8_type().const_zero().into(),
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_zero().into(),
     ]);
     let global = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
     global.set_constant(true);
@@ -18231,7 +18231,9 @@ fn verify_hashmap_lowering_facts_consistent(pipeline: &IrPipeline) -> CodegenRes
 fn is_hashmap_layout_probe_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
-        "__hew_codegen_emit_hashmap_layout_probe" | "__hew_codegen_emit_hashset_layout_probe"
+        "__hew_codegen_emit_hashmap_layout_probe"
+            | "__hew_codegen_emit_hashset_layout_probe"
+            | "__hew_codegen_emit_vec_layout_probe"
     )
 }
 
@@ -18624,6 +18626,21 @@ fn lower_hashmap_layout_probe(
             // codegen.  The zero-size value layout is fabricated inside
             // `hew_hashset_new_with_layout` itself (C-1c).
             let _ = hashmap_key_layout_descriptor_ptr(fn_ctx, elem_ty, Some(elem_resolved))?;
+        }
+        "__hew_codegen_emit_vec_layout_probe" => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "{callee}: expected 1 arg (elem), got {}",
+                    args.len()
+                )));
+            }
+            // Vec layout path: a single `HewTypeLayout` descriptor whose two
+            // leading `usize` fields are target-width. The probe drives the
+            // same `layout_descriptor_ptr` synthesis the Vec ops use, so the
+            // emitted `@__hew_layout_probe_*` global is the unforgeable witness
+            // that the descriptor width follows the active target.
+            let (_, elem_ty) = place_pointer(fn_ctx, args[0])?;
+            let _ = layout_descriptor_ptr(fn_ctx, elem_ty, "probe")?;
         }
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -19210,10 +19227,6 @@ fn lower_vec_constructor_call(
     let fv = get_or_declare_vec_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
     let call = match ctor {
         VecCtor::BitCopyLayout(elem_llvm_ty) => {
-            // WASM-TODO(#1819): this constructor path still synthesizes
-            // `HewTypeLayout { size, align, ownership_kind }` with native
-            // host-width fields via `layout_descriptor_ptr`; make the descriptor
-            // target-aware before claiming wasm32 parity.
             let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
             fn_ctx
                 .builder
@@ -19537,9 +19550,6 @@ fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            // WASM-TODO(#1819): `layout_descriptor_ptr` synthesizes the descriptor
-            // with native host-width size/align fields. wasm32 requires target-aware
-            // synthesis; claim WASM parity only after that is resolved.
             let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
             fn_ctx
                 .builder
@@ -19581,9 +19591,6 @@ fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            // WASM-TODO(#1819): `layout_descriptor_ptr` synthesizes the descriptor
-            // with native host-width size/align fields. wasm32 requires target-aware
-            // synthesis; claim WASM parity only after that is resolved.
             let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
             let call = fn_ctx
                 .builder
@@ -41229,6 +41236,112 @@ mod tests {
         assert!(
             !wasm.contains("@__hew_map_value_layout_8_8_plain"),
             "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
+        );
+    }
+
+    /// Single-function pipeline that drives the Vec layout-descriptor synthesis
+    /// probe over a `Point` record element (2 × i64 → 16/8 native, 16/8 wasm32
+    /// with i32 fields). Mirrors `hashmap_descriptor_width_probe_pipeline` but
+    /// exercises `layout_descriptor_ptr` (the Vec width authority) instead of
+    /// the hashmap key/value descriptors.
+    fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
+        let entry = BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Call {
+                callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
+                builtin: None,
+                args: vec![Place::Local(0)],
+                dest: None,
+                next: 1,
+            },
+        };
+        let ret = BasicBlock {
+            id: 1,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Return,
+        };
+        IrPipeline {
+            thir: Vec::new(),
+            raw_mir: vec![RawMirFunction {
+                name: "main".to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
+                params: vec![],
+                locals: vec![named_record_ty("Point")],
+                blocks: vec![entry, ret],
+                decisions: Vec::<DecisionFact>::new(),
+                intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
+
+                lambda_actor_user_param_locals: Vec::new(),
+            }],
+            checked_mir: Vec::new(),
+            elaborated_mir: Vec::new(),
+            diagnostics: Vec::new(),
+            opaque_handle_names: Vec::new(),
+            record_layouts: vec![RecordLayout {
+                name: "Point".to_string(),
+                field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            }],
+            actor_layouts: Vec::new(),
+            supervisor_layouts: Vec::new(),
+            machine_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            regex_literals: Vec::new(),
+            user_consts: Vec::new(),
+            gen_state_layouts: vec![],
+            extern_decls: vec![],
+            dyn_vtable_registry: vec![],
+            hashmap_lowering_facts: vec![],
+            hashset_lowering_facts: vec![],
+            actor_send_aliasing: std::collections::HashMap::new(),
+            polymorphic_mir: Vec::new(),
+        }
+    }
+
+    fn vec_descriptor_probe_ir(module_name: &str, triple: Option<&str>) -> String {
+        let ctx = Context::create();
+        let pipeline = vec_descriptor_width_probe_pipeline();
+        let module = if let Some(triple) = triple {
+            let machine = target_machine_for_triple(triple).expect("target machine");
+            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine))
+                .expect("targeted vec descriptor probe module")
+        } else {
+            build_module(&ctx, &pipeline, module_name).expect("native vec descriptor probe module")
+        };
+        module.print_to_string().to_string()
+    }
+
+    #[test]
+    fn vec_layout_descriptors_use_target_usize_width() {
+        let native = vec_descriptor_probe_ir("native_vec_layout_width", None);
+        let wasm =
+            vec_descriptor_probe_ir("wasm32_vec_layout_width", Some("wasm32-unknown-unknown"));
+
+        // The Vec `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`
+        // descriptor's two leading fields are target-width `usize`: i64 native,
+        // i32 wasm32 — the same width authority the hashmap descriptors use.
+        let native_desc = descriptor_line(&native, "@__hew_layout_probe_16_8_plain");
+        assert!(
+            native_desc.contains("{ i64, i64, i8 }")
+                && native_desc.contains("{ i64 16, i64 8, i8 0 }"),
+            "native Vec descriptor must use 8-byte usize fields:\n{native_desc}\n\nfull IR:\n{native}"
+        );
+
+        let wasm_desc = descriptor_line(&wasm, "@__hew_layout_probe_16_8_plain");
+        assert!(
+            wasm_desc.contains("{ i32, i32, i8 }") && wasm_desc.contains("{ i32 16, i32 8, i8 0 }"),
+            "wasm32 Vec descriptor must use 4-byte usize fields:\n{wasm_desc}\n\nfull IR:\n{wasm}"
+        );
+
+        // Fail-closed against silent host-width fallback: the wasm32 module must
+        // never emit an i64-shaped Vec descriptor.
+        assert!(
+            !wasm.contains("{ i64, i64, i8 }"),
+            "wasm32 Vec descriptor synthesis must not fall back to native 8-byte usize fields:\n{wasm}"
         );
     }
 

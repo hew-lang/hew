@@ -10202,6 +10202,38 @@ fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
 }
 
 #[test]
+fn recursive_value_type_rejects_diverging_generic_self_reference() {
+    // A polymorphic self-reference whose field re-instantiates the record
+    // with strictly-larger type args — `Wrap<T> { w: Wrap<Wrap<T>> }`. Each
+    // generic-instantiation step produces a distinct `(name, args)` pair
+    // (`Wrap<i64>` → `Wrap<Wrap<i64>>` → …), so the `(name, args)` dedup set
+    // never collides. Without a name-based bound on the expansion walk this
+    // diverges and exhausts memory; the bound must let the value-cycle
+    // detector terminate and reject `Wrap` as infinitely sized.
+    let output = check_source(
+        r"
+        type Wrap<T> { w: Wrap<Wrap<T>> }
+        fn main() {}
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                &error.kind,
+                TypeErrorKind::RecursiveValueType {
+                    type_name,
+                    referenced_type,
+                } if type_name == "Wrap" && referenced_type == "Wrap"
+            )
+        }),
+        "expected diverging generic self-reference rejected as recursive \
+         value type, got {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn recursive_value_type_allows_pointer_self_reference() {
     let output = check_source(
         r"

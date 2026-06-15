@@ -303,29 +303,31 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
     assert_eq!(layouts[0].mangled_name, "Box$$Vec_i64");
 }
 
-/// (e) Plan test E: recursive polymorphic instantiation
-/// (`pub type Node<T> { ... next: Box<Node<i64>> }`) fires the
-/// `RecursiveGenericTypeUnsupported` diagnostic and produces no
-/// `Node` entry (the `Box<Node<i64>>` field would force unbounded
-/// layout expansion).
+/// (e) Plan test E: diverging polymorphic instantiation fires
+/// `RecursiveGenericTypeUnsupported` and produces no registry entry.
+///
+/// `pub type Grow<T> { tag: i64; sub: Grow<Grow<i64>> }` is the diverging
+/// shape tested here: instantiating at `Grow<i64>` substitutes T = i64, so
+/// `sub: Grow<Grow<i64>>`.  The occurrence's args are `[Grow<i64>]`, which
+/// contain `i64` as a strict subterm — the args are strictly larger than
+/// `current_args = [i64]`.  Each new instantiation would demand yet another
+/// distinct layout (`Grow<Grow<i64>>` → `Grow<Grow<Grow<i64>>>` → …),
+/// growing without bound.  The HIR guard must reject it and skip the insert.
+///
+/// The hardcoded `Grow<i64>` in the field (rather than `Grow<Grow<T>>`) lets
+/// the type-checker's infinite-size gate fire cleanly (no stack overflow)
+/// before HIR lowering runs — we assert specifically on
+/// `RecursiveGenericTypeUnsupported` to prove the layout guard fires
+/// independently.
 #[test]
 fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
-    // Construct a Node<string> — the recursive cycle is detected at
-    // substitution time when the `next` field substitutes to
-    // `Box<Node<i64>>`, which names `Node` with arg `i64` while the
-    // current Node instantiation has arg `string`.
-    //
-    // Note: this fixture is purely structural for the diagnostic
-    // probe; whether it type-checks end-to-end depends on stdlib
-    // Box being usable. We accept checker errors here and assert on
-    // the HIR diagnostic shape.
-    let source = r#"
-        pub type Node<T> { value: T; next: Box<Node<i64>> }
+    let source = r"
+        pub type Grow<T> { tag: i64; sub: Grow<Grow<i64>> }
 
         fn main() {
-            let n: Node<string> = Node { value: "hi", next: hole };
+            let g: Grow<i64> = Grow { tag: 1, sub: hole };
         }
-    "#;
+    ";
 
     let output = typecheck_and_lower_allowing_diags(source);
 
@@ -347,23 +349,23 @@ fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
     );
     match &recursive_diags[0].kind {
         HirDiagnosticKind::RecursiveGenericTypeUnsupported { name } => {
-            assert_eq!(name, "Node");
+            assert_eq!(name, "Grow");
         }
         _ => unreachable!(),
     }
 
-    // No `Node` entry should have landed (the diagnostic short-
-    // circuits the insert).
-    let node_layouts: Vec<_> = output
+    // No `Grow` entry should have landed (the diagnostic short-circuits
+    // the insert).
+    let grow_layouts: Vec<_> = output
         .module
         .record_layouts
         .iter()
-        .filter(|l| l.key.origin_name == "Node")
+        .filter(|l| l.key.origin_name == "Grow")
         .collect();
     assert!(
-        node_layouts.is_empty(),
-        "no Node record-layout entry must land when the recursive \
-         polymorphic diagnostic fires; got {node_layouts:#?}"
+        grow_layouts.is_empty(),
+        "no Grow record-layout entry must land when the recursive \
+         polymorphic diagnostic fires; got {grow_layouts:#?}"
     );
 }
 

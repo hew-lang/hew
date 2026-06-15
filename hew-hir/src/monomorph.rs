@@ -770,16 +770,75 @@ impl EnumLayoutRegistry {
     }
 }
 
-/// Detect whether `ty` contains a reference to `origin_name` with
-/// different concrete type args than `current_args`. Used to fail-closed
-/// on recursive polymorphic instantiations like
-/// `pub type Node<T> { next: Box<Node<int>> }` — observed `Node<T>` has
-/// `args = [T_concrete]`, but the field mentions `Node<int>`, a
-/// different arg set, which would force unbounded layout expansion.
+/// Returns `true` if `needle` appears as a **strict** subterm of `haystack`
+/// — that is, `needle` is embedded at depth ≥ 1 inside `haystack`'s
+/// children (not equal to `haystack` itself).
 ///
-/// Self-reference with the *same* args is fine (`pub type Box<T> { next:
-/// Box<T> }` is a recursive shape but expansion converges at one
-/// layout). Self-reference with *different* args is the unbounded case.
+/// Used by `contains_recursive_polymorphic_self` to decide whether the
+/// occurrence's args are strictly larger than `current_args`, which is the
+/// signal for a diverging (unbounded) layout chain.
+fn is_nested_subterm(needle: &ResolvedTy, haystack: &ResolvedTy) -> bool {
+    match haystack {
+        ResolvedTy::Named { args, .. } => args
+            .iter()
+            .any(|a| a == needle || is_nested_subterm(needle, a)),
+        ResolvedTy::Tuple(items) => items
+            .iter()
+            .any(|t| t == needle || is_nested_subterm(needle, t)),
+        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
+            elem.as_ref() == needle || is_nested_subterm(needle, elem)
+        }
+        ResolvedTy::Function { params, ret } => {
+            params
+                .iter()
+                .any(|p| p == needle || is_nested_subterm(needle, p))
+                || ret.as_ref() == needle
+                || is_nested_subterm(needle, ret)
+        }
+        ResolvedTy::Closure {
+            params,
+            ret,
+            captures,
+        } => {
+            params
+                .iter()
+                .any(|p| p == needle || is_nested_subterm(needle, p))
+                || ret.as_ref() == needle
+                || is_nested_subterm(needle, ret)
+                || captures
+                    .iter()
+                    .any(|c| c == needle || is_nested_subterm(needle, c))
+        }
+        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
+            pointee.as_ref() == needle || is_nested_subterm(needle, pointee)
+        }
+        ResolvedTy::Task(inner) => inner.as_ref() == needle || is_nested_subterm(needle, inner),
+        _ => false,
+    }
+}
+
+/// Detect whether `ty` contains a DIVERGING self-reference to `origin_name`.
+///
+/// A self-reference is diverging when the occurrence's args are strictly
+/// larger than `current_args` — specifically, when any element of
+/// `current_args` appears as a strict subterm (depth ≥ 1) of any element
+/// of the occurrence's args. That means each new layout step demands
+/// strictly deeper nesting, producing an unbounded chain. Two cases:
+///
+/// * **Finite (admit):** `Box<Box<i64>>` — outer Box has
+///   `current_args = [Box<i64>]`. After substituting T = `Box<i64>`, the
+///   field is `Box<i64>`. Its args are `[i64]`. Is `Box<i64>` strictly
+///   inside `i64`? No — the args SHRANK. Finite; must NOT be rejected.
+///   Same for `Box<Box<Box<i64>>>`: occurrence args are `[Box<i64>]`,
+///   and `Box<Box<i64>>` does NOT appear strictly inside `Box<i64>`.
+///
+/// * **Diverging (reject):** `Tree<T> { child: Tree<Tree<T>> }` at T = i64.
+///   Field substitutes to `Tree<Tree<i64>>`. Args are `[Tree<i64>]`. Is
+///   `i64` (from `current_args`) strictly inside `Tree<i64>`? Yes — `i64`
+///   is a direct child. Each step the arg grows one layer deeper; unbounded.
+///
+/// Self-reference with the *same* args is fine — `Box<T> { next: Box<T> }`
+/// — and is excluded by the `args != current_args` guard before this check.
 #[must_use]
 pub(crate) fn contains_recursive_polymorphic_self(
     ty: &ResolvedTy,
@@ -789,7 +848,16 @@ pub(crate) fn contains_recursive_polymorphic_self(
     match ty {
         ResolvedTy::Named { name, args, .. } => {
             if name == origin_name && args.as_slice() != current_args {
-                return true;
+                // Diverging only when the occurrence's args strictly contain
+                // some element of current_args — i.e., the args are growing.
+                // Finite nesting (Box<Box<i64>>) has args that are structurally
+                // SMALLER than current_args, so no current_arg is a subterm.
+                if current_args
+                    .iter()
+                    .any(|ca| args.iter().any(|a| is_nested_subterm(ca, a)))
+                {
+                    return true;
+                }
             }
             args.iter()
                 .any(|a| contains_recursive_polymorphic_self(a, origin_name, current_args))
@@ -934,17 +1002,18 @@ mod tests {
     }
 
     #[test]
-    fn recursive_polymorphic_self_detects_different_args() {
-        // Node<T> with field `next: Box<Node<int>>` — the field
-        // mentions Node with a different arg set than T.
-        let current_args = vec![ResolvedTy::named_user("T", vec![])];
+    fn recursive_polymorphic_self_detects_diverging_args() {
+        // Tree<T> with field `child: Tree<Tree<T>>` — at T=i64 the field
+        // substitutes to Tree<Tree<i64>>.  The occurrence has args=[Tree<i64>]
+        // which nest `Tree` itself → diverging layout chain, must reject.
+        let current_args = vec![ResolvedTy::I64];
         let field_ty = ResolvedTy::named_user(
-            "Box",
-            vec![ResolvedTy::named_user("Node", vec![ResolvedTy::I64])],
+            "Tree",
+            vec![ResolvedTy::named_user("Tree", vec![ResolvedTy::I64])],
         );
         assert!(contains_recursive_polymorphic_self(
             &field_ty,
-            "Node",
+            "Tree",
             &current_args
         ));
     }
@@ -958,6 +1027,76 @@ mod tests {
         assert!(!contains_recursive_polymorphic_self(
             &field_ty,
             "Box",
+            &current_args
+        ));
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_admits_finite_nesting() {
+        // Box<Box<i64>> — outer Box has current_args=[Box<i64>].
+        // The field `value: T` substitutes to `value: Box<i64>`.
+        // Box<i64>'s args are [i64], which do NOT contain `Box` → finite,
+        // must admit (not reject).
+        let current_args = vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])];
+        let field_ty = ResolvedTy::named_user("Box", vec![ResolvedTy::I64]);
+        assert!(!contains_recursive_polymorphic_self(
+            &field_ty,
+            "Box",
+            &current_args
+        ));
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_admits_triple_nesting() {
+        // Box<Box<Box<i64>>> — outer Box has current_args=[Box<Box<i64>>].
+        // Field substitutes to Box<Box<i64>>. Its args are [Box<i64>].
+        // Box<i64>'s args are [i64] — no `Box` appears in [i64] → finite.
+        let current_args = vec![ResolvedTy::named_user(
+            "Box",
+            vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])],
+        )];
+        let field_ty = ResolvedTy::named_user(
+            "Box",
+            vec![ResolvedTy::named_user("Box", vec![ResolvedTy::I64])],
+        );
+        assert!(!contains_recursive_polymorphic_self(
+            &field_ty,
+            "Box",
+            &current_args
+        ));
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_detects_concrete_diverging_args() {
+        // Grow<T> { sub: Grow<Grow<i64>> } at T=i64: field substitutes to
+        // Grow<Grow<i64>>.  current_args=[i64]; occurrence args=[Grow<i64>].
+        // i64 is a strict subterm of Grow<i64> → diverging, must reject.
+        // This mirrors the integration test shape where the inner arg is
+        // hardcoded rather than a type param.
+        let current_args = vec![ResolvedTy::I64];
+        let field_ty = ResolvedTy::named_user(
+            "Grow",
+            vec![ResolvedTy::named_user("Grow", vec![ResolvedTy::I64])],
+        );
+        assert!(contains_recursive_polymorphic_self(
+            &field_ty,
+            "Grow",
+            &current_args
+        ));
+    }
+
+    #[test]
+    fn recursive_polymorphic_self_admits_multi_param_finite() {
+        // Pair<Pair<i64, string>, bool> with current_args=[i64, string] —
+        // the nested Pair occurrence has same args [i64, string] → same-args
+        // path, not divergent.  Even if we reach a different-args occurrence,
+        // the args must contain `Pair` itself to be flagged.
+        let current_args = vec![ResolvedTy::I64, ResolvedTy::String];
+        // Pair<i64, string> — same args as current, must not be flagged.
+        let field_ty = ResolvedTy::named_user("Pair", vec![ResolvedTy::I64, ResolvedTy::String]);
+        assert!(!contains_recursive_polymorphic_self(
+            &field_ty,
+            "Pair",
             &current_args
         ));
     }

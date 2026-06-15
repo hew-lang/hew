@@ -151,6 +151,33 @@ if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${trait_sig_out}"; then
 fi
 echo "PASS ${trait_sig_reject}"
 
+# Reject fixture: local-shadow + cross-module trait impl. The importer opts only
+# the trait `Closable` into scope and defines its OWN local `CloseError`, then
+# impls `close` returning that LOCAL bare `CloseError`. The trait requires
+# `closableerr.CloseError`; the local type is distinct, so the impl must be
+# REJECTED with `TraitImplSignatureMismatch`. The local-shadow carve-out is
+# side-specific: it preserves the local identity only on the IMPL/actual side,
+# while the trait side's bare `CloseError` always qualifies to the trait owner.
+# A shared carve-out would leave the trait side bare too and falsely ACCEPT the
+# wrong-module impl (fail-open).
+local_shadow_reject="local_shadow_trait_sig_reject"
+local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${local_shadow_reject}.hew" 2>&1)" && {
+  echo "FAIL ${local_shadow_reject}: hew check unexpectedly succeeded (local-shadow impl slipped the trait-sig gate)" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+}
+if ! grep -q "but trait \`Closable\` requires" <<<"${local_shadow_out}"; then
+  echo "FAIL ${local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${local_shadow_out}"; then
+  echo "FAIL ${local_shadow_reject}: local-shadow impl fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+fi
+echo "PASS ${local_shadow_reject}"
+
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
 # modules is a genuine ambiguity. The checker must fail closed with `ambiguous
 # type` naming both published candidates, at the type boundary (NOT a bare

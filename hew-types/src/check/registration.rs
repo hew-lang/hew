@@ -5085,21 +5085,37 @@ impl Checker {
         // impl that returns the wrong module's type. Instead:
         //   * an already module-qualified name keeps its qualifier (it is an
         //     explicit, unambiguous identity);
-        //   * a bare name written in the trait declaration denotes the trait's
-        //     own defining module's type, so it is qualified against that module
-        //     when the module defines it — unless the bare name shadows a local
-        //     type in the impl's scope, in which case it stays bare and the
-        //     local identity is preserved (and so a local `CloseError` correctly
-        //     mismatches the trait's `closableerr.CloseError`).
+        //   * a bare name written in the TRAIT DECLARATION denotes the trait's
+        //     own defining module's type, so it ALWAYS qualifies against that
+        //     module when the module defines it. The trait side is canonicalized
+        //     with `preserve_local_shadow = false` — the importer's local type
+        //     names are irrelevant to what the trait declaration requires;
+        //   * a bare name on the IMPL/ACTUAL side is canonicalized with
+        //     `preserve_local_shadow = true`: if it shadows a local type in the
+        //     impl's scope it stays bare so the local identity is preserved (and
+        //     so a local `CloseError` correctly MISMATCHES the trait's
+        //     `closableerr.CloseError` rather than being conflated with it).
+        //
+        // The carve-out MUST be side-specific. Applying the local-shadow filter
+        // to BOTH sides with one shared predicate is fail-open: the trait's bare
+        // `CloseError` would also be left bare when the importer has a local
+        // `CloseError`, so it would compare EQUAL to the impl's local type
+        // instead of to the trait owner's required `closableerr.CloseError`,
+        // falsely accepting a wrong-module impl.
+        //
         // The user-facing diagnostics still render the original, untouched types.
         //
         // `trait_owner` is the trait's defining module (`Some("closableerr")`)
         // or `None` for a root/local trait. `ctx` carries the in-scope module
         // set, the registered-type predicate, and the local-shadow predicate so
         // the recursion needs no `&self` borrow held across the later mutable
-        // error-reporting calls.
-        fn canonicalize_type_identity(ty: &Ty, ctx: &TraitSigCanonCtx) -> Ty {
-            let rec = |t: &Ty| canonicalize_type_identity(t, ctx);
+        // error-reporting calls. `preserve_local_shadow` selects the side.
+        fn canonicalize_type_identity(
+            ty: &Ty,
+            ctx: &TraitSigCanonCtx,
+            preserve_local_shadow: bool,
+        ) -> Ty {
+            let rec = |t: &Ty| canonicalize_type_identity(t, ctx, preserve_local_shadow);
             match ty {
                 Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(rec).collect()),
                 Ty::Array(elem, n) => Ty::Array(Box::new(rec(elem)), *n),
@@ -5110,13 +5126,15 @@ impl Checker {
                         // qualifier as the type identity.
                         Some((module, _)) if ctx.modules.contains(module) => name.clone(),
                         // Bare name: qualify against the trait's defining module
-                        // when that module defines it AND it is not shadowed by a
-                        // local type in the impl scope. Otherwise (builtin, type
-                        // param, or a genuine local) leave it bare so its identity
-                        // is preserved.
+                        // when that module defines it. On the impl/actual side a
+                        // local shadow is preserved (left bare); on the trait
+                        // side the local-shadow carve-out does NOT apply, so a
+                        // bare trait-declared name always qualifies to its owner.
+                        // Otherwise (builtin, type param, or — on the impl side —
+                        // a genuine local) leave it bare so its identity survives.
                         _ => ctx
                             .trait_owner
-                            .filter(|_| !(ctx.is_local)(name))
+                            .filter(|_| !(preserve_local_shadow && (ctx.is_local)(name)))
                             .map(|owner| format!("{owner}.{name}"))
                             .filter(|qualified| (ctx.defines_qualified)(qualified))
                             .unwrap_or_else(|| name.clone()),
@@ -5367,17 +5385,25 @@ impl Checker {
                     self.local_type_defs.contains(name) || self.source_type_defs.contains(name)
                 },
             };
+            // EXPECTED is the trait declaration's required signature: a bare
+            // name there denotes the trait owner's sibling type, so it ALWAYS
+            // qualifies to the owner (`preserve_local_shadow = false`). The
+            // importer's local type names do not change what the trait requires.
             let canon_expected_params: Vec<Ty> = expected_params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx))
+                .map(|t| canonicalize_type_identity(t, &ctx, false))
                 .collect();
+            // ACTUAL is the impl's written signature: a bare name that shadows a
+            // local type keeps its local identity (`preserve_local_shadow =
+            // true`), so a local `CloseError` correctly mismatches the trait's
+            // `closableerr.CloseError` instead of being conflated with it.
             let canon_actual_params: Vec<Ty> = impl_sig
                 .params
                 .iter()
-                .map(|t| canonicalize_type_identity(t, &ctx))
+                .map(|t| canonicalize_type_identity(t, &ctx, true))
                 .collect();
-            let canon_expected_return = canonicalize_type_identity(&expected_return, &ctx);
-            let canon_actual_return = canonicalize_type_identity(&impl_sig.return_type, &ctx);
+            let canon_expected_return = canonicalize_type_identity(&expected_return, &ctx, false);
+            let canon_actual_return = canonicalize_type_identity(&impl_sig.return_type, &ctx, true);
             (
                 canon_expected_params,
                 canon_actual_params,

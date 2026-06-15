@@ -2245,15 +2245,21 @@ pub struct Checker {
     /// last writer. For deciding *whether* a bare reference is ambiguous, use
     /// `published_bare_type_owners` instead, which keeps the full set.
     pub(super) unqualified_to_module: HashMap<(Option<String>, String), String>,
-    /// Maps (`importer_module`, `bare_type_name`) to the full set of modules
-    /// that published that bare TYPE binding into the importer's scope (via a
-    /// named / glob / aliased opt-in, or a prelude bootstrap surface).
+    /// Maps (`importer_module`, `bare_type_binding`) to the full set of SOURCE
+    /// identities (`owner.OriginalName`) published under that bare binding into
+    /// the importer's scope (via a named / glob / aliased opt-in, or a prelude
+    /// bootstrap surface).
     ///
-    /// Drives the use-time ambiguity decision: a bare reference is ambiguous
-    /// only when more than one module *published* the bare binding — a plain
-    /// `import` that exported but did not publish the name must not contribute,
-    /// so it cannot poison an explicit named import of the same bare name from
-    /// another module.
+    /// The value is the SOURCE identity, not merely the owner module, so an
+    /// aliased import (`import m::{ T as U }`) records `U -> { "m.T" }`: a use of
+    /// bare `U` resolves to the type `m` exports under `T`, never a phantom
+    /// `m.U`.
+    ///
+    /// Drives the use-time ambiguity decision: a bare reference is ambiguous only
+    /// when more than one source identity is published under the binding — a
+    /// plain `import` that exported but did not publish the name does not
+    /// contribute, so it cannot poison an explicit named import of the same bare
+    /// name from another module.
     pub(super) published_bare_type_owners:
         HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.

@@ -28,15 +28,20 @@ impl Checker {
         if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
             return None;
         }
-        let owners = self
+        let identities = self
             .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))?;
-        if owners.len() != 1 {
+        if identities.len() != 1 {
             return None;
         }
-        let owner = owners.iter().next()?;
-        let qualified = format!("{owner}.{name}");
-        self.type_defs.contains_key(&qualified).then_some(qualified)
+        // The stored value IS the owner-qualified SOURCE identity
+        // (`owner.OriginalName`). For an aliased opt-in (`import m::{ T as U }`)
+        // the binding `U` records `m.T`, so a bare `U` binds to `m.T` — never a
+        // reconstructed `m.U` that would name the wrong (or a non-existent) type.
+        let qualified = identities.iter().next()?;
+        self.type_defs
+            .contains_key(qualified)
+            .then(|| qualified.clone())
     }
 
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
@@ -68,23 +73,24 @@ impl Checker {
             .collect();
         owner_modules.sort_unstable();
         owner_modules.dedup();
-        let published_owners: Vec<String> = self
+        // Each published entry is the owner-qualified SOURCE identity
+        // (`owner.OriginalName`) — the spelling that disambiguates an aliased
+        // opt-in. Used directly as the candidate suggestion; no reconstruction
+        // from `{owner}.{name}`, which would mis-name an alias's source type.
+        let published_identities: Vec<String> = self
             .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))
-            .map(|owners| owners.iter().cloned().collect())
+            .map(|identities| identities.iter().cloned().collect())
             .unwrap_or_default();
-        if published_owners.len() > 1 {
-            let mut candidates: Vec<String> = published_owners
-                .iter()
-                .map(|m| format!("{m}.{name}"))
-                .collect();
+        if published_identities.len() > 1 {
+            let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,
                 format!(
                     "ambiguous type `{name}`: published bare by {} imported modules",
-                    published_owners.len()
+                    published_identities.len()
                 ),
                 candidates
                     .iter()
@@ -93,7 +99,7 @@ impl Checker {
             );
             return true;
         }
-        if published_owners.is_empty() && !owner_modules.is_empty() {
+        if published_identities.is_empty() && !owner_modules.is_empty() {
             let mut suggestions: Vec<String> = Vec::new();
             for owner in &owner_modules {
                 suggestions.push(format!("qualify the reference, e.g. `{owner}.{name}`"));

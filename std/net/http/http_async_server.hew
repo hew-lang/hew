@@ -369,9 +369,8 @@ fn find_header(header_section: string, name: string) -> string {
     let target = string.to_lower(name);
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
-    var i: i64 = 0;
     var found = "";
-    while i < n {
+    for i in 0 .. n {
         let line = lines.get(i);
         let colon = line.find(":");
         if colon > 0 {
@@ -380,7 +379,6 @@ fn find_header(header_section: string, name: string) -> string {
                 found = string.trim(line.slice(colon + 1, line.len()));
             }
         }
-        i = i + 1;
     }
     found
 }
@@ -394,9 +392,8 @@ fn header_count(header_section: string, name: string) -> i64 {
     let target = string.to_lower(name);
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
-    var i: i64 = 0;
     var count: i64 = 0;
-    while i < n {
+    for i in 0 .. n {
         let line = lines.get(i);
         let colon = line.find(":");
         if colon > 0 {
@@ -405,7 +402,6 @@ fn header_count(header_section: string, name: string) -> i64 {
                 count = count + 1;
             }
         }
-        i = i + 1;
     }
     count
 }
@@ -420,15 +416,13 @@ fn headers_have_colons(header_section: string) -> bool {
     }
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
-    var i: i64 = 0;
-    while i < n {
+    for i in 0 .. n {
         let line = lines.get(i);
         if !string.is_empty(line) {
             if line.find(":") <= 0 {
                 return false;
             }
         }
-        i = i + 1;
     }
     true
 }
@@ -476,15 +470,13 @@ fn is_alpha_token(s: string) -> bool {
     if n == 0 {
         return false;
     }
-    var i: i64 = 0;
-    while i < n {
+    for i in 0 .. n {
         let b = s.char_at(i);
         let upper = b >= 65 && b <= 90;
         let lower = b >= 97 && b <= 122;
         if !upper && !lower {
             return false;
         }
-        i = i + 1;
     }
     true
 }
@@ -495,13 +487,11 @@ fn is_alpha_token(s: string) -> bool {
 /// CRLF-delimited headers into the framed output.
 fn has_control_char(s: string) -> bool {
     let n = s.len();
-    var i: i64 = 0;
-    while i < n {
+    for i in 0 .. n {
         let b = s.char_at(i);
         if b < 32 || b == 127 {
             return true;
         }
-        i = i + 1;
     }
     false
 }

@@ -10,13 +10,19 @@
 //! - **Stable slot addresses.** Slot values live in `Vec<Box<AtomicI64>>`.
 //!   Pushing a new box reallocates the *pointer* vector, never the boxed
 //!   atomics, so an integer slot handle stays valid for the process lifetime.
-//!   A handle is the slot index; the hot path (`inc`/`add`/`set`/`record`)
-//!   reads the box pointer under a short read and mutates the atomic without
-//!   the registration lock.
-//! - **Register-lock-only mutation of the directory.** All structural changes
-//!   (new metric, new label series, charset/cap checks) happen under a single
-//!   [`PoisonSafe`] lock so the caps are checked-and-committed atomically; two
-//!   threads cannot both pass a `len < CAP` check and overflow.
+//!   A handle is the slot index.
+//! - **Single registry lock today.** All access — both structural changes (new
+//!   metric, new label series, charset/cap checks) and the hot-path mutators
+//!   (`inc`/`add`/`set`/`record`) — goes through one [`PoisonSafe`] lock. A
+//!   mutator takes the lock to resolve the slot index to its boxed atomic and
+//!   mutates the atomic under that lock. The boxed-atomic design already keeps a
+//!   handle stable across registration, so a future revision can resolve a slot
+//!   under a short read lock (or a lock-free index→pointer map) and mutate the
+//!   atomic without holding the registration lock; that lock-free hot path is a
+//!   Phase B optimisation, not the current behaviour.
+//! - **Atomic cap checks.** Structural changes happen under the same lock so the
+//!   caps are checked-and-committed atomically; two threads cannot both pass a
+//!   `len < CAP` check and overflow.
 //! - **Fail-closed caps.** Every overflow — too many names, too many series,
 //!   too many label keys, an over-long name, a charset violation, a collision
 //!   with a runtime built-in, or an unknown handle — is rejected and counted
@@ -85,8 +91,11 @@ struct MetricEntry {
     /// metric.
     label_keys: Vec<String>,
     /// Histogram bucket upper bounds, ascending. Empty for non-histograms.
-    /// The slot at `base_slot + i + 1` accumulates observations `<= buckets[i]`
-    /// (cumulative), and `base_slot` holds the running observation count.
+    /// A histogram's slot layout is: `base_slot` holds the running observation
+    /// count, `base_slot + 1` holds the running observation sum, and the slot at
+    /// `base_slot + 2 + i` accumulates observations `<= buckets[i]` (cumulative).
+    /// Tracking the sum lets the scrape emit a valid `name_count` / `name_sum`
+    /// histogram exposition; a bare count is not valid Prometheus.
     buckets: Vec<i64>,
     /// Map from a canonical label-value key (`"k1=v1,k2=v2"`) to the slot
     /// index of that series' value. Only populated for labelled metrics.
@@ -178,10 +187,29 @@ fn label_key_is_valid(key: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// True when `name` collides with a built-in runtime metric the observe
-/// registry already owns. A user metric may not shadow one.
+/// True when `name`'s rendered Prometheus series name collides with a built-in
+/// runtime metric the observe registry already owns. A user metric may not
+/// shadow one.
+///
+/// The check is on the rendered name (`.` → `_`), not the canonical name,
+/// because the scrape render is non-injective: `metrics.counter("heap_live_bytes")`
+/// is a distinct canonical name from the built-in `heap.live_bytes` but renders
+/// to the same `heap_live_bytes` series, shadowing the built-in's scrape output.
 fn collides_with_builtin(name: &str) -> bool {
-    crate::observe::is_builtin_metric_name(name)
+    crate::observe::rendered_name_collides_with_builtin(name)
+}
+
+/// True when `name`'s rendered Prometheus series name collides with an
+/// already-registered user metric's rendered name (under a *different*
+/// canonical name). `foo.bar` and `foo_bar` both render to `foo_bar`; the
+/// second registration would emit a duplicate `# TYPE` block and an aliased
+/// series, so it is rejected. An exact canonical-name match is not a collision
+/// here — that is the idempotent register-or-get path handled by the caller.
+fn rendered_name_collides_with_existing(reg: &RegistryInner, name: &str) -> bool {
+    let rendered = crate::observe::render_prometheus_name(name);
+    reg.name_order.iter().any(|existing| {
+        existing != name && crate::observe::render_prometheus_name(existing) == rendered
+    })
 }
 
 /// Register a counter/gauge/histogram name, or return the existing slot if the
@@ -215,18 +243,28 @@ fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
             NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
+        // A distinct canonical name that renders to the same Prometheus series
+        // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
+        // duplicate `# TYPE` block and an aliased series. Reject it.
+        if rendered_name_collides_with_existing(reg, name) {
+            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
+            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return REGISTER_FAILED;
+        }
         if reg.names.len() >= MAX_NAMES {
             NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
 
         let base_slot = reg.alloc_slot();
-        // A histogram reserves one slot per bucket (cumulative `le` counters)
-        // plus the running sum slot allocated lazily; the count rides
-        // `base_slot`. Allocate the bucket slots contiguously after the base.
+        // A histogram's count rides `base_slot`; the slot immediately after
+        // holds the running observation sum, and one cumulative `le` counter
+        // slot follows per bucket. Allocate them contiguously after the base so
+        // `histogram_record` and the scrape render can address them by offset.
         if kind == MetricKind::Histogram {
+            reg.alloc_slot(); // sum slot at base_slot + 1
             for _ in buckets {
-                reg.alloc_slot();
+                reg.alloc_slot(); // bucket slots at base_slot + 2 + i
             }
         }
         reg.names.insert(
@@ -266,6 +304,14 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
             if existing.kind == kind && existing.label_keys == label_keys {
                 return i64_slot(existing.base_slot);
             }
+            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
+            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return REGISTER_FAILED;
+        }
+        // A distinct canonical name that renders to the same Prometheus series
+        // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
+        // duplicate `# TYPE` block and an aliased series. Reject it.
+        if rendered_name_collides_with_existing(reg, name) {
             COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
             NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
@@ -470,8 +516,9 @@ pub fn gauge_set(handle: i64, n: i64) {
 }
 
 /// Record one histogram observation. `value` is the observed quantity; the
-/// running observation count rides the base slot and each bucket slot
-/// accumulates the cumulative `<= upper_bound` count.
+/// running observation count rides the base slot, the slot after it accumulates
+/// the running sum, and each bucket slot accumulates the cumulative
+/// `<= upper_bound` count.
 pub fn histogram_record(handle: i64, value: i64) {
     let Ok(base_idx) = usize::try_from(handle) else {
         INVALID_OPS.fetch_add(1, Ordering::Relaxed);
@@ -492,9 +539,12 @@ pub fn histogram_record(handle: i64, value: i64) {
         if let Some(count) = reg.slots.get(base_idx) {
             count.fetch_add(1, Ordering::Relaxed);
         }
+        if let Some(sum) = reg.slots.get(base_idx + 1) {
+            sum.fetch_add(value, Ordering::Relaxed);
+        }
         for (i, bound) in buckets.iter().enumerate() {
             if value <= *bound {
-                if let Some(bucket_slot) = reg.slots.get(base_idx + i + 1) {
+                if let Some(bucket_slot) = reg.slots.get(base_idx + 2 + i) {
                     bucket_slot.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -516,8 +566,14 @@ pub struct RenderedMetric {
     /// The label keys, in declaration order.
     pub label_keys: Vec<String>,
     /// One `(label_values, value)` pair per series. Empty `label_values` for
-    /// the base series.
+    /// the base series. For a histogram, the base series value is the running
+    /// observation count.
     pub series: Vec<(Vec<String>, i64)>,
+    /// For a histogram, the running observation sum (the companion to the count
+    /// in `series`). `None` for counters and gauges. Lets the scrape emit a
+    /// valid `name_count` / `name_sum` exposition rather than a bare sample
+    /// under `# TYPE name histogram`, which Prometheus rejects.
+    pub histogram_sum: Option<i64>,
 }
 
 /// Snapshot every user metric for the scrape render. Returns metrics in
@@ -530,7 +586,7 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
             let Some(entry) = reg.names.get(name) else {
                 continue;
             };
-            let prometheus_name = name.replace('.', "_");
+            let prometheus_name = crate::observe::render_prometheus_name(name);
             let mut series = Vec::new();
             if entry.label_keys.is_empty() {
                 let value = reg
@@ -550,12 +606,19 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
                     series.push((split_series_values(canon), value));
                 }
             }
+            // A histogram's sum rides the slot after its count (base_slot + 1).
+            let histogram_sum = (entry.kind == MetricKind::Histogram).then(|| {
+                reg.slots
+                    .get(entry.base_slot + 1)
+                    .map_or(0, |s| s.load(Ordering::Relaxed))
+            });
             out.push(RenderedMetric {
                 prometheus_name,
                 canonical_name: name.clone(),
                 type_token: entry.kind.prometheus_type(),
                 label_keys: entry.label_keys.clone(),
                 series,
+                histogram_sum,
             });
         }
         out
@@ -1005,6 +1068,43 @@ mod tests {
     }
 
     #[test]
+    fn rendered_collision_with_builtin_is_rejected_and_counted() {
+        let _g = guard();
+        // `heap_live_bytes` is a distinct canonical name from the built-in
+        // `heap.live_bytes`, but both render to the same Prometheus series
+        // `heap_live_bytes`. Registering it would shadow the built-in's scrape
+        // output, so the rendered-name check must reject it.
+        let h = register_counter("heap_live_bytes");
+        assert_eq!(
+            h, REGISTER_FAILED,
+            "a name that renders to a built-in's series must be rejected"
+        );
+        assert_eq!(self_metrics().collision_rejected, 1);
+    }
+
+    #[test]
+    fn rendered_collision_between_user_metrics_is_rejected_and_counted() {
+        let _g = guard();
+        // `foo.bar` and `foo_bar` are distinct canonical names that render to
+        // the same `foo_bar` Prometheus series. The first registers; the second
+        // would emit a duplicate `# TYPE` block and alias the first's series, so
+        // it is rejected and counted.
+        let first = register_counter("foo.bar");
+        assert!(first >= 0, "first canonical name registers");
+        let second = register_counter("foo_bar");
+        assert_eq!(
+            second, REGISTER_FAILED,
+            "a second name rendering to an existing series must be rejected"
+        );
+        assert_eq!(self_metrics().collision_rejected, 1);
+        // The exact-name re-register is still the idempotent get, not a
+        // collision: it returns the same slot and does not bump the counter.
+        let again = register_counter("foo.bar");
+        assert_eq!(again, first, "exact re-register is idempotent get");
+        assert_eq!(self_metrics().collision_rejected, 1);
+    }
+
+    #[test]
     fn kind_mismatch_for_same_name_is_collision() {
         let _g = guard();
         let c = register_counter("app.dual");
@@ -1113,6 +1213,32 @@ mod tests {
         assert_eq!(m.type_token, "histogram");
         // base slot holds the total observation count.
         assert_eq!(m.series[0].1, 3, "three observations recorded");
+        // The sum rides the slot after the count: 5 + 50 + 5000 = 5055.
+        assert_eq!(
+            m.histogram_sum,
+            Some(5055),
+            "histogram must track the observation sum"
+        );
+    }
+
+    #[test]
+    fn scalar_histogram_tracks_count_and_sum() {
+        let _g = guard();
+        // The Phase A scalar histogram (no `le` buckets) must still track both
+        // the observation count and the running sum so the scrape can emit a
+        // valid `_count` / `_sum` exposition.
+        let h = register_histogram("app.scalar", &[]);
+        assert!(h >= 0);
+        histogram_record(h, 3);
+        histogram_record(h, 7);
+        let snap = render_snapshot();
+        let m = snap
+            .iter()
+            .find(|m| m.canonical_name == "app.scalar")
+            .unwrap();
+        assert_eq!(m.type_token, "histogram");
+        assert_eq!(m.series[0].1, 2, "two observations recorded");
+        assert_eq!(m.histogram_sum, Some(10), "sum is 3 + 7");
     }
 
     #[test]

@@ -674,14 +674,33 @@ fn observe_series() -> &'static [(&'static str, &'static str)] {
     ]
 }
 
-/// True when `name` is a runtime built-in metric the observe registry owns.
+/// Render a metric name into its Prometheus series name. Prometheus names
+/// cannot contain `.`, so the scrape maps every `.` to `_`. This is the single
+/// source of truth for that mapping: both the scrape render and the registry's
+/// collision check must agree on it, or a user metric whose rendered name
+/// equals a built-in's (`heap.live_bytes` vs `heap_live_bytes`) could slip
+/// past a canonical-name check and corrupt the built-in's scrape output.
+#[must_use]
+pub fn render_prometheus_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// True when `name`'s *rendered* Prometheus series name collides with a runtime
+/// built-in's rendered name.
 ///
 /// The user-metric registry (`crate::metrics`) rejects any registration whose
-/// name collides with a built-in so a user metric cannot shadow runtime
-/// telemetry in the shared scrape output.
+/// rendered name collides with a built-in so a user metric cannot shadow
+/// runtime telemetry in the shared scrape output. The check is on the rendered
+/// form (`.` → `_`) rather than the canonical name because the scrape render is
+/// non-injective: `heap_live_bytes` and `heap.live_bytes` are distinct
+/// canonical names but render to the same series, and the second is the
+/// built-in.
 #[must_use]
-pub fn is_builtin_metric_name(name: &str) -> bool {
-    observe_series().iter().any(|(builtin, _)| *builtin == name)
+pub fn rendered_name_collides_with_builtin(name: &str) -> bool {
+    let rendered = render_prometheus_name(name);
+    observe_series()
+        .iter()
+        .any(|(builtin, _)| render_prometheus_name(builtin) == rendered)
 }
 
 fn prometheus_label_value(value: &str) -> String {
@@ -755,6 +774,23 @@ fn push_user_metric_series(out: &mut String) {
         out.push(' ');
         out.push_str(metric.type_token);
         out.push('\n');
+        if let Some(sum) = metric.histogram_sum {
+            // A histogram must expose `_count` and `_sum` under the base name;
+            // a bare sample under `# TYPE name histogram` is invalid exposition
+            // and drops the sum. The Phase A scalar histogram carries no `le`
+            // buckets, so emit the count and sum lines only. (Bucketed `_bucket`
+            // lines arrive with the bucketed/labelled follow-on.)
+            let count = metric.series.first().map_or(0, |(_, v)| *v);
+            out.push_str(&metric.prometheus_name);
+            out.push_str("_count ");
+            out.push_str(&count.to_string());
+            out.push('\n');
+            out.push_str(&metric.prometheus_name);
+            out.push_str("_sum ");
+            out.push_str(&sum.to_string());
+            out.push('\n');
+            continue;
+        }
         for (label_values, value) in &metric.series {
             out.push_str(&metric.prometheus_name);
             if !metric.label_keys.is_empty() {
@@ -817,7 +853,7 @@ pub fn scrape_text() -> String {
     let mut out = String::new();
     for (name, kind) in observe_series() {
         if let Some(value) = read_u64(name) {
-            let prometheus_name = name.replace('.', "_");
+            let prometheus_name = render_prometheus_name(name);
             out.push_str("# TYPE ");
             out.push_str(&prometheus_name);
             out.push(' ');
@@ -1042,6 +1078,43 @@ mod tests {
         assert!(
             scrape.contains("app_routed{path=\"a\\\"b\"} 1"),
             "label value must be quote-escaped and carry the exact value:\n{scrape}"
+        );
+    }
+
+    #[test]
+    fn scrape_renders_histogram_as_valid_count_and_sum() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        // A scalar histogram with three observations: 5 + 42 + 500 = 547.
+        let durations = crate::metrics::register_histogram("app.request_duration", &[]);
+        assert!(durations >= 0);
+        crate::metrics::histogram_record(durations, 5);
+        crate::metrics::histogram_record(durations, 42);
+        crate::metrics::histogram_record(durations, 500);
+
+        let scrape = scrape_text();
+
+        // Valid Prometheus histogram exposition: a `# TYPE ... histogram` line
+        // followed by `_count` and `_sum` samples under the base name — not a
+        // bare sample, which Prometheus rejects and which drops the sum.
+        assert!(
+            scrape.contains("# TYPE app_request_duration histogram"),
+            "missing histogram TYPE line:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_request_duration_count 3\n"),
+            "histogram must emit an exact _count sample:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_request_duration_sum 547\n"),
+            "histogram must emit an exact _sum sample:\n{scrape}"
+        );
+        // The invalid bare sample (`name <value>` under TYPE histogram) must NOT
+        // appear: every histogram line carries the `_count` / `_sum` suffix.
+        assert!(
+            !scrape.contains("\napp_request_duration 3\n"),
+            "histogram must not emit a bare sample under TYPE histogram:\n{scrape}"
         );
     }
 

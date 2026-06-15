@@ -144,6 +144,18 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    (no user surface yields a ptr-element Vec).
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",
+    // -- Metric families with no Phase-A user surface. `std::metrics`
+    //    exposes only the scalar register/mutate path (counter, gauge,
+    //    and the simple histogram), all covered by the
+    //    `metric_register_record` fixture. The bucketed histogram
+    //    registration and the labelled (vec) families take a raw
+    //    `(ptr, len)` C-array ABI that a Hew `extern "C"` `Vec<T>` cannot
+    //    marshal, so no Phase-A surface lowers to these symbols. They
+    //    leave this list when labelled metrics land in v0.5.3 with a
+    //    `HewVec`-shaped ABI.
+    "hew_metric_histogram_register",
+    "hew_metric_vec_register",
+    "hew_metric_vec_with",
 ];
 
 fn golden_dir() -> PathBuf {

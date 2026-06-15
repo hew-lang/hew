@@ -1,0 +1,7 @@
+// Composed adapters, applied left-to-right: `(0..=10).rev()` is 10 9 .. 0,
+// then `.step_by(3)` takes every third element: 10 7 4 1.
+fn main() {
+    for i in (0 ..= 10).rev().step_by(3) {
+        println(i);
+    }
+}

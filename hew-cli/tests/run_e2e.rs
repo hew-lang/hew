@@ -2005,6 +2005,61 @@ fn for_range_negative_literal_bound_runs_and_returns_correct_value() {
     );
 }
 
+/// Range iterator adapters (`.rev()` / `.step_by(k)`) lower to a strided /
+/// descending `ForRange` and produce the EXACT iteration sequences:
+///   - `(0..5).rev()`              → 4 3 2 1 0
+///   - `(0..10).step_by(2)`        → 0 2 4 6 8
+///   - `(0..=10).rev().step_by(3)` → 10 7 4 1   (composed left-to-right)
+///
+/// Asserting the full stdout (not just an exit code or a count) is the test
+/// with teeth: a mis-ordered, off-by-one, or dropped-stride codegen path
+/// would change the printed sequence.
+#[test]
+fn for_range_rev_and_step_by_print_exact_sequences() {
+    require_codegen();
+
+    let cases: &[(&str, &str)] = &[
+        (
+            "tests/vertical-slice/accept/for_range_rev.hew",
+            "4\n3\n2\n1\n0\n",
+        ),
+        (
+            "tests/vertical-slice/accept/for_range_step_by.hew",
+            "0\n2\n4\n6\n8\n",
+        ),
+        (
+            "tests/vertical-slice/accept/for_range_rev_step_by.hew",
+            "10\n7\n4\n1\n",
+        ),
+    ];
+
+    for (rel, expected_stdout) in cases {
+        let fixture = repo_root().join(rel);
+        assert!(fixture.exists(), "fixture missing: {}", fixture.display());
+
+        let output = Command::new(hew_binary())
+            .arg("run")
+            .arg(&fixture)
+            .current_dir(repo_root())
+            .output()
+            .expect("invoke hew run");
+
+        assert!(
+            output.status.success(),
+            "{rel}: expected clean exit; stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+        assert_eq!(
+            stdout,
+            *expected_stdout,
+            "{rel}: exact iteration sequence mismatch; stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+}
+
 /// Named functions used as first-class values: passed as arguments,
 /// stored in let bindings, and called through a local binding.
 /// Also guards that lambda literals continue to work (regression guard).

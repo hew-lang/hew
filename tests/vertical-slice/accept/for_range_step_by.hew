@@ -1,0 +1,6 @@
+// `(0..10).step_by(2)` strides the half-open range: 0 2 4 6 8.
+fn main() {
+    for i in (0 .. 10).step_by(2) {
+        println(i);
+    }
+}

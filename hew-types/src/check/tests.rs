@@ -151,6 +151,84 @@ fn cancellation_token_has_no_cancel_method() {
 }
 
 #[test]
+fn wire_encode_decode_record_binary_codec_rewrite() {
+    let output = check_source(
+        r"
+        #[wire]
+        struct Point { x: i64 @1, y: i64 @2 }
+
+        fn main() -> i64 {
+            let p = Point { x: 1, y: 2 };
+            let b = p.encode();
+            let p2 = Point.decode(b);
+            return p2.x + p2.y;
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "wire `.encode()` / `.decode()` should type-check: {:#?}",
+        output.errors
+    );
+    let encode_rewrite = output.method_call_rewrites.values().any(|rewrite| {
+        matches!(
+            rewrite,
+            MethodCallRewrite::WireCodec {
+                direction: WireCodecDirection::Encode,
+                ..
+            }
+        )
+    });
+    assert!(
+        encode_rewrite,
+        "`.encode()` must record a WireCodec::Encode rewrite (not MethodCallNoRewrite)"
+    );
+    let decode_rewrite = output.method_call_rewrites.values().any(|rewrite| {
+        matches!(
+            rewrite,
+            MethodCallRewrite::WireCodec {
+                direction: WireCodecDirection::Decode,
+                ..
+            }
+        )
+    });
+    assert!(
+        decode_rewrite,
+        "`Type.decode(bytes)` must record a WireCodec::Decode rewrite (not MethodCallNoRewrite)"
+    );
+}
+
+#[test]
+fn wire_text_format_methods_record_no_codec_rewrite() {
+    // The text-format wire methods (`to_json`/`from_json`/…) are out of scope
+    // for the binary codec lane: no text-format thunk exists, so they must NOT
+    // record a WireCodec rewrite. They stay on the fail-closed path
+    // (MethodCallNoRewrite at HIR lowering), never producing a binary codec.
+    let output = check_source(
+        r"
+        #[wire]
+        struct Point { x: i64 @1, y: i64 @2 }
+
+        fn main() {
+            let p = Point { x: 1, y: 2 };
+            let s = p.to_json();
+        }
+        ",
+    );
+
+    let any_wire_codec = output
+        .method_call_rewrites
+        .values()
+        .any(|rewrite| matches!(rewrite, MethodCallRewrite::WireCodec { .. }));
+    assert!(
+        !any_wire_codec,
+        "text-format `.to_json()` must NOT record a binary WireCodec rewrite; \
+         it stays fail-closed until a text-format serializer lands"
+    );
+}
+
+#[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
         r"

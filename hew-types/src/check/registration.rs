@@ -5217,11 +5217,32 @@ impl Checker {
         Some((required, known))
     }
 
+    /// Resolve a supertrait edge written inside `module_short` to its
+    /// OWNER-QUALIFIED `trait_defs` key. A `trait Sub: Base` declaration spells
+    /// `Base` bare in its source, but under qualified-by-default that names the
+    /// source module's own trait, so the collision-free identity is
+    /// `{module_short}.Base`. Returns that qualified key when the source module
+    /// registered it (the same-package supertrait case, which registration order
+    /// guarantees is present by the time the subtrait is registered); otherwise
+    /// returns the bare name unchanged (a supertrait imported INTO the source
+    /// module from another package is not `{module_short}`-qualified — best
+    /// effort, matching the pre-existing unresolved-reference fallback).
+    fn qualify_super_trait_edge(&self, module_short: &str, super_name: &str) -> String {
+        let qualified = format!("{module_short}.{super_name}");
+        if self.trait_defs.contains_key(&qualified) {
+            qualified
+        } else {
+            super_name.to_string()
+        }
+    }
+
     /// Walk the (transitive) super-trait chain of `trait_key`, inserting every
     /// super-trait's declared method name into `known`. `visited` guards against
-    /// cycles. Super-trait names are resolved against `trait_super` (keyed by the
-    /// same bare/qualified spelling the registration paths author) and their
-    /// methods against `trait_defs`.
+    /// cycles. Super-trait edges are owner-qualified `trait_defs` keys (an
+    /// imported `Sub`'s edge points at `{owner}.Base`, never the importer's bare
+    /// `Base`; a local trait's edge is its bare local key, which is authoritative
+    /// for a local trait), so the recursion resolves each super against its
+    /// defining trait, collision-free.
     fn collect_super_trait_method_names(
         &self,
         trait_key: &str,
@@ -5241,6 +5262,98 @@ impl Checker {
                 }
             }
             self.collect_super_trait_method_names(&super_name, known, visited);
+        }
+    }
+
+    /// The `trait_defs` key for a resolved trait identity: the owner-qualified
+    /// `{owner}.{source}` key when an owner resolved and that key is registered,
+    /// otherwise the identity's SOURCE name (authoritative for a local trait, best
+    /// effort for an unresolved reference). Mirrors the `lookup_key` derivation in
+    /// `trait_required_and_known_methods`. The fallback is the source name — not
+    /// the sub-trait the impl wrote — so a declaring SUPERTRAIT identity reached
+    /// through the super chain keys on the supertrait's own name (`Base`), never
+    /// the sub-trait's (`Sub`).
+    fn trait_defs_key_for_identity(&self, identity: &ResolvedTraitIdentity) -> String {
+        identity
+            .owner
+            .as_ref()
+            .map(|owner| format!("{owner}.{}", identity.source_trait_name))
+            .filter(|q| self.trait_defs.contains_key(q))
+            .unwrap_or_else(|| identity.source_trait_name.clone())
+    }
+
+    /// Resolve which trait DECLARES `method_name` for an `impl <Trait>`: the
+    /// primary trait when it declares the method directly, otherwise the
+    /// supertrait in the OWNER-QUALIFIED super chain that declares it (an impl of
+    /// a sub-trait may provide an inherited supertrait method inline). Returns the
+    /// declaring trait's owner-qualified identity so the caller's signature
+    /// lookup and trait-owner canonicalization key off the SUPERTRAIT's owner —
+    /// not the sub-trait's — when the method is inherited. Without this, an inline
+    /// supermethod is never found on the primary trait and its signature goes
+    /// unchecked (a fail-open: a wrong-signature inherited method is accepted).
+    ///
+    /// `primary_key` is the primary trait's `trait_defs` key (owner-qualified).
+    /// The walk follows `trait_super` (owner-qualified edges) and matches each
+    /// super against its `trait_defs` entry, so a same-name supertrait collision
+    /// resolves through the defining owner, never the importer namespace.
+    fn resolve_declaring_trait_identity(
+        &self,
+        primary_identity: &ResolvedTraitIdentity,
+        primary_key: &str,
+        method_name: &str,
+    ) -> Option<ResolvedTraitIdentity> {
+        if self
+            .trait_defs
+            .get(primary_key)
+            .is_some_and(|info| info.methods.iter().any(|m| m.name == method_name))
+        {
+            return Some(ResolvedTraitIdentity {
+                owner: primary_identity.owner.clone(),
+                source_trait_name: primary_identity.source_trait_name.clone(),
+                is_local: primary_identity.is_local,
+            });
+        }
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut stack: Vec<String> = self
+            .trait_super
+            .get(primary_key)
+            .cloned()
+            .unwrap_or_default();
+        while let Some(super_key) = stack.pop() {
+            if !visited.insert(super_key.clone()) {
+                continue;
+            }
+            let declares = self
+                .trait_defs
+                .get(&super_key)
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == method_name));
+            if declares {
+                return Some(self.identity_from_trait_defs_key(&super_key));
+            }
+            if let Some(supers) = self.trait_super.get(&super_key) {
+                stack.extend(supers.iter().cloned());
+            }
+        }
+        None
+    }
+
+    /// Recover a trait identity from a `trait_defs` key. An owner-qualified
+    /// `{module}.{Trait}` key whose module is in scope yields
+    /// `owner = Some(module)`, `source = Trait`; a bare key yields a local
+    /// identity (`is_local = true`, no owner). Used to re-anchor the signature
+    /// lookup on a declaring SUPERTRAIT reached through the super chain.
+    fn identity_from_trait_defs_key(&self, key: &str) -> ResolvedTraitIdentity {
+        match key.split_once('.') {
+            Some((module, source)) if self.modules.contains(module) => ResolvedTraitIdentity {
+                owner: Some(module.to_string()),
+                source_trait_name: source.to_string(),
+                is_local: false,
+            },
+            _ => ResolvedTraitIdentity {
+                owner: None,
+                source_trait_name: key.to_string(),
+                is_local: true,
+            },
         }
     }
 
@@ -5466,7 +5579,32 @@ impl Checker {
         }
 
         let trait_name = trait_bound.name.clone();
-        let Some(trait_info) = self.trait_defs.get(&trait_name).cloned() else {
+
+        // Resolve the trait as written in the impl (`impl C for X`) to its
+        // OWNER-QUALIFIED identity, uniformly across all three reference kinds
+        // (aliased / imported-bare, local-root shadow, unambiguous single-owner
+        // import). The bare `Trait::method` key is first-write-wins and pollutes
+        // under same-name collisions, so it is NEVER the authority when the
+        // identity resolves to a real owner or a local trait. See
+        // `resolve_trait_conformance_identity`.
+        let primary_identity = self.resolve_trait_conformance_identity(&trait_name);
+        let primary_key = self.trait_defs_key_for_identity(&primary_identity);
+
+        // An `impl Sub for T` (where `trait Sub: Base`) may provide an inherited
+        // SUPERTRAIT method (`base`) inline. Resolve which trait actually DECLARES
+        // this method — the primary trait, or the declaring supertrait reached
+        // through the OWNER-QUALIFIED super chain — and key the signature check
+        // off THAT trait's identity. Skipping inherited methods here is a
+        // fail-open: a wrong-signature inline supermethod would never be compared.
+        let Some(identity) =
+            self.resolve_declaring_trait_identity(&primary_identity, &primary_key, &method.name)
+        else {
+            return;
+        };
+        // The declaring trait's `trait_defs` entry supplies the trait method AST
+        // (its type params, span, and receiver shape) for the comparison below.
+        let declaring_key = self.trait_defs_key_for_identity(&identity);
+        let Some(trait_info) = self.trait_defs.get(&declaring_key).cloned() else {
             return;
         };
         let Some(trait_method) = trait_info
@@ -5477,15 +5615,6 @@ impl Checker {
         else {
             return;
         };
-
-        // Resolve the trait as written in the impl (`impl C for X`) to its
-        // OWNER-QUALIFIED identity, uniformly across all three reference kinds
-        // (aliased / imported-bare, local-root shadow, unambiguous single-owner
-        // import). The bare `Trait::method` key is first-write-wins and pollutes
-        // under same-name collisions, so it is NEVER the authority when the
-        // identity resolves to a real owner or a local trait. See
-        // `resolve_trait_conformance_identity`.
-        let identity = self.resolve_trait_conformance_identity(&trait_name);
 
         // Materialise the trait method's required signature through the resolved
         // identity, collision-free:
@@ -5505,16 +5634,19 @@ impl Checker {
             }
         } else if identity.is_local {
             // A local/root trait resolves its required signature from its own
-            // `trait_defs[trait_name]` entry (last-write-wins → authoritative)
-            // rather than the polluted bare `fn_sigs` key. `lookup_trait_method`
-            // strips the receiver and projects `Self::Bar`, mirroring what
-            // `register_trait_method_sig` would have written.
-            match self.lookup_trait_method(&trait_name, &method.name) {
+            // `trait_defs` entry (last-write-wins → authoritative) rather than the
+            // polluted bare `fn_sigs` key. `lookup_trait_method` strips the
+            // receiver and projects `Self::Bar`, mirroring what
+            // `register_trait_method_sig` would have written. The DECLARING trait
+            // is keyed (`identity.source_trait_name`): for an inline supermethod
+            // of a local sub-trait this is the supertrait that declares it, not
+            // the sub-trait written in the impl.
+            match self.lookup_trait_method(&identity.source_trait_name, &method.name) {
                 Some(sig) => sig,
                 None => return,
             }
         } else {
-            let trait_method_key = format!("{}::{}", trait_name, method.name);
+            let trait_method_key = format!("{}::{}", identity.source_trait_name, method.name);
             let scoped_trait_key =
                 scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
                     .unwrap_or_else(|| trait_method_key.clone());
@@ -5531,8 +5663,16 @@ impl Checker {
 
         // The trait's defining module anchors how a bare type name written in
         // the trait declaration is canonicalized. A local/root trait has no
-        // owner module (`None`), so its bare sibling-type names stay bare.
+        // owner module (`None`), so its bare sibling-type names stay bare. For an
+        // inline supermethod this is the SUPERTRAIT's owner (its declaration's
+        // bare sibling types belong to its module), not the sub-trait's.
         let trait_owner_module: Option<String> = identity.owner.clone();
+
+        // The DECLARING trait's source name drives `Self::Assoc` projection and
+        // associated-type-binding lookup in `substitute_trait_sig_for_impl`. For
+        // an inline supermethod this is the supertrait that declared the assoc
+        // type, not the sub-trait written in the impl.
+        let declaring_trait_name = identity.source_trait_name.clone();
 
         // Build trait-type-param substitution map.
         let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
@@ -5558,7 +5698,7 @@ impl Checker {
                     p,
                     &impl_self,
                     type_name,
-                    &trait_name,
+                    &declaring_trait_name,
                     &trait_param_map,
                 );
                 Self::rename_method_type_params(
@@ -5573,7 +5713,7 @@ impl Checker {
                 &trait_sig.return_type,
                 &impl_self,
                 type_name,
-                &trait_name,
+                &declaring_trait_name,
                 &trait_param_map,
             );
             Self::rename_method_type_params(
@@ -7087,14 +7227,30 @@ impl Checker {
                     let qualified = format!("{module_short}.{}", tr.name);
                     self.trait_defs.insert(qualified.clone(), info.clone());
 
-                    // Record super-trait relationships for both qualified and unqualified
+                    // Record super-trait relationships for both qualified and
+                    // unqualified bindings. A supertrait reference written inside
+                    // the source module (`trait Sub: Base`) is bare in the source
+                    // spelling, but under qualified-by-default it names the source
+                    // module's own `Base` (`{module_short}.Base`). Store the
+                    // OWNER-QUALIFIED identity, exactly as the primary trait is
+                    // registered under `qualified`, so `trait_super` values are
+                    // collision-free `trait_defs` keys. Resolving the bare
+                    // source spelling in the IMPORTER's namespace instead is both
+                    // collision-unsafe (binds whatever `Base` the importer has)
+                    // and over-strict (an import-only-`Sub` would fail to find
+                    // its supertrait's method set, falsely rejecting an inline
+                    // supermethod as extra). A supertrait imported INTO the source
+                    // module from elsewhere is not `{module_short}`-qualified, so
+                    // fall back to the bare name when the qualified key is unknown.
                     if let Some(supers) = &tr.super_traits {
-                        let super_names: Vec<String> =
-                            supers.iter().map(|s| s.name.clone()).collect();
+                        let super_keys: Vec<String> = supers
+                            .iter()
+                            .map(|s| self.qualify_super_trait_edge(module_short, &s.name))
+                            .collect();
                         self.trait_super
-                            .insert(qualified.clone(), super_names.clone());
+                            .insert(qualified.clone(), super_keys.clone());
                         if let Some(binding_name) = import_binding.as_ref() {
-                            self.trait_super.insert(binding_name.clone(), super_names);
+                            self.trait_super.insert(binding_name.clone(), super_keys);
                         }
                     }
 

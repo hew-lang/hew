@@ -1,0 +1,31 @@
+// Accept fixture: a MULTI-LEVEL super chain. `hew::supertraits` declares
+// `Deep: Mid`, `Mid: Base`. An importer brings only `Deep` into scope and
+// provides every inherited method inline (`base` from `Base`, `mid` from `Mid`,
+// `deep` from `Deep`). Each supertrait edge is owner-qualified, so the known set
+// and per-method signature check resolve `base`/`mid` against their declaring
+// owners two levels up — not the importer namespace. Run e2e so every level's
+// method dispatches.
+import hew::supertraits::{ Deep };
+
+type DW {
+    id: i64;
+}
+
+impl Deep for DW {
+    fn base(w: DW) -> i64 {
+        w.id
+    }
+
+    fn mid(w: DW) -> i64 {
+        w.id + 1
+    }
+
+    fn deep(w: DW) -> i64 {
+        w.id + 2
+    }
+}
+
+fn main() {
+    let w = DW { id: 7 };
+    println(f"deep {w.deep()} mid {w.mid()} base {w.base()}");
+}

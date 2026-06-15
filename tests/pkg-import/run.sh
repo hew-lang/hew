@@ -136,6 +136,30 @@ fixtures=(
   # check must fold the whole super-trait chain into the KNOWN set, so the inline
   # super-method is not flagged as extraneous. ACCEPT + run e2e.
   subtrait_inline_supermethod_accept
+  # IMPORTED supertrait, inline supermethod. An importer brings ONLY `Sub` into
+  # scope (`trait Sub: Base` in `hew::supertraits`) and provides the inherited
+  # `base` inline. The supertrait edge is OWNER-QUALIFIED (`supertraits.Base`), so
+  # `base`'s methods are folded into the known set through `Base`'s owner — not
+  # the importer namespace, where `Base` is absent — and the inline `base`'s
+  # signature is checked against `supertraits.Base` (`-> i64`). ACCEPT + run e2e
+  # so the inherited `base` and the sub's own `tag` both dispatch. (Guards the
+  # over-strict "declares method(s) not on the trait: base" rejection of an
+  # import-only sub whose super edge resolved in the wrong namespace.)
+  imported_subtrait_inline_supermethod_accept
+  # IMPORTED multi-level chain (`Deep: Mid`, `Mid: Base`). An import-only `Deep`
+  # provides every inherited method inline; each owner-qualified super edge
+  # resolves the method set + signatures two levels up. ACCEPT + run e2e.
+  imported_deep_chain_inline_supermethods_accept
+  # IMPORTED diamond (`Diamond: Left + Right`, both `Left`/`Right: Base`). An
+  # import-only `Diamond` provides the doubly-inherited `base` ONCE plus both
+  # branch methods and the apex; the owner-qualified super walk dedups the two
+  # branch paths so the single inline `base` is KNOWN. ACCEPT + run e2e.
+  imported_diamond_inline_supermethods_accept
+  # ALIASED imported sub-trait (`Sub as S`) provides the inherited `base` inline.
+  # The alias resolves to its SOURCE identity (`supertraits.Sub`), whose
+  # owner-qualified super edge anchors `base` at `supertraits.Base`; the inline
+  # `base`'s signature is checked through the alias. ACCEPT + run e2e.
+  aliased_subtrait_inline_supermethod_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -352,6 +376,78 @@ assert_method_set_reject trait_impl_missing_method_bare_reject "is missing requi
 assert_method_set_reject trait_impl_missing_method_local_reject "is missing required method(s): close"
 # Extra method not declared on the trait, under a same-name collision.
 assert_method_set_reject trait_impl_extra_method_reject "declares method(s) not on the trait: extra"
+
+# --- Imported-supertrait inline-supermethod reject fixtures ------------------
+# An `impl <Sub> for T` may provide an inherited supertrait method inline. The
+# method's SIGNATURE must be checked against the supertrait that DECLARES it,
+# resolved through the OWNER-QUALIFIED super chain (`trait Sub: Base` names the
+# sub's owner's `Base`, never the importer namespace's). The rev7 method-set
+# check permitted the inline super method but never checked its signature — a
+# fail-open this closes. Each fixture must REJECT with the signature-mismatch
+# diagnostic and NOT fall through to a codegen-front / D10 gate.
+assert_super_sig_reject() { # <fixture>
+  local fixture="$1" out
+  out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+    echo "FAIL ${fixture}: hew check unexpectedly succeeded (inline super wrong-sig slipped the gate)" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  if ! grep -qE "TraitImplSignatureMismatch|but trait .* requires" <<<"${out}"; then
+    echo "FAIL ${fixture}: expected a TraitImplSignatureMismatch diagnostic on the inline super method" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${out}"; then
+    echo "FAIL ${fixture}: inline super wrong-sig fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
+# LOCAL super (`Sub: Super`), inline `base -> bool` vs `Super::base -> i64`. The
+# same fail-open applies to local traits — the declaring-trait fallback keys on
+# the supertrait's source name, not the sub-trait written in the impl.
+assert_super_sig_reject subtrait_inline_super_wrong_sig_reject
+# Direct imported super (`Sub: Base`), inline `base -> bool` vs `Base::base -> i64`.
+assert_super_sig_reject imported_subtrait_inline_super_wrong_sig_reject
+# Same-name supertrait collision: `Sub` from `hew::supertraits` (i64 `Base`), a
+# different bare `Base` from `hew::supertraitsb` (bool); inline `base -> bool`
+# must check against the OWNER-qualified `supertraits.Base` (i64), not the
+# importer-namespace `supertraitsb.Base`. Run the collision case 10x below for
+# determinism; this single run asserts the diagnostic shape.
+assert_super_sig_reject supertrait_collision_inline_wrong_sig_reject
+# Wrong-sig at an INTERMEDIATE level of a multi-level chain (`Deep: Mid: Base`):
+# inline `mid -> bool` vs `Mid::mid -> i64`.
+assert_super_sig_reject imported_deep_chain_inline_super_wrong_sig_reject
+# Wrong-sig on a DIAMOND-inherited method (`base` reachable via two branches).
+assert_super_sig_reject imported_diamond_inline_super_wrong_sig_reject
+# Wrong-sig inline super reached through an ALIASED sub-trait (`Sub as S`).
+assert_super_sig_reject aliased_subtrait_inline_super_wrong_sig_reject
+
+# Extra method on NEITHER the imported sub nor its owner-qualified super chain.
+assert_method_set_reject imported_subtrait_extra_method_reject "declares method(s) not on the trait: nope"
+# Missing the imported sub's OWN required method (`tag`) while providing the
+# inherited `base` — the sub's required set is unchanged by the super-edge fix.
+assert_method_set_reject imported_subtrait_missing_own_method_reject "is missing required method(s): tag"
+
+# Determinism: the same-name supertrait collision must REJECT on every run
+# regardless of module-registration order. A bare super edge would bind whichever
+# `Base` the importer registered, making the verdict order-dependent; the
+# owner-qualified edge is stable. Run the collision reject 10x.
+for i in $(seq 1 10); do
+  det_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/supertrait_collision_inline_wrong_sig_reject.hew" 2>&1)" && {
+    echo "FAIL supertrait_collision_inline_wrong_sig_reject (run ${i}): unexpectedly succeeded" >&2
+    echo "${det_out}" >&2
+    exit 1
+  }
+  if ! grep -qE "but trait .* requires" <<<"${det_out}"; then
+    echo "FAIL supertrait_collision_inline_wrong_sig_reject (run ${i}): missing the signature-mismatch diagnostic" >&2
+    echo "${det_out}" >&2
+    exit 1
+  fi
+done
+echo "PASS supertrait_collision_inline_wrong_sig_reject (10x determinism)"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
 # modules is a genuine ambiguity. The checker must fail closed with `ambiguous

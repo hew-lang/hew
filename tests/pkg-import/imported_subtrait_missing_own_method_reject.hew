@@ -1,0 +1,22 @@
+// Reject fixture: an import-only `Sub` impl provides the inherited super method
+// `base` but OMITS `Sub`'s own required method `tag`. A supertrait's required
+// methods are not folded into the sub's `required` set (they are satisfied by a
+// separate `impl Base` or at the bound site), but the SUB's own required methods
+// still are — so omitting `tag` must REJECT with the "missing required method(s)"
+// diagnostic. Guards against the super-edge change relaxing the sub's own
+// required set.
+import hew::supertraits::{ Sub };
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

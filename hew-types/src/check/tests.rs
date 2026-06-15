@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::check::registration::StdlibBarePublication;
 use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
 use crate::module_registry::ModuleRegistry;
 use crate::BuiltinType;
@@ -7757,6 +7758,94 @@ fn glob_import_type_publishes_bare_binding() {
             .unqualified_to_module
             .contains_key(&(None, "Reply".to_string())),
         "glob import must publish the importer-scope bare binding for `Reply`"
+    );
+}
+
+// -- Finding 2: stdlib Hew-source imports obey the same bare-publication gate --
+//
+// A C-backed stdlib module that also ships Hew source registers through
+// `register_stdlib_hew_items`. A plain `import std::…` must NOT expose its
+// types bare (so `Server` is reached only as `websocket.Server`), exactly like
+// a user-package import; a named opt-in publishes the bare binding; and the
+// compiled-in `Prelude` bootstrap surfaces (always-in-scope) keep publishing
+// bare unconditionally. The qualified alias + module export are always
+// recorded so the qualified spelling and the use-time "exported by module X"
+// diagnostic work regardless of the gate.
+
+/// A plain stdlib import (`Import(&None)`) registers the qualified authority
+/// but does NOT publish the bare binding — closing the asymmetry where stdlib
+/// types slipped past the qualified-by-default gate.
+#[test]
+fn stdlib_plain_import_does_not_publish_bare_type() {
+    let server = make_pub_struct("Server", "fd");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("websocket".to_string());
+    checker.register_stdlib_hew_items(
+        "websocket",
+        &[(Item::TypeDecl(server), 0..0)],
+        StdlibBarePublication::Import(&None),
+    );
+
+    assert!(
+        checker.type_defs.contains_key("websocket.Server"),
+        "plain stdlib import must register the qualified type `websocket.Server`"
+    );
+    assert!(
+        checker
+            .module_type_exports
+            .get("websocket")
+            .is_some_and(|s| s.contains("Server")),
+        "plain stdlib import must record the module export so the use-time gate names it"
+    );
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Server".to_string())),
+        "plain stdlib import must NOT publish bare `Server` (qualified-by-default)"
+    );
+}
+
+/// A named stdlib opt-in (`Import(&Some(Names))`) publishes the bare binding.
+#[test]
+fn stdlib_named_import_publishes_bare_type() {
+    let server = make_pub_struct("Server", "fd");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("websocket".to_string());
+    checker.register_stdlib_hew_items(
+        "websocket",
+        &[(Item::TypeDecl(server), 0..0)],
+        StdlibBarePublication::Import(&Some(ImportSpec::Names(vec![ImportName {
+            name: "Server".to_string(),
+            alias: None,
+        }]))),
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Server".to_string())),
+        "named stdlib opt-in must publish bare `Server`"
+    );
+}
+
+/// A compiled-in `Prelude` bootstrap surface publishes its bare binding
+/// unconditionally — these are always-in-scope and have no user import.
+#[test]
+fn stdlib_prelude_publishes_bare_type() {
+    let close_error = make_pub_struct("CloseError", "code");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("closable".to_string());
+    checker.register_stdlib_hew_items(
+        "closable",
+        &[(Item::TypeDecl(close_error), 0..0)],
+        StdlibBarePublication::Prelude,
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "CloseError".to_string())),
+        "prelude bootstrap surface must publish bare `CloseError` unconditionally"
     );
 }
 

@@ -5,6 +5,43 @@
 use super::*;
 use crate::BuiltinType;
 
+/// Whether a stdlib Hew-source registration publishes its types' bare names
+/// into the importer's scope, passed to `register_stdlib_hew_items`.
+///
+/// `Prelude` is the compiled-in bootstrap path (`builtins`, `closable`,
+/// `link_monitor`, the receiver-impl surfaces, …): these are genuine
+/// always-in-scope prelude surfaces with no user `import` statement, so their
+/// bare names are published unconditionally.
+///
+/// `Import(spec)` is a real `import std::…` of a C-backed stdlib module that
+/// also ships Hew source. It obeys the same qualified-by-default gate as a
+/// user-package import: a plain `import` (spec `None`) publishes only the
+/// qualified name, and a named/glob/aliased import publishes the bare (or
+/// aliased) binding. This closes the asymmetry where a plain stdlib import
+/// exposed `Server` bare while the equivalent user-package import rejected it.
+#[derive(Clone, Copy)]
+pub(super) enum StdlibBarePublication<'a> {
+    Prelude,
+    Import(&'a Option<ImportSpec>),
+}
+
+impl StdlibBarePublication<'_> {
+    /// The bare binding name to publish for `name`, or `None` if this
+    /// registration does not publish it unqualified. `Prelude` always
+    /// publishes the bare name as-is; `Import(spec)` publishes only when the
+    /// spec opts the name in (named/glob/aliased), applying any alias — the
+    /// same gate `register_user_module` uses via `should_import_name` /
+    /// `resolve_import_name`.
+    fn bare_binding(self, name: &str) -> Option<String> {
+        match self {
+            Self::Prelude => Some(name.to_string()),
+            Self::Import(spec) => Checker::should_import_name(name, spec).then(|| {
+                Checker::resolve_import_name(spec, name).unwrap_or_else(|| name.to_string())
+            }),
+        }
+    }
+}
+
 /// Context for canonicalizing trait-vs-impl signature types to a single
 /// defining-module-qualified identity before comparison
 /// (`check_impl_method_against_trait`). Carries only borrowed predicates so the
@@ -914,7 +951,7 @@ impl Checker {
         // as the qualified-key prefix on per-method `td.methods` insertions
         // (none of which fire for primitive targets that lack a
         // `type_defs` entry).
-        self.register_stdlib_hew_items("builtins", &impl_items);
+        self.register_stdlib_hew_items("builtins", &impl_items, StdlibBarePublication::Prelude);
         self.register_compiled_stdlib_receiver_impls(
             "string",
             include_str!("../../../std/string.hew"),
@@ -967,7 +1004,11 @@ impl Checker {
             })
             .collect();
         if !impl_items.is_empty() {
-            self.register_stdlib_hew_items(module_short, &impl_items);
+            self.register_stdlib_hew_items(
+                module_short,
+                &impl_items,
+                StdlibBarePublication::Prelude,
+            );
         }
     }
 
@@ -986,7 +1027,7 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("closable", &items);
+            self.register_stdlib_hew_items("closable", &items, StdlibBarePublication::Prelude);
         }
     }
 
@@ -1008,7 +1049,7 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("link_monitor", &items);
+            self.register_stdlib_hew_items("link_monitor", &items, StdlibBarePublication::Prelude);
             self.consume_receiver_methods
                 .insert("MonitorRef::close".to_string());
             self.registry.register_drop_type("MonitorRef".to_string());
@@ -1035,7 +1076,7 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("failure", &items);
+            self.register_stdlib_hew_items("failure", &items, StdlibBarePublication::Prelude);
         }
     }
 
@@ -1057,7 +1098,7 @@ impl Checker {
         );
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
-            self.register_stdlib_hew_items("lookup_error", &items);
+            self.register_stdlib_hew_items("lookup_error", &items, StdlibBarePublication::Prelude);
         }
     }
 
@@ -5837,7 +5878,11 @@ impl Checker {
                     // alongside their C/Rust bindings so trait methods stay visible.
                     if let Some(ref resolved_items) = decl.resolved_items {
                         if !self.stdlib_hew_source_already_registered(decl, &module_path) {
-                            self.register_stdlib_hew_items(&short, resolved_items);
+                            self.register_stdlib_hew_items(
+                                &short,
+                                resolved_items,
+                                StdlibBarePublication::Import(&decl.spec),
+                            );
                         }
                     }
 
@@ -5864,7 +5909,11 @@ impl Checker {
                             );
                             if parsed.errors.is_empty() {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
-                                self.register_stdlib_hew_items(&short, &items);
+                                self.register_stdlib_hew_items(
+                                    &short,
+                                    &items,
+                                    StdlibBarePublication::Prelude,
+                                );
                             }
                         }
                     }
@@ -5886,7 +5935,11 @@ impl Checker {
                             );
                             if parsed.errors.is_empty() {
                                 let items: Vec<_> = parsed.program.items.into_iter().collect();
-                                self.register_stdlib_hew_items(&short, &items);
+                                self.register_stdlib_hew_items(
+                                    &short,
+                                    &items,
+                                    StdlibBarePublication::Prelude,
+                                );
                             }
                         }
                     }
@@ -6034,6 +6087,7 @@ impl Checker {
         &mut self,
         module_short: &str,
         items: &[Spanned<Item>],
+        import_spec: StdlibBarePublication<'_>,
     ) {
         // Temporarily scope local_type_defs so that locally_non_generic in
         // resolve_type_expr suppresses fresh-var injection for opaque handle
@@ -6073,14 +6127,22 @@ impl Checker {
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
-                    // This compiled-in bootstrap path publishes the bare name
-                    // unconditionally (these builtin surfaces are always in
-                    // scope). Record the importer binding so the qualified-by-
-                    // default use-time gate treats the bare name as published.
-                    self.unqualified_to_module.insert(
-                        (self.current_module.clone(), td.name.clone()),
-                        module_short.to_string(),
-                    );
+                    // Qualified authority is always published, mirroring the
+                    // user-module path: the qualified alias and the module-export
+                    // record that drives the use-time gate's "exported by module
+                    // X" diagnostic and ambiguity candidate naming.
+                    self.register_qualified_type_alias(module_short, &td.name);
+                    self.record_module_type_export(module_short, &td.name);
+                    // The importer-scope bare binding obeys the qualified-by-
+                    // default gate: `Prelude` (compiled-in bootstrap surfaces)
+                    // always publishes bare; a real `import` publishes bare only
+                    // on a named/glob/aliased opt-in, exactly like a user module.
+                    if let Some(binding) = import_spec.bare_binding(&td.name) {
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding),
+                            module_short.to_string(),
+                        );
+                    }
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
@@ -6097,14 +6159,25 @@ impl Checker {
                     self.register_machine_decl(md, span);
                     self.known_types.insert(md.name.clone());
                     self.known_types.insert(event_name.clone());
-                    self.unqualified_to_module.insert(
-                        (self.current_module.clone(), md.name.clone()),
-                        module_short.to_string(),
-                    );
-                    self.unqualified_to_module.insert(
-                        (self.current_module.clone(), event_name),
-                        module_short.to_string(),
-                    );
+                    self.register_qualified_type_alias(module_short, &md.name);
+                    self.register_qualified_type_alias(module_short, &event_name);
+                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, &event_name);
+                    // Bare publication of the machine and its companion event
+                    // enum is gated together so a named/glob import exposes both
+                    // or neither; `Prelude` publishes both unconditionally.
+                    if let Some(binding) = import_spec.bare_binding(&md.name) {
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding),
+                            module_short.to_string(),
+                        );
+                    }
+                    if let Some(binding) = import_spec.bare_binding(&event_name) {
+                        self.unqualified_to_module.insert(
+                            (self.current_module.clone(), binding),
+                            module_short.to_string(),
+                        );
+                    }
                 }
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {

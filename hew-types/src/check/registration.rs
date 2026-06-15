@@ -5518,10 +5518,30 @@ impl Checker {
 
         let provided: HashSet<&str> = impl_methods.iter().map(|m| m.name.as_str()).collect();
 
-        // Missing: a required (bodyless) trait method the impl never provided.
+        // INHERITED method names: every method declared by a (transitively
+        // reachable) SUPERTRAIT of this trait. A sub-trait may REDECLARE its
+        // supertrait's methods (`trait Sub: Base { fn base(self); ... }`), which
+        // makes them bodyless-required on `Sub` even though they belong to
+        // `Base`. Such an inherited requirement is satisfied by a SEPARATE
+        // `impl Base for T` block (not the `impl Sub for T` block), exactly as a
+        // non-redeclared inherited method is — supertrait conformance is resolved
+        // lazily at the call site (`no method X on T` if no impl supplies it),
+        // never eagerly forced onto the sub-trait's own impl block. Dropping an
+        // inherited method from `missing` here keeps redeclared and non-redeclared
+        // inherited methods behaving identically; the per-method signature check
+        // (`resolve_declaring_trait_identity`) still validates any inline copy.
+        let lookup_key = self.trait_defs_key_for_identity(&identity);
+        let mut inherited: HashSet<String> = HashSet::new();
+        let mut inherited_visited: HashSet<String> = HashSet::new();
+        self.collect_super_trait_method_names(&lookup_key, &mut inherited, &mut inherited_visited);
+
+        // Missing: a required (bodyless) trait method the impl never provided AND
+        // that is not inherited from a supertrait (the supertrait's own impl
+        // block carries that obligation).
         let mut missing: Vec<String> = required
             .iter()
             .filter(|name| !provided.contains(name.as_str()))
+            .filter(|name| !inherited.contains(name.as_str()))
             .cloned()
             .collect();
         missing.sort_unstable();

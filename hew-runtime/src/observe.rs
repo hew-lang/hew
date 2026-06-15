@@ -743,6 +743,75 @@ fn push_attributed_turn_series(out: &mut String) {
     }
 }
 
+/// Append the developer-defined metrics (`std::metrics`) to the scrape, in
+/// Prometheus text form, alongside the runtime built-ins. Metric names already
+/// have dots mapped to underscores by the registry snapshot; label values are
+/// escaped through [`prometheus_label_value`] so a value carrying `"`, `\`, or
+/// a newline cannot break the line format.
+fn push_user_metric_series(out: &mut String) {
+    for metric in crate::metrics::render_snapshot() {
+        out.push_str("# TYPE ");
+        out.push_str(&metric.prometheus_name);
+        out.push(' ');
+        out.push_str(metric.type_token);
+        out.push('\n');
+        for (label_values, value) in &metric.series {
+            out.push_str(&metric.prometheus_name);
+            if !metric.label_keys.is_empty() {
+                out.push('{');
+                for (i, (key, val)) in metric
+                    .label_keys
+                    .iter()
+                    .zip(label_values.iter())
+                    .enumerate()
+                {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(key);
+                    out.push_str("=\"");
+                    out.push_str(&prometheus_label_value(val));
+                    out.push('"');
+                }
+                out.push('}');
+            }
+            out.push(' ');
+            out.push_str(&value.to_string());
+            out.push('\n');
+        }
+    }
+    push_user_metric_self_series(out);
+}
+
+/// Append the registry self-metrics — the fail-closed drop/reject counters — so
+/// a user discovers dropped data by reading the same scrape.
+fn push_user_metric_self_series(out: &mut String) {
+    let self_metrics = crate::metrics::self_metrics();
+    for (name, value) in [
+        (
+            "hew_metrics_names_dropped_total",
+            self_metrics.names_dropped,
+        ),
+        (
+            "hew_metrics_series_dropped_total",
+            self_metrics.series_dropped,
+        ),
+        ("hew_metrics_invalid_ops_total", self_metrics.invalid_ops),
+        (
+            "hew_metrics_collision_rejected_total",
+            self_metrics.collision_rejected,
+        ),
+    ] {
+        out.push_str("# TYPE ");
+        out.push_str(name);
+        out.push_str(" counter\n");
+        out.push_str(name);
+        out.push(' ');
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+}
+
 #[must_use]
 pub fn scrape_text() -> String {
     let mut out = String::new();
@@ -761,6 +830,7 @@ pub fn scrape_text() -> String {
         }
     }
     push_attributed_turn_series(&mut out);
+    push_user_metric_series(&mut out);
     out
 }
 
@@ -773,6 +843,16 @@ pub fn series_text() -> String {
     }
     out.push_str("actors.attributed_turns_by_handler_total\n");
     out.push_str("actors.attributed_turn_duration_ns_by_handler_total\n");
+    // Developer-defined metrics (`std::metrics`), by canonical name, plus the
+    // registry self-metrics — the same names the scrape renders.
+    for metric in crate::metrics::render_snapshot() {
+        out.push_str(&metric.canonical_name);
+        out.push('\n');
+    }
+    out.push_str("hew_metrics_names_dropped_total\n");
+    out.push_str("hew_metrics_series_dropped_total\n");
+    out.push_str("hew_metrics_invalid_ops_total\n");
+    out.push_str("hew_metrics_collision_rejected_total\n");
     out
 }
 
@@ -901,6 +981,68 @@ mod tests {
         let scrape = scrape_text();
         assert!(scrape.contains("heap_live_bytes"));
         assert!(scrape.contains("scheduler_queue_depth"));
+    }
+
+    #[test]
+    fn scrape_renders_user_metrics_with_exact_values() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        // A developer counter incremented five times, then a labelled gauge.
+        let requests = crate::metrics::register_counter("app.requests");
+        assert!(requests >= 0);
+        for _ in 0..5 {
+            crate::metrics::inc(requests);
+        }
+
+        let scrape = scrape_text();
+
+        // The user counter renders with its exact value, dots → underscores,
+        // and the correct # TYPE line — not `> 0`, the exact emitted bytes.
+        assert!(
+            scrape.contains("# TYPE app_requests counter"),
+            "missing user-counter TYPE line:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("\napp_requests 5\n") || scrape.starts_with("app_requests 5\n"),
+            "user counter must render the exact value `app_requests 5`:\n{scrape}"
+        );
+
+        // The registry self-metrics are present so a user can discover drops.
+        assert!(scrape.contains("# TYPE hew_metrics_names_dropped_total counter"));
+
+        // A built-in metric name is not corrupted by appending user metrics.
+        assert!(scrape.contains("# TYPE heap_live_bytes gauge"));
+        assert!(scrape.contains("scheduler_queue_depth"));
+
+        // series() lists the canonical user-metric name alongside built-ins.
+        let series = series_text();
+        assert!(series.contains("\napp.requests\n") || series.contains("app.requests\n"));
+        assert!(series.contains("heap.live_bytes"));
+    }
+
+    #[test]
+    fn scrape_escapes_user_label_values() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        let base = crate::metrics::register_labelled(
+            "app.routed",
+            crate::metrics::MetricKind::Counter,
+            &["path".to_string()],
+        );
+        assert!(base >= 0);
+        // A label value carrying a quote must be escaped so the line stays
+        // well-formed Prometheus text.
+        let series = crate::metrics::resolve_series(base, &["a\"b".to_string()]);
+        assert!(series >= 0);
+        crate::metrics::inc(series);
+
+        let scrape = scrape_text();
+        assert!(
+            scrape.contains("app_routed{path=\"a\\\"b\"} 1"),
+            "label value must be quote-escaped and carry the exact value:\n{scrape}"
+        );
     }
 
     unsafe extern "C-unwind" fn fake_dispatch(

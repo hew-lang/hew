@@ -66,6 +66,53 @@
 //!   promised, made real: the one tombstoned handle is process-static (not even
 //!   a heap leak), matching the single-runtime singleton.
 //!
+//! # Concurrency at the 0↔1 boundary (the revival/teardown serialization)
+//!
+//! M1 documents host-thread concurrency: multiple host threads may call
+//! `new`/`retain`/`release`/`shutdown` on the singleton at once, even without
+//! unbalanced retain/release. The refcount alone is **not** enough to make the
+//! lifecycle race-safe, because the count dropping to zero and the teardown it
+//! triggers are not one atomic step: `run_runtime_teardown` ends by
+//! `take_default`-ing and dropping the installed runtime, and until that final
+//! drop the runtime is *still installed*. A `new` that observed count 0 in that
+//! window would clear the tombstone, find `hew_sched_init` a CAS no-op (the old
+//! runtime is still in the slot), and be handed a runtime another thread is in
+//! the middle of tearing down — and a `release` that drove the count back to 0
+//! in that window could run a *second* concurrent teardown.
+//!
+//! The fix serializes every init/teardown transition under [`LIFECYCLE`] so a
+//! teardown and an init can never interleave:
+//!
+//! - **Every `new`** runs its owner-take + `hew_sched_init` (re-)install — and,
+//!   if it is the reviver, its `shut`-clear — under `LIFECYCLE`. `new` is a host
+//!   *lifecycle* call, invoked a handful of times per process by an embedder
+//!   (not a per-message hot path), so the lock is free in practice; in return it
+//!   guarantees no `new` installs a runtime concurrently with a teardown
+//!   detaching one, and no two `new`s race the install.
+//! - **The last release** (the thread that drove the count 1→0) runs the whole
+//!   teardown — through the final `take_default`/drop — while holding
+//!   `LIFECYCLE`. Because the 1→0 decrement and the teardown decision are not
+//!   one atomic step, the teardown **re-reads the count under the lock** and
+//!   aborts if a reviver reappeared (count back to non-zero): tearing down then
+//!   would pull the runtime out from under that new owner. If still zero, it is
+//!   the genuine last release and tears down.
+//!
+//! Whichever of a reviving `new` and a last-release teardown takes `LIFECYCLE`
+//! first runs to completion before the other observes the slot. If teardown
+//! wins, it empties the slot (`take_default`) before the reviver's
+//! `hew_sched_init` installs a *fresh* runtime — never aliasing the torn-down
+//! one; the reviver also re-clears `shut`, so its set's last release tears the
+//! re-inited runtime down once. If the reviver wins, the runtime stays live
+//! (count non-zero) and the teardown's under-lock re-read aborts. A second
+//! concurrent teardown cannot run: a boundary-crossing `release` would have to
+//! observe its own 1→0 CAS, but the count is pinned at 0 until a `new` revives
+//! it, so a redundant release short-circuits at `cur == 0`.
+//!
+//! [`hew_runtime_retain`] stays lock-free (a pure increment that never installs
+//! or tears down). `LIFECYCLE` is acquired before any scheduler-internal lock on
+//! every path (init and teardown alike), so the ordering is consistent and
+//! deadlock-free, and neither init nor teardown re-enters the handle ABI.
+//!
 //! A leak detector running green is non-evidence that the runtime was released
 //! (a thread-backed handle leak is invisible to it); the honest oracle is the
 //! `RUNTIME_INNER_DROPS` drop-count under a known release sequence (see
@@ -74,6 +121,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 /// Opaque host handle to a Hew runtime. The host holds `*mut HewRuntime` and
 /// never inspects the fields.
@@ -119,6 +167,37 @@ impl HewRuntime {
 /// over-release a safe no-op rather than a use-after-free.
 static DEFAULT_HANDLE: HewRuntime = HewRuntime::new_singleton();
 
+/// Serializes the singleton's runtime init and teardown so the two can never
+/// interleave.
+///
+/// Held by **every `hew_runtime_new`** across its owner-take + `hew_sched_init`
+/// (re-)install (and, for the reviver, its `shut`-clear), by the **last
+/// release** across its whole teardown (`teardown_once` → `take_default`/drop),
+/// and by an explicit `hew_runtime_shutdown` across its teardown. Because every
+/// install and every teardown take this one lock, a `new` can neither install a
+/// runtime concurrently with a teardown detaching one nor race another `new`'s
+/// install, and a teardown re-reads the owner count under the lock so a reviver
+/// that reappeared aborts the teardown. [`hew_runtime_retain`] is exempt: it is
+/// a pure increment that never installs or tears down.
+///
+/// Always acquired *before* any scheduler-internal lock (init and teardown
+/// alike), so the ordering is consistent and deadlock-free; neither init nor
+/// teardown re-enters the handle ABI under the lock.
+///
+/// A poisoned lock (a panic inside a teardown or re-init while held) is
+/// recovered with `into_inner`: the lifecycle must keep serializing across a
+/// panic rather than wedge every later `new`/`release`, matching how the
+/// runtime's other process-lifecycle locks treat poison.
+static LIFECYCLE: Mutex<()> = Mutex::new(());
+
+/// Acquire [`LIFECYCLE`], recovering from poison. A panic in a prior critical
+/// section must not wedge the lifecycle for the rest of the process.
+fn lifecycle_lock() -> std::sync::MutexGuard<'static, ()> {
+    LIFECYCLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The stable `*mut HewRuntime` the host sees. Casting `&'static` to `*mut` is
 /// sound here: the host never writes through the pointer (the fields it cares
 /// about are the interior atomics, which are mutated through shared `&` via
@@ -137,8 +216,14 @@ fn default_handle_ptr() -> *mut HewRuntime {
 ///
 /// # Safety
 ///
-/// `handle` must be a valid `*mut HewRuntime` returned by [`hew_runtime_new`]
-/// and not yet freed.
+/// `handle` must be a valid `*mut HewRuntime` returned by [`hew_runtime_new`].
+/// The handle is the process-static singleton and is never freed, so it stays
+/// valid to pass after a prior teardown (where this is a no-op).
+///
+/// Callers that drive a 0↔1 boundary transition (the last release, an explicit
+/// `shutdown`, a reviving `new`) must hold [`LIFECYCLE`] so the teardown body —
+/// which ends by `take_default`-ing and dropping the installed runtime — cannot
+/// run concurrently with a revival re-installing it.
 unsafe fn teardown_once(handle: *mut HewRuntime) {
     // SAFETY: caller guarantees `handle` is a live handle.
     let h = unsafe { &*handle };
@@ -169,10 +254,29 @@ fn run_runtime_teardown() {
 /// Test-only teardown: record the invocation instead of tearing down the
 /// shared default runtime the test guard owns. The real ordering is covered by
 /// the existing `hew_runtime_cleanup` lifecycle tests; here we only need to
-/// prove the handle drives teardown exactly once.
+/// prove the handle drives teardown exactly once — and, for the concurrency
+/// tests, that the [`LIFECYCLE`] lock makes the teardown body mutually exclusive
+/// with a concurrent revive/teardown.
+///
+/// The `IN_TEARDOWN` gauge detects a second teardown body running concurrently:
+/// it is incremented on entry and the entry asserts the previous value was zero,
+/// then decremented on exit. With the lock held across the real teardown the
+/// gauge never exceeds one; without it, an overlapping teardown trips the assert.
+///
+/// `teardown_hook` lets a test hold a teardown body open at a chosen point so it
+/// can deterministically drive a concurrent revive+release while this body is
+/// still in flight (see `teardown_lock_blocks_concurrent_revive_teardown`),
+/// rather than relying on a probabilistic spin window.
 #[cfg(test)]
 fn run_runtime_teardown() {
+    let overlap = tests::IN_TEARDOWN.fetch_add(1, Ordering::SeqCst);
+    assert_eq!(
+        overlap, 0,
+        "two teardown bodies ran concurrently — the 0↔1 boundary lock failed"
+    );
+    tests::run_teardown_hook();
     tests::TEARDOWN_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+    tests::IN_TEARDOWN.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// Initialise the Hew runtime and return an owning host handle.
@@ -198,20 +302,36 @@ fn run_runtime_teardown() {
 pub extern "C" fn hew_runtime_new() -> *mut HewRuntime {
     // SAFETY: the static is always live; `addr_of!` yields a valid pointer.
     let h = &DEFAULT_HANDLE;
-    // Take this owner's reference first. If we are the owner that revives a
-    // torn-down runtime (transition 0→1), clear the tombstone so the next
-    // teardown can run, and only then (re-)install the default runtime. Ordering
-    // matters: clearing `shut` before `hew_sched_init` means a concurrent
-    // `shutdown`/`release` from a *previous* owner set cannot observe a half
-    // state — by the time a new owner exists the count is already non-zero.
+    // The whole owner-take + (re-)init runs under LIFECYCLE so it serializes
+    // against a last-release teardown and against any other `new`. `new` is a
+    // host *lifecycle* call (invoked a handful of times per process by an
+    // embedder), not a per-message hot path, so a lock here is free in practice
+    // — and it is what makes init fully race-safe:
+    //
+    // - A reviver (the owner whose increment is 0→1) and a last-release teardown
+    //   cannot interleave: whichever takes the lock first runs to completion
+    //   before the other sees the slot. If teardown wins, it empties the slot
+    //   (`take_default`) before the reviver's `hew_sched_init` installs a fresh
+    //   runtime; if the reviver wins, it keeps the runtime live (count back to
+    //   non-zero) and the last-release re-reads the count under the lock and
+    //   aborts its teardown (see `hew_runtime_release`).
+    // - A non-reviver (increment from a non-zero count) does NOT independently
+    //   install: holding the lock, it observes the runtime the reviver already
+    //   brought up. This closes the window where a lock-free `hew_sched_init`
+    //   could install a second worker-backed runtime concurrently with a
+    //   teardown detaching the first.
+    let _g = lifecycle_lock();
     let prev = h.strong.fetch_add(1, Ordering::AcqRel);
     if prev == 0 {
         // First owner of a fresh (or revived) runtime: clear any tombstone left
         // by the previous owner set's teardown so this set's last release tears
-        // the re-inited runtime down once.
+        // the re-inited runtime down once, then (re-)install the default runtime
+        // into the now-guaranteed-empty slot.
         h.shut.store(false, Ordering::Release);
     }
-    // Bring the process default runtime up if it is not already (idempotent).
+    // Bring the process default runtime up if it is not already (idempotent CAS:
+    // a no-op when an owner already installed it). Under the lock this never
+    // races a teardown's detach or another `new`'s install.
     let _ = crate::scheduler::hew_sched_init();
     default_handle_ptr()
 }
@@ -295,12 +415,37 @@ pub unsafe extern "C" fn hew_runtime_release(handle: *mut HewRuntime) {
         // Other owners remain (we decremented from `cur` > 1).
         return;
     }
-    // Last owner dropped: tear the runtime down (idempotent). The handle is the
-    // process-static singleton — it is NOT freed, only tombstoned (count is now
-    // zero; `teardown_once` sets `shut`). This is what makes a subsequent
-    // over-release a safe no-op rather than a use-after-free.
-    // SAFETY: `handle` is the live static singleton and this is the unique
-    // last-release caller (the one that observed `cur == 1`).
+    // TEST HOOK: between the lock-free 1→0 CAS above and taking LIFECYCLE below
+    // is the exact window a reviving `new` can slip into (grab LIFECYCLE first,
+    // bump the count back to 1). A test installs a hook here to force that
+    // interleaving deterministically and prove the under-lock re-read aborts.
+    #[cfg(test)]
+    tests::run_pre_teardown_lock_hook();
+    // Last owner dropped (we drove the count 1→0): tear the runtime down under
+    // LIFECYCLE. Holding the lock across the whole teardown — through
+    // `run_runtime_teardown`'s final `take_default`/drop — keeps the count-0/
+    // torn-down state from being observable to a reviving `new` until the slot
+    // is empty, and keeps a concurrent boundary-crossing `release` from running
+    // a second teardown (it would have to observe its own 1→0 CAS, but the count
+    // is pinned at 0 until a `new` revives it, so it short-circuits at `cur == 0`
+    // above). The handle is the process-static singleton — NOT freed, only
+    // tombstoned (count is now zero; `teardown_once` sets `shut`).
+    let _g = lifecycle_lock();
+    // Re-validate under the lock: a reviving `new` may have raced our 1→0 CAS
+    // and grabbed LIFECYCLE first (count 0→1, runtime kept live). The 1→0 CAS
+    // and this teardown decision are not one atomic step, so we must re-read the
+    // count while holding the lock. If an owner reappeared, the runtime is live
+    // again and tearing it down would pull it out from under that owner — abort.
+    // If still zero, we are the genuine last release; tear down. Either way the
+    // outcome is decided atomically with respect to revival because both this
+    // check and the reviver's re-init run under LIFECYCLE.
+    if h.strong.load(Ordering::Acquire) != 0 {
+        #[cfg(test)]
+        tests::ABORTED_TEARDOWNS.fetch_add(1, Ordering::SeqCst);
+        return;
+    }
+    // SAFETY: `handle` is the live static singleton; under the lock the count is
+    // still zero, so we are the unique last-release caller with no live owner.
     unsafe { teardown_once(handle) };
 }
 
@@ -310,19 +455,32 @@ pub unsafe extern "C" fn hew_runtime_release(handle: *mut HewRuntime) {
 /// Joins the workers and runs the `hew_runtime_cleanup` sequence, in the same
 /// order the no-arg lifecycle path uses. Idempotent: a second `shutdown`, or a
 /// later `release`, observes the teardown already ran and does not repeat it.
-/// The handle box itself is freed by the final [`hew_runtime_release`], so a
-/// host may `shutdown` for deterministic teardown timing and still `release` to
-/// reclaim the handle. A null handle is a no-op.
+///
+/// The handle is a **process-static singleton and is never freed** — so a host
+/// may `shutdown` for deterministic teardown timing and still call the balancing
+/// [`hew_runtime_release`] afterwards; that release drops the owner count and,
+/// finding the teardown already ran, only tombstones the (still-valid) static
+/// handle rather than re-tearing-down or freeing anything. A null handle is a
+/// no-op.
+///
+/// Runs the teardown under the same [`LIFECYCLE`] lock the last-release path
+/// uses, so an explicit `shutdown` cannot race a concurrent reviving `new`'s
+/// `hew_sched_init` re-install — the two are serialized at the 0↔1 boundary.
 ///
 /// # Safety
 ///
 /// `handle`, if non-null, must be a valid `*mut HewRuntime` from
-/// [`hew_runtime_new`] that has not been freed.
+/// [`hew_runtime_new`]. The handle is never freed, so it stays valid to pass
+/// after teardown (where the teardown half is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_runtime_shutdown(handle: *mut HewRuntime) {
     if handle.is_null() {
         return;
     }
+    // Serialize against a reviving `new`/last-release teardown — see the
+    // `LIFECYCLE` doc. The lock makes the explicit teardown mutually exclusive
+    // with the 0↔1 re-init/teardown transitions.
+    let _g = lifecycle_lock();
     // SAFETY: caller guarantees `handle` is live.
     unsafe { teardown_once(handle) };
 }
@@ -411,13 +569,130 @@ pub unsafe extern "C" fn hew_registry_lookup_with_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     /// Count of `run_runtime_teardown` invocations (the test build records here
     /// instead of tearing the shared default runtime down — see
     /// `run_runtime_teardown`). Lets a test assert teardown ran exactly once
     /// without driving the real global cleanup.
     pub(super) static TEARDOWN_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Number of teardown bodies currently executing. The `cfg(test)`
+    /// `run_runtime_teardown` increments this on entry (asserting it was zero)
+    /// and decrements on exit, so a second teardown body running concurrently —
+    /// the unserialized-revival bug this commit fixes — trips the entry assert.
+    /// With the [`LIFECYCLE`] lock held across each teardown it never exceeds
+    /// one. Process-global rather than per-test because teardown runs off worker
+    /// threads in the concurrency test.
+    pub(super) static IN_TEARDOWN: AtomicUsize = AtomicUsize::new(0);
+
+    /// Count of last-release teardowns that aborted under the lock because a
+    /// reviving `new` reappeared (the count re-read found a live owner). The
+    /// stress test records this to confirm the abort branch — the residual race
+    /// the under-lock re-read closes — is actually exercised, not dead code.
+    pub(super) static ABORTED_TEARDOWNS: AtomicUsize = AtomicUsize::new(0);
+
+    use std::sync::{Arc, Condvar};
+
+    /// A one-shot rendezvous a test installs to hold a code path open at a
+    /// chosen point: the hooked path flips `entered` true (notifying the test)
+    /// then blocks until the test flips `release`. Lets a test force a precise
+    /// interleaving deterministically rather than relying on timing.
+    struct Gate {
+        entered: Mutex<bool>,
+        entered_cv: Condvar,
+        release: Mutex<bool>,
+        release_cv: Condvar,
+    }
+
+    impl Gate {
+        fn new() -> Arc<Gate> {
+            Arc::new(Gate {
+                entered: Mutex::new(false),
+                entered_cv: Condvar::new(),
+                release: Mutex::new(false),
+                release_cv: Condvar::new(),
+            })
+        }
+
+        /// Called from inside a hooked path: signal entry, then block until the
+        /// driving test opens the gate.
+        fn enter_and_block(&self) {
+            {
+                let mut entered = self
+                    .entered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *entered = true;
+                self.entered_cv.notify_all();
+            }
+            let mut released = self
+                .release
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = self
+                    .release_cv
+                    .wait(released)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+
+        /// Block (on the test thread) until the hooked path has entered.
+        fn wait_entered(&self) {
+            let mut entered = self
+                .entered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*entered {
+                entered = self
+                    .entered_cv
+                    .wait(entered)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+
+        /// Open the gate so the blocked hooked path resumes.
+        fn open(&self) {
+            let mut release = self
+                .release
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *release = true;
+            self.release_cv.notify_all();
+        }
+    }
+
+    /// Gate installed inside the `cfg(test)` teardown body (`run_teardown_hook`)
+    /// to hold a teardown in flight. `None` for ordinary tests.
+    static TEARDOWN_GATE: Mutex<Option<Arc<Gate>>> = Mutex::new(None);
+
+    /// Gate installed at the pre-LIFECYCLE point in `hew_runtime_release`
+    /// (`run_pre_teardown_lock_hook`) to pause a last-release after its 1→0 CAS
+    /// but before it takes the lock. `None` for ordinary tests.
+    static PRE_TEARDOWN_LOCK_GATE: Mutex<Option<Arc<Gate>>> = Mutex::new(None);
+
+    fn installed_gate(slot: &'static Mutex<Option<Arc<Gate>>>) -> Option<Arc<Gate>> {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Called from inside the `cfg(test)` teardown body. If a gate is installed,
+    /// signal that the teardown body has entered, then block until released.
+    pub(super) fn run_teardown_hook() {
+        if let Some(gate) = installed_gate(&TEARDOWN_GATE) {
+            gate.enter_and_block();
+        }
+    }
+
+    /// Called from `hew_runtime_release` between the lock-free 1→0 CAS and taking
+    /// LIFECYCLE. If a gate is installed, pause here so a test can deterministi-
+    /// cally let a reviving `new` reappear before the teardown re-reads the count.
+    pub(super) fn run_pre_teardown_lock_hook() {
+        if let Some(gate) = installed_gate(&PRE_TEARDOWN_LOCK_GATE) {
+            gate.enter_and_block();
+        }
+    }
 
     /// Serializes these handle tests. Every test drives the *one* process-static
     /// [`DEFAULT_HANDLE`] (the real ABI's singleton), so they share its owner
@@ -432,6 +707,14 @@ mod tests {
         DEFAULT_HANDLE.strong.store(0, Ordering::SeqCst);
         DEFAULT_HANDLE.shut.store(false, Ordering::SeqCst);
         TEARDOWN_INVOCATIONS.store(0, Ordering::SeqCst);
+        IN_TEARDOWN.store(0, Ordering::SeqCst);
+        ABORTED_TEARDOWNS.store(0, Ordering::SeqCst);
+        *TEARDOWN_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *PRE_TEARDOWN_LOCK_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Read the singleton's current owner count.
@@ -756,5 +1039,247 @@ mod tests {
         // SAFETY: `handle` is the live static singleton.
         unsafe { hew_runtime_release(handle) };
         assert_eq!(owner_count(), 0, "owner balanced");
+    }
+
+    /// Concurrency proving gate for the 0↔1 boundary. Many host threads hammer
+    /// balanced `new`/`release` pairs against the one singleton, driving the
+    /// count across 1→0 (last release → teardown) and 0→1 (revive) repeatedly
+    /// and concurrently. The serialization invariant is:
+    ///
+    /// - **No double-teardown.** Two teardown bodies never run at once — the
+    ///   `IN_TEARDOWN` gauge (incremented under a widened window in the
+    ///   `cfg(test)` teardown) asserts it stayed ≤ 1. Without the [`LIFECYCLE`]
+    ///   lock a revive could clear `shut` mid-teardown and a following release
+    ///   would start a second teardown; the gauge assert trips on that.
+    /// - **No torn-down handle revived under an in-flight teardown.** A reviving
+    ///   `new` clears `shut`/re-inits only under the same lock the teardown
+    ///   holds, so it cannot observe the count-0 state until teardown finished.
+    ///
+    /// The `runtime_test_guard` keeps a worker-less runtime installed, so every
+    /// `hew_sched_init` is a CAS no-op and the `cfg(test)` teardown only records
+    /// (no real scheduler is spawned or torn down). What is exercised is purely
+    /// the handle's count/lock state machine — which is exactly what races.
+    ///
+    /// Run this under TSan/ASan (`RUSTFLAGS="-Zsanitizer=thread"` /
+    /// `-Zsanitizer=address`) to catch a data race on the count/flag in addition
+    /// to the logical double-teardown the gauge already fails on.
+    #[test]
+    fn concurrent_new_release_never_double_teardown_or_revive_torn_down() {
+        const THREADS: usize = 8;
+        const ITERS: usize = 2_000;
+
+        let _lock = HANDLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::runtime_test_guard();
+        reset_singleton();
+
+        let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    // Release the barrier so every thread piles onto the 0↔1
+                    // boundary at once, maximising the chance of an overlap.
+                    start.wait();
+                    for _ in 0..ITERS {
+                        let h = hew_runtime_new();
+                        // SAFETY: `h` is the live process-static singleton.
+                        unsafe { hew_runtime_release(h) };
+                    }
+                })
+            })
+            .collect();
+        for t in handles {
+            t.join().expect(
+                "a worker thread panicked — a concurrent teardown overlap tripped the \
+                 IN_TEARDOWN gauge assert",
+            );
+        }
+
+        // Every owner was balanced: the count is back to zero and no teardown is
+        // mid-flight.
+        assert_eq!(owner_count(), 0, "all owners released → count 0");
+        assert_eq!(
+            IN_TEARDOWN.load(Ordering::SeqCst),
+            0,
+            "no teardown body left in flight"
+        );
+        // The boundary was actually crossed: balanced new/release pairs must have
+        // driven the count to zero (and thus run teardown) many times, proving
+        // the test exercised the revive/teardown transitions rather than a
+        // perpetually-non-zero count that never tests the lock.
+        assert!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst) > 0,
+            "the 0↔1 boundary was crossed at least once (teardown ran)"
+        );
+    }
+
+    /// Deterministic proof that the [`LIFECYCLE`] lock serializes a teardown
+    /// against a concurrent revive+release — the exact double-teardown /
+    /// revive-under-teardown race the cross-eco review found. Unlike the
+    /// probabilistic stress test, this forces the dangerous interleaving:
+    ///
+    /// 1. Main thread holds one owner (count 1) and installs a teardown gate.
+    /// 2. Main thread `release`s the last owner → count 1→0, the last-release
+    ///    takes `LIFECYCLE` and enters the teardown body, which blocks in the
+    ///    gate (still holding `LIFECYCLE`).
+    /// 3. A second thread, once it sees the teardown body has entered, calls
+    ///    `new()` (would revive: 0→1, clear `shut`) then `release()` (would
+    ///    drive 1→0 and run a SECOND teardown). With the lock, that `new`'s
+    ///    revive blocks on `LIFECYCLE` until step 4; without it, it would clear
+    ///    `shut` mid-teardown and the release would start an overlapping
+    ///    teardown, tripping the `IN_TEARDOWN` gauge.
+    /// 4. Main thread opens the gate; the first teardown completes and releases
+    ///    `LIFECYCLE`; only THEN does the second thread's revive proceed and its
+    ///    release run the second teardown — sequentially, never overlapping.
+    ///
+    /// The assertion with teeth is that the second thread joins cleanly (the
+    /// gauge never tripped) and teardown ran exactly twice, in order.
+    #[test]
+    fn teardown_lock_blocks_concurrent_revive_teardown() {
+        let _lock = HANDLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::runtime_test_guard();
+        reset_singleton();
+
+        // Install the gate the teardown body will block in.
+        let gate = Gate::new();
+        *TEARDOWN_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+
+        // One owner whose release will drive the first (gated) teardown.
+        DEFAULT_HANDLE.strong.store(1, Ordering::SeqCst);
+
+        // Reviver thread: blocks until the first teardown body has entered, then
+        // does new()+release(). Its new() must block on LIFECYCLE until the first
+        // teardown finishes, so its teardown cannot overlap the first.
+        let gate_for_reviver = Arc::clone(&gate);
+        let reviver = std::thread::spawn(move || {
+            gate_for_reviver.wait_entered();
+            // The first teardown body is now in flight (and holds LIFECYCLE). A
+            // revive here must wait for it; without the lock it would race.
+            let h = hew_runtime_new();
+            // SAFETY: `h` is the live process-static singleton.
+            unsafe { hew_runtime_release(h) };
+        });
+
+        // Drive the first, gated teardown on this thread. The release enters the
+        // teardown body (under LIFECYCLE), which blocks in the gate.
+        let releaser = std::thread::spawn(|| {
+            let h = default_handle_ptr();
+            // SAFETY: `h` is the live process-static singleton.
+            unsafe { hew_runtime_release(h) };
+        });
+
+        // Wait until the first teardown body has entered, then let the reviver
+        // make its (blocked) attempt before opening the gate. The short sleep
+        // gives the reviver time to reach (and block on) LIFECYCLE inside its
+        // new(); if the lock were missing it would already have raced by now.
+        gate.wait_entered();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Open the gate so the first teardown can finish and drop LIFECYCLE.
+        gate.open();
+
+        releaser.join().expect("releaser thread panicked");
+        reviver
+            .join()
+            .expect("reviver thread panicked — a teardown overlap tripped IN_TEARDOWN");
+
+        // Both teardowns ran, sequentially: first the gated last-release, then
+        // the reviver's release after its revive completed under the lock.
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            2,
+            "two teardowns ran in sequence, never overlapping"
+        );
+        assert_eq!(owner_count(), 0, "balanced: count back to zero");
+        assert_eq!(
+            IN_TEARDOWN.load(Ordering::SeqCst),
+            0,
+            "no teardown left in flight"
+        );
+    }
+
+    /// Deterministic proof of the under-lock count re-read abort. The last
+    /// release's lock-free 1→0 CAS and its teardown decision are not one atomic
+    /// step; a reviving `new` can slip into the gap (grab LIFECYCLE first, drive
+    /// the count back to 1) and keep the runtime live. The teardown must then
+    /// abort rather than tear a now-owned runtime down. This forces that exact
+    /// interleaving:
+    ///
+    /// 1. Main holds one owner and installs the pre-LIFECYCLE-lock gate.
+    /// 2. A releaser `release`s the owner → 1→0 CAS, then pauses in the gate
+    ///    (before taking LIFECYCLE).
+    /// 3. A reviver `new()`s → takes LIFECYCLE, drives count 0→1, re-inits, and
+    ///    returns a live handle (one owner now holds the runtime).
+    /// 4. Main opens the gate; the releaser takes LIFECYCLE, re-reads the count
+    ///    (now 1), and ABORTS its teardown — no teardown runs, the runtime stays
+    ///    live under the reviver's owner.
+    /// 5. The reviver balances its owner; that release is the genuine last one
+    ///    and tears down exactly once.
+    ///
+    /// Teeth: `TEARDOWN_INVOCATIONS == 1` (only the reviver's final release tore
+    /// down — the raced release aborted) and `ABORTED_TEARDOWNS == 1`. Without
+    /// the re-read the raced release would tear the live runtime down, giving two
+    /// teardowns and a runtime ripped out from under a live owner.
+    #[test]
+    fn last_release_aborts_teardown_when_new_revives_first() {
+        let _lock = HANDLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = crate::runtime_test_guard();
+        reset_singleton();
+
+        let gate = Gate::new();
+        *PRE_TEARDOWN_LOCK_GATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+
+        // One owner whose release will (try to) drive teardown but pause first.
+        DEFAULT_HANDLE.strong.store(1, Ordering::SeqCst);
+
+        // Releaser: last release drives 1→0, then blocks in the pre-lock gate.
+        let releaser = std::thread::spawn(|| {
+            let h = default_handle_ptr();
+            // SAFETY: `h` is the live process-static singleton.
+            unsafe { hew_runtime_release(h) };
+        });
+
+        // Wait until the releaser has done its 1→0 CAS and parked in the gate
+        // (count is now 0), then revive on this thread: new() takes LIFECYCLE,
+        // drives 0→1, re-inits — keeping the runtime live.
+        gate.wait_entered();
+        assert_eq!(owner_count(), 0, "releaser drove the count to zero");
+        let revived = hew_runtime_new();
+        assert_eq!(owner_count(), 1, "reviver brought an owner back");
+
+        // Open the gate; the releaser now takes LIFECYCLE, re-reads count == 1,
+        // and aborts its teardown.
+        gate.open();
+        releaser.join().expect("releaser thread panicked");
+
+        assert_eq!(
+            ABORTED_TEARDOWNS.load(Ordering::SeqCst),
+            1,
+            "the raced last release aborted its teardown under the lock"
+        );
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            0,
+            "no teardown ran: the runtime stayed live under the reviver"
+        );
+
+        // The reviver's own release is the genuine last one: it tears down once.
+        // SAFETY: `revived` is the live process-static singleton.
+        unsafe { hew_runtime_release(revived) };
+        assert_eq!(owner_count(), 0, "reviver balanced");
+        assert_eq!(
+            TEARDOWN_INVOCATIONS.load(Ordering::SeqCst),
+            1,
+            "the reviver's last release tears the live runtime down exactly once"
+        );
     }
 }

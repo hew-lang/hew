@@ -1977,6 +1977,14 @@ impl Checker {
             return;
         };
         let is_wire_struct = type_def.kind == TypeDefKind::Struct;
+        // Track wire structs so the method-dispatch arms can recognise the
+        // binary `encode`/`decode` codec calls (which lower to the
+        // `__hew_serialize_*` / `__hew_deserialize_*` thunks) without
+        // re-deriving wire-ness. Only wire structs carry the binary codec; wire
+        // enums get JSON/YAML helpers only.
+        if is_wire_struct {
+            self.wire_struct_types.insert(type_name.to_string());
+        }
         let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
             && type_def
                 .variants

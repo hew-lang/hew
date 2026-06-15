@@ -1325,6 +1325,31 @@ pub enum MethodCallRewrite {
     RecordFnFieldCall {
         field_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// Binary wire codec call on a `#[wire]` struct: `value.encode() -> bytes`
+    /// (instance) or `Type.decode(bytes) -> Type` (static).
+    ///
+    /// The msgpack round-trip is implemented by the `__hew_serialize_<key>` /
+    /// `__hew_deserialize_<key>` C-ABI thunk pair codegen already emits for the
+    /// actor message path (`hew-codegen-rs/src/llvm.rs`). These thunks have a
+    /// non-Hew ABI (an out-length / out-struct-size pointer parameter and a
+    /// malloc'd result the caller adopts), so the call cannot lower through the
+    /// generic `RewriteToFunction` path — it gets a dedicated HIR node that
+    /// codegen wires to the thunk with the correct ABI.
+    ///
+    /// `value_ty` is the checker-resolved wire-struct type (the receiver type
+    /// for `encode`, the produced type for `decode`); codegen derives the thunk
+    /// key from it via the same `mangle_resolved_ty` encoder the actor path
+    /// uses, so a direct `.encode()` and an actor send of the same type share
+    /// one thunk.
+    ///
+    /// The text-format wire methods (`to_json`/`to_yaml`/`from_json`/
+    /// `from_yaml`/`to_toml`/`from_toml`) are intentionally NOT covered here:
+    /// no text-format thunk exists yet, so they remain fail-closed
+    /// (`MethodCallNoRewrite`) until a later change adds the serializers.
+    WireCodec {
+        direction: WireCodecDirection,
+        value_ty: crate::resolved_ty::ResolvedTy,
+    },
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -1353,6 +1378,15 @@ pub enum MathGenericOp {
     Abs,
     Min,
     Max,
+}
+
+/// Direction of a [`MethodCallRewrite::WireCodec`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireCodecDirection {
+    /// `value.encode() -> bytes`: serialize the receiver to msgpack bytes.
+    Encode,
+    /// `Type.decode(bytes) -> Type`: deserialize msgpack bytes back to the type.
+    Decode,
 }
 
 /// Which `Vec<T>` pipeline method a
@@ -2037,6 +2071,13 @@ pub struct Checker {
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
+    /// `#[wire]` struct type names that carry the binary msgpack codec methods
+    /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
+    /// — which lower to the `__hew_serialize_*` / `__hew_deserialize_*` thunks —
+    /// from a same-named user method, without re-deriving wire-ness in the
+    /// method-dispatch arms. Populated by `register_wire_methods` for wire
+    /// structs only (wire enums carry no binary codec methods).
+    pub(super) wire_struct_types: HashSet<String>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
     /// single pass before the first lookup — see `ensure_handle_bearing_fresh`.
@@ -2608,6 +2649,7 @@ impl Checker {
             fn_sigs: HashMap::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
+            wire_struct_types: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),

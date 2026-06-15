@@ -46,7 +46,7 @@ pub use check::{
     MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
     PatternKind, PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey, TyPattern,
-    TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
+    TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WireCodecDirection,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

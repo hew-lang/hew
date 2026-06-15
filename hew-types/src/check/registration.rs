@@ -4202,37 +4202,56 @@ impl Checker {
         span: &Span,
     ) {
         let method_key = format!("{trait_name}::{}", method.name);
-        if self.fn_sigs.contains_key(&method_key) {
-            return;
-        }
-        // Activate trait-body `Self::Bar` projection while resolving this
-        // method's signature, so `Self::Item` in the return type becomes a
-        // deferred `Ty::AssocType` carrier instead of an opaque named type.
+        // The owner-qualified key (`{module}.{trait}::{method}`) is collision-free
+        // even when two imported modules export a same-named trait. The bare
+        // `{trait}::{method}` key is first-write-wins, so with a same-name
+        // collision it holds whichever module registered first and silently
+        // shadows the other's signature. Trait-conformance resolves an aliased
+        // trait to its source owner and looks up this qualified key
+        // authoritatively, so it must always be present when an owner is known.
+        let owner_qualified_key = self
+            .current_module_short()
+            .map(|short| format!("{short}.{method_key}"));
+
+        // Build the trait method's FnDecl once; reuse it for both the bare and
+        // owner-qualified registrations. `Self::Bar` projection is active while
+        // the signature resolves so `Self::Item` becomes a deferred
+        // `Ty::AssocType` carrier instead of an opaque named type.
+        let decl = FnDecl {
+            attributes: vec![],
+            is_async: false,
+            is_generator: false,
+            visibility: hew_parser::ast::Visibility::Private,
+            name: method.name.clone(),
+            type_params: method.type_params.clone(),
+            params: method.params.clone(),
+            return_type: method.return_type.clone(),
+            where_clause: method.where_clause.clone(),
+            body: hew_parser::ast::Block {
+                stmts: vec![],
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: span.clone(),
+            fn_span: 0..0,
+            intrinsic: None,
+        };
+
         let prev_trait_self = self
             .current_trait_for_self_projection
             .replace(trait_name.to_string());
-        self.register_fn_sig_with_name(
-            &method_key,
-            &FnDecl {
-                attributes: vec![],
-                is_async: false,
-                is_generator: false,
-                visibility: hew_parser::ast::Visibility::Private,
-                name: method.name.clone(),
-                type_params: method.type_params.clone(),
-                params: method.params.clone(),
-                return_type: method.return_type.clone(),
-                where_clause: method.where_clause.clone(),
-                body: hew_parser::ast::Block {
-                    stmts: vec![],
-                    trailing_expr: None,
-                },
-                doc_comment: None,
-                decl_span: span.clone(),
-                fn_span: 0..0,
-                intrinsic: None,
-            },
-        );
+        // Register the owner-qualified key first (collision-free) regardless of
+        // whether the bare key is already taken by another module's same-named
+        // trait, so the authoritative lookup never misses for a known owner.
+        if let Some(qualified_key) = owner_qualified_key.as_ref() {
+            if !self.fn_sigs.contains_key(qualified_key) {
+                self.register_fn_sig_with_name(qualified_key, &decl);
+            }
+        }
+        // The bare key keeps first-write-wins for the local/non-aliased path.
+        if !self.fn_sigs.contains_key(&method_key) {
+            self.register_fn_sig_with_name(&method_key, &decl);
+        }
         self.current_trait_for_self_projection = prev_trait_self;
     }
 
@@ -5220,17 +5239,21 @@ impl Checker {
         let owner_qualified_trait_key = source_trait_identity
             .as_ref()
             .map(|(owner, name)| format!("{owner}.{name}::{}", method.name));
-        let Some(trait_sig) = self
-            .fn_sigs
-            .get(&scoped_trait_key)
-            .or_else(|| self.fn_sigs.get(&trait_method_key))
-            .or_else(|| {
-                owner_qualified_trait_key
-                    .as_ref()
-                    .and_then(|key| self.fn_sigs.get(key))
-            })
-            .cloned()
-        else {
+        // When the alias resolved to a known owner, the owner-qualified key
+        // `m.Trait::method` is AUTHORITATIVE: the bare `Trait::method` key can
+        // collide with a same-named trait imported from a different module and
+        // would silently compare the impl against the wrong signature
+        // (fail-open). Only consult the bare/scoped keys when there is NO
+        // resolved owner (a local/root trait, or a non-aliased name whose
+        // binding == source name — the existing fallback).
+        let trait_sig_lookup = match owner_qualified_trait_key.as_ref() {
+            Some(owner_key) => self.fn_sigs.get(owner_key),
+            None => self
+                .fn_sigs
+                .get(&scoped_trait_key)
+                .or_else(|| self.fn_sigs.get(&trait_method_key)),
+        };
+        let Some(trait_sig) = trait_sig_lookup.cloned() else {
             return;
         };
 

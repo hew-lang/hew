@@ -1,0 +1,22 @@
+//! Same-name trait collision fixture (module A). Exports a trait `Source` whose
+//! `close` returns `Result<Payload, ErrA>`. A SECOND module (`hew::srccollideb`)
+//! exports a DISTINCT trait that also happens to be named `Source` but whose
+//! `close` returns `i64`. The bare trait-method key `Source::close` is therefore
+//! ambiguous across the two modules; trait-conformance must resolve an aliased
+//! `Source` to its source owner and compare against THIS module's signature, not
+//! whichever same-named trait registered its bare key first.
+
+/// Error type returned on the failure arm of `Source::close`.
+pub type ErrA {
+    code: i64;
+}
+
+/// Success payload returned by `Source::close`.
+pub type Payload {
+    code: i64;
+}
+
+/// A closable source whose `close` surfaces a structured `Result`.
+pub trait Source {
+    fn close(val: Self) -> Result<Payload, ErrA>;
+}

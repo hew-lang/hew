@@ -106,6 +106,18 @@ fixtures=(
   # then ACCEPT the matching impl. Run end-to-end so the aliased impl is also
   # exercised through codegen + receiver dispatch.
   aliased_trait_sig
+  # Two imported packages (`hew::srccollidea`, `hew::srccollideb`) each export a
+  # trait literally named `Source` with DIVERGENT signatures (`Result<Payload,
+  # ErrA>` vs `i64`). The importer aliases module A's trait (`Source as A`) and
+  # plain-imports module B, then impls A with A's CORRECT `Result<Payload, ErrA>`
+  # signature. The bare trait-method key `Source::close` collides across the two
+  # modules (first-write-wins, registration-order-dependent), so conformance must
+  # resolve the aliased trait to its source owner and compare against the
+  # collision-free owner-qualified key (`srccollidea.Source::close`). The correct
+  # impl must ACCEPT even while module B's same-named `Source::close` (the `i64`
+  # shape) is also registered. Run end-to-end so the aliased impl is exercised
+  # through codegen + receiver dispatch.
+  aliased_trait_source_name_collision_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -254,6 +266,36 @@ if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${aliased_local_shadow_out}"; th
   exit 1
 fi
 echo "PASS ${aliased_local_shadow_reject}"
+
+# Reject fixture: ALIASED trait + same-name trait collision across modules. Two
+# imported packages (`hew::srccollidea`, `hew::srccollideb`) each export a trait
+# literally named `Source` with DIVERGENT signatures (`Result<Payload, ErrA>` vs
+# `i64`). The importer aliases module A's trait (`Source as A`) and plain-imports
+# module B, then impls A with module B's `i64` signature. The bare trait-method
+# key `Source::close` is first-write-wins and collides across the two modules, so
+# a bare-key comparison is registration-order-dependent and could silently accept
+# B's `i64` impl against A's trait (a NON-DETERMINISTIC fail-open on the soundness
+# boundary). Conformance must resolve the aliased trait `A` to its SOURCE owner
+# (`srccollidea.Source`) and compare against the collision-free owner-qualified
+# key (`srccollidea.Source::close`). Must REJECT with `TraitImplSignatureMismatch`
+# at the type boundary, NOT a codegen-front / D10 fall-through.
+samename_trait_collision_reject="aliased_trait_source_name_collision_reject"
+samename_trait_collision_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${samename_trait_collision_reject}.hew" 2>&1)" && {
+  echo "FAIL ${samename_trait_collision_reject}: hew check unexpectedly succeeded (same-name trait collision slipped the trait-sig gate)" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${samename_trait_collision_out}"; then
+  echo "FAIL ${samename_trait_collision_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${samename_trait_collision_out}"; then
+  echo "FAIL ${samename_trait_collision_reject}: same-name trait collision fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+fi
+echo "PASS ${samename_trait_collision_reject}"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
 # modules is a genuine ambiguity. The checker must fail closed with `ambiguous

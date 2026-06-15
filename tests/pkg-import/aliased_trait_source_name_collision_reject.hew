@@ -1,0 +1,38 @@
+// Reject fixture: ALIASED trait + same-name trait collision across modules.
+//
+// Two imported packages each export a trait literally named `Source`:
+//   - `hew::srccollidea::Source` requires `close(Self) -> Result<Payload, ErrA>`
+//   - `hew::srccollideb::Source` requires `close(Self) -> i64`
+//
+// The importer aliases module A's trait (`Source as A`) and plain-imports module
+// B (bringing its same-named `Source` into the registration set). The impl is for
+// the ALIASED `A` (i.e. `srccollidea.Source`), so it MUST satisfy A's
+// `Result<Payload, ErrA>` signature. This impl instead supplies B's `i64`
+// signature.
+//
+// The bare trait-method key `Source::close` is first-write-wins and collides
+// across the two modules: depending on registration order it holds either
+// module's signature, so a bare-key comparison is order-dependent and can
+// silently accept B's `i64` impl against A's trait (a NON-DETERMINISTIC fail-open
+// on the soundness boundary). Trait-conformance must resolve the aliased trait `A`
+// to its SOURCE owner (`srccollidea.Source`) and compare against the
+// owner-qualified signature key (`srccollidea.Source::close`), which is
+// collision-free. The impl must be REJECTED with `TraitImplSignatureMismatch`.
+//
+// Harness verb: hew check (negative — see run.sh).
+import hew::srccollidea::{ Source as A };
+import hew::srccollideb;
+
+type W {
+    id: i64;
+}
+
+impl A for W {
+    fn close(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

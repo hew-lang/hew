@@ -1,0 +1,6 @@
+[package]
+name = "hew::srccollidea"
+version = "0.1.0"
+description = "Same-name trait collision fixture (module A): exports a trait `Source` whose `close` returns `Result<Payload, ErrA>`, colliding on the bare trait name with hew::srccollideb"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

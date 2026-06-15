@@ -1,0 +1,89 @@
+//! Tests for the `impl duration` receiver methods declared in
+//! `std/builtins.hew` (`nanos`/`micros`/`millis`/`secs`/`mins`/`hours`/`abs`/
+//! `is_zero`). Each `#[extern_symbol(hew_duration_*)]` method lowers through a
+//! catalog row in `hew-hir/src/stdlib_catalog.rs`; these tests assert the exact
+//! converted value the runtime returns, not a `> 0` smell.
+//!
+//! Duration literals carry nanoseconds: `5s` == 5_000_000_000, `2h` ==
+//! 7_200_000_000_000, `3m` == 180_000_000_000.
+
+import std::testing;
+
+// ── unit conversions on a 5-second duration ──────────────────────────
+#[test]
+fn test_duration_nanos_exact() {
+    let d = 5s;
+    testing.assert_eq(d.nanos(), 5000000000);
+}
+
+#[test]
+fn test_duration_micros_exact() {
+    let d = 5s;
+    testing.assert_eq(d.micros(), 5000000);
+}
+
+#[test]
+fn test_duration_millis_exact() {
+    let d = 5s;
+    testing.assert_eq(d.millis(), 5000);
+}
+
+#[test]
+fn test_duration_secs_exact() {
+    let d = 5s;
+    testing.assert_eq(d.secs(), 5);
+}
+
+// ── whole-unit truncation toward zero ────────────────────────────────
+#[test]
+fn test_duration_mins_truncates_below_one_minute() {
+    let d = 5s;
+    testing.assert_eq(d.mins(), 0);
+}
+
+#[test]
+fn test_duration_hours_truncates_below_one_hour() {
+    let d = 5s;
+    testing.assert_eq(d.hours(), 0);
+}
+
+#[test]
+fn test_duration_mins_exact_on_three_minutes() {
+    let d = 3m;
+    testing.assert_eq(d.mins(), 3);
+    testing.assert_eq(d.secs(), 180);
+}
+
+#[test]
+fn test_duration_hours_exact_on_two_hours() {
+    let d = 2h;
+    testing.assert_eq(d.hours(), 2);
+    testing.assert_eq(d.mins(), 120);
+    testing.assert_eq(d.secs(), 7200);
+}
+
+// ── abs on positive and negative durations ───────────────────────────
+#[test]
+fn test_duration_abs_positive_unchanged() {
+    let d = 5s;
+    testing.assert_eq(d.abs().nanos(), 5000000000);
+}
+
+#[test]
+fn test_duration_abs_zero_is_zero() {
+    let d = 0ns;
+    testing.assert_eq(d.abs().nanos(), 0);
+}
+
+// ── is_zero predicate ────────────────────────────────────────────────
+#[test]
+fn test_duration_is_zero_true_for_zero() {
+    let d = 0ns;
+    testing.assert_true(d.is_zero());
+}
+
+#[test]
+fn test_duration_is_zero_false_for_nonzero() {
+    let d = 5ns;
+    testing.assert_false(d.is_zero());
+}

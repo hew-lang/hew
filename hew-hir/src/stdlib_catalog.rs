@@ -767,6 +767,87 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_result_unwrap_or_i64",
         },
     ),
+    // Receiver-method rewrite targets for the `impl duration` methods declared
+    // in `std/builtins.hew`. The checker's `Ty::Duration` dispatch arm records a
+    // `RewriteToFunction { c_symbol: "hew_duration_*", descriptor: None }`; HIR
+    // resolves that callee through the seeded `fn_registry`, so each runtime
+    // symbol needs a catalog row here to be resolvable (mirrors the Option/Result
+    // rows above). `duration` is i64-backed: the receiver is modelled as the
+    // single `I64` param so codegen's `declare_catalog_ffi` declares the extern
+    // with the real `(i64) -> ...` C ABI. `nanos`/`micros`/`millis`/`secs`/
+    // `mins`/`hours`/`abs` return `I64`; `is_zero` returns `Bool`.
+    direct(
+        "hew_duration_nanos",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_nanos",
+        },
+    ),
+    direct(
+        "hew_duration_micros",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_micros",
+        },
+    ),
+    direct(
+        "hew_duration_millis",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_millis",
+        },
+    ),
+    direct(
+        "hew_duration_secs",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_secs",
+        },
+    ),
+    direct(
+        "hew_duration_mins",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_mins",
+        },
+    ),
+    direct(
+        "hew_duration_hours",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_hours",
+        },
+    ),
+    direct(
+        "hew_duration_abs",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_abs",
+        },
+    ),
+    direct(
+        "hew_duration_is_zero",
+        BuiltinClass::ClassB,
+        I64,
+        BuiltinTy::Bool,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_duration_is_zero",
+        },
+    ),
     // Class A: string predicate overloads (ABI-safe: bool return, no i32/i64 conflict).
     overload(
         "starts_with_str",

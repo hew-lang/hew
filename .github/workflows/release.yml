@@ -833,6 +833,123 @@ jobs:
           path: ${{ steps.archive.outputs.name }}.tar.gz
 
   # ─────────────────────────────────────────────────────────────────────────
+  # FreeBSD build — aarch64 via QEMU VM (tier-1, required release gate)
+  # Runs inside a FreeBSD 15.1 aarch64 VM under QEMU emulation on a standard
+  # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
+  # but needs no new host infra. The native aarch64 build is not reproducible
+  # locally; CI is the proving gate for this toolchain asset.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-freebsd-aarch64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Compute archive name
+        id: archive
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          echo "name=hew-v${VERSION}-freebsd-aarch64" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build on FreeBSD aarch64
+        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
+        with:
+          release: "15.1"
+          arch: aarch64
+          mem: 8192
+          prepare: |
+            mkdir -p /usr/local/etc/pkg/repos
+            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest", mirror_type: "srv", enabled: yes }\n' \
+              > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
+            pkg install -y llvm22 rust cmake ninja git pkgconf libffi libxml2
+
+          run: |
+            set -eux
+
+            # The VM user differs from the synced checkout owner; without
+            # this the build script cannot read git metadata and the shipped
+            # binaries report `unknown` for their commit hash.
+            git config --global --add safe.directory "$(pwd)"
+
+            # ── LLVM ───────────────────────────────────────────────────────
+            # LLVM 22 comes from pkg on FreeBSD 15.1 (llvm22-22.1.2).
+            export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            /usr/local/llvm22/bin/llvm-config --version
+
+            # ── Rust builds (release) ──────────────────────────────────────
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-lib --release
+
+            # ── Package archive ────────────────────────────────────────────
+            ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
+
+            mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
+                     "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+
+            # Binaries
+            cp target/release/hew           "${ARCHIVE_NAME}/bin/"
+            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
+            cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
+            cp target/release/hew-observe   "${ARCHIVE_NAME}/bin/"
+            chmod +x "${ARCHIVE_NAME}/bin/"*
+
+            # Combined runtime + stdlib library
+            cp target/release/libhew.a "${ARCHIVE_NAME}/lib/"
+
+            # Standard library sources (all .hew files, including subdirectories)
+            cp -r std/. "${ARCHIVE_NAME}/std/"
+
+            # Generate shell completions from built binaries
+            for shell in bash zsh fish; do
+              "${ARCHIVE_NAME}/bin/hew" completions "${shell}" > "${ARCHIVE_NAME}/completions/hew.${shell}"
+              "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
+            done
+
+            # Licenses and docs
+            cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+
+            # Strip packaged binaries when present; missing artifacts are expected
+            # for targets that do not build every binary, but strip failures on
+            # existing files must still fail the job.
+            for b in hew adze hew-lsp hew-observe; do
+              bin="${ARCHIVE_NAME}/bin/${b}"
+              if [[ -f "${bin}" ]]; then
+                strip "${bin}"
+              fi
+            done
+
+            tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+
+            echo "==> Package-layout smoke test"
+            smoke_root=$(mktemp -d)
+            trap 'rm -rf "${smoke_root}"' EXIT
+
+            cat > "${smoke_root}/pkg-smoke.hew" <<'HEWEOF'
+            fn main() {
+                println("pkg-smoke-ok")
+            }
+            HEWEOF
+
+            mkdir -p "${smoke_root}/staging"
+            tar -xf "${ARCHIVE_NAME}.tar.gz" -C "${smoke_root}/staging" --strip-components=1
+
+            output=$(HEW_STD="${smoke_root}/staging/std" "${smoke_root}/staging/bin/hew" run "${smoke_root}/pkg-smoke.hew")
+            echo "${output}"
+            echo "${output}" | grep -q "pkg-smoke-ok"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.name }}.tar.gz
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Linux packages — build .deb, .rpm, .pkg.tar.zst from glibc tarballs
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
@@ -966,12 +1083,12 @@ jobs:
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, build-linux, build-freebsd, linux-packages, docker-clean-room-test]
+    needs: [build, build-linux, build-freebsd, build-freebsd-aarch64, linux-packages, docker-clean-room-test]
     runs-on: ubuntu-24.04
-    # Requires successful macOS, Windows, Linux, FreeBSD x86_64, package,
-    # and clean-room validation jobs. Alpine/musl assets are deferred until
-    # the llvm-alpine:22 toolchain is repaired.
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.build-freebsd.result == 'success' && (needs.linux-packages.result == 'success' || needs.linux-packages.result == 'skipped') && needs.docker-clean-room-test.result == 'success' }}
+    # Requires successful macOS, Windows, Linux, FreeBSD x86_64, FreeBSD
+    # aarch64, package, and clean-room validation jobs. Alpine/musl assets are
+    # deferred until the llvm-alpine:22 toolchain is repaired.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-linux.result == 'success' && needs.build-freebsd.result == 'success' && needs.build-freebsd-aarch64.result == 'success' && (needs.linux-packages.result == 'success' || needs.linux-packages.result == 'skipped') && needs.docker-clean-room-test.result == 'success' }}
     permissions:
       contents: write   # create/update the GitHub Release and upload release assets
     steps:

@@ -1,4 +1,4 @@
-# Publish and pre-build LLVM toolchain artifacts.
+# Publish LLVM toolchain artifacts.
 #
 # Windows toolchain: builds LLVM 22.1.0 from source on a windows-2022
 # runner using MSVC + Ninja, installs to C:\llvm-22, packages as a Hew-owned
@@ -9,9 +9,7 @@
 # The publish step is idempotent — it skips if the versioned asset already
 # exists (immutable once published; bump TOOLCHAIN_TAG to republish).
 #
-# FreeBSD: builds LLVM from source and warms the GitHub Actions cache used
-# by the FreeBSD release path (tier-2, continue-on-error). This job is
-# independent of the Windows publish job. force_rebuild only affects this job.
+# FreeBSD: no longer builds LLVM — FreeBSD 15.1 provides llvm22 via pkg.
 #
 # Runs weekly on Sunday 04:00 UTC and can be triggered manually.
 # Can also be triggered automatically when this workflow file changes.
@@ -20,12 +18,12 @@ name: Pre-build LLVM
 
 on:
   schedule:
-    # Sunday 04:00 UTC — keeps FreeBSD caches warm before they expire
+    # Sunday 04:00 UTC
     - cron: "0 4 * * 0"
   workflow_dispatch:
     inputs:
       force_rebuild:
-        description: "Force FreeBSD LLVM cache rebuild even if it already exists (no effect on immutable Windows toolchain assets)"
+        description: "Force Windows LLVM toolchain rebuild (no effect — Windows assets are immutable once published; bump TOOLCHAIN_TAG to republish)"
         required: false
         default: "false"
         type: boolean
@@ -40,7 +38,6 @@ env:
   # IMPORTANT: when bumping LLVM, update LLVM_TAG here and the corresponding
   # toolchain asset name/tag (TOOLCHAIN_TAG, ASSET_NAME) consumed by release.yml.
   LLVM_TAG: "llvmorg-22.1.0"
-  LLVM_CACHE_KEY_BSD: "llvm-22.1.0-freebsd15-amd64-v3"
   # Versioned toolchain release tag and asset name for the Hew-owned Windows
   # LLVM package. Bump the v-suffix (v2, v3, …) when the packaging or layout
   # changes without a LLVM version bump. Must match release.yml exactly.
@@ -412,87 +409,3 @@ jobs:
         with:
           subject-path: ${{ env.ASSET_NAME }}
 
-  # ─────────────────────────────────────────────────────────────────────
-  # FreeBSD: QEMU VM via vmactions — warms cache for release.yml
-  # ─────────────────────────────────────────────────────────────────────
-  prebuild-freebsd:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      actions: write    # needed for cache save
-    env:
-      FORCE: "${{ inputs.force_rebuild }}"
-
-    steps:
-      - name: Check if cache already exists
-        id: check
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: ${{ env.LLVM_CACHE_KEY_BSD }}
-          lookup-only: true
-
-      - name: Skip if cache is warm
-        if: steps.check.outputs.cache-hit == 'true' && env.FORCE != 'true'
-        run: echo "Cache hit — skipping LLVM build"
-
-      - name: Build LLVM on FreeBSD
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: vmactions/freebsd-vm@a6de9343ef5747433d9c25784c90e84998b9d69a  # v1.4.6
-        with:
-          release: "15.0"
-          mem: 8192
-          prepare: |
-            pkg install -y cmake ninja git
-
-          run: |
-            set -eux
-
-            # Inline the LLVM tag so it is available inside the VM regardless
-            # of how the runner exposes step-level env vars to the guest shell.
-            LLVM_BRANCH="${{ env.LLVM_TAG }}"
-            LLVM_PREFIX=/usr/local/llvm22-src
-
-            echo "==> Building LLVM 22 from source"
-            git clone --depth 1 --branch "${LLVM_BRANCH}" \
-              --filter=blob:none --sparse \
-              https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              (cd /tmp/llvm-src && git sparse-checkout set llvm cmake third-party)
-
-            cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
-                -DLLVM_TARGETS_TO_BUILD="X86;AArch64;WebAssembly" \
-                -DLLVM_BUILD_TOOLS=ON \
-                -DLLVM_BUILD_UTILS=ON \
-              -DLLVM_INSTALL_UTILS=ON \
-              -DLLVM_INCLUDE_TESTS=OFF \
-              -DLLVM_INCLUDE_BENCHMARKS=OFF \
-              -DLLVM_INCLUDE_EXAMPLES=OFF \
-                -DLLVM_INCLUDE_DOCS=OFF \
-                -DLLVM_ENABLE_BINDINGS=OFF \
-                -DLLVM_ENABLE_ZLIB=ON \
-                -DLLVM_ENABLE_ZSTD=OFF \
-                -DLLVM_BUILD_LLVM_DYLIB=OFF \
-                -DBUILD_SHARED_LIBS=OFF
-
-            cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
-            cmake --install /tmp/llvm-build
-
-            # Create archive for caching
-            tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
-            zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
-            rm -f llvm-freebsd-install.tar
-
-            ls -lh llvm-freebsd-install.tar.zst
-
-            # Clean up
-            rm -rf /tmp/llvm-src /tmp/llvm-build
-
-      - name: Save cache
-        if: steps.check.outputs.cache-hit != 'true' || env.FORCE == 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: llvm-freebsd-install.tar.zst
-          key: ${{ env.LLVM_CACHE_KEY_BSD }}

@@ -5181,41 +5181,87 @@ impl Checker {
         else {
             return;
         };
-        let trait_method_key = format!("{trait_name}::{}", method.name);
+
+        // Resolve the trait as written in the impl (`impl C for X`) to its
+        // SOURCE identity. An aliased trait import (`import m::{ Trait as C }`)
+        // binds `C` while the trait's method signatures and qualified
+        // `trait_defs` entry live under the source identity `m.Trait`. Recover
+        // `(owner_module, source_trait_name)` from the published-bare-trait map;
+        // exactly one published identity is the well-formed case. With zero (a
+        // local/root trait, or a non-aliased name whose binding == source name)
+        // or an ambiguous set, fall back to the name as written.
+        let source_trait_identity: Option<(String, String)> = self
+            .published_bare_trait_owners
+            .get(&(self.current_module.clone(), trait_name.clone()))
+            .filter(|identities| identities.len() == 1)
+            .and_then(|identities| identities.iter().next())
+            .and_then(|qualified| {
+                qualified
+                    .split_once('.')
+                    .filter(|(module, _)| self.modules.contains(*module))
+                    .map(|(module, name)| (module.to_string(), name.to_string()))
+            });
+
+        // The method-signature key uses the SOURCE trait name when the impl
+        // referenced an alias: signatures are registered under
+        // `m.Trait::method` / the in-module `Trait::method`, never the alias
+        // `C::method`. Looking up the alias key misses and would return early,
+        // accepting the impl WITHOUT the signature comparison (fail-open).
+        let sig_trait_name = source_trait_identity
+            .as_ref()
+            .map_or(trait_name.as_str(), |(_, name)| name.as_str());
+        let trait_method_key = format!("{sig_trait_name}::{}", method.name);
         let scoped_trait_key =
             scoped_module_item_name(self.current_module.as_deref(), &trait_method_key)
                 .unwrap_or_else(|| trait_method_key.clone());
+        // Also try the SOURCE-owner-qualified key (`m.Trait::method`) directly,
+        // so an aliased import of a trait from another module resolves the
+        // signature registered under the owner's qualified key.
+        let owner_qualified_trait_key = source_trait_identity
+            .as_ref()
+            .map(|(owner, name)| format!("{owner}.{name}::{}", method.name));
         let Some(trait_sig) = self
             .fn_sigs
             .get(&scoped_trait_key)
             .or_else(|| self.fn_sigs.get(&trait_method_key))
+            .or_else(|| {
+                owner_qualified_trait_key
+                    .as_ref()
+                    .and_then(|key| self.fn_sigs.get(key))
+            })
             .cloned()
         else {
             return;
         };
 
         // The trait's defining module anchors how a bare type name written in
-        // the trait declaration is canonicalized. Recover it from the qualified
-        // `{module}.{trait_name}` alias the registration paths author alongside
-        // the bare `trait_defs` entry. Exactly one owner is the well-formed
-        // case; with zero (a root/local trait) or an ambiguous set we leave
-        // bare names untouched and fall back to the bare-name comparison rather
-        // than guess a module.
-        let trait_owner_module: Option<String> = {
-            let suffix = format!(".{trait_name}");
-            let mut owners: Vec<&str> = self
-                .trait_defs
-                .keys()
-                .filter_map(|k| k.strip_suffix(&suffix))
-                .filter(|module| !module.is_empty() && self.modules.contains(*module))
-                .collect();
-            owners.sort_unstable();
-            owners.dedup();
-            match owners.as_slice() {
-                [single] => Some((*single).to_string()),
-                _ => None,
-            }
-        };
+        // the trait declaration is canonicalized. When the impl referenced an
+        // aliased trait, the owner is the SOURCE identity's module — the
+        // suffix-scan below keys on the name as written (`C`) and would find no
+        // `m.C` owner, so the resolved source owner must take precedence.
+        // Otherwise recover it from the qualified `{module}.{trait_name}` alias
+        // the registration paths author alongside the bare `trait_defs` entry.
+        // Exactly one owner is the well-formed case; with zero (a root/local
+        // trait) or an ambiguous set we leave bare names untouched and fall back
+        // to the bare-name comparison rather than guess a module.
+        let trait_owner_module: Option<String> = source_trait_identity
+            .as_ref()
+            .map(|(owner, _)| owner.clone())
+            .or_else(|| {
+                let suffix = format!(".{trait_name}");
+                let mut owners: Vec<&str> = self
+                    .trait_defs
+                    .keys()
+                    .filter_map(|k| k.strip_suffix(&suffix))
+                    .filter(|module| !module.is_empty() && self.modules.contains(*module))
+                    .collect();
+                owners.sort_unstable();
+                owners.dedup();
+                match owners.as_slice() {
+                    [single] => Some((*single).to_string()),
+                    _ => None,
+                }
+            });
 
         // Build trait-type-param substitution map.
         let mut trait_param_map: HashMap<String, Ty> = HashMap::new();
@@ -6774,7 +6820,8 @@ impl Checker {
                     if let Some(supers) = &tr.super_traits {
                         let super_names: Vec<String> =
                             supers.iter().map(|s| s.name.clone()).collect();
-                        self.trait_super.insert(qualified, super_names.clone());
+                        self.trait_super
+                            .insert(qualified.clone(), super_names.clone());
                         if let Some(binding_name) = import_binding.as_ref() {
                             self.trait_super.insert(binding_name.clone(), super_names);
                         }
@@ -6783,6 +6830,14 @@ impl Checker {
                     // If glob or named import, also register unqualified (using alias if present)
                     if let Some(binding_name) = import_binding {
                         self.trait_defs.insert(binding_name.clone(), info.clone());
+                        // Record the SOURCE identity (`module_short.tr.name`) under
+                        // the binding so trait-conformance can recover the owner +
+                        // original trait name for an aliased import. `qualified` is
+                        // the source identity even when `binding_name` is an alias.
+                        self.published_bare_trait_owners
+                            .entry((self.current_module.clone(), binding_name.clone()))
+                            .or_default()
+                            .insert(qualified.clone());
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
                             module_short.to_string(),

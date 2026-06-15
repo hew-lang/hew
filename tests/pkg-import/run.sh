@@ -97,6 +97,15 @@ fixtures=(
   # resolved source identity rather than the bare alias binding so the field-order
   # lookup hits `Payload`, not the unregistered `Other` alias key.
   alias_import_does_not_conflate_with_same_named_export
+  # An ALIASED trait opt-in (`import hew::closableerr::{ Closable as C }`) impls
+  # the trait under its alias (`impl C for MonitorRef`) returning the error type
+  # through its CORRECT module-qualified spelling (`closableerr.CloseError`). The
+  # trait-conformance check must resolve the aliased trait `C` to its SOURCE
+  # identity (`closableerr.Closable`) to find the registered method signatures and
+  # to qualify the trait declaration's bare `CloseError` against the trait owner,
+  # then ACCEPT the matching impl. Run end-to-end so the aliased impl is also
+  # exercised through codegen + receiver dispatch.
+  aliased_trait_sig
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -192,6 +201,59 @@ if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${local_shadow_out}"; then
   exit 1
 fi
 echo "PASS ${local_shadow_reject}"
+
+# Reject fixture: ALIASED trait + cross-module wrong return type. The importer
+# brings `Closable` into scope under an alias (`Closable as C`) and impls `close`
+# returning the DISTINCT `closableerr2.CloseError`. The alias must not let the
+# impl bypass the signature comparison: the checker must resolve `C` to its
+# SOURCE identity (`closableerr.Closable`) to find the registered signatures
+# (under `closableerr.Closable::close`, not the alias `C::close`) and to qualify
+# the trait's bare `CloseError` to the trait owner. Without that resolution the
+# alias-keyed lookup misses and the wrong-module impl is silently accepted
+# (fail-open). Must REJECT with `TraitImplSignatureMismatch` at the type
+# boundary, NOT a codegen-front / D10 fall-through.
+aliased_trait_reject="aliased_trait_cross_module_sig_reject"
+aliased_trait_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${aliased_trait_reject}.hew" 2>&1)" && {
+  echo "FAIL ${aliased_trait_reject}: hew check unexpectedly succeeded (aliased-trait wrong-module return type slipped the trait-sig gate)" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${aliased_trait_out}"; then
+  echo "FAIL ${aliased_trait_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${aliased_trait_out}"; then
+  echo "FAIL ${aliased_trait_reject}: aliased-trait wrong-module return type fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+fi
+echo "PASS ${aliased_trait_reject}"
+
+# Reject fixture: ALIASED trait + local-shadow. The importer aliases the trait
+# (`Closable as C`), defines its OWN local `CloseError`, and impls `close`
+# returning that LOCAL bare type. Resolving `C` to its SOURCE owner
+# (`closableerr`) qualifies the trait side's bare `CloseError` to
+# `closableerr.CloseError`, while the impl side's local shadow keeps its local
+# identity; the two differ, so the impl must be REJECTED. Proves the
+# side-specific local-shadow carve-out is reached through an alias.
+aliased_local_shadow_reject="aliased_trait_local_shadow_sig_reject"
+aliased_local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${aliased_local_shadow_reject}.hew" 2>&1)" && {
+  echo "FAIL ${aliased_local_shadow_reject}: hew check unexpectedly succeeded (aliased-trait local-shadow impl slipped the trait-sig gate)" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${aliased_local_shadow_out}"; then
+  echo "FAIL ${aliased_local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${aliased_local_shadow_out}"; then
+  echo "FAIL ${aliased_local_shadow_reject}: aliased-trait local-shadow impl fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+fi
+echo "PASS ${aliased_local_shadow_reject}"
 
 # Reject fixture: two opt-ins of the same bare name from divergent-layout
 # modules is a genuine ambiguity. The checker must fail closed with `ambiguous

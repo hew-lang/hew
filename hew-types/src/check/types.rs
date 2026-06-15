@@ -2262,6 +2262,22 @@ pub struct Checker {
     /// name from another module.
     pub(super) published_bare_type_owners:
         HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
+    /// Maps (`importer_module`, `trait_binding`) to the full set of SOURCE
+    /// trait identities (`owner.OriginalTrait`) published under that binding into
+    /// the importer's scope. The trait-namespace analogue of
+    /// `published_bare_type_owners`.
+    ///
+    /// An aliased trait import (`import m::{ Trait as T }`) records
+    /// `T -> { "m.Trait" }`. The trait-conformance check (`check_impl_method_
+    /// against_trait`) reads this to recover the SOURCE identity for an aliased
+    /// trait so it can (a) look up the trait's method signatures under the
+    /// source/qualified key (`m.Trait::method`) instead of missing on the alias
+    /// key (`T::method`) and accepting the impl unchecked, and (b) qualify bare
+    /// type names written in the trait declaration against the SOURCE owner
+    /// (`m`), not the alias. A single source identity is the well-formed case;
+    /// zero or an ambiguous set falls back to the alias-keyed behaviour.
+    pub(super) published_bare_trait_owners:
+        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
@@ -2629,6 +2645,7 @@ impl Checker {
             module_type_exports: HashMap::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),
+            published_bare_trait_owners: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,

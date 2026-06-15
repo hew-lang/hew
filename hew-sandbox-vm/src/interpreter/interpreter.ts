@@ -351,6 +351,31 @@ class Interpreter {
       case "i64.checked_mul":
         this.writeDst(frame, instruction, this.checkedI64(this.i64Arg(frame, instruction.args[0], instruction.span) * this.i64Arg(frame, instruction.args[1], instruction.span), instruction.span));
         return;
+      // f64 arithmetic follows IEEE-754 exactly (matching native LLVM
+      // fadd/fsub/fmul/fdiv/frem/fneg). JS `number` is an IEEE-754 double, so
+      // the host operators reproduce native results bit-for-bit. Unlike the
+      // checked i64 ops these never trap: float divide-by-zero yields
+      // ±Infinity/NaN, never `divide_by_zero`.
+      case "f64.add":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) + this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.sub":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) - this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.mul":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) * this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.div":
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) / this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.rem":
+        // JS `%` on doubles is C `fmod` / LLVM `frem`: truncated remainder
+        // carrying the sign of the dividend — identical to native.
+        this.writeDst(frame, instruction, this.f64(this.f64Arg(frame, instruction.args[0], instruction.span) % this.f64Arg(frame, instruction.args[1], instruction.span)));
+        return;
+      case "f64.neg":
+        this.writeDst(frame, instruction, this.f64(-this.f64Arg(frame, instruction.args[0], instruction.span)));
+        return;
       case "cmp.eq":
       case "cmp.ne":
       case "cmp.lt":
@@ -1158,8 +1183,29 @@ class Interpreter {
     const right = this.resolve(frame, instruction.args[1], instruction.span);
     switch (instruction.op) {
       case "cmp.eq":
+        // f64 equality mirrors native codegen, which lowers `==` to LLVM `fcmp
+        // OEQ` (ordered equal): false if either operand is NaN, true for equal
+        // non-NaN values (including Infinity==Infinity). JS `===` matches OEQ
+        // exactly (`NaN===NaN` is false, `Infinity===Infinity` is true). The
+        // canonical-JSON path collapses NaN/±Infinity to `null` and cannot model
+        // this, so compare the raw numbers for f64 operands and keep canonical
+        // equality for i64/string/structural values.
+        if (left.kind === "f64" && right.kind === "f64") {
+          return left.value === right.value;
+        }
         return canonicalComparable(left) === canonicalComparable(right);
       case "cmp.ne":
+        // f64 inequality mirrors native `fcmp ONE` (ordered not-equal): true only
+        // when both operands are non-NaN AND differ. If either is NaN the result
+        // is false — so `nan != nan`, `nan != inf` are both false, unlike JS `!==`
+        // (which is true when a NaN is present). Model ONE explicitly.
+        if (left.kind === "f64" && right.kind === "f64") {
+          return (
+            !Number.isNaN(left.value) &&
+            !Number.isNaN(right.value) &&
+            left.value !== right.value
+          );
+        }
         return canonicalComparable(left) !== canonicalComparable(right);
       case "cmp.lt":
         return compareScalar(this.scalarComparable(left, instruction.span), this.scalarComparable(right, instruction.span), "<", (message) =>
@@ -1411,6 +1457,14 @@ class Interpreter {
     return value.value;
   }
 
+  private f64Arg(frame: Frame, operand: Operand | undefined, span: string | null): number {
+    const value = this.resolve(frame, operand, span);
+    if (value.kind !== "f64") {
+      this.trap("invalid_local", "expected f64 operand", span);
+    }
+    return value.value;
+  }
+
   private indexArg(frame: Frame, operand: Operand | undefined, span: string | null): number {
     const value = this.i64Arg(frame, operand, span);
     if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) {
@@ -1507,6 +1561,10 @@ class Interpreter {
 
   private i64(value: bigint): VmValue {
     return { kind: "i64", value };
+  }
+
+  private f64(value: number): VmValue {
+    return { kind: "f64", value };
   }
 
   private checkedI64(value: bigint, span: string | null): VmValue {

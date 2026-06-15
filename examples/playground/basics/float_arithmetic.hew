@@ -1,0 +1,13 @@
+//! @name Float Arithmetic
+//! @description Add, subtract, multiply, and negate floating-point numbers
+
+fn main() {
+    let a: f64 = 1.5;
+    let b: f64 = 2.5;
+    println(f"sum {a + b}");
+    println(f"difference {b - a}");
+    println(f"product {a * b}");
+    println(f"negated {-b}");
+    let total: f64 = a + b + 4.0;
+    println(f"running total {total}");
+}

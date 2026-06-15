@@ -61,12 +61,27 @@ borrow checking.
 | `i64.checked_mul` | i64 | lhs, rhs | `integer_overflow` on overflow. |
 | `i64.checked_div` | i64 | lhs, rhs | `divide_by_zero` or `integer_overflow`. |
 | `i64.checked_rem` | i64 | lhs, rhs | `divide_by_zero` or `integer_overflow`. |
+| `f64.add` | f64 | lhs, rhs | IEEE-754 add; never traps. |
+| `f64.sub` | f64 | lhs, rhs | IEEE-754 subtract; never traps. |
+| `f64.mul` | f64 | lhs, rhs | IEEE-754 multiply; never traps. |
+| `f64.div` | f64 | lhs, rhs | IEEE-754 divide; zero divisor yields ±inf/NaN, never traps. |
+| `f64.rem` | f64 | lhs, rhs | IEEE-754 remainder (LLVM `frem` / C `fmod`); never traps. |
+| `f64.neg` | f64 | value | IEEE-754 negation; never traps. |
 
-The v0 registry starts with i64 because fixture coverage can be educational
-without committing the full scalar matrix. Additional numeric widths require a
-schema revision or a documented v0 extension before use.
+The v0 registry started with i64 because fixture coverage can be educational
+without committing the full scalar matrix. The f64 arithmetic family is
+type-directed by the emitter: it selects `f64.*` when the operand type is a
+float and `i64.*` otherwise. Unlike the checked i64 ops, the f64 ops follow
+IEEE-754 exactly (matching native LLVM `fadd`/`fsub`/`fmul`/`fdiv`/`frem`/
+`fneg`), so divide-by-zero produces `inf`/`-inf`/`NaN` rather than a trap.
+Additional numeric widths require a schema revision or a documented v0
+extension before use.
 
 ## Comparisons
+
+Comparison opcodes are type-polymorphic: a single `cmp.*` opcode covers i64,
+f64, and string operands. The interpreter dispatches on the runtime value kind
+(`compareScalar`), so float comparisons reuse these opcodes directly.
 
 | Opcode | Result | Operand shape |
 | --- | --- | --- |

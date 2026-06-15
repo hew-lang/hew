@@ -1,0 +1,32 @@
+//! @name Statement If Let
+//! @description Statement-position if-let with side-effecting branches
+
+enum Wrapped {
+    Value(i64);
+    Empty;
+}
+
+fn announce(w: Wrapped) {
+    if let Value(n) = w {
+        println(f"value: {n}");
+    } else {
+        println("empty");
+    }
+}
+
+fn main() {
+    announce(Value(10));
+    announce(Empty);
+    announce(Value(99));
+
+    // No-else form: only fires when pattern matches.
+    let x = Value(7);
+    if let Value(n) = x {
+        println(f"x is {n}");
+    }
+    let y = Empty;
+    if let Value(n) = y {
+        println(f"should not print: {n}");
+    }
+    println("done");
+}

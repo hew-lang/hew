@@ -1,0 +1,9 @@
+//! @name String Slicing
+//! @description String length and substring slicing
+
+fn main() {
+    let s = "hello world";
+    println(f"len: {s.len()}");
+    println(f"head: {s.slice(0, 5)}");
+    println(f"tail: {s.slice(6, 11)}");
+}

@@ -4,24 +4,10 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 use assert_cmd::Command;
-use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic};
+use hew_sandbox_wasm::{compile_to_sandbox_bytecode, Diagnostic, REQUIRED_PARITY_TEST_NAMES};
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
 const HEW_SEED: &str = "42";
-
-const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
-    "hello_world",
-    "fibonacci",
-    "function_composition",
-    "pattern_matching",
-    "collections",
-    "record_types",
-    "structural_records",
-    "counter_actor",
-    "actor_pipeline",
-    "supervisor",
-    "traffic_light",
-];
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
@@ -32,6 +18,34 @@ const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
         test_name: "fibonacci",
         source_rel: "examples/playground/basics/fibonacci.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Float add/sub/mul/neg through the type-directed f64.* opcode family.
+        test_name: "float_arithmetic",
+        source_rel: "examples/playground/basics/float_arithmetic.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Float division and remainder (IEEE-754, never trap-on-zero).
+        test_name: "float_division",
+        source_rel: "examples/playground/basics/float_division.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Non-finite f64 equality: NaN never equal, ±Infinity compare by sign,
+        // -0.0 == 0.0. `==` mirrors native `fcmp OEQ` and `!=` mirrors `fcmp ONE`
+        // (false whenever a NaN operand is present), proving the sandbox no longer
+        // collapses NaN/±Infinity through the canonical-JSON path.
+        test_name: "float_nonfinite_compare",
+        source_rel: "examples/playground/basics/float_nonfinite_compare.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Integer (checked i64.*) and float (f64.*) arithmetic in one program,
+        // proving the emitter dispatches the opcode family per operand type.
+        test_name: "mixed_numeric",
+        source_rel: "examples/playground/basics/mixed_numeric.hew",
         accepted_divergences: &[],
     },
     ParityCase {
@@ -82,6 +96,59 @@ const PARITY_CASES: &[ParityCase] = &[
         test_name: "traffic_light",
         source_rel: "examples/playground/machines/traffic_light.hew",
         // Machine support now emits bytecode; no profile divergence.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_if",
+        source_rel: "examples/playground/basics/stmt_if.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_match",
+        source_rel: "examples/playground/basics/stmt_match.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "stmt_if_let",
+        source_rel: "examples/playground/basics/stmt_if_let.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Value-position if-let (`let v = if let Value(n) = w { n } else { d }`):
+        // the matched arm value is joined on a result local, so the expression
+        // yields the matched value, not unit. Proves the value-position lowering.
+        test_name: "if_let_value",
+        source_rel: "examples/playground/basics/if_let_value.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "arithmetic_operators",
+        source_rel: "examples/playground/language/arithmetic_operators.hew",
+        // Integer +,-,*,/,%, unary negate, and all six comparisons.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "array_indexing",
+        source_rel: "examples/playground/language/array_indexing.hew",
+        // Array literal, index read, `.len()`, and range-for over the length.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "string_slicing",
+        source_rel: "examples/playground/language/string_slicing.hew",
+        // String `.len()` and `.slice(start, end)`.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "while_loop",
+        source_rel: "examples/playground/language/while_loop.hew",
+        // `while` loop with a mutable accumulator.
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "wildcard_match",
+        source_rel: "examples/playground/language/wildcard_match.hew",
+        // Enum dispatch with a catch-all `_` arm.
         accepted_divergences: &[],
     },
 ];

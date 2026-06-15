@@ -229,7 +229,20 @@ impl<'a> ProfileChecker<'a> {
                         );
                     }
                 }
-                Item::TypeAlias(_) | Item::Record(_) => {}
+                Item::TypeAlias(_) => self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    // Top-level type aliases are `E_NOT_YET_IMPLEMENTED` in the
+                    // native HIR lowering, so a program using one cannot run
+                    // natively at all — there is no native behaviour to be at
+                    // parity with. The sandbox admitted it (no-op arm) and emitted
+                    // bytecode that ran, diverging from native (which refuses to
+                    // compile). Reject fail-closed so the sandbox never runs a
+                    // construct the native engine itself rejects.
+                    "top-level type aliases are not yet supported by the native engine, so they \
+                     are not admitted to sandbox bytecode export",
+                ),
+                Item::Record(_) => {}
             }
         }
     }
@@ -347,7 +360,26 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(expr);
                 }
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, op, value } => {
+                // Compound assignment (`x += v`, `x *= v`, …) carries the operator
+                // in `op`; the parser leaves `value` as the bare right-hand side
+                // (NOT pre-combined). The sandbox emitter lowers `Stmt::Assign` by
+                // storing `value` directly into the target and ignores `op`, so
+                // `x += 5` silently became `x = 5` — a silent-wrong-answer (G1)
+                // class hole inside the admitted surface. Correct compound-assign
+                // lowering is type-directed (an `f64` `+=` must pick the f64 op
+                // family, which the SP-1 type-aware numeric lowering provides), so
+                // it graduates with that lane. Until then, reject fail-closed so a
+                // learner gets a compile-time diagnostic instead of a wrong answer.
+                if op.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "compound_assignment_rejected",
+                        "compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, bitwise/shift forms) \
+                         is not yet admitted to sandbox bytecode export; rewrite as an explicit \
+                         `x = x + v` assignment",
+                    );
+                }
                 self.check_expr(target);
                 self.check_expr(value);
             }
@@ -356,17 +388,6 @@ impl<'a> ProfileChecker<'a> {
                 then_block,
                 else_block,
             } => {
-                // Statement-position `if` is not yet lowered by the sandbox
-                // emitter; reject at the profile level so the caller gets a
-                // compile-time diagnostic instead of a runtime trap.
-                // Sub-expressions are still checked so any nested profile
-                // violations are surfaced in the same compilation.
-                self.reject(
-                    span.clone(),
-                    "statement_control_flow_rejected",
-                    "statement-position `if` is not yet admitted to sandbox bytecode export; \
-                     use expression-position `if` (assign the result to a variable)",
-                );
                 self.check_expr(condition);
                 self.check_block(then_block);
                 if let Some(else_block) = else_block {
@@ -379,14 +400,6 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::Match { scrutinee, arms } => {
-                // Statement-position `match` is not yet lowered by the sandbox
-                // emitter; reject at the profile level.
-                self.reject(
-                    span.clone(),
-                    "statement_control_flow_rejected",
-                    "statement-position `match` is not yet admitted to sandbox bytecode export; \
-                     use expression-position `match` (assign the result to a variable)",
-                );
                 self.check_expr(scrutinee);
                 for arm in arms {
                     self.check_pattern(&arm.pattern);
@@ -457,7 +470,7 @@ impl<'a> ProfileChecker<'a> {
                 self.check_expr(expr);
                 self.check_block(body);
             }
-            Stmt::Break { value, .. } => {
+            Stmt::Break { value, label } => {
                 if value.is_some() {
                     self.reject(
                         span.clone(),
@@ -465,17 +478,29 @@ impl<'a> ProfileChecker<'a> {
                         "break-with-value is not yet admitted in the sandbox profile",
                     );
                 }
+                // Labeled loops are themselves rejected (above), so a `break
+                // @label` can only reference a rejected loop or a dangling label
+                // the emitter cannot resolve. Reject the labeled break directly
+                // so the rejection is named here, not deferred to an
+                // `unsupported_instruction` trap on an unresolved label.
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled `break` is not yet admitted in the sandbox profile",
+                    );
+                }
             }
-            Stmt::Continue { .. } => {}
+            Stmt::Continue { label } => {
+                if label.is_some() {
+                    self.reject(
+                        span.clone(),
+                        "reserved_control_flow",
+                        "labeled `continue` is not yet admitted in the sandbox profile",
+                    );
+                }
+            }
             Stmt::IfLet { expr, body, else_body, .. } => {
-                // Statement-position `if let` is not yet lowered by the sandbox
-                // emitter; reject at the profile level.
-                self.reject(
-                    span.clone(),
-                    "statement_control_flow_rejected",
-                    "statement-position `if let` is not yet admitted to sandbox bytecode export; \
-                     use a `match` in expression position (assign the result to a variable)",
-                );
                 self.check_expr(expr);
                 self.check_block(body);
                 if let Some(block) = else_body {

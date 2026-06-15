@@ -1,0 +1,25 @@
+//! @name Statement If
+//! @description Statement-position if with side-effecting branches
+
+fn classify(n: i64) {
+    if n > 0 {
+        println("positive");
+    } else if n < 0 {
+        println("negative");
+    } else {
+        println("zero");
+    }
+}
+
+fn main() {
+    classify(5);
+    classify(-3);
+    classify(0);
+    let x = 10;
+    if x > 5 {
+        println("x is big");
+    }
+    if x < 0 {
+        println("unreachable");
+    }
+}

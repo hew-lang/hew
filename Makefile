@@ -159,7 +159,7 @@ sandbox-fixtures-check:
 sandbox-parity: hew stdlib
 	npm --prefix hew-sandbox-vm ci
 	npm --prefix hew-sandbox-vm run build
-	cargo test -p hew-sandbox-wasm --test parity
+	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet
 
 # Repo-local browser/tooling smoke:
 # manifest freshness + full hew-wasm test suite (lib + integration) + analysis-only WASM build.

@@ -1,0 +1,13 @@
+//! @name Float Division
+//! @description Divide and take the remainder of floating-point numbers
+
+fn main() {
+    let x: f64 = 10.0;
+    let y: f64 = 4.0;
+    println(f"quotient {x / y}");
+    println(f"remainder {x % y}");
+    let half: f64 = 9.0 / 2.0;
+    println(f"half of nine {half}");
+    let scaled: f64 = x / y * 3.0;
+    println(f"scaled {scaled}");
+}

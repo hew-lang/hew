@@ -26,12 +26,129 @@
     }
   },
   {
+    "id": "basics/float_arithmetic",
+    "category": "basics",
+    "name": "Float Arithmetic",
+    "description": "Add, subtract, multiply, and negate floating-point numbers",
+    "source_path": "basics/float_arithmetic.hew",
+    "expected_path": "basics/float_arithmetic.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/float_division",
+    "category": "basics",
+    "name": "Float Division",
+    "description": "Divide and take the remainder of floating-point numbers",
+    "source_path": "basics/float_division.hew",
+    "expected_path": "basics/float_division.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/float_nonfinite_compare",
+    "category": "basics",
+    "name": "Float Non-Finite Compare",
+    "description": "IEEE-754 equality on NaN and \u00b1Infinity f64 values",
+    "source_path": "basics/float_nonfinite_compare.hew",
+    "expected_path": "basics/float_nonfinite_compare.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "basics/higher_order_functions",
     "category": "basics",
     "name": "Function Composition",
     "description": "Named functions and enum dispatch for composable behaviour",
     "source_path": "basics/higher_order_functions.hew",
     "expected_path": "basics/higher_order_functions.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/if_let_value",
+    "category": "basics",
+    "name": "If Let Value",
+    "description": "Value-position if-let: the matched arm value flows into a binding",
+    "source_path": "basics/if_let_value.hew",
+    "expected_path": "basics/if_let_value.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/mixed_numeric",
+    "category": "basics",
+    "name": "Mixed Numeric Types",
+    "description": "Integer and floating-point arithmetic side by side",
+    "source_path": "basics/mixed_numeric.hew",
+    "expected_path": "basics/mixed_numeric.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_control_flow",
+    "category": "basics",
+    "name": "Statement-position Control Flow",
+    "description": "if/match/if-let in statement position with side-effecting branches",
+    "source_path": "basics/stmt_control_flow.hew",
+    "expected_path": "basics/stmt_control_flow.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_if",
+    "category": "basics",
+    "name": "Statement If",
+    "description": "Statement-position if with side-effecting branches",
+    "source_path": "basics/stmt_if.hew",
+    "expected_path": "basics/stmt_if.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_if_let",
+    "category": "basics",
+    "name": "Statement If Let",
+    "description": "Statement-position if-let with side-effecting branches",
+    "source_path": "basics/stmt_if_let.hew",
+    "expected_path": "basics/stmt_if_let.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "basics/stmt_match",
+    "category": "basics",
+    "name": "Statement Match",
+    "description": "Statement-position match with side-effecting arms",
+    "source_path": "basics/stmt_match.hew",
+    "expected_path": "basics/stmt_match.expected",
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",
@@ -101,6 +218,71 @@
       "browser": "analysis-only",
       "sandbox": "runnable",
       "wasi": "unsupported"
+    }
+  },
+  {
+    "id": "language/arithmetic_operators",
+    "category": "language",
+    "name": "Arithmetic Operators",
+    "description": "Integer arithmetic, comparison, and unary negation",
+    "source_path": "language/arithmetic_operators.hew",
+    "expected_path": "language/arithmetic_operators.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/array_indexing",
+    "category": "language",
+    "name": "Array Indexing",
+    "description": "Array literals, element indexing, and length",
+    "source_path": "language/array_indexing.hew",
+    "expected_path": "language/array_indexing.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/string_slicing",
+    "category": "language",
+    "name": "String Slicing",
+    "description": "String length and substring slicing",
+    "source_path": "language/string_slicing.hew",
+    "expected_path": "language/string_slicing.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "unsupported"
+    }
+  },
+  {
+    "id": "language/while_loop",
+    "category": "language",
+    "name": "While Loop",
+    "description": "Counting with a while loop and a running total",
+    "source_path": "language/while_loop.hew",
+    "expected_path": "language/while_loop.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "language/wildcard_match",
+    "category": "language",
+    "name": "Wildcard Match",
+    "description": "Enum dispatch with a catch-all wildcard arm",
+    "source_path": "language/wildcard_match.hew",
+    "expected_path": "language/wildcard_match.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
     }
   },
   {

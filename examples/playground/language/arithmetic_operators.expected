@@ -1,0 +1,11 @@
+sum: 22
+diff: 12
+prod: 85
+quot: 3
+rem: 2
+neg: -17
+unary_neg: -17
+a < b: false
+a > b: true
+a == b: false
+a != b: true

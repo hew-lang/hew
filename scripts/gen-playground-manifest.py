@@ -32,13 +32,22 @@ ROOT = Path(__file__).resolve().parent.parent
 PLAYGROUND_DIR = ROOT / "examples" / "playground"
 OUTPUT_FILE = PLAYGROUND_DIR / "manifest.json"
 HEADER_PATTERN = re.compile(r"^//!\s*@(?P<key>name|description)\s+(?P<value>.+?)\s*$")
-CATEGORY_ORDER = ("basics", "concurrency", "machines", "types")
+CATEGORY_ORDER = ("basics", "concurrency", "language", "machines", "types")
 # Keep the checked-in manifest aligned with the current curated snippet order.
 EXAMPLE_ORDER = {
     "basics": (
         "hello_world",
         "fibonacci",
+        "float_arithmetic",
+        "float_division",
+        "float_nonfinite_compare",
         "higher_order_functions",
+        "if_let_value",
+        "mixed_numeric",
+        "stmt_control_flow",
+        "stmt_if",
+        "stmt_if_let",
+        "stmt_match",
         "string_interpolation",
     ),
     "concurrency": (
@@ -46,6 +55,16 @@ EXAMPLE_ORDER = {
         "async_await",
         "counter_actor",
         "supervisor",
+    ),
+    # Construct-coverage snippets backing the sandbox parity ratchet: each
+    # exercises a profile-admitted language construct end-to-end so it cannot
+    # be admitted-but-unparited (the G7 hole). See hew-sandbox-wasm/tests.
+    "language": (
+        "arithmetic_operators",
+        "array_indexing",
+        "string_slicing",
+        "while_loop",
+        "wildcard_match",
     ),
     "machines": ("traffic_light",),
     "types": (
@@ -76,7 +95,27 @@ EXAMPLE_ORDER = {
 SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/hello_world": "runnable",
     "basics/fibonacci": "runnable",
+    # Float and mixed numeric arithmetic lower to the type-directed i64/f64
+    # opcode families; the sandbox VM executes them at native parity.
+    "basics/float_arithmetic": "runnable",
+    "basics/float_division": "runnable",
+    # Non-finite f64 equality (NaN/±Infinity) executes at native parity now that
+    # the sandbox VM compares f64 operands with IEEE OEQ/ONE semantics.
+    "basics/float_nonfinite_compare": "runnable",
+    "basics/mixed_numeric": "runnable",
+    # Statement-position if/match/if-let lower to branch terminators in sandbox
+    # bytecode; all branch bodies are sandbox-admitted side effects.
+    "basics/stmt_control_flow": "runnable",
+    "basics/stmt_if": "runnable",
+    "basics/stmt_if_let": "runnable",
+    "basics/stmt_match": "runnable",
     "basics/string_interpolation": "runnable",
+    # Value-position if-let: the matched arm value flows into a binding or
+    # trailing expression. The lowering now declares a result local, binds the
+    # matched payload in the then-arm, joins arms on the result local, and yields
+    # it — identical to value-position if. The sandbox VM executes this at native
+    # parity following the fix in this PR.
+    "basics/if_let_value": "runnable",
     "types/pattern_matching": "runnable",
     # Actor/supervisor/machine support was added in the sandbox VM; these now compile
     # to bytecode and execute in the educational browser sandbox.
@@ -107,6 +146,13 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/structural_bounds: rewritten from trait/impl/generic (profile-rejected)
     # to plain record types with conditional dispatch.
     "types/structural_bounds": "runnable",
+    # language/*: construct-coverage snippets that back the sandbox parity
+    # ratchet — each runs at native↔sandbox parity (verified by tests/parity.rs).
+    "language/arithmetic_operators": "runnable",
+    "language/array_indexing": "runnable",
+    "language/string_slicing": "runnable",
+    "language/while_loop": "runnable",
+    "language/wildcard_match": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".
@@ -120,6 +166,10 @@ WASI_CAPABILITY: dict[str, str] = {
     # traffic_light now has fn main() but the machine runtime is not yet wired
     # into the WASI/LLVM path; remains unsupported in WASI until that lands.
     "machines/traffic_light": "unsupported",
+    # language/string_slicing: `hew_string_slice` aborts under wasm32-wasi with a
+    # wasm-ld function-signature mismatch ((i32,i64,i64)->i32); the example runs
+    # at native↔sandbox parity but is not WASI-runnable until that ABI gap closes.
+    "language/string_slicing": "unsupported",
 }
 
 

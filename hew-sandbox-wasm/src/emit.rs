@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, Expr, FnDecl, Item, Literal, MatchArm,
-    Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem, TypeDeclKind, VariantKind,
+    ActorDecl, BinaryOp, Block as AstBlock, CallArg, ElseBlock, Expr, FnDecl, Item, Literal,
+    MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem, TypeDeclKind,
+    VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::Ty;
@@ -1351,7 +1352,25 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     self.emit_unsupported(Some(span));
                 }
             }
-            Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. } | Stmt::Defer(_) => {
+            Stmt::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.lower_stmt_if(condition, then_block, else_block.as_ref(), span)?;
+            }
+            Stmt::Match { scrutinee, arms } => {
+                self.lower_stmt_match(scrutinee, arms, span)?;
+            }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                self.lower_stmt_if_let(pattern, expr, body, else_body.as_ref(), span)?;
+            }
+            Stmt::Defer(_) => {
                 self.emit_unsupported(Some(span));
             }
             Stmt::Loop { label, body } => {
@@ -1547,9 +1566,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 let value = self.lower_expr(operand)?;
                 if *op == hew_parser::ast::UnaryOp::Negate {
                     let ty = self.ty_for_expr(expr);
+                    // Type-directed negation: float negation is IEEE-754
+                    // (`f64.neg`, never traps), integer negation is checked
+                    // (`i64.neg`, traps on `I64_MIN` overflow). See G1.
+                    let opcode = if ty.is_float() { "f64.neg" } else { "i64.neg" };
                     let dst = self.temp_local(&ty, Some(span.clone()));
                     self.emit_instruction(
-                        "i64.neg",
+                        opcode,
                         Some(dst.clone()),
                         vec![Operand::local(value)],
                         Some(span.clone()),
@@ -1802,8 +1825,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::Await(operand) => self.lower_await(operand, span.clone()),
-            Expr::IfLet { .. }
-            | Expr::Tuple(_)
+            // `if let` in expression position (e.g. `let v = if let Some(x) =
+            // opt { x } else { d }`): join both arm values on a result local so
+            // value-position if-let runs at parity with native `hew run`,
+            // mirroring the value-position `Expr::If` / `Expr::Match` lowering.
+            Expr::IfLet {
+                pattern,
+                expr: scrutinee,
+                body,
+                else_body,
+            } => self.lower_expr_if_let(
+                expr,
+                pattern,
+                scrutinee,
+                body,
+                else_body.as_ref(),
+                span.clone(),
+            ),
+            Expr::Tuple(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
@@ -1919,7 +1958,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
     ) -> Result<String, CompileError> {
         let left_local = self.lower_expr(left)?;
         let right_local = self.lower_expr(right)?;
+        // Arithmetic opcodes are type-directed: the native semantics of
+        // `+ - * / %` differ between integers (checked, traps on overflow /
+        // divide-by-zero) and floats (IEEE-754, never traps). Dispatch the
+        // opcode family on the resolved operand type rather than `BinaryOp`
+        // alone. The result type of an arithmetic op equals its operand type,
+        // but comparisons yield `bool`, so we read the operand type from the
+        // left-hand expression (both operands share a numeric type by the
+        // time the type checker accepts the expression).
+        let operand_is_float = self.ty_for_expr(left).is_float();
         let opcode = match op {
+            BinaryOp::Add if operand_is_float => "f64.add",
+            BinaryOp::Subtract if operand_is_float => "f64.sub",
+            BinaryOp::Multiply if operand_is_float => "f64.mul",
+            BinaryOp::Divide if operand_is_float => "f64.div",
+            BinaryOp::Modulo if operand_is_float => "f64.rem",
+            // WrappingAdd/Sub/Mul are integer-only operators; they cannot type
+            // a float operand, so they remain i64.* regardless.
             BinaryOp::Add => "i64.checked_add",
             BinaryOp::Subtract => "i64.checked_sub",
             BinaryOp::Multiply => "i64.checked_mul",
@@ -1928,6 +1983,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             BinaryOp::WrappingAdd => "i64.add",
             BinaryOp::WrappingSub => "i64.sub",
             BinaryOp::WrappingMul => "i64.mul",
+            // Comparisons are already type-polymorphic in the interpreter
+            // (`compareScalar` dispatches on the runtime value kind), so a
+            // single `cmp.*` opcode covers both i64 and f64 operands.
             BinaryOp::Equal => "cmp.eq",
             BinaryOp::NotEqual => "cmp.ne",
             BinaryOp::Less => "cmp.lt",
@@ -2790,6 +2848,380 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         self.bindings = saved_bindings;
         self.switch_to(exit_idx);
         Ok(())
+    }
+
+    /// Lower a statement-position `if` to the same `block`/`br_if` sequences used
+    /// by expression-position `if`, discarding the branch results (side effects
+    /// only; result is always unit).
+    fn lower_stmt_if(
+        &mut self,
+        condition: &Spanned<Expr>,
+        then_block: &AstBlock,
+        else_block: Option<&ElseBlock>,
+        span: std::ops::Range<usize>,
+    ) -> Result<(), CompileError> {
+        let cond_local = self.lower_expr(condition)?;
+        let span_ref = self.package.spans.span_ref(&span);
+        let (then_idx, then_id) = self.new_block("if_then", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("if_exit", span_ref.clone());
+
+        if let Some(else_block) = else_block {
+            let (else_idx, else_id) = self.new_block("if_else", span_ref.clone());
+            self.terminate(Terminator::br_if(
+                Operand::local(cond_local),
+                then_id,
+                else_id,
+                Vec::new(),
+                span_ref,
+            ));
+
+            self.switch_to(then_idx);
+            self.lower_block(then_block)?;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id.clone(), Vec::new(), None));
+            }
+
+            self.switch_to(else_idx);
+            if let Some(else_body_block) = &else_block.block {
+                self.lower_block(else_body_block)?;
+            }
+            if let Some(chained_if) = &else_block.if_stmt {
+                // `else if` chains lower recursively as statement-position if.
+                self.lower_stmt(&chained_if.0, chained_if.1.clone())?;
+            }
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id, Vec::new(), None));
+            }
+        } else {
+            self.terminate(Terminator::br_if(
+                Operand::local(cond_local),
+                then_id,
+                exit_id.clone(),
+                Vec::new(),
+                span_ref,
+            ));
+            self.switch_to(then_idx);
+            self.lower_block(then_block)?;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id, Vec::new(), None));
+            }
+        }
+
+        self.switch_to(exit_idx);
+        Ok(())
+    }
+
+    /// Lower a statement-position `match` to the same tag-dispatch sequences
+    /// used by expression-position `match`, discarding each arm's result
+    /// (side effects only; result is always unit).
+    fn lower_stmt_match(
+        &mut self,
+        scrutinee: &Spanned<Expr>,
+        arms: &[MatchArm],
+        span: std::ops::Range<usize>,
+    ) -> Result<(), CompileError> {
+        if arms
+            .iter()
+            .any(|arm| matches!(arm.pattern.0, Pattern::Struct { .. } | Pattern::Tuple(_)))
+        {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        }
+        let scrutinee_local = self.lower_expr(scrutinee)?;
+        let tag_local = self.temp_local(&Ty::I64, Some(scrutinee.1.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(scrutinee_local.clone())],
+            Some(scrutinee.1.clone()),
+            None,
+        );
+
+        let exit_span = self.package.spans.span_ref(&span);
+        let (exit_idx, exit_id) = self.new_block("match_exit", exit_span);
+        let mut check_blocks = Vec::new();
+        let mut arm_blocks = Vec::new();
+        for (index, arm) in arms.iter().enumerate() {
+            let check_span = self.package.spans.span_ref(&arm.pattern.1);
+            check_blocks.push(self.new_block(&format!("match_check_{index}"), check_span));
+            let arm_span = self.package.spans.span_ref(&arm.body.1);
+            arm_blocks.push(self.new_block(&format!("match_arm_{index}"), arm_span));
+        }
+
+        if let Some((first_idx, first_id)) = check_blocks.first() {
+            let span_ref = self.package.spans.span_ref(&span);
+            self.terminate(Terminator::br(first_id.clone(), Vec::new(), span_ref));
+            self.switch_to(*first_idx);
+        }
+
+        for (index, arm) in arms.iter().enumerate() {
+            let (check_idx, _) = check_blocks[index].clone();
+            self.switch_to(check_idx);
+            let (_, arm_id) = &arm_blocks[index];
+            let tag = self.pattern_tag(&arm.pattern).unwrap_or(index);
+            let tag_const = self.lower_literal(
+                &Literal::Integer {
+                    value: i64::try_from(tag).unwrap_or(0),
+                    radix: hew_parser::ast::IntRadix::Decimal,
+                },
+                arm.pattern.1.clone(),
+            );
+            let cond = self.temp_local(&Ty::Bool, Some(arm.pattern.1.clone()));
+            self.emit_instruction(
+                "cmp.eq",
+                Some(cond.clone()),
+                vec![Operand::local(tag_local.clone()), Operand::local(tag_const)],
+                Some(arm.pattern.1.clone()),
+                None,
+            );
+            let else_id = check_blocks
+                .get(index + 1)
+                .map_or_else(|| arm_id.clone(), |(_, id)| id.clone());
+            let pattern_span = self.package.spans.span_ref(&arm.pattern.1);
+            self.terminate(Terminator::br_if(
+                Operand::local(cond),
+                arm_id.clone(),
+                else_id,
+                Vec::new(),
+                pattern_span,
+            ));
+
+            let (arm_idx, _) = arm_blocks[index].clone();
+            self.switch_to(arm_idx);
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(&arm.pattern, &scrutinee_local);
+            // Discard the arm result (statement-position: side effects only).
+            self.lower_expr(&arm.body)?;
+            self.bindings = saved_bindings;
+            let body_span = self.package.spans.span_ref(&arm.body.1);
+            self.terminate(Terminator::br(exit_id.clone(), Vec::new(), body_span));
+        }
+
+        self.switch_to(exit_idx);
+        Ok(())
+    }
+
+    /// Lower a statement-position `if let` to enum-tag-check + conditional body
+    /// execution, discarding the body result (side effects only). This is the
+    /// non-looping analogue of `emit_while_let`.
+    fn lower_stmt_if_let(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        expr: &Spanned<Expr>,
+        body: &AstBlock,
+        else_body: Option<&AstBlock>,
+        span: std::ops::Range<usize>,
+    ) -> Result<(), CompileError> {
+        let Pattern::Constructor { name, .. } = &pattern.0 else {
+            self.emit_unsupported(Some(span));
+            return Ok(());
+        };
+        let constructor_name = name.clone();
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("ifl_exit", span_ref.clone());
+
+        let scrutinee = self.lower_expr(expr)?;
+        let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(scrutinee.clone())],
+            Some(expr.1.clone()),
+            None,
+        );
+        let expected_tag = self
+            .package
+            .enum_variant_tags
+            .get(&constructor_name)
+            .map_or(0, |(_, tag, _)| *tag);
+        let expected_local = self.lower_literal(
+            &Literal::Integer {
+                value: i64::try_from(expected_tag).unwrap_or(0),
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(cond.clone()),
+            vec![Operand::local(tag_local), Operand::local(expected_local)],
+            Some(span.clone()),
+            None,
+        );
+
+        if let Some(else_body) = else_body {
+            let (else_idx, else_id) = self.new_block("ifl_else", span_ref.clone());
+            self.terminate(Terminator::br_if(
+                Operand::local(cond),
+                then_id,
+                else_id,
+                Vec::new(),
+                span_ref,
+            ));
+
+            self.switch_to(then_idx);
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(pattern, &scrutinee);
+            self.lower_block(body)?;
+            self.bindings = saved_bindings;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id.clone(), Vec::new(), None));
+            }
+
+            self.switch_to(else_idx);
+            let saved_else = self.bindings.clone();
+            self.lower_block(else_body)?;
+            self.bindings = saved_else;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id, Vec::new(), None));
+            }
+        } else {
+            self.terminate(Terminator::br_if(
+                Operand::local(cond),
+                then_id,
+                exit_id.clone(),
+                Vec::new(),
+                span_ref,
+            ));
+
+            self.switch_to(then_idx);
+            let saved_bindings = self.bindings.clone();
+            self.bind_pattern_payloads(pattern, &scrutinee);
+            self.lower_block(body)?;
+            self.bindings = saved_bindings;
+            if !self.current_is_terminated() {
+                self.terminate(Terminator::br(exit_id, Vec::new(), None));
+            }
+        }
+
+        self.switch_to(exit_idx);
+        Ok(())
+    }
+
+    /// Lower a value-position `if let` (`let v = if let Some(x) = opt { x }
+    /// else { d }`). Joins the then/else arm values on a result local so the
+    /// expression yields the matched arm value, mirroring the value-position
+    /// `Expr::If` lowering. When the pattern is not a constructor (the only
+    /// shape the statement form supports) or there is no else arm to join,
+    /// it falls back to statement-form lowering and yields unit.
+    fn lower_expr_if_let(
+        &mut self,
+        whole_expr: &Spanned<Expr>,
+        pattern: &Spanned<Pattern>,
+        scrutinee_expr: &Spanned<Expr>,
+        body: &AstBlock,
+        else_body: Option<&AstBlock>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        // Value position requires a join: without an else arm there is no
+        // second value to join, so fall back to the statement form (the result
+        // is unit anyway). Non-constructor patterns are unsupported by the
+        // statement form too; route through it so they trap consistently.
+        let Pattern::Constructor { name, .. } = &pattern.0 else {
+            self.lower_stmt_if_let(pattern, scrutinee_expr, body, else_body, span.clone())?;
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+        let constructor_name = name.clone();
+        let Some(else_body) = else_body else {
+            self.lower_stmt_if_let(pattern, scrutinee_expr, body, None, span.clone())?;
+            return Ok(self.emit_const_unit(Some(span)));
+        };
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
+        let (else_idx, else_id) = self.new_block("ifl_else", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("ifl_exit", span_ref.clone());
+
+        let result_ty = self.ty_for_expr(whole_expr);
+        let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
+
+        let scrutinee = self.lower_expr(scrutinee_expr)?;
+        let tag_local = self.temp_local(&Ty::I64, Some(scrutinee_expr.1.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(scrutinee.clone())],
+            Some(scrutinee_expr.1.clone()),
+            None,
+        );
+        let expected_tag = self
+            .package
+            .enum_variant_tags
+            .get(&constructor_name)
+            .map_or(0, |(_, tag, _)| *tag);
+        let expected_local = self.lower_literal(
+            &Literal::Integer {
+                value: i64::try_from(expected_tag).unwrap_or(0),
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(cond.clone()),
+            vec![Operand::local(tag_local), Operand::local(expected_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(cond),
+            then_id,
+            else_id,
+            Vec::new(),
+            span_ref,
+        ));
+
+        // Then arm: bind the matched payload, lower the body, join its value.
+        self.switch_to(then_idx);
+        let saved_bindings = self.bindings.clone();
+        self.bind_pattern_payloads(pattern, &scrutinee);
+        let then_val = self
+            .lower_block(body)?
+            .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
+        if !self.current_is_terminated() {
+            self.emit_instruction(
+                "local.set",
+                None,
+                vec![
+                    Operand::local(result_local.clone()),
+                    Operand::local(then_val),
+                ],
+                Some(span.clone()),
+                None,
+            );
+            let s = self.package.spans.span_ref(&span);
+            self.terminate(Terminator::br(exit_id.clone(), Vec::new(), s));
+        }
+        self.bindings = saved_bindings;
+
+        // Else arm: lower the else body, join its value.
+        self.switch_to(else_idx);
+        let saved_else = self.bindings.clone();
+        let else_val = self
+            .lower_block(else_body)?
+            .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
+        if !self.current_is_terminated() {
+            self.emit_instruction(
+                "local.set",
+                None,
+                vec![
+                    Operand::local(result_local.clone()),
+                    Operand::local(else_val),
+                ],
+                Some(span.clone()),
+                None,
+            );
+            let s = self.package.spans.span_ref(&span);
+            self.terminate(Terminator::br(exit_id, Vec::new(), s));
+        }
+        self.bindings = saved_else;
+
+        self.switch_to(exit_idx);
+        Ok(result_local)
     }
 
     fn emit_while_let(

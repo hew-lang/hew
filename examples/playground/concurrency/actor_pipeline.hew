@@ -11,8 +11,6 @@ actor Doubler {
 
 fn main() {
     let doubler = spawn Doubler;
-    // Expression-position match (sandbox bytecode does not yet admit
-    // statement-position match); -1 marks a failed ask.
     let a = match await doubler.process(5) {
         Ok(v) => v,
         Err(_) => -1,

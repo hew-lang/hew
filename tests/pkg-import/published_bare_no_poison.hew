@@ -1,0 +1,24 @@
+// Published-bare-name ambiguity oracle: a plain import must not poison a named
+// opt-in of the same bare name from another module.
+//
+// `hew::widgetpub8` and `hew::widgetpub64` both export a public `Gadget` with a
+// DIVERGENT layout (i8 vs i64). This importer opts `Gadget` in from `widgetpub8`
+// only (`::{ Gadget }`) and plain-imports `widgetpub64` (which exports `Gadget`
+// but does not publish it bare). A bare `Gadget` must resolve to the PUBLISHED
+// owner `widgetpub8.Gadget` — not error ambiguous against the unpublished
+// `widgetpub64.Gadget`, and not bind the wrong (i64) layout. The construction
+// is read back through its field, so the proof turns on binding the published
+// owner's i8 layout end-to-end.
+//
+// Ambiguity is decided over PUBLISHED bare bindings, so the plain `widgetpub64`
+// import does not contribute and cannot poison the opt-in.
+//
+// Harness verb: hew run
+// Expected: a=7 (the i8 `Gadget` from the opted-in module).
+import hew::widgetpub8::{ Gadget };
+import hew::widgetpub64;
+
+fn main() {
+    let a = Gadget { v: 7 };
+    println(f"a={a.v}");
+}

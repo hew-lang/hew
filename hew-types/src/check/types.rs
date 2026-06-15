@@ -2240,7 +2240,22 @@ pub struct Checker {
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
+    ///
+    /// Single-valued: with two opt-ins of the same bare name it retains only the
+    /// last writer. For deciding *whether* a bare reference is ambiguous, use
+    /// `published_bare_type_owners` instead, which keeps the full set.
     pub(super) unqualified_to_module: HashMap<(Option<String>, String), String>,
+    /// Maps (`importer_module`, `bare_type_name`) to the full set of modules
+    /// that published that bare TYPE binding into the importer's scope (via a
+    /// named / glob / aliased opt-in, or a prelude bootstrap surface).
+    ///
+    /// Drives the use-time ambiguity decision: a bare reference is ambiguous
+    /// only when more than one module *published* the bare binding — a plain
+    /// `import` that exported but did not publish the name must not contribute,
+    /// so it cannot poison an explicit named import of the same bare name from
+    /// another module.
+    pub(super) published_bare_type_owners:
+        HashMap<(Option<String>, String), std::collections::BTreeSet<String>>,
     /// Call graph: maps caller function name → set of callee function names.
     pub(super) call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
@@ -2607,6 +2622,7 @@ impl Checker {
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
             unqualified_to_module: HashMap::new(),
+            published_bare_type_owners: HashMap::new(),
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,

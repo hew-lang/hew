@@ -6138,6 +6138,7 @@ impl Checker {
                     // always publishes bare; a real `import` publishes bare only
                     // on a named/glob/aliased opt-in, exactly like a user module.
                     if let Some(binding) = import_spec.bare_binding(&td.name) {
+                        self.record_published_bare_type(&binding, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding),
                             module_short.to_string(),
@@ -6167,12 +6168,14 @@ impl Checker {
                     // enum is gated together so a named/glob import exposes both
                     // or neither; `Prelude` publishes both unconditionally.
                     if let Some(binding) = import_spec.bare_binding(&md.name) {
+                        self.record_published_bare_type(&binding, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding),
                             module_short.to_string(),
                         );
                     }
                     if let Some(binding) = import_spec.bare_binding(&event_name) {
+                        self.record_published_bare_type(&binding, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding),
                             module_short.to_string(),
@@ -6654,6 +6657,7 @@ impl Checker {
                         let binding_name = Self::resolve_import_name(spec, &td.name)
                             .unwrap_or_else(|| td.name.clone());
                         self.known_types.insert(binding_name.clone());
+                        self.record_published_bare_type(&binding_name, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
                             module_short.to_string(),
@@ -6689,6 +6693,8 @@ impl Checker {
                             .unwrap_or_else(|| event_name.clone());
                         self.known_types.insert(machine_binding.clone());
                         self.known_types.insert(event_binding.clone());
+                        self.record_published_bare_type(&machine_binding, module_short);
+                        self.record_published_bare_type(&event_binding, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), machine_binding),
                             module_short.to_string(),
@@ -6840,6 +6846,7 @@ impl Checker {
                     if Self::should_import_name(&ad.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &ad.name)
                             .unwrap_or_else(|| ad.name.clone());
+                        self.record_published_bare_type(&binding_name, module_short);
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
                             module_short.to_string(),
@@ -7003,5 +7010,19 @@ impl Checker {
             .entry(module_short.to_string())
             .or_default()
             .insert(name.to_string());
+    }
+
+    /// Record that `owner_module` published the bare TYPE/MACHINE/ACTOR binding
+    /// `bare_binding` into the current importer's scope. Populated at every site
+    /// that inserts a bare type binding into `unqualified_to_module`, this set
+    /// is the authority the use-time ambiguity check reads: a bare reference is
+    /// ambiguous only when more than one module *published* the bare name, so a
+    /// plain `import` that exported but did not publish it cannot poison an
+    /// explicit named import of the same bare name.
+    pub(super) fn record_published_bare_type(&mut self, bare_binding: &str, owner_module: &str) {
+        self.published_bare_type_owners
+            .entry((self.current_module.clone(), bare_binding.to_string()))
+            .or_default()
+            .insert(owner_module.to_string());
     }
 }

@@ -329,11 +329,16 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .call_type_args
         .get(&SpanKey::from(&call_span))
         .expect("imported generic call should record inferred type args");
+    // The glob import PUBLISHES `Label` bare, so a bare `Label` binds to its
+    // owner's QUALIFIED identity (`widgets.Label`) — the per-module-type-identity
+    // discipline that keeps a sibling module's same-bare-name `Label` from
+    // colliding on one last-write-wins key downstream. The C1 layout authority
+    // shortens the qualifier back to bare on the non-colliding layout lookup.
     assert_eq!(
         inferred,
         &vec![Ty::Named {
             builtin: None,
-            name: "Label".to_string(),
+            name: "widgets.Label".to_string(),
             args: vec![],
         }]
     );
@@ -797,16 +802,26 @@ fn same_bare_name_types_register_independent_divergent_field_layouts() {
 
 #[test]
 fn unqualified_ambiguous_type_is_typed_error() {
-    // VC6: a bare reference to a type exported by two imported modules must be a
-    // typed AmbiguousType error, not a silent first-wins pick.
+    // VC6: a bare reference to a type PUBLISHED bare by two imported modules
+    // (each via an explicit `::{ Value }` opt-in) must be a typed AmbiguousType
+    // error, not a silent first-wins pick. Ambiguity is decided over published
+    // bare bindings — two plain imports publish nothing and are "not in scope"
+    // instead (asserted separately below); two opt-ins are the genuine
+    // ambiguity.
+    let value_spec = || {
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Value".to_string(),
+            alias: None,
+        }]))
+    };
     let import_a = make_user_import(
         &["pkg", "alpha"],
-        None,
+        value_spec(),
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     let import_b = make_user_import(
         &["pkg", "beta"],
-        None,
+        value_spec(),
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     // A function signature referencing bare `Value`.
@@ -865,6 +880,82 @@ fn unqualified_ambiguous_type_is_typed_error() {
             .iter()
             .any(|e| e.kind == hew_types::error::TypeErrorKind::DuplicateDefinition),
         "ambiguity must not be reported as DuplicateDefinition, got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
+    // Finding 3: two PLAIN imports each EXPORT `Value` but neither PUBLISHES it
+    // bare, so a bare reference is "not in scope" under qualified-by-default —
+    // NOT ambiguous. A plain import that did not publish the name must not
+    // contribute to the ambiguity set (so it cannot poison an opt-in elsewhere).
+    let import_a = make_user_import(
+        &["pkg", "alpha"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let import_b = make_user_import(
+        &["pkg", "beta"],
+        None,
+        vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
+    );
+    let consumer = FnDecl {
+        attributes: vec![],
+        is_async: false,
+        is_generator: false,
+        visibility: Visibility::Private,
+        name: "use_value".to_string(),
+        type_params: None,
+        params: vec![Param {
+            name: "v".to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "Value".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            is_mutable: false,
+        }],
+        return_type: None,
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        doc_comment: None,
+        decl_span: 0..0,
+        fn_span: 0..0,
+        intrinsic: None,
+    };
+    let program = Program {
+        items: vec![
+            (Item::Import(import_a), 0..0),
+            (Item::Import(import_b), 0..0),
+            (Item::Function(consumer), 0..0),
+        ],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedType),
+        "bare `Value` with two plain (non-publishing) exporters must be UndefinedType \
+         (not in scope), got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::AmbiguousType),
+        "plain imports publish nothing, so the bare ref must NOT be ambiguous, got: {:?}",
         output.errors
     );
 }

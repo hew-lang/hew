@@ -75,6 +75,13 @@ fixtures=(
   # rejects the impl with a false `TraitImplSignatureMismatch`. Called via
   # receiver dispatch so the proof turns only on trait conformance.
   qualified_trait_sig
+  # A bare `Gadget` opted in from `widgetpub8::{ Gadget }` while `widgetpub64`
+  # (which also exports a divergent-layout `Gadget`) is plain-imported. The bare
+  # reference must resolve to the PUBLISHED owner `widgetpub8.Gadget` (i8) and
+  # read 7 — the plain import must not poison the opt-in into a false ambiguity,
+  # and must not bind the wrong (i64) layout. Ambiguity is decided over
+  # PUBLISHED bare bindings, not bare exports.
+  published_bare_no_poison
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -143,6 +150,49 @@ if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${trait_sig_out}"; then
   exit 1
 fi
 echo "PASS ${trait_sig_reject}"
+
+# Reject fixture: two opt-ins of the same bare name from divergent-layout
+# modules is a genuine ambiguity. The checker must fail closed with `ambiguous
+# type` naming both published candidates, at the type boundary (NOT a bare
+# last-write-wins binding that trips a downstream MIR field-order failure).
+ambig_fixture="published_bare_two_optin_ambiguous"
+ambig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${ambig_fixture}.hew" 2>&1)" && {
+  echo "FAIL ${ambig_fixture}: hew check unexpectedly succeeded (ambiguous bare name slipped the gate)" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+}
+if ! grep -q "ambiguous type \`Gadget\`" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: expected an ambiguous-type diagnostic over the published candidates" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+fi
+if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: ambiguous bare name fell through to a MIR field-order failure instead of the type-boundary diagnostic" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+fi
+echo "PASS ${ambig_fixture}"
+
+# Reject fixture: two plain imports both export `Gadget` but neither publishes
+# it bare, so a bare `Gadget` is not in scope. The checker must fail closed at
+# the type boundary naming both exporting modules.
+unpub_fixture="published_bare_two_plain_rejected"
+unpub_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${unpub_fixture}.hew" 2>&1)" && {
+  echo "FAIL ${unpub_fixture}: hew check unexpectedly succeeded (unpublished bare name slipped the gate)" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+}
+if ! grep -q "is not in scope" <<<"${unpub_out}"; then
+  echo "FAIL ${unpub_fixture}: expected a not-in-scope diagnostic for the unpublished bare name" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+fi
+if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${unpub_out}"; then
+  echo "FAIL ${unpub_fixture}: unpublished bare name fell through to a MIR field-order failure instead of the type-boundary diagnostic" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+fi
+echo "PASS ${unpub_fixture}"
 
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).

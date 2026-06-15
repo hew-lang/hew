@@ -6,6 +6,120 @@ use super::coerce::cast_is_valid;
 use super::*;
 
 impl Checker {
+    /// The QUALIFIED identity (`owner.Name`) a bare TYPE reference resolves to
+    /// when exactly one imported module PUBLISHED the bare binding into the
+    /// current importer and a qualified def for it is registered; `None`
+    /// otherwise (local name, builtin, zero/ambiguous publishers, or no
+    /// qualified def).
+    ///
+    /// Binding a published bare reference to its owner's qualified identity is
+    /// what keeps two modules' same-bare-name types from collapsing onto one
+    /// last-write-wins bare key in the downstream record-layout / field-order
+    /// registry. The C1 layout authority shortens the qualifier back to bare on
+    /// a non-colliding lookup, so a single-module reference is unaffected.
+    pub(super) fn published_bare_type_qualified(&self, name: &str) -> Option<String> {
+        if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+            return None;
+        }
+        // A builtin surface (`CrashInfo`, `CrashAction`, channel handles, …) has
+        // the builtin as its canonical identity — never a module-qualified user
+        // def. Leave it bare so the `builtin:` discriminator survives (the
+        // `#[on(crash)]` hook check and the substrate-handle paths key on it).
+        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+            return None;
+        }
+        let owners = self
+            .published_bare_type_owners
+            .get(&(self.current_module.clone(), name.to_string()))?;
+        if owners.len() != 1 {
+            return None;
+        }
+        let owner = owners.iter().next()?;
+        let qualified = format!("{owner}.{name}");
+        self.type_defs.contains_key(&qualified).then_some(qualified)
+    }
+
+    /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
+    /// ill-formed: more than one imported module *published* the bare name
+    /// (ambiguous), or one or more modules export it but none published it (not
+    /// in scope under qualified-by-default). Reports the appropriate diagnostic
+    /// and returns `true`; returns `false` (no report) when the bare name is
+    /// well-formed — local, a builtin, or published by exactly one module.
+    ///
+    /// Shared by the type-position resolver (`resolve_type_expr`) and the bare
+    /// record constructor (`check_struct_init`) so `fn f(x: Gadget)` and
+    /// `Gadget { … }` reject the same ill-formed cases identically rather than
+    /// the constructor silently binding a last-write-wins bare def.
+    pub(super) fn report_bare_type_scope_error(&mut self, name: &str, span: &Span) -> bool {
+        if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+            return false;
+        }
+        // Builtin surfaces resolve to their builtin identity regardless of which
+        // module exports them, so the qualified-by-default publication gate does
+        // not apply — never reject a bare builtin name.
+        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+            return false;
+        }
+        let mut owner_modules: Vec<&str> = self
+            .module_type_exports
+            .iter()
+            .filter(|(_, exports)| exports.contains(name))
+            .map(|(module, _)| module.as_str())
+            .collect();
+        owner_modules.sort_unstable();
+        owner_modules.dedup();
+        let published_owners: Vec<String> = self
+            .published_bare_type_owners
+            .get(&(self.current_module.clone(), name.to_string()))
+            .map(|owners| owners.iter().cloned().collect())
+            .unwrap_or_default();
+        if published_owners.len() > 1 {
+            let mut candidates: Vec<String> = published_owners
+                .iter()
+                .map(|m| format!("{m}.{name}"))
+                .collect();
+            candidates.sort();
+            self.report_error_with_suggestions(
+                TypeErrorKind::AmbiguousType,
+                span,
+                format!(
+                    "ambiguous type `{name}`: published bare by {} imported modules",
+                    published_owners.len()
+                ),
+                candidates
+                    .iter()
+                    .map(|c| format!("qualify the reference, e.g. `{c}`"))
+                    .collect(),
+            );
+            return true;
+        }
+        if published_owners.is_empty() && !owner_modules.is_empty() {
+            let mut suggestions: Vec<String> = Vec::new();
+            for owner in &owner_modules {
+                suggestions.push(format!("qualify the reference, e.g. `{owner}.{name}`"));
+                suggestions.push(format!(
+                    "or opt in to the bare name: `import {owner}::{{ {name} }}`"
+                ));
+            }
+            let detail = if owner_modules.len() == 1 {
+                format!("module `{}`", owner_modules[0])
+            } else {
+                format!("modules {}", owner_modules.join(", "))
+            };
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!(
+                    "type `{name}` is not in scope; it is exported by {detail} \
+                     but a plain `import` does not publish it unqualified"
+                ),
+                suggestions,
+            );
+            return true;
+        }
+        false
+    }
+
     fn resolve_trait_object_bound(
         &mut self,
         bound: &hew_parser::ast::TraitBound,
@@ -1280,8 +1394,11 @@ impl Checker {
                 if let Some(aliased) = self.type_aliases.get(name) {
                     return aliased.clone();
                 }
-                // Qualify unqualified handle types only when imported and unambiguous.
-                let handle_matches: Vec<&String> = self
+                // Qualify unqualified handle types only when imported and
+                // unambiguous. Collect owned strings so this borrow of
+                // `known_types` ends before the `&mut self` scope-error call
+                // below.
+                let handle_matches: Vec<String> = self
                     .known_types
                     .iter()
                     .filter(|qualified| {
@@ -1289,6 +1406,7 @@ impl Checker {
                             .rsplit_once('.')
                             .is_some_and(|(_, short)| short == name)
                     })
+                    .cloned()
                     .collect();
                 // A bare reference binds to the current module's own type when the
                 // name is locally defined (root program or the module being
@@ -1298,68 +1416,27 @@ impl Checker {
                 // must not be treated as an unambiguous resolution.
                 let is_local = self.local_type_defs.contains(name.as_str())
                     || self.source_type_defs.contains(name.as_str());
-                // Distinct importing modules that export this bare name, per the
-                // authoritative `module_type_exports` registry (populated on every
-                // registration path: stdlib Pass 3, user-module, handle types).
-                // `known_types` alone is insufficient — it carries qualified keys
-                // only for the C-binding handle path, not pure-Hew user modules.
-                let mut owner_modules: Vec<&str> = self
-                    .module_type_exports
-                    .iter()
-                    .filter(|(_, exports)| exports.contains(name.as_str()))
-                    .map(|(module, _)| module.as_str())
-                    .collect();
-                owner_modules.sort_unstable();
-                owner_modules.dedup();
-                if !is_local && owner_modules.len() > 1 {
-                    // Unqualified name exported by more than one imported module.
-                    // Fail closed with a typed ambiguity error naming the
-                    // candidates, rather than silently first-winning a def.
-                    let mut candidates: Vec<String> = owner_modules
-                        .iter()
-                        .map(|m| format!("{m}.{name}"))
-                        .collect();
-                    candidates.sort();
-                    self.report_error_with_suggestions(
-                        TypeErrorKind::AmbiguousType,
-                        &te.1,
-                        format!(
-                            "ambiguous type `{name}`: exported by {} imported modules",
-                            owner_modules.len()
-                        ),
-                        candidates
-                            .iter()
-                            .map(|c| format!("qualify the reference, e.g. `{c}`"))
-                            .collect(),
-                    );
-                    return Ty::Error;
-                }
-                // Qualified-by-default: a bare reference to a type exported by
-                // exactly one *plainly* imported module (no `::{ }` / glob /
-                // alias opt-in) is not in scope. Fail closed with both the
-                // qualifier and the explicit-opt-in import as suggestions,
-                // rather than silently binding the source module's bare def.
-                let published_bare = self
-                    .unqualified_to_module
-                    .contains_key(&(self.current_module.clone(), name.clone()));
-                if !is_local && owner_modules.len() == 1 && !published_bare {
-                    let owner = owner_modules[0];
-                    self.report_error_with_suggestions(
-                        TypeErrorKind::UndefinedType,
-                        &te.1,
-                        format!(
-                            "type `{name}` is not in scope; it is exported by module `{owner}` \
-                             but a plain `import` does not publish it unqualified"
-                        ),
-                        vec![
-                            format!("qualify the reference, e.g. `{owner}.{name}`"),
-                            format!("or opt in to the bare name: `import {owner}::{{ {name} }}`"),
-                        ],
-                    );
+                // Fail closed under qualified-by-default: a bare reference
+                // published by more than one module is ambiguous, and one
+                // exported by some module(s) but published by none is not in
+                // scope. The decision is over PUBLISHED bare bindings (not bare
+                // exports), so a plain `import` cannot poison an explicit named
+                // import of the same bare name. The same helper gates the bare
+                // record constructor in `check_struct_init`, so a type position
+                // (`fn f(x: Gadget)`) and a construction (`Gadget { … }`) reject
+                // the ill-formed cases identically.
+                if !is_local && self.report_bare_type_scope_error(name, &te.1) {
                     return Ty::Error;
                 }
                 let resolved_name = if is_local && self.type_defs.contains_key(name) {
                     name.clone()
+                } else if let Some(qualified) = self.published_bare_type_qualified(name) {
+                    // Exactly one module published this bare name. Bind to that
+                    // owner's QUALIFIED identity (`owner.Name`) so a sibling
+                    // module exporting the same bare name cannot collapse the two
+                    // onto one last-write-wins bare key downstream (the MIR
+                    // record-layout / field-order registry is keyed by identity).
+                    qualified
                 } else {
                     match handle_matches.as_slice() {
                         // Exactly one importing module exports this name: bind to

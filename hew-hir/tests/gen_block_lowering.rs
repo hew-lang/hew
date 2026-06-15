@@ -23,6 +23,20 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
     )
 }
 
+/// Type-check `source` and return the checker's error messages without lowering.
+/// Used by reject-path regressions where the body is expected to be ill-typed.
+fn typecheck_errors(source: &str) -> Vec<String> {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    tco.errors.iter().map(|e| e.message.clone()).collect()
+}
+
 fn main_body(output: &hew_hir::LowerOutput) -> &hew_hir::HirBlock {
     output
         .module
@@ -318,6 +332,53 @@ fn actor_receive_gen_fn_yield_lowers_through_genblock() {
         let value = value.as_ref().expect("yield must carry value");
         assert_eq!(value.ty, ResolvedTy::I64);
     }
+}
+
+#[test]
+fn actor_receive_gen_fn_rejects_non_unit_return() {
+    // Regression (fail-open fix): an actor `receive gen fn`'s declared `-> T` is
+    // the Yield element type; the body falls off the end with Unit, so an
+    // explicit `return <T>;` must be rejected exactly like a standalone
+    // `gen fn` — the value would otherwise be silently dropped. The checker
+    // shapes `current_return_type` as `Generator<Yield = T, Return = Unit>`, so
+    // `return 7;` is checked against the Unit Return component and fails.
+    let errors = typecheck_errors(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn one_then_done() -> i64 { yield 42; return 7; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("expected `()`") && m.contains("found `i64`")),
+        "expected a Unit/i64 return-type mismatch on the explicit `return 7;`, got: {errors:?}"
+    );
+}
+
+#[test]
+fn actor_receive_gen_fn_accepts_bare_return() {
+    // Companion to the reject regression: a bare `return;` in an actor
+    // `receive gen fn` is valid (it returns the Unit Return component) and must
+    // not be flagged as a Unit-vs-`i64` mismatch. Before the fix the body was
+    // checked against the bare yield type, so a bare return was wrongly rejected.
+    let output = typecheck_and_lower(
+        r"
+        actor Seq {
+            init() {}
+            receive gen fn one_then_done() -> i64 { yield 42; return; }
+        }
+        fn main() { let _s = spawn Seq(); }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "unexpected HIR diagnostics: {:?}",
+        output.diagnostics
+    );
 }
 
 #[test]

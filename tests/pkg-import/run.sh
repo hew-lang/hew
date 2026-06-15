@@ -180,6 +180,17 @@ fixtures=(
   # two re-export hops, so the whole transitive method set is KNOWN and each inline
   # method's signature is checked against its origin. ACCEPT + run e2e.
   reexport_chain_inline_supermethods_accept
+  # REDECLARED supertrait satisfied by a SEPARATE impl (the stdlib
+  # `ValueMethods: CanonicalValueMethods` shape). `trait Redecl: Base` REDECLARES
+  # the inherited `base`; the type provides `base` through a SEPARATE `impl Base
+  # for W` and supplies only `Redecl`'s own `tag` in `impl Redecl for W`. The
+  # redeclared `base` is bodyless-required on `Redecl` but INHERITED from `Base`,
+  # so the method-set check must drop it from `Redecl`'s required set rather than
+  # demand it on the sub-impl block. ACCEPT + run e2e so the inherited `base`
+  # (via `impl Base`) and the sub's own `tag` both dispatch. Guards the
+  # over-strict "is missing required method(s): base" rejection of the
+  # separate-supertrait-impl pattern.
+  imported_redeclared_super_separate_impl_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -478,6 +489,11 @@ assert_method_set_reject imported_subtrait_extra_method_reject "declares method(
 # Missing the imported sub's OWN required method (`tag`) while providing the
 # inherited `base` — the sub's required set is unchanged by the super-edge fix.
 assert_method_set_reject imported_subtrait_missing_own_method_reject "is missing required method(s): tag"
+# REDECLARED supertrait method (`base`) satisfied by a separate `impl Base`, but
+# the sub's OWN required `tag` omitted. The inherited `base` is dropped from
+# `Redecl`'s required set, but `Redecl`'s own `tag` is not — so this rejects on
+# `tag`, proving the inherited-method relaxation does not leak onto own methods.
+assert_method_set_reject imported_redeclared_super_missing_own_reject "is missing required method(s): tag"
 
 # Determinism: the same-name supertrait collision must REJECT on every run
 # regardless of module-registration order. A bare super edge would bind whichever

@@ -1,0 +1,26 @@
+// Reject fixture: counterpart to `imported_redeclared_super_separate_impl_accept`.
+// `trait Redecl: Base` REDECLARES the inherited `base` and adds its own `tag`.
+// The impl provides a separate `impl Base for W` (satisfying the inherited
+// `base`) but OMITS `Redecl`'s own required `tag`. The inherited `base` is
+// dropped from `Redecl`'s required set, but `Redecl`'s OWN required `tag` is
+// not — so this must REJECT with "is missing required method(s): tag", never
+// silently accept. Guards the inherited-method relaxation from leaking onto the
+// sub-trait's own required methods.
+import hew::supertraits::{Base, Redecl};
+
+type W {
+    id: i64;
+}
+
+impl Base for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+}
+
+impl Redecl for W {
+}
+
+fn main() -> i64 {
+    0
+}

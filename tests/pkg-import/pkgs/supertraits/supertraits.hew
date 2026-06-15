@@ -24,6 +24,20 @@ pub trait Sub: Base {
     fn tag(val: Self) -> i64;
 }
 
+/// Sub-trait that REDECLARES its supertrait's method (`base`) alongside its own
+/// (`tag`). This is the stdlib `ValueMethods: CanonicalValueMethods` shape: the
+/// redeclared `base` becomes bodyless-required on `Redecl`, but it is INHERITED
+/// from `Base` and satisfied by a SEPARATE `impl Base for T` block — never forced
+/// onto the `impl Redecl for T` block. The method-set check must drop the
+/// inherited `base` from `Redecl`'s required set so a sub-impl that omits it (and
+/// relies on `impl Base for T`) is accepted, while keeping `Redecl`'s own `tag`
+/// required.
+pub trait Redecl: Base {
+    fn base(val: Self) -> i64;
+
+    fn tag(val: Self) -> i64;
+}
+
 /// One level above `Base`.
 pub trait Mid: Base {
     fn mid(val: Self) -> i64;
@@ -53,6 +67,7 @@ pub trait Diamond: Left + Right {
 /// may omit `provided` (default) while `req` stays required.
 pub trait Defaulty {
     fn req(val: Self) -> i64;
+
     fn provided(val: Self) -> i64 {
         7
     }

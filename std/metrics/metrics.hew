@@ -36,11 +36,15 @@
 //!
 //! # Names
 //!
-//! Metric names follow the Prometheus charset `[a-zA-Z_:][a-zA-Z0-9_:.]*`. A
-//! name that is malformed, that exceeds the registry's caps, or that collides
-//! with a runtime built-in is rejected. The fail-fast constructors
-//! (`counter`/`gauge`/`histogram`) panic on rejection; the `try_*` variants
-//! return a [`MetricsError`] so the caller can recover.
+//! Metric names follow the Prometheus charset `[a-zA-Z_:][a-zA-Z0-9_:.]*`. The
+//! scrape renders a name to its Prometheus series by mapping `.` to `_`. A name
+//! that is malformed, that exceeds the registry's caps, or whose rendered series
+//! name collides with a runtime built-in or an already-registered user metric
+//! (`heap_live_bytes` vs the built-in `heap.live_bytes`; `foo.bar` vs `foo_bar`)
+//! is rejected, so a user metric cannot shadow or alias another's scrape output.
+//! The fail-fast constructors (`counter`/`gauge`/`histogram`) panic on
+//! rejection; the `try_*` variants return a [`MetricsError`] so the caller can
+//! recover.
 
 /// Why a metric registration was rejected.
 pub enum MetricsError {
@@ -71,9 +75,10 @@ pub type Gauge {
 /// Created by `metrics.histogram(name)`. `Copy`: the handle is the registry
 /// slot index, not an owning pointer.
 ///
-/// This handle records observations against the running observation count.
-/// Bucketed histograms (custom `le` upper bounds) are not yet expressible from
-/// the stdlib surface and arrive in a later release.
+/// This handle records observations; the scrape exposes the running
+/// observation count and sum as valid `name_count` / `name_sum` lines.
+/// Bucketed histograms (custom `le` upper bounds, the `name_bucket` lines) are
+/// not yet expressible from the stdlib surface and arrive in a later release.
 pub type Histogram {
     id: i64;
 }
@@ -227,8 +232,9 @@ pub fn try_gauge(name: string) -> Result<Gauge, MetricsError> {
 /// Panics if the name is rejected by the registry. Use [`try_histogram`] for a
 /// recoverable result.
 ///
-/// The histogram records observations against the running observation count.
-/// Custom bucket upper bounds arrive in a later release.
+/// The histogram records observations; the scrape exposes the running count
+/// and sum as `name_count` / `name_sum`. Custom bucket upper bounds (the
+/// `name_bucket` lines) arrive in a later release.
 pub fn histogram(name: string) -> Histogram {
     let id = unsafe {
         hew_metric_histogram_register_simple(name)

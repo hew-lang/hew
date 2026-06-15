@@ -51,7 +51,11 @@ fn main() {
     assert(scrape.contains("app_requests 10"));
     assert(scrape.contains("# TYPE app_active_connections gauge"));
     assert(scrape.contains("app_active_connections 9"));
+    // A histogram exposes valid `_count` / `_sum` samples under its base name,
+    // never a bare sample (which Prometheus rejects). Three observations of
+    // 5 + 42 + 500 → count 3, sum 547.
     assert(scrape.contains("# TYPE app_request_duration histogram"));
-    assert(scrape.contains("app_request_duration 3"));
+    assert(scrape.contains("app_request_duration_count 3"));
+    assert(scrape.contains("app_request_duration_sum 547"));
     println("metrics_smoke: OK");
 }

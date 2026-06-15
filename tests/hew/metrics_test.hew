@@ -56,16 +56,19 @@ fn test_gauge_set_inc_dec_exact() {
     testing.assert_true(scrape.contains("test_gauge_value 9"));
 }
 
-// ── Histogram: observation count ──────────────────────────────────────
+// ── Histogram: valid _count / _sum exposition ─────────────────────────
 #[test]
-fn test_histogram_observation_count() {
+fn test_histogram_count_and_sum_exposition() {
     let h = metrics.histogram("test.histogram_count");
     h.observe(1.0);
     h.observe(50.0);
     h.observe(900.0);
     let scrape = observe.scrape();
+    // A histogram renders valid `_count` and `_sum` samples under its base
+    // name, never a bare sample (Prometheus rejects that and drops the sum).
     testing.assert_true(scrape.contains("# TYPE test_histogram_count histogram"));
-    testing.assert_true(scrape.contains("test_histogram_count 3"));
+    testing.assert_true(scrape.contains("test_histogram_count_count 3"));
+    testing.assert_true(scrape.contains("test_histogram_count_sum 951"));
 }
 
 // ── try_* recovers a structured result ────────────────────────────────
@@ -85,6 +88,18 @@ fn test_try_counter_ok_for_valid_name() {
 fn test_try_counter_rejects_builtin_collision() {
     // `heap.live_bytes` is a runtime built-in; a user metric may not shadow it.
     match metrics.try_counter("heap.live_bytes") {
+        Ok(_) => testing.assert_true(false),
+        Err(_) => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_try_counter_rejects_rendered_builtin_collision() {
+    // `heap_live_bytes` is a distinct name from the built-in `heap.live_bytes`,
+    // but both render to the same `heap_live_bytes` Prometheus series. The
+    // registry rejects it so a user metric cannot shadow the built-in's scrape
+    // output.
+    match metrics.try_counter("heap_live_bytes") {
         Ok(_) => testing.assert_true(false),
         Err(_) => testing.assert_true(true),
     }

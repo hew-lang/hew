@@ -1,0 +1,31 @@
+// Reject fixture (the re-exported-supertrait acid test). `Sub` is imported from
+// `hew::reexsub` (where `Sub: Base`, and `Base` is itself re-imported by
+// `reexsub` from `hew::reexbase`, `Base::base -> i64`). A DIFFERENT bare `Base`
+// is imported from `hew::wrongbase` (`Base::base -> bool`). The impl provides
+// `base -> bool` inline. Resolving the supertrait edge in the FINAL IMPORTER's
+// namespace would bind `wrongbase.Base` (bool) and falsely ACCEPT. The edge must
+// follow the re-export chain to `reexbase.Base` (i64), so `base` is checked
+// against the i64 signature of `Sub`'s re-exported supertrait and the impl is
+// REJECTED with `TraitImplSignatureMismatch`. The collision-unsafe fail-open is
+// that `qualify_super_trait_edge` fell back to the bare `Base` (binding the
+// final importer's `wrongbase.Base`) when `reexsub.Base` was unregistered.
+import hew::reexsub::{Sub};
+
+import hew::wrongbase::{Base};
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> bool {
+        true
+    }
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

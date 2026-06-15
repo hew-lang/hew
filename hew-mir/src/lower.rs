@@ -5181,14 +5181,18 @@ fn is_codegen_ready_user_name(name: &str, readiness: &LayoutReadiness) -> bool {
             .record_field_orders
             .keys()
             .any(|known| short_name(known) == short_name(name))
-        // Generic record instantiations are keyed by mangled name
-        // (e.g. "Wrapper$$i64"); match the bare name prefix so that
+        // Generic record instantiations are keyed by the mangled SHORT name
+        // (e.g. "Wrapper$$i64"); match against the bare (short) prefix so that
         // `UnknownType` is not emitted for types that DO have a concrete
-        // layout entry under a monomorphised symbol.
-        || readiness
-            .record_field_orders
-            .keys()
-            .any(|known| known.starts_with(name) && known[name.len()..].starts_with("$$"))
+        // layout entry under a monomorphised symbol — including a qualified
+        // outer spelling (`shapes.Holder<...>` keyed `Holder$$Box`).
+        || {
+            let short = short_name(name);
+            readiness
+                .record_field_orders
+                .keys()
+                .any(|known| known.starts_with(short) && known[short.len()..].starts_with("$$"))
+        }
         || readiness.actor_layouts.contains_key(name)
         || readiness.supervisor_layout_map.contains_key(name)
         || machine_layout_name_matches(readiness.machine_layout_names, name)
@@ -7406,9 +7410,20 @@ impl Builder {
                     return;
                 };
                 let object_ty = self.subst_ty(&object.ty);
+                // Route the GENERIC arm's outer record name through `short_name`
+                // before mangling, exactly as the `StructInit` arm does
+                // (`mangle_layout_key(short_name(tname), args)`): registration
+                // keys a generic record's layout under the bare outer name
+                // (`Holder$$Box`), so a qualified outer spelling must shorten
+                // here or the mangled key diverges from the registered one. The
+                // monomorphic arm keeps the (possibly qualified) `name` so a
+                // same-bare-name record registered under its QUALIFIED key
+                // (`widgeti8.Widget` vs `widgeti64.Widget`, divergent layouts)
+                // hits its own layout; `lookup_record_field_order` strips the
+                // qualifier on a miss for bare-registered monomorphic records.
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(name, args)
+                        mangle_layout_key(short_name(name), args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -8151,7 +8166,7 @@ impl Builder {
                 let record_key = match &expr_ty {
                     ResolvedTy::Named {
                         name: tname, args, ..
-                    } if !args.is_empty() => mangle_layout_key(tname, args),
+                    } if !args.is_empty() => mangle_layout_key(short_name(tname), args),
                     ResolvedTy::Named {
                         name: tname,
                         args,
@@ -8164,30 +8179,29 @@ impl Builder {
                 // If it's missing, the checker allowed a type that was never
                 // registered — fail closed rather than silently producing
                 // malformed MIR.
-                let field_order =
-                    if let Some(order) = self.record_field_orders.get(record_key.as_str()) {
-                        order.clone()
-                    } else {
-                        // Walk sub-expressions for checker-stream coverage.
-                        for (_, fexpr) in fields {
-                            let _ = self.lower_value(fexpr);
-                        }
-                        if let Some(base_expr) = base {
-                            let _ = self.lower_value(base_expr);
-                        }
-                        self.diagnostics.push(MirDiagnostic {
-                            kind: MirDiagnosticKind::NotYetImplemented {
-                                construct: format!(
-                                    "record type `{name}` (not registered in field-order table)"
-                                ),
-                                site: expr.site,
-                            },
-                            note: "record type was not found in the field-order table; \
+                let field_order = if let Some(order) = self.lookup_record_field_order(&record_key) {
+                    order.clone()
+                } else {
+                    // Walk sub-expressions for checker-stream coverage.
+                    for (_, fexpr) in fields {
+                        let _ = self.lower_value(fexpr);
+                    }
+                    if let Some(base_expr) = base {
+                        let _ = self.lower_value(base_expr);
+                    }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "record type `{name}` (not registered in field-order table)"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "record type was not found in the field-order table; \
                                this is a checker bug (the type must be declared before use)"
-                                .to_string(),
-                        });
-                        return None;
-                    };
+                            .to_string(),
+                    });
+                    return None;
+                };
 
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
@@ -8380,11 +8394,18 @@ impl Builder {
                 // can look up the field offset in the field-order table.
                 // For a generic record instantiation (`b: Box<i64>` reading
                 // `b.value`) the key is the mangled name `Box$$i64`; for a
-                // monomorphic record the key is the bare name.
+                // monomorphic record the key is the (possibly qualified) name.
+                // Route the GENERIC arm's outer name through `short_name` before
+                // mangling — identical to the `StructInit` arm — since a generic
+                // record's layout is registered under the bare outer name. The
+                // monomorphic arm keeps `name` so a same-bare-name record
+                // registered under its QUALIFIED key (`widgeti8.Widget` vs
+                // `widgeti64.Widget`) hits its own divergent layout;
+                // `lookup_record_field_order` strips the qualifier on a miss.
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(name, args)
+                        mangle_layout_key(short_name(name), args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -28877,6 +28898,85 @@ fn enumerate_exits(
 // synthetic `ElaboratedMirFunction` inputs so the HIR-construction gap
 // (no LambdaActor/Duplex HIR shape yet) doesn't block coverage.
 // ============================================================================
+
+#[cfg(test)]
+mod layout_key_shortening_guard {
+    //! Structural guard: the GENERIC record-layout key the field-store,
+    //! field-read, and `StructInit` arms build must route the OUTER record name
+    //! through `short_name` before mangling. A generic record's layout is
+    //! registered under the bare outer name (`Holder$$Box`), so a module-
+    //! qualified outer spelling reached under qualified-by-default (`q.Holder`)
+    //! would mangle to a divergent key and miss its layout unless the qualifier
+    //! is shortened here. The three generic arms therefore use
+    //! `mangle_layout_key(short_name(name|tname), args)` — never a bare
+    //! `mangle_layout_key(name, args)`. (The MONOMORPHIC arms intentionally keep
+    //! the possibly-qualified `name` so a same-bare-name record registered under
+    //! its QUALIFIED key — `widgeti8.Widget` vs `widgeti64.Widget`, divergent
+    //! layouts — hits its own layout, with `lookup_record_field_order` stripping
+    //! the qualifier on a miss.) This scan keeps producer (registration) and
+    //! consumer (field load/store) generic keys from silently diverging.
+
+    /// The production (non-test) prefix of `lower.rs`.
+    ///
+    /// Normalises CRLF→LF before splitting: on a Windows checkout
+    /// (`core.autocrlf=true`) the embedded `include_str!` source carries
+    /// `\r\n`, so a split on the LF-anchored `\n#[cfg(test)]\n` never matches
+    /// and would return the WHOLE file — pulling the test module's own
+    /// `mangle_layout_key(name, args)` string literals into the scan and
+    /// breaking the bare-key count guard below. Normalising keeps the guard
+    /// deterministic across line-ending conventions.
+    fn production_source() -> String {
+        let src = include_str!("lower.rs").replace("\r\n", "\n");
+        src.split("\n#[cfg(test)]\n")
+            .next()
+            .expect("lower.rs has a non-test prefix")
+            .to_string()
+    }
+
+    /// The field-store AND field-read GENERIC arms each shorten the outer name.
+    /// If a future edit drops the `short_name` wrap (re-opening the qualified-
+    /// spine layout miss for generic field load/store), this check fails and
+    /// names the regression.
+    #[test]
+    fn field_order_generic_arms_route_outer_name_through_short_name() {
+        let prod = production_source();
+        let generic_arm = "mangle_layout_key(short_name(name), args)";
+        let generic_hits = prod.matches(generic_arm).count();
+        assert!(
+            generic_hits >= 2,
+            "expected the field-store AND field-read generic arms to build the layout \
+             key via `{generic_arm}` (parity with the StructInit arm); found {generic_hits}. \
+             A bare `mangle_layout_key(name, args)` re-opens the qualified-spine layout miss."
+        );
+        // No field-order generic arm may feed a BARE-outer-name mangle. The only
+        // remaining `mangle_layout_key(name, args)` (bare outer) is the
+        // vec-owned-element key path, which has its own `short_name`-aware
+        // fallback lookups — assert the field-order arms are not among them by
+        // requiring every `mangle_layout_key(name, args)` to be paired with a
+        // `short_name`-based membership check within a few lines (the
+        // vec-owned-key shape). Here we simply pin that the shortened form is
+        // the dominant one for the field-order sites.
+        assert!(
+            prod.matches("mangle_layout_key(name, args)").count() <= 1,
+            "at most the single vec-owned-element-key site may mangle a bare outer \
+             name; a new bare-outer `mangle_layout_key(name, args)` likely feeds a \
+             field-order lookup and must shorten the outer name instead"
+        );
+    }
+
+    /// The `StructInit` arm — the parity reference — also shortens its outer
+    /// name. Pinned here so the three arms cannot drift apart.
+    #[test]
+    fn struct_init_arm_routes_outer_name_through_short_name() {
+        let prod = production_source();
+        assert!(
+            prod.contains("mangle_layout_key(short_name(tname), args)"),
+            "the StructInit record-key arm must shorten its outer name via \
+             `mangle_layout_key(short_name(tname), args)` — the parity reference the \
+             field-store and field-read arms mirror"
+        );
+    }
+}
 
 #[cfg(test)]
 mod slice3_invariants {

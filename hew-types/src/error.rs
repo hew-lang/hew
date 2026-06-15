@@ -837,6 +837,36 @@ pub enum TypeErrorKind {
         /// or `"return type"`. Used by tests to pin diagnostic precision.
         detail: &'static str,
     },
+    /// An `impl <Trait> for <Type>` omits one or more REQUIRED (bodyless) trait
+    /// methods. The required method set is resolved through the trait's
+    /// owner-qualified identity, so a same-name trait collision cannot leak a
+    /// neighbour's method set into the comparison. Fail-closed: an impl missing
+    /// a required method is rejected at the impl site rather than accepted and
+    /// surfacing later as a confusing call-site failure.
+    ///
+    /// Envelope code: `E_TRAIT_IMPL_MISSING_METHODS`.
+    TraitImplMissingMethods {
+        /// Trait whose required method(s) the impl failed to provide.
+        trait_name: String,
+        /// The impl target type.
+        type_name: String,
+        /// Sorted names of the required methods that are missing.
+        methods: Vec<String>,
+    },
+    /// An `impl <Trait> for <Type>` declares one or more methods that the trait
+    /// does not declare. The known method set is resolved through the trait's
+    /// owner-qualified identity. Fail-closed: an extraneous method is a
+    /// contract error rejected at the impl site.
+    ///
+    /// Envelope code: `E_TRAIT_IMPL_EXTRA_METHODS`.
+    TraitImplExtraMethods {
+        /// Trait the impl is for.
+        trait_name: String,
+        /// The impl target type.
+        type_name: String,
+        /// Sorted names of the impl methods that are not on the trait.
+        methods: Vec<String>,
+    },
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
     ///
@@ -955,6 +985,8 @@ impl TypeErrorKind {
             Self::AmbiguousActorReference { .. } => "AmbiguousActorReference",
             Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
             Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
+            Self::TraitImplMissingMethods { .. } => "TraitImplMissingMethods",
+            Self::TraitImplExtraMethods { .. } => "TraitImplExtraMethods",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
         }

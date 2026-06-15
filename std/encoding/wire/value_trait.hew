@@ -21,7 +21,7 @@
 //! `0 =>` arm expecting a real null — it will never fire.
 
 /// Common `Value` methods implemented by stdlib encodings with opaque handles.
-trait CanonicalValueMethods {
+pub trait CanonicalValueMethods {
     /// Serialize the value back to its source encoding.
     fn stringify(self) -> string;
 

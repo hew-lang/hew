@@ -10732,14 +10732,30 @@ impl LowerCtx {
                     // `Named { name: "widgeti8.Widget" }` at this span. Carry
                     // that qualifier onto the init expression's type so MIR can
                     // resolve the per-module layout when two packages export a
-                    // same-bare-name type. Only adopt the recorded name when it
-                    // is the dotted form of the same short construction name and
-                    // names a non-builtin user type; a single-module construction
-                    // records the bare name and keeps `name` byte-identically.
-                    // For a non-colliding qualified reference MIR keeps the bare
-                    // layout key and codegen resolves the qualified name to the
-                    // single bare struct by short-name, so this is safe even when
-                    // the type does not collide.
+                    // same-bare-name type; a single-module construction records
+                    // the bare name and keeps `name` byte-identically. For a
+                    // non-colliding qualified reference MIR keeps the bare layout
+                    // key and codegen resolves the qualified name to the single
+                    // bare struct by short-name, so this is safe even when the
+                    // type does not collide.
+                    //
+                    // The recorded short name does NOT always equal the syntactic
+                    // construction name. For an ALIASED import (`import m::{
+                    // Payload as Tag }; Tag { … }`) the checker resolves `Tag`
+                    // through `published_bare_type_qualified` to the SOURCE
+                    // identity `m.Payload` and records `Named { name: "m.Payload"
+                    // }` — short form `Payload`, not the binding `Tag`. Keying
+                    // MIR's field-order lookup off the bare binding `Tag` finds no
+                    // registered record (the layout is registered under the source
+                    // `Payload`), tripping the field-order fail-closed. So adopt
+                    // the checker-recorded qualified identity whenever its short
+                    // form is a registered record — the same-name qualified case
+                    // (`short == name`) and the aliased case (`short` names the
+                    // source record) both route through the source identity, never
+                    // the bare binding. The `record_registry` membership check
+                    // mirrors the checker's `type_defs.contains_key(qualified)`
+                    // guard in `published_bare_type_qualified`, so an unrelated or
+                    // unregistered qualified name is never adopted.
                     let result_name = self
                         .expr_types
                         .get(&self.mk_key(&span))
@@ -10748,12 +10764,12 @@ impl LowerCtx {
                                 name: recorded,
                                 builtin: None,
                                 ..
-                            } if recorded.contains('.')
-                                && recorded
-                                    .rsplit_once('.')
-                                    .is_some_and(|(_, short)| short == name.as_str()) =>
-                            {
-                                Some(recorded.clone())
+                            } if recorded.contains('.') => {
+                                recorded.rsplit_once('.').and_then(|(_, short)| {
+                                    (short == name.as_str()
+                                        || self.record_registry.contains_key(short))
+                                    .then(|| recorded.clone())
+                                })
                             }
                             _ => None,
                         })

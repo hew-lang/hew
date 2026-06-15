@@ -1,0 +1,28 @@
+// Accept fixture: an importer brings ONLY `Sub` into scope (`trait Sub: Base` in
+// `hew::supertraits`) and provides the inherited supertrait method `base` inline
+// alongside `Sub`'s own `tag`. The supertrait edge is owner-qualified
+// (`supertraits.Base`), so the method-set check folds `Base`'s methods into the
+// KNOWN set through `Base`'s OWNER — `base` is not flagged as extra even though
+// `Base` was never imported — and the inline `base`'s signature is checked
+// against `supertraits.Base` (`-> i64`). Run e2e so both the inherited `base`
+// and the sub's own `tag` are dispatched through receiver calls.
+import hew::supertraits::{ Sub };
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id + 100
+    }
+}
+
+fn main() {
+    let w = W { id: 5 };
+    println(f"tag {w.tag()} base {w.base()}");
+}

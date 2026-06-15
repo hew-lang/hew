@@ -59,6 +59,138 @@ fixtures=(
   # `Holder$$Box` lookup and the heap-owning Box drop / field read falls through
   # the codegen fail-closed.
   postmono_qualified_layout
+  # A monomorphic record (`Point`) and a generic record (`Holder<Box>`) both
+  # CONSTRUCTED through their module-qualified OUTER name (`qualshapes.Point`,
+  # `qualshapes.Holder<qualshapes.Box>`) under qualified-by-default. Layout
+  # registration keys on the bare outer name (`Point`, `Holder$$Box`), so the
+  # MIR `StructInit` field-order lookup, the MIR codegen-readiness check, and
+  # the codegen `record_struct_for` monomorphic arm must each shorten the
+  # qualified outer name before the lookup, or the construction falls through
+  # the field-order / record-layout fail-closed.
+  qualified_construct_layout
+  # An `impl Closable` whose `close` returns the error type through its
+  # module-qualified spelling (`closableerr.CloseError`) while the trait
+  # declares it bare (`CloseError`). `check_impl_method_against_trait` must
+  # shorten the known-module qualifier before comparing signatures, or it
+  # rejects the impl with a false `TraitImplSignatureMismatch`. Called via
+  # receiver dispatch so the proof turns only on trait conformance.
+  qualified_trait_sig
+  # A bare `Gadget` opted in from `widgetpub8::{ Gadget }` while `widgetpub64`
+  # (which also exports a divergent-layout `Gadget`) is plain-imported. The bare
+  # reference must resolve to the PUBLISHED owner `widgetpub8.Gadget` (i8) and
+  # read 7 — the plain import must not poison the opt-in into a false ambiguity,
+  # and must not bind the wrong (i64) layout. Ambiguity is decided over
+  # PUBLISHED bare bindings, not bare exports.
+  published_bare_no_poison
+  # An ALIASED opt-in (`import hew::aliassrc::{ Payload as Tag }`) constructs the
+  # record through its alias binding (`Tag { code: … }`). The checker resolves
+  # `Tag` to the SOURCE identity `aliassrc.Payload`; HIR lowering must stamp that
+  # source identity onto the StructInit result type, not the bare binding `Tag`,
+  # or the MIR field-order lookup misses the registered bare `Payload` layout and
+  # the construction falls through the field-order fail-closed. Reading the field
+  # back proves the source layout was constructed end-to-end.
+  alias_import_resolves_bare_binding_to_source_identity
+  # The same owner module ALSO exports a DISTINCT `Other` record. Aliasing
+  # `Payload as Other` must bind the SOURCE `aliassrc.Payload`, never the
+  # same-named export `aliassrc.Other`: the construction `Other { code: … }`
+  # initialises `Payload`'s sole field, and HIR keys the StructInit off the
+  # resolved source identity rather than the bare alias binding so the field-order
+  # lookup hits `Payload`, not the unregistered `Other` alias key.
+  alias_import_does_not_conflate_with_same_named_export
+  # An ALIASED trait opt-in (`import hew::closableerr::{ Closable as C }`) impls
+  # the trait under its alias (`impl C for MonitorRef`) returning the error type
+  # through its CORRECT module-qualified spelling (`closableerr.CloseError`). The
+  # trait-conformance check must resolve the aliased trait `C` to its SOURCE
+  # identity (`closableerr.Closable`) to find the registered method signatures and
+  # to qualify the trait declaration's bare `CloseError` against the trait owner,
+  # then ACCEPT the matching impl. Run end-to-end so the aliased impl is also
+  # exercised through codegen + receiver dispatch.
+  aliased_trait_sig
+  # Two imported packages (`hew::srccollidea`, `hew::srccollideb`) each export a
+  # trait literally named `Source` with DIVERGENT signatures (`Result<Payload,
+  # ErrA>` vs `i64`). The importer aliases module A's trait (`Source as A`) and
+  # plain-imports module B, then impls A with A's CORRECT `Result<Payload, ErrA>`
+  # signature. The bare trait-method key `Source::close` collides across the two
+  # modules (first-write-wins, registration-order-dependent), so conformance must
+  # resolve the aliased trait to its source owner and compare against the
+  # collision-free owner-qualified key (`srccollidea.Source::close`). The correct
+  # impl must ACCEPT even while module B's same-named `Source::close` (the `i64`
+  # shape) is also registered. Run end-to-end so the aliased impl is exercised
+  # through codegen + receiver dispatch.
+  aliased_trait_source_name_collision_accept
+  # A LOCAL trait `Source` shadows an imported same-name trait. The program
+  # declares its own `Source` (`close` → `i64`) while `hew::srccollidea` (aliased
+  # `Source as A`, whose `close` → `Result<Payload, ErrA>`) and `hew::srccollideb`
+  # are also in scope, polluting the bare `Source::close` key (first-write-wins).
+  # Trait conformance must resolve `Source` to the LOCAL trait — not the imported
+  # signature leaked into the bare key — so the local `i64` impl is valid and runs.
+  local_trait_shadows_imported_collision_accept
+  # A correct ALIASED multi-method trait impl (`Proc as P` from `hew::multitrait`,
+  # `tick` + `close` → `Result<Tally, ProcErr>`) under a same-name collision with
+  # `hew::multitraitb`'s one-method `Proc`. Conformance resolves `P` to its
+  # owner-qualified identity and ACCEPTs — exercising BOTH method-set membership
+  # and per-method signature comparison against the collision-free owner key.
+  aliased_multimethod_trait_collision_accept
+  # An `impl Sub for W` (where `trait Sub: Super`) provides a SUPER-trait method
+  # (`base`) inline alongside the sub-trait's own method. The impl-site method-set
+  # check must fold the whole super-trait chain into the KNOWN set, so the inline
+  # super-method is not flagged as extraneous. ACCEPT + run e2e.
+  subtrait_inline_supermethod_accept
+  # IMPORTED supertrait, inline supermethod. An importer brings ONLY `Sub` into
+  # scope (`trait Sub: Base` in `hew::supertraits`) and provides the inherited
+  # `base` inline. The supertrait edge is OWNER-QUALIFIED (`supertraits.Base`), so
+  # `base`'s methods are folded into the known set through `Base`'s owner — not
+  # the importer namespace, where `Base` is absent — and the inline `base`'s
+  # signature is checked against `supertraits.Base` (`-> i64`). ACCEPT + run e2e
+  # so the inherited `base` and the sub's own `tag` both dispatch. (Guards the
+  # over-strict "declares method(s) not on the trait: base" rejection of an
+  # import-only sub whose super edge resolved in the wrong namespace.)
+  imported_subtrait_inline_supermethod_accept
+  # IMPORTED multi-level chain (`Deep: Mid`, `Mid: Base`). An import-only `Deep`
+  # provides every inherited method inline; each owner-qualified super edge
+  # resolves the method set + signatures two levels up. ACCEPT + run e2e.
+  imported_deep_chain_inline_supermethods_accept
+  # IMPORTED diamond (`Diamond: Left + Right`, both `Left`/`Right: Base`). An
+  # import-only `Diamond` provides the doubly-inherited `base` ONCE plus both
+  # branch methods and the apex; the owner-qualified super walk dedups the two
+  # branch paths so the single inline `base` is KNOWN. ACCEPT + run e2e.
+  imported_diamond_inline_supermethods_accept
+  # ALIASED imported sub-trait (`Sub as S`) provides the inherited `base` inline.
+  # The alias resolves to its SOURCE identity (`supertraits.Sub`), whose
+  # owner-qualified super edge anchors `base` at `supertraits.Base`; the inline
+  # `base`'s signature is checked through the alias. ACCEPT + run e2e.
+  aliased_subtrait_inline_supermethod_accept
+  # RE-EXPORTED supertrait, inline supermethod. The importer brings ONLY `Sub`
+  # into scope from `hew::reexsub`, where `trait Sub: Base` and `Base` is itself
+  # re-imported by `reexsub` from `hew::reexbase`. The super edge must follow the
+  # re-export chain to `reexbase.Base` (reached through `reexsub`'s own import) —
+  # there is no `reexsub.Base` def, so a `{declaring}.Base`-only check misses and
+  # the bare fallback would bind the final importer's namespace. The inline
+  # `base`'s methods are folded into the known set through `reexbase.Base`'s owner
+  # and its signature is checked against `reexbase.Base` (`-> i64`). ACCEPT + e2e.
+  reexport_super_inline_supermethod_accept
+  # ALIASED re-exported supertrait: `SubA` from `hew::reexsubalias`, where
+  # `SubA: B` and `B` is `reexbase.Base` re-imported under an alias. The super
+  # edge `B` follows the module's ALIASED import binding to `reexbase.Base`, never
+  # a reconstructed `reexsubalias.B`. ACCEPT + run e2e.
+  reexport_aliased_super_inline_supermethod_accept
+  # TWO-HOP re-export chain: `Top` from `hew::reexchaina` (`Top: Mid`, `Mid: Base`,
+  # both re-exported). The importer provides `base`/`mid`/`top` inline; each super
+  # edge follows its declaring module's import binding to the original owner across
+  # two re-export hops, so the whole transitive method set is KNOWN and each inline
+  # method's signature is checked against its origin. ACCEPT + run e2e.
+  reexport_chain_inline_supermethods_accept
+  # REDECLARED supertrait satisfied by a SEPARATE impl (the stdlib
+  # `ValueMethods: CanonicalValueMethods` shape). `trait Redecl: Base` REDECLARES
+  # the inherited `base`; the type provides `base` through a SEPARATE `impl Base
+  # for W` and supplies only `Redecl`'s own `tag` in `impl Redecl for W`. The
+  # redeclared `base` is bodyless-required on `Redecl` but INHERITED from `Base`,
+  # so the method-set check must drop it from `Redecl`'s required set rather than
+  # demand it on the sub-impl block. ACCEPT + run e2e so the inherited `base`
+  # (via `impl Base`) and the sub's own `tag` both dispatch. Guards the
+  # over-strict "is missing required method(s): base" rejection of the
+  # separate-supertrait-impl pattern.
+  imported_redeclared_super_separate_impl_accept
 )
 
 for fixture in "${fixtures[@]}"; do
@@ -100,6 +232,397 @@ if grep -q "D10 violation" <<<"${reject_out}"; then
   exit 1
 fi
 echo "PASS ${reject_fixture}"
+
+# Reject fixture: cross-module same-bare-name trait-signature mismatch. The
+# trait `Closable` (from `hew::closableerr`) requires `close` to return
+# `closableerr.CloseError`; this impl returns the DISTINCT
+# `closableerr2.CloseError` (a different type from a different module that
+# shares the bare name). The signature comparison must reject this at the type
+# boundary with `TraitImplSignatureMismatch` — NOT accept it via an over-strip
+# that collapses both qualifiers to bare `CloseError`, and NOT defer to a
+# downstream `E_CODEGEN_FRONT` / D10 codegen fall-through. The positive
+# `qualified_trait_sig` oracle above (same-module spelling) must still pass.
+trait_sig_reject="cross_module_trait_sig_reject"
+trait_sig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${trait_sig_reject}.hew" 2>&1)" && {
+  echo "FAIL ${trait_sig_reject}: hew check unexpectedly succeeded (wrong-module return type slipped the trait-sig gate)" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+}
+if ! grep -q "but trait \`Closable\` requires" <<<"${trait_sig_out}"; then
+  echo "FAIL ${trait_sig_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${trait_sig_out}"; then
+  echo "FAIL ${trait_sig_reject}: wrong-module return type fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${trait_sig_out}" >&2
+  exit 1
+fi
+echo "PASS ${trait_sig_reject}"
+
+# Reject fixture: local-shadow + cross-module trait impl. The importer opts only
+# the trait `Closable` into scope and defines its OWN local `CloseError`, then
+# impls `close` returning that LOCAL bare `CloseError`. The trait requires
+# `closableerr.CloseError`; the local type is distinct, so the impl must be
+# REJECTED with `TraitImplSignatureMismatch`. The local-shadow carve-out is
+# side-specific: it preserves the local identity only on the IMPL/actual side,
+# while the trait side's bare `CloseError` always qualifies to the trait owner.
+# A shared carve-out would leave the trait side bare too and falsely ACCEPT the
+# wrong-module impl (fail-open).
+local_shadow_reject="local_shadow_trait_sig_reject"
+local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${local_shadow_reject}.hew" 2>&1)" && {
+  echo "FAIL ${local_shadow_reject}: hew check unexpectedly succeeded (local-shadow impl slipped the trait-sig gate)" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+}
+if ! grep -q "but trait \`Closable\` requires" <<<"${local_shadow_out}"; then
+  echo "FAIL ${local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${local_shadow_out}"; then
+  echo "FAIL ${local_shadow_reject}: local-shadow impl fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${local_shadow_out}" >&2
+  exit 1
+fi
+echo "PASS ${local_shadow_reject}"
+
+# Reject fixture: ALIASED trait + cross-module wrong return type. The importer
+# brings `Closable` into scope under an alias (`Closable as C`) and impls `close`
+# returning the DISTINCT `closableerr2.CloseError`. The alias must not let the
+# impl bypass the signature comparison: the checker must resolve `C` to its
+# SOURCE identity (`closableerr.Closable`) to find the registered signatures
+# (under `closableerr.Closable::close`, not the alias `C::close`) and to qualify
+# the trait's bare `CloseError` to the trait owner. Without that resolution the
+# alias-keyed lookup misses and the wrong-module impl is silently accepted
+# (fail-open). Must REJECT with `TraitImplSignatureMismatch` at the type
+# boundary, NOT a codegen-front / D10 fall-through.
+aliased_trait_reject="aliased_trait_cross_module_sig_reject"
+aliased_trait_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${aliased_trait_reject}.hew" 2>&1)" && {
+  echo "FAIL ${aliased_trait_reject}: hew check unexpectedly succeeded (aliased-trait wrong-module return type slipped the trait-sig gate)" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${aliased_trait_out}"; then
+  echo "FAIL ${aliased_trait_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${aliased_trait_out}"; then
+  echo "FAIL ${aliased_trait_reject}: aliased-trait wrong-module return type fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${aliased_trait_out}" >&2
+  exit 1
+fi
+echo "PASS ${aliased_trait_reject}"
+
+# Reject fixture: ALIASED trait + local-shadow. The importer aliases the trait
+# (`Closable as C`), defines its OWN local `CloseError`, and impls `close`
+# returning that LOCAL bare type. Resolving `C` to its SOURCE owner
+# (`closableerr`) qualifies the trait side's bare `CloseError` to
+# `closableerr.CloseError`, while the impl side's local shadow keeps its local
+# identity; the two differ, so the impl must be REJECTED. Proves the
+# side-specific local-shadow carve-out is reached through an alias.
+aliased_local_shadow_reject="aliased_trait_local_shadow_sig_reject"
+aliased_local_shadow_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${aliased_local_shadow_reject}.hew" 2>&1)" && {
+  echo "FAIL ${aliased_local_shadow_reject}: hew check unexpectedly succeeded (aliased-trait local-shadow impl slipped the trait-sig gate)" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${aliased_local_shadow_out}"; then
+  echo "FAIL ${aliased_local_shadow_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${aliased_local_shadow_out}"; then
+  echo "FAIL ${aliased_local_shadow_reject}: aliased-trait local-shadow impl fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${aliased_local_shadow_out}" >&2
+  exit 1
+fi
+echo "PASS ${aliased_local_shadow_reject}"
+
+# Reject fixture: ALIASED trait + same-name trait collision across modules. Two
+# imported packages (`hew::srccollidea`, `hew::srccollideb`) each export a trait
+# literally named `Source` with DIVERGENT signatures (`Result<Payload, ErrA>` vs
+# `i64`). The importer aliases module A's trait (`Source as A`) and plain-imports
+# module B, then impls A with module B's `i64` signature. The bare trait-method
+# key `Source::close` is first-write-wins and collides across the two modules, so
+# a bare-key comparison is registration-order-dependent and could silently accept
+# B's `i64` impl against A's trait (a NON-DETERMINISTIC fail-open on the soundness
+# boundary). Conformance must resolve the aliased trait `A` to its SOURCE owner
+# (`srccollidea.Source`) and compare against the collision-free owner-qualified
+# key (`srccollidea.Source::close`). Must REJECT with `TraitImplSignatureMismatch`
+# at the type boundary, NOT a codegen-front / D10 fall-through.
+samename_trait_collision_reject="aliased_trait_source_name_collision_reject"
+samename_trait_collision_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${samename_trait_collision_reject}.hew" 2>&1)" && {
+  echo "FAIL ${samename_trait_collision_reject}: hew check unexpectedly succeeded (same-name trait collision slipped the trait-sig gate)" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+}
+if ! grep -q "TraitImplSignatureMismatch\|but trait .* requires" <<<"${samename_trait_collision_out}"; then
+  echo "FAIL ${samename_trait_collision_reject}: expected a TraitImplSignatureMismatch return-type diagnostic" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+fi
+if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${samename_trait_collision_out}"; then
+  echo "FAIL ${samename_trait_collision_reject}: same-name trait collision fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+  echo "${samename_trait_collision_out}" >&2
+  exit 1
+fi
+echo "PASS ${samename_trait_collision_reject}"
+
+# --- Method-SET membership reject fixtures ----------------------------------
+# An `impl <Trait> for <Type>` must provide EXACTLY the trait's method set:
+# every required (bodyless) method present, and no method that is not on the
+# trait. The required/known method set is resolved through the trait's
+# owner-qualified identity, so a same-name trait collision can never leak a
+# neighbour's method set into the comparison (the previous fail-open: the
+# conformance pass iterated only the impl's methods, so a missing or extra
+# method slipped through and `record_trait_impl` ran unconditionally).
+# Shared assertion: each fixture must REJECT with the method-set diagnostic and
+# NOT fall through to a codegen-front / D10 gate.
+assert_method_set_reject() { # <fixture> <needle>
+  local fixture="$1" needle="$2" out
+  out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+    echo "FAIL ${fixture}: hew check unexpectedly succeeded (method-set defect slipped the gate)" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  if ! grep -q "${needle}" <<<"${out}"; then
+    echo "FAIL ${fixture}: expected a method-set diagnostic matching '${needle}'" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${out}"; then
+    echo "FAIL ${fixture}: method-set defect fell through to codegen-front/D10" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
+# Missing required method, resolved through each trait kind's owner-qualified
+# identity under a same-name collision (aliased / imported-bare / local-shadow).
+assert_method_set_reject trait_impl_missing_method_aliased_reject "is missing required method(s): close"
+assert_method_set_reject trait_impl_missing_method_bare_reject "is missing required method(s): close"
+assert_method_set_reject trait_impl_missing_method_local_reject "is missing required method(s): close"
+# Extra method not declared on the trait, under a same-name collision.
+assert_method_set_reject trait_impl_extra_method_reject "declares method(s) not on the trait: extra"
+
+# --- Imported-supertrait inline-supermethod reject fixtures ------------------
+# An `impl <Sub> for T` may provide an inherited supertrait method inline. The
+# method's SIGNATURE must be checked against the supertrait that DECLARES it,
+# resolved through the OWNER-QUALIFIED super chain (`trait Sub: Base` names the
+# sub's owner's `Base`, never the importer namespace's). The rev7 method-set
+# check permitted the inline super method but never checked its signature — a
+# fail-open this closes. Each fixture must REJECT with the signature-mismatch
+# diagnostic and NOT fall through to a codegen-front / D10 gate.
+assert_super_sig_reject() { # <fixture>
+  local fixture="$1" out
+  out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+    echo "FAIL ${fixture}: hew check unexpectedly succeeded (inline super wrong-sig slipped the gate)" >&2
+    echo "${out}" >&2
+    exit 1
+  }
+  if ! grep -qE "TraitImplSignatureMismatch|but trait .* requires" <<<"${out}"; then
+    echo "FAIL ${fixture}: expected a TraitImplSignatureMismatch diagnostic on the inline super method" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${out}"; then
+    echo "FAIL ${fixture}: inline super wrong-sig fell through to codegen-front/D10 instead of TraitImplSignatureMismatch" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
+# LOCAL super (`Sub: Super`), inline `base -> bool` vs `Super::base -> i64`. The
+# same fail-open applies to local traits — the declaring-trait fallback keys on
+# the supertrait's source name, not the sub-trait written in the impl.
+assert_super_sig_reject subtrait_inline_super_wrong_sig_reject
+# Direct imported super (`Sub: Base`), inline `base -> bool` vs `Base::base -> i64`.
+assert_super_sig_reject imported_subtrait_inline_super_wrong_sig_reject
+# Same-name supertrait collision: `Sub` from `hew::supertraits` (i64 `Base`), a
+# different bare `Base` from `hew::supertraitsb` (bool); inline `base -> bool`
+# must check against the OWNER-qualified `supertraits.Base` (i64), not the
+# importer-namespace `supertraitsb.Base`. Run the collision case 10x below for
+# determinism; this single run asserts the diagnostic shape.
+assert_super_sig_reject supertrait_collision_inline_wrong_sig_reject
+# Wrong-sig at an INTERMEDIATE level of a multi-level chain (`Deep: Mid: Base`):
+# inline `mid -> bool` vs `Mid::mid -> i64`.
+assert_super_sig_reject imported_deep_chain_inline_super_wrong_sig_reject
+# Wrong-sig on a DIAMOND-inherited method (`base` reachable via two branches).
+assert_super_sig_reject imported_diamond_inline_super_wrong_sig_reject
+# Wrong-sig inline super reached through an ALIASED sub-trait (`Sub as S`).
+assert_super_sig_reject aliased_subtrait_inline_super_wrong_sig_reject
+
+# --- RE-EXPORTED supertrait inline-supermethod reject fixtures ----------------
+# A supertrait reached via the DECLARING module's own import (a re-export) has no
+# same-module `{declaring}.Base` def, so the old edge resolver fell back to the
+# bare name and bound whatever same-named `Base` the FINAL importer had in scope
+# (a collision-unsafe fail-open). The unified resolver follows the declaring
+# module's import binding (the re-export chain) to the original owner, so the
+# inline supermethod's signature is checked against that owner. Each fixture must
+# REJECT with the signature-mismatch diagnostic and NOT fall through to codegen.
+#
+# Direct re-export with a same-name collision: `Sub` from `hew::reexsub` (super
+# `reexbase.Base`, `base -> i64`) plus a different bare `Base` from
+# `hew::wrongbase` (`base -> bool`); inline `base -> bool` must check against
+# `reexbase.Base`, not the importer-namespace `wrongbase.Base`. Run 10x below for
+# determinism; this single run asserts the diagnostic shape.
+assert_super_sig_reject reexport_super_wrong_collision_reject
+# ALIASED re-export: `SubA` from `hew::reexsubalias` (super `B = reexbase.Base`),
+# inline `base -> bool` vs `reexbase.Base::base -> i64`. The aliased import binding
+# follows `B` to `reexbase.Base` — there is no `reexsubalias.B` def to fall back on.
+assert_super_sig_reject reexport_aliased_super_wrong_sig_reject
+# INTERMEDIATE level of a two-hop chain: `Top` from `hew::reexchaina`, inline
+# `mid -> bool` vs `reexmid.Mid::mid -> i64`. The intermediate super edge follows
+# `reexchaina`'s import binding to `reexmid.Mid`.
+assert_super_sig_reject reexport_chain_intermediate_wrong_sig_reject
+# ORIGIN of a two-hop chain: `Top` from `hew::reexchaina`, inline `base -> bool`
+# vs `reexbase.Base::base -> i64` reached by walking Top -> reexmid.Mid ->
+# reexbase.Base, following an import binding at each hop.
+assert_super_sig_reject reexport_deep_chain_base_wrong_sig_reject
+
+# Extra method on NEITHER the imported sub nor its owner-qualified super chain.
+assert_method_set_reject imported_subtrait_extra_method_reject "declares method(s) not on the trait: nope"
+# Missing the imported sub's OWN required method (`tag`) while providing the
+# inherited `base` — the sub's required set is unchanged by the super-edge fix.
+assert_method_set_reject imported_subtrait_missing_own_method_reject "is missing required method(s): tag"
+# REDECLARED supertrait method (`base`) satisfied by a separate `impl Base`, but
+# the sub's OWN required `tag` omitted. The inherited `base` is dropped from
+# `Redecl`'s required set, but `Redecl`'s own `tag` is not — so this rejects on
+# `tag`, proving the inherited-method relaxation does not leak onto own methods.
+assert_method_set_reject imported_redeclared_super_missing_own_reject "is missing required method(s): tag"
+
+# Determinism: the same-name supertrait collision must REJECT on every run
+# regardless of module-registration order. A bare super edge would bind whichever
+# `Base` the importer registered, making the verdict order-dependent; the
+# owner-qualified edge is stable. Run the collision reject 10x.
+for i in $(seq 1 10); do
+  det_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/supertrait_collision_inline_wrong_sig_reject.hew" 2>&1)" && {
+    echo "FAIL supertrait_collision_inline_wrong_sig_reject (run ${i}): unexpectedly succeeded" >&2
+    echo "${det_out}" >&2
+    exit 1
+  }
+  if ! grep -qE "but trait .* requires" <<<"${det_out}"; then
+    echo "FAIL supertrait_collision_inline_wrong_sig_reject (run ${i}): missing the signature-mismatch diagnostic" >&2
+    echo "${det_out}" >&2
+    exit 1
+  fi
+done
+echo "PASS supertrait_collision_inline_wrong_sig_reject (10x determinism)"
+
+# Determinism: the RE-EXPORTED supertrait collision must REJECT on every run
+# regardless of module-registration order. The super edge for `reexsub.Sub`
+# resolves through `reexsub`'s import binding to `reexbase.Base` (i64); a bare
+# fallback would bind whichever `Base` the final importer registered first
+# (`reexbase.Base` i64 or `wrongbase.Base` bool), making the verdict
+# order-dependent. The import-binding resolution is stable. Run the reject 10x.
+for i in $(seq 1 10); do
+  reex_det_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/reexport_super_wrong_collision_reject.hew" 2>&1)" && {
+    echo "FAIL reexport_super_wrong_collision_reject (run ${i}): unexpectedly succeeded" >&2
+    echo "${reex_det_out}" >&2
+    exit 1
+  }
+  if ! grep -qE "but trait .* requires" <<<"${reex_det_out}"; then
+    echo "FAIL reexport_super_wrong_collision_reject (run ${i}): missing the signature-mismatch diagnostic" >&2
+    echo "${reex_det_out}" >&2
+    exit 1
+  fi
+done
+echo "PASS reexport_super_wrong_collision_reject (10x determinism)"
+
+# --- REQUIRED-ASSOCIATED-TYPE same-name collision reject/accept oracle ---------
+# An `impl <Trait> for <Type>` that omits a REQUIRED associated type must be
+# rejected. `hew::assocreqimplbad` impls `assocreq.Source` (which requires
+# `type Item`) for `W` without defining `Item`. Pulling in `hew::assocemptyuse`
+# (which imports a same-named empty `Source` from `hew::assocempty`) collides on
+# the bare `Source` name in `trait_defs`. A bare `trait_defs["Source"]` read is
+# last-write-wins between the two same-named traits, so the missing-`Item` check
+# only fired when the required `Source` happened to win the write — an
+# order-dependent fail-open. The required-associated-type enforcement keys off
+# the impl's OWNER-qualified trait identity, so the verdict is stable. Run both
+# import orders 10x; each must reject with the missing-associated-type
+# diagnostic, NOT fall through to a codegen-front / D10 gate.
+for fixture in \
+  missing_assoc_type_collision_reject \
+  missing_assoc_type_collision_reject_reversed; do
+  for i in $(seq 1 10); do
+    assoc_det_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${fixture}.hew" 2>&1)" && {
+      echo "FAIL ${fixture} (run ${i}): unexpectedly succeeded (impl omitting required type Item slipped the gate)" >&2
+      echo "${assoc_det_out}" >&2
+      exit 1
+    }
+    if ! grep -q "must define associated type \`Item\`" <<<"${assoc_det_out}"; then
+      echo "FAIL ${fixture} (run ${i}): missing the required-associated-type diagnostic" >&2
+      echo "${assoc_det_out}" >&2
+      exit 1
+    fi
+    if grep -qE "E_CODEGEN_FRONT|D10 violation" <<<"${assoc_det_out}"; then
+      echo "FAIL ${fixture} (run ${i}): fell through to codegen-front/D10 instead of the type-boundary diagnostic" >&2
+      echo "${assoc_det_out}" >&2
+      exit 1
+    fi
+  done
+  echo "PASS ${fixture} (10x determinism)"
+done
+
+# Accept control: a COMPLETE impl (`hew::assocreqimplok` defines `type Item`)
+# under the SAME same-name `Source` collision must still be accepted on every
+# run — the owner-qualified check must not over-reject a correct impl just
+# because an empty same-named `Source` is in the graph.
+for i in $(seq 1 10); do
+  assoc_ok_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/missing_assoc_type_collision_accept.hew" 2>&1)" || {
+    echo "FAIL missing_assoc_type_collision_accept (run ${i}): a complete impl was rejected under the same-name collision" >&2
+    echo "${assoc_ok_out}" >&2
+    exit 1
+  }
+done
+echo "PASS missing_assoc_type_collision_accept (10x determinism)"
+
+# Reject fixture: two opt-ins of the same bare name from divergent-layout
+# modules is a genuine ambiguity. The checker must fail closed with `ambiguous
+# type` naming both published candidates, at the type boundary (NOT a bare
+# last-write-wins binding that trips a downstream MIR field-order failure).
+ambig_fixture="published_bare_two_optin_ambiguous"
+ambig_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${ambig_fixture}.hew" 2>&1)" && {
+  echo "FAIL ${ambig_fixture}: hew check unexpectedly succeeded (ambiguous bare name slipped the gate)" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+}
+if ! grep -q "ambiguous type \`Gadget\`" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: expected an ambiguous-type diagnostic over the published candidates" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+fi
+if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${ambig_out}"; then
+  echo "FAIL ${ambig_fixture}: ambiguous bare name fell through to a MIR field-order failure instead of the type-boundary diagnostic" >&2
+  echo "${ambig_out}" >&2
+  exit 1
+fi
+echo "PASS ${ambig_fixture}"
+
+# Reject fixture: two plain imports both export `Gadget` but neither publishes
+# it bare, so a bare `Gadget` is not in scope. The checker must fail closed at
+# the type boundary naming both exporting modules.
+unpub_fixture="published_bare_two_plain_rejected"
+unpub_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${unpub_fixture}.hew" 2>&1)" && {
+  echo "FAIL ${unpub_fixture}: hew check unexpectedly succeeded (unpublished bare name slipped the gate)" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+}
+if ! grep -q "is not in scope" <<<"${unpub_out}"; then
+  echo "FAIL ${unpub_fixture}: expected a not-in-scope diagnostic for the unpublished bare name" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+fi
+if grep -qE "E_NOT_YET_IMPLEMENTED|field-order table" <<<"${unpub_out}"; then
+  echo "FAIL ${unpub_fixture}: unpublished bare name fell through to a MIR field-order failure instead of the type-boundary diagnostic" >&2
+  echo "${unpub_out}" >&2
+  exit 1
+fi
+echo "PASS ${unpub_fixture}"
 
 # Memory-safety pass on the ask-reply + explicit-release path (macOS only:
 # MallocScribble/MallocGuardEdges are libmalloc features).

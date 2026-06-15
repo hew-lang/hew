@@ -1,0 +1,35 @@
+// Aliased-trait positive trait-signature ACCEPT oracle.
+//
+// `hew::closableerr` exports the trait `Closable` whose `close` returns
+// `Result<(), CloseError>` (bare inside the defining module). This importer
+// brings the trait into scope under an ALIAS (`Closable as C`) and impls `close`
+// returning the CORRECT type spelled through its module qualifier
+// (`closableerr.CloseError`).
+//
+// After resolving the aliased trait `C` to its SOURCE identity
+// (`closableerr.Closable`), the trait side's bare `CloseError` qualifies to
+// `closableerr.CloseError` and the impl side's `closableerr.CloseError` keeps its
+// qualifier; the two name the one type and the comparison must ACCEPT. A broken
+// alias resolution would either miss the signature lookup (and accept anything)
+// or qualify the trait side wrong and falsely reject this correct impl.
+//
+// Harness verb: hew check (positive — see run.sh).
+import hew::closableerr::{ Closable as C };
+
+pub type MonitorRef {
+    id: i64;
+}
+
+impl C for MonitorRef {
+    fn close(monitor_ref: MonitorRef) -> Result<(), closableerr.CloseError> {
+        Ok(())
+    }
+}
+
+fn main() {
+    let m = MonitorRef { id: 1 };
+    match m.close() {
+        Ok(_) => println("ok"),
+        Err(_) => println("err"),
+    }
+}

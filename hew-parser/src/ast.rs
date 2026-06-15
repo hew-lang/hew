@@ -829,6 +829,13 @@ pub struct FnDecl {
 pub struct ImportDecl {
     pub path: Vec<String>,
     pub spec: Option<ImportSpec>,
+    /// Whole-module alias from `import path::to::mod as alias;`. Legal only for
+    /// the whole-module form (`spec` is `None`); aliasing a brace/glob spec
+    /// (`import m::{ A } as f`, `import m::* as f`) is a parse error. When
+    /// present, `alias` is the qualifier a bare reference reaches the module's
+    /// names through (`alias.Thing`), replacing the last path segment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_alias: Option<String>,
     pub file_path: Option<String>,
     /// Resolved items from the imported file (populated by `resolve_file_imports`).
     /// Used by the type checker to register user module items under the module namespace.

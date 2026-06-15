@@ -1,0 +1,6 @@
+[package]
+name = "hew::reexbase"
+version = "0.1.0"
+description = "Re-exported-supertrait origin: declares the trait `Base` whose `base` returns `i64`. A downstream package re-imports this `Base` and declares a sub-trait against it, so the supertrait edge must resolve to THIS module's `Base`, not whatever same-named `Base` the final importer has in scope."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

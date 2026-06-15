@@ -7,7 +7,7 @@
 //! empty string (the NEW-1 EOF convention). Correct under HEW_WORKERS=1 proves
 //! the lone worker is freed across BOTH closure suspends.
 
-import std::net;
+import std::net::{Listener};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;

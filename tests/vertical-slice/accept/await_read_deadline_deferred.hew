@@ -9,7 +9,7 @@
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42; wrong
 // IoError variant -> 8; no actor exit -> main fallback 99.
 import std::fs;
-import std::net;
+import std::net::{Listener};
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;

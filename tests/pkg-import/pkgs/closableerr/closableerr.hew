@@ -1,0 +1,21 @@
+//! Qualified trait-signature fixture (owner module). Exports a trait `Closable`
+//! whose `close` method returns `Result<(), CloseError>` — referencing the
+//! sibling error type by its BARE name, as written inside the defining module.
+//!
+//! An importer that opts only the trait into scope (`::{ Closable }`) and leaves
+//! the error type qualified-by-default must spell it `closableerr.CloseError` in
+//! its `impl Closable` method signature. The trait's recorded return type then
+//! carries the bare `CloseError` while the impl's carries the qualified
+//! `closableerr.CloseError`; `check_impl_method_against_trait` must shorten the
+//! module qualifier before comparing the signatures, or it reports a false
+//! `TraitImplSignatureMismatch` for two spellings of the one type.
+
+/// Error type returned by `Closable::close`.
+pub type CloseError {
+    code: i64;
+}
+
+/// A resource that can be closed, surfacing a `CloseError` on failure.
+pub trait Closable {
+    fn close(val: Self) -> Result<(), CloseError>;
+}

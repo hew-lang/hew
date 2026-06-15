@@ -30,7 +30,7 @@
 // fetches; it never frees the parent passed by the caller.
 import std::net::http::http_client;
 
-import std::encoding::json;
+import std::encoding::json::{Value};
 
 // Fetch a URL and return the body string, or None on transport failure.
 fn fetch(url: string) -> Option<string> {

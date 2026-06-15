@@ -1,0 +1,6 @@
+[package]
+name = "hew::multitrait"
+version = "0.1.0"
+description = "Multi-method trait collision fixture (module A): exports a two-method trait `Proc` whose `close` returns `Result<Tally, ProcErr>`, colliding on the bare trait name with hew::multitraitb"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

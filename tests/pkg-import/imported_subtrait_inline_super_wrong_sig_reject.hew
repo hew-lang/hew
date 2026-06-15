@@ -1,0 +1,26 @@
+// Reject fixture: an import-only `Sub` (from `hew::supertraits`, where
+// `trait Sub: Base`) provides the inherited supertrait method `base` inline with
+// the WRONG signature (`-> bool` where `supertraits.Base` declares `-> i64`).
+// rev7's method-SET check permits the inline super method, so without checking
+// its SIGNATURE this is a fail-open. The owner-qualified declaring-trait
+// resolution must find `base` on `supertraits.Base` and reject the mismatch with
+// `TraitImplSignatureMismatch`, NOT silently accept and fall through to codegen.
+import hew::supertraits::{ Sub };
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> bool {
+        true
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

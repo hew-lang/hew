@@ -1,0 +1,33 @@
+// Accept fixture: an `impl Sub for T` may provide a SUPER-trait method inline.
+// `trait Sub: Super` means the impl-site method-set check must treat `Super`'s
+// declared methods as KNOWN (not extraneous) when validating an `impl Sub`. The
+// impl provides `Sub`'s own `tag` plus `Super`'s `base` in one block, which must
+// ACCEPT — the "extra method" gate folds the whole super-trait chain into the
+// known set. Run e2e so the inline-provided methods are exercised through
+// dispatch. (Guards against the known set being scoped to the sub-trait only.)
+trait Super {
+    fn base(val: Self) -> i64;
+}
+
+trait Sub: Super {
+    fn tag(val: Self) -> i64;
+}
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id + 100
+    }
+}
+
+fn main() {
+    let w = W { id: 5 };
+    println(f"tag {w.tag()}");
+}

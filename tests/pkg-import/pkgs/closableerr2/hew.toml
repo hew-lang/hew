@@ -1,0 +1,6 @@
+[package]
+name = "hew::closableerr2"
+version = "0.1.0"
+description = "Second module exporting a DISTINCT type that shares the bare name CloseError with hew::closableerr, for the cross-module trait-sig reject oracle"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

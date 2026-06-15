@@ -1,0 +1,9 @@
+[package]
+name = "hew::assocemptyuse"
+version = "0.1.0"
+description = "Imports hew::assocempty's empty same-named `Source`. Pulled into the graph alongside the assocreq impl to poison the global bare `trait_defs[\"Source\"]`."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::assocempty" = { version = "0.1.0", path = "../assocempty" }

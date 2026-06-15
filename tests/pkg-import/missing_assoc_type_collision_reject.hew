@@ -1,0 +1,13 @@
+// REJECT: `hew::assocreqimplbad` impls `assocreq.Source` for `W` but omits the
+// required `type Item`. Pulling in `hew::assocemptyuse` (which imports a
+// same-named empty `Source` from `hew::assocempty`) collides on the bare
+// `Source` name in `trait_defs`. The required-associated-type enforcement must
+// key off the impl's OWNER-qualified trait identity, so the missing `Item` is
+// flagged regardless of which same-named `Source` last wrote the bare entry.
+import hew::assocreqimplbad;
+
+import hew::assocemptyuse;
+
+fn main() -> i64 {
+    0
+}

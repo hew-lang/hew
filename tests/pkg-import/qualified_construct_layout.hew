@@ -1,0 +1,33 @@
+// Qualified-outer-name record construction layout.
+//
+// `hew::qualshapes` exports a monomorphic record `Point` and a generic record
+// `Holder<T>` (over a payload record `Box`). Under qualified-by-default the
+// importer never opts the bare names into scope, so it constructs each record
+// through its module-qualified outer spelling: the annotation `qualshapes.Point`
+// stamps the QUALIFIED name onto the construction's recorded type, and
+// `qualshapes.Holder<qualshapes.Box>` carries a qualified outer name AND a
+// qualified payload arg.
+//
+// Every record-layout site keys on the BARE outer name: registration stores
+// `Point` and the mangled `Holder$$Box`. Three lookup sites must therefore
+// shorten the qualified outer name to its bare form before consulting the
+// field-order / layout map — the MIR `StructInit` field-order lookup, the MIR
+// codegen-readiness `is_codegen_ready_user_name` generic-prefix match, and the
+// codegen `record_struct_for` monomorphic arm. If any keeps the qualified
+// spelling the lookup misses the registered bare key and the construction falls
+// through a fail-closed gate (`record type not registered in field-order table`
+// at MIR, or `reached RecordInit/RecordFieldLoad but is not in the registered
+// record-layout map` at codegen).
+//
+// Harness verb: hew run
+// Expected: the monomorphic point reads back (3, 7); the generic holder reads
+// its tag (5) and unwraps the qualified payload (99).
+import hew::qualshapes;
+
+fn main() {
+    let p: qualshapes.Point = Point { x: 3, y: 7 };
+    let b: qualshapes.Box = Box { payload: 99 };
+    let h: qualshapes.Holder<qualshapes.Box> = Holder { inner: b, tag: 5 };
+    println(f"x={p.x} y={p.y}");
+    println(f"tag={h.tag} payload={h.inner.payload}");
+}

@@ -1,0 +1,29 @@
+// Reject fixture: an ALIASED re-exported supertrait with a wrong inline signature.
+// `SubA` is imported from `hew::reexsubalias` (`trait SubA: B`, where `B` is
+// `reexbase.Base` re-imported as an alias). A DIFFERENT bare `Base` is imported
+// from `hew::wrongbase` (`Base::base -> bool`). The impl provides `base -> bool`
+// inline. There is no `reexsubalias.B` def, so resolving `B` to the bare `Base`
+// in the final importer's namespace would bind `wrongbase.Base` (bool) and falsely
+// ACCEPT. The aliased import binding follows `B` to `reexbase.Base` (i64), so
+// `base` is REJECTED with `TraitImplSignatureMismatch`. Proves the re-export
+// chain fix reaches the alias path.
+import hew::reexsubalias::{SubA};
+
+import hew::wrongbase::{Base};
+
+type W {
+    id: i64;
+}
+
+impl SubA for W {
+    fn base(w: W) -> bool {
+        true
+    }
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

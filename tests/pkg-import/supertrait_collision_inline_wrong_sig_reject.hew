@@ -1,0 +1,28 @@
+// Reject fixture: a same-name SUPERTRAIT collision. `Sub` is imported from
+// `hew::supertraits` (where `Sub: Base`, `Base::base -> i64`), while a DIFFERENT
+// bare `Base` is imported from `hew::supertraitsb` (`Base::base -> bool`). The
+// impl provides `base -> bool` inline. Resolving the supertrait edge in the
+// IMPORTER's namespace would bind `supertraitsb.Base` (bool) and falsely ACCEPT.
+// The edge is owner-qualified (`supertraits.Base`), so `base` is checked against
+// the i64 signature of `Sub`'s OWN supertrait and the impl is REJECTED with
+// `TraitImplSignatureMismatch`. Guards the collision-unsafe fail-open.
+import hew::supertraits::{ Sub };
+import hew::supertraitsb::{ Base };
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> bool {
+        true
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

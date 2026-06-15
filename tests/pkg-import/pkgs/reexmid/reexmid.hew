@@ -1,0 +1,13 @@
+//! Intermediate of a re-export chain.
+//!
+//! Re-imports `hew::reexbase::{ Base }` and declares `Mid: Base`. The super edge
+//! `Base` follows this module's import binding to `reexbase.Base` (`base -> i64`).
+//! A downstream package (`hew::reexchaina`) re-imports `Mid` and declares its own
+//! sub-trait, so the full apex-to-origin chain crosses two re-export hops.
+
+import hew::reexbase::{Base};
+
+/// One level above `Base`, itself re-exported downstream.
+pub trait Mid: Base {
+    fn mid(val: Self) -> i64;
+}

@@ -1027,6 +1027,7 @@ mod tests {
                     Item::Import(ImportDecl {
                         path: path.iter().map(ToString::to_string).collect(),
                         spec: None,
+                        module_alias: None,
                         file_path: None,
                         resolved_items: Some(parsed.program.items),
                         resolved_item_source_paths: Vec::new(),

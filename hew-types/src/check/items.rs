@@ -1677,7 +1677,12 @@ impl Checker {
             // trait must be defined in the current compilation unit.
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name);
-                let trait_is_local = self.local_trait_defs.contains(&tb.name);
+                // Route through the one canonical resolver: a trait reference is
+                // "local" exactly when it resolves to a local declaration (the
+                // resolver's local-shadow step), so the orphan-rule warning keys
+                // on the same authoritative identity every other trait-reference
+                // site does — never the bare spelling in isolation.
+                let trait_is_local = self.trait_ref_is_local(&tb.name);
                 if !type_is_local && !trait_is_local {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,

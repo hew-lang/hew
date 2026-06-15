@@ -8,7 +8,7 @@
 //   Listener     — accept loop; spawns ClientHandler per connection
 //   ClientHandler — reads MQTT frames, calls router methods
 //   Router       — tracks clients and subscriptions, fans out publishes
-import std::net;
+import std::net::{Connection};
 
 import std::string;
 

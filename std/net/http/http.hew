@@ -148,6 +148,12 @@ trait RequestMethods {
 
     /// Begin a streaming response, returning `Err(fs.IoError)` on failure.
     fn try_respond_stream(self, status: i64, content_type: string) -> Result<Sink<string>, fs.IoError>;
+
+    /// Release the request resources.
+    ///
+    /// Callers MUST invoke `free()` before the value goes out of scope;
+    /// dropping without `free()` is a resource leak.
+    fn free(self);
 }
 
 impl RequestMethods for Request {

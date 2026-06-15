@@ -1,0 +1,28 @@
+//! Qualified-construction layout fixture (owner module). Exports a monomorphic
+//! record `Point` and a generic record `Holder<T>` plus a payload record `Box`.
+//!
+//! Under qualified-by-default the importer constructs these through their
+//! module-qualified outer name (`qualshapes.Point`, `qualshapes.Holder<Box>`).
+//! Every record-layout registration keys on the BARE outer name (`Point`,
+//! `Holder$$Box`); the MIR `StructInit` producer, the MIR codegen-readiness
+//! check, and the codegen `record_layouts` consumer must therefore shorten the
+//! qualified outer name to its bare form before the field-order / layout lookup,
+//! or the qualified spelling misses the registered key and the construction
+//! falls through the fail-closed gate.
+
+/// Monomorphic record reached through `qualshapes.Point`.
+pub type Point {
+    x: i64;
+    y: i64;
+}
+
+/// Payload record for the generic instantiation.
+pub type Box {
+    payload: i64;
+}
+
+/// Generic record reached through `qualshapes.Holder<qualshapes.Box>`.
+pub type Holder<T> {
+    inner: T;
+    tag: i64;
+}

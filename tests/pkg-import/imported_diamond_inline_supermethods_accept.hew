@@ -1,0 +1,35 @@
+// Accept fixture: a DIAMOND super chain. `hew::supertraits` declares
+// `Diamond: Left + Right`, with both `Left: Base` and `Right: Base`. An importer
+// brings only `Diamond` into scope and provides the apex method, both branch
+// methods, and the doubly-inherited `base` ONCE. The owner-qualified super-edge
+// walk folds `Base`'s methods into the known set via two distinct branches
+// (deduped), so the single inline `base` is KNOWN and its signature is checked
+// against `supertraits.Base` (`-> i64`). Run e2e so every method dispatches.
+import hew::supertraits::{ Diamond };
+
+type DM {
+    id: i64;
+}
+
+impl Diamond for DM {
+    fn base(w: DM) -> i64 {
+        w.id
+    }
+
+    fn left(w: DM) -> i64 {
+        w.id + 10
+    }
+
+    fn right(w: DM) -> i64 {
+        w.id + 20
+    }
+
+    fn diamond(w: DM) -> i64 {
+        w.id + 30
+    }
+}
+
+fn main() {
+    let w = DM { id: 1 };
+    println(f"diamond {w.diamond()} left {w.left()} right {w.right()} base {w.base()}");
+}

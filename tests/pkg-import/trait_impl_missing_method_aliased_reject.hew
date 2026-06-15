@@ -1,0 +1,25 @@
+// Reject fixture: an ALIASED multi-method trait impl that OMITS a required
+// method. `hew::multitrait` exports a two-method `Proc` (`tick`, `close`);
+// `hew::multitraitb` exports a DISTINCT same-named `Proc` (one method, divergent
+// `close`). The importer aliases A's trait (`Proc as P`) and plain-imports B, so
+// the bare `Proc::close` key collides across modules. The impl provides only
+// `tick`, omitting the required `close`. Conformance must resolve `P` to its
+// owner-qualified identity (`multitrait.Proc`), read THAT trait's required method
+// set, and REJECT the impl for the missing `close` — never accept it by reading
+// the polluted bare method set or B's neighbour set.
+import hew::multitrait::{ Proc as P, Tally, ProcErr };
+import hew::multitraitb;
+
+type W {
+    id: i64;
+}
+
+impl P for W {
+    fn tick(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

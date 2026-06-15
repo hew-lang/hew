@@ -1,0 +1,23 @@
+// Reject fixture: an IMPORTED-BARE multi-method trait impl that OMITS a required
+// method, while a same-named trait from another module is also in scope. The
+// importer opts `Proc` in from `hew::multitrait` and plain-imports
+// `hew::multitraitb` (which also declares a `Proc`), so the bare `Proc::close`
+// key collides. The impl provides only `tick`, omitting the required `close`.
+// Conformance must resolve the bare `Proc` to its owner-qualified identity and
+// REJECT for the missing method rather than read a polluted neighbour set.
+import hew::multitrait::{ Proc, Tally, ProcErr };
+import hew::multitraitb;
+
+type W {
+    id: i64;
+}
+
+impl Proc for W {
+    fn tick(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

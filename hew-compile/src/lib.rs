@@ -630,6 +630,7 @@ pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
                 Item::Import(ImportDecl {
                     path,
                     spec: None,
+                    module_alias: None,
                     file_path: None,
                     resolved_items: None,
                     resolved_item_source_paths: Vec::new(),

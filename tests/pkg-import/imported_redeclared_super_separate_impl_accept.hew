@@ -1,0 +1,33 @@
+// Accept fixture: the stdlib `ValueMethods: CanonicalValueMethods` shape. An
+// importer brings `Redecl` and its supertrait `Base` into scope (`trait Redecl:
+// Base` in `hew::supertraits`, where `Redecl` REDECLARES `Base`'s `base`). The
+// type satisfies the inherited `base` through a SEPARATE `impl Base for W`, and
+// provides only `Redecl`'s own `tag` in `impl Redecl for W`. The redeclared
+// `base` is bodyless-required on `Redecl`, but it is INHERITED from `Base`, so
+// the impl-site method-set check must NOT demand it on the `impl Redecl` block —
+// it is satisfied by `impl Base for W`. Run e2e so both the inherited `base`
+// (dispatched through `impl Base`) and `Redecl`'s own `tag` resolve at call
+// sites. Guards the over-strict "is missing required method(s): base" rejection
+// of a sub-impl whose redeclared supertrait method comes from a separate impl.
+import hew::supertraits::{Base, Redecl};
+
+type W {
+    id: i64;
+}
+
+impl Base for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+}
+
+impl Redecl for W {
+    fn tag(w: W) -> i64 {
+        w.id + 100
+    }
+}
+
+fn main() {
+    let w = W { id: 5 };
+    println(f"tag {w.tag()} base {w.base()}");
+}

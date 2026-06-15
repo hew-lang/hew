@@ -5,7 +5,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "non-suspendable context"
-import std::net;
+import std::net::{Connection};
 
 fn helper(conn: Connection) {
     let _ = await conn.read_string() | after 50ms;

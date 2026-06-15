@@ -4,7 +4,7 @@
 //
 // Harness verb: hew compile (must fail)
 // Expected diagnostic substring: "non-suspendable context"
-import std::net;
+import std::net::{Connection};
 
 fn helper(conn: Connection) -> Result<bytes, fs.IoError> {
     await conn.read() | after 50ms

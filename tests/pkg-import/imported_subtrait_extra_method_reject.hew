@@ -1,0 +1,29 @@
+// Reject fixture: an import-only `Sub` impl provides a method (`nope`) that is on
+// NEITHER `Sub` nor its owner-qualified supertrait `Base`. The method-set check
+// folds only the real super chain into the known set, so a genuinely-extraneous
+// method is still flagged. Must REJECT with the "declares method(s) not on the
+// trait" diagnostic — owner-qualifying the super edge must not widen the known
+// set beyond the actual chain.
+import hew::supertraits::{ Sub };
+
+type W {
+    id: i64;
+}
+
+impl Sub for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id
+    }
+
+    fn nope(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

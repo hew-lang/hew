@@ -1,0 +1,15 @@
+//! Apex of a two-hop re-export chain.
+//!
+//! Re-imports `hew::reexmid::{ Mid }` (where `Mid: Base`, and `Base` is itself
+//! re-imported by `reexmid` from `reexbase`) and declares `Top: Mid`. The super
+//! edge `Mid` follows this module's import binding to `reexmid.Mid`; `Mid`'s own
+//! super edge `Base` follows `reexmid`'s binding to `reexbase.Base`. A final
+//! importer of `Top` providing `base`/`mid`/`top` inline must have each
+//! inherited method's signature checked against its ORIGINAL owner.
+
+import hew::reexmid::{Mid};
+
+/// Apex over a two-hop re-exported super chain (Top -> Mid -> Base).
+pub trait Top: Mid {
+    fn top(val: Self) -> i64;
+}

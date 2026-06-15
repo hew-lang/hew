@@ -1,0 +1,9 @@
+[package]
+name = "hew::reexsubalias"
+version = "0.1.0"
+description = "Re-imports hew::reexbase's Base under an alias (`Base as B`) and declares `SubA: B`. The supertrait edge `B` must follow this module's aliased import binding to reexbase.Base — the alias renames the binding without losing the source identity."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::reexbase" = { version = "0.1.0", path = "../reexbase" }

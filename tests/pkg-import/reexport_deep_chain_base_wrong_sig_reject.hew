@@ -1,0 +1,29 @@
+// Reject fixture: wrong signature at the ORIGIN of a re-export chain, reached
+// through TWO re-export hops. `Top` is imported from `hew::reexchaina`
+// (`Top: Mid`, `Mid: Base`, both re-exported; `Base` is `reexbase.Base`). The
+// impl provides the inherited `base` inline with the WRONG return type (`-> bool`
+// where `reexbase.Base::base -> i64`). Resolving `base`'s owner requires walking
+// `Top -> reexmid.Mid -> reexbase.Base`, following an import binding at each hop.
+// The impl is REJECTED with `TraitImplSignatureMismatch`. Guards the chain fix at
+// the deepest level — the origin, two hops from the apex.
+import hew::reexchaina::{Top};
+
+type W {
+    id: i64;
+}
+
+impl Top for W {
+    fn base(w: W) -> bool {
+        true
+    }
+    fn mid(w: W) -> i64 {
+        w.id
+    }
+    fn top(w: W) -> i64 {
+        w.id
+    }
+}
+
+fn main() -> i64 {
+    0
+}

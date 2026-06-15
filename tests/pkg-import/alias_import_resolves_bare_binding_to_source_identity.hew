@@ -1,0 +1,27 @@
+// Aliased-import construction resolves to the SOURCE identity, end-to-end.
+//
+// `hew::aliassrc` exports a record `Payload`. The importer opts it in under the
+// alias `Tag` (`import hew::aliassrc::{ Payload as Tag }`) and constructs it as
+// `Tag { code: … }`. The checker resolves the bare binding `Tag` through
+// `published_bare_type_qualified` to the SOURCE identity `aliassrc.Payload`
+// (never a phantom `aliassrc.Tag`, which has no def) and records that qualified
+// name on the construction's type.
+//
+// HIR lowering must stamp the source identity onto the StructInit result type,
+// not the bare alias binding. If it keyed off `Tag`, the MIR field-order lookup
+// would miss (the layout is registered under the bare source `Payload`, and
+// `Tag` neither matches nor strips to it) and the construction would fall
+// through the field-order fail-closed (`record type `Tag` not registered in
+// field-order table`). With the source identity on the type, the qualified
+// `aliassrc.Payload` strips to the registered bare `Payload` and both the
+// construction and the subsequent field read resolve.
+//
+// Harness verb: hew run
+// Expected: the aliased construction reads its field back as 7.
+import hew::aliassrc::{ Payload as Tag };
+
+fn main() {
+    let x = Tag { code: 7 };
+    let y = Tag { code: x.code + 1 };
+    println(f"code={x.code} next={y.code}");
+}

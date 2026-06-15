@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::check::registration::StdlibBarePublication;
 use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
 use crate::module_registry::ModuleRegistry;
 use crate::BuiltinType;
@@ -6277,6 +6278,45 @@ fn no_warn_used_import() {
 }
 
 #[test]
+fn no_warn_named_import_type_used_bare() {
+    // A named import (`::{ T }`) of a type used only as a bare type reference
+    // must mark the module used — qualified-by-default routes bare references
+    // through the published binding, which must still consume the import so the
+    // unused-import lint does not false-positive.
+    let source = "import std::io::closable::{ CloseError };\n\
+                  fn handle(e: CloseError) -> i64 { 0 }\n\
+                  fn main() { let _ = handle; println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    assert!(
+        !output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
+        "named import used via a bare type reference must not warn unused: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
+fn warn_named_import_type_unused() {
+    // The complement: a named import whose type is never referenced still warns.
+    let source = "import std::io::closable::{ CloseError };\nfn main() { println(1); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
+        "an unused named import must still warn: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
         import std::string;
@@ -7466,6 +7506,7 @@ fn make_user_import(
     ImportDecl {
         path: path.iter().map(ToString::to_string).collect(),
         spec,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(items),
         resolved_item_source_paths: Vec::new(),
@@ -7548,6 +7589,379 @@ fn bare_import_registers_qualified_name() {
         "bare import should NOT register unqualified name 'helper'"
     );
 }
+
+// -- C2 qualified-by-default import surface (types + machines) --
+//
+// These mirror the function-arm gate (`bare_import_registers_qualified_name`)
+// for the type/machine arms. A plain `import m;` publishes only the qualified
+// binding; bare publication is opt-in via `::{ Name }` or glob. The source
+// module's own bare `type_defs` entry is always kept (the qualified alias copy
+// reads it) — what the gate controls is the *importer-scope* binding recorded
+// in `unqualified_to_module` / `known_types`.
+
+/// Helper: build a single-field public struct `TypeDecl`.
+fn make_pub_struct(name: &str, field: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: field.to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: Vec::new(),
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+/// P1 — a bare `import m;` of a `pub type` publishes only the qualified
+/// binding; the importer-scope bare binding is NOT recorded.
+#[test]
+fn bare_import_type_registers_qualified_only() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        None, // bare import
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    // Qualified authority is always published.
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "bare import should register the qualified type `mod_a.Reply`"
+    );
+    // The source module's own bare def stays (the alias copy reads it); the
+    // importer-scope binding does NOT.
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "bare import must NOT publish the importer-scope bare binding for `Reply`"
+    );
+    assert!(
+        !checker.known_types.contains("Reply"),
+        "bare import must NOT publish bare `Reply` into the importer's known types"
+    );
+}
+
+/// P3 — an explicit `import m::{ Reply };` restores the bare binding.
+#[test]
+fn named_import_type_publishes_bare_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: None,
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "named import should still register the qualified type"
+    );
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "named import must publish the importer-scope bare binding for `Reply`"
+    );
+    assert!(
+        checker.known_types.contains("Reply"),
+        "named import must publish bare `Reply` into the importer's known types"
+    );
+}
+
+/// P3-alias — a named import alias publishes under the aliased name only.
+#[test]
+fn named_import_type_alias_publishes_alias_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("R".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "R".to_string())),
+        "aliased named import must publish the alias binding `R`"
+    );
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "aliased named import must NOT publish the source name `Reply`"
+    );
+}
+
+/// P3-alias-identity — an aliased opt-in (`import m::{ Reply as R }`) makes the
+/// bare binding `R` resolve to the SOURCE identity `m.Reply`, not a phantom
+/// `m.R`. This is the resolver half of the aliased-import fix: the published-bare
+/// map carries the owner-qualified source name, so `published_bare_type_qualified`
+/// returns the type `m` actually exports under `Reply`.
+#[test]
+fn alias_import_resolves_bare_binding_to_source_identity() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("R".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert_eq!(
+        checker.published_bare_type_qualified("R"),
+        Some("mod_a.Reply".to_string()),
+        "aliased binding `R` must resolve to the source identity `mod_a.Reply`, not `mod_a.R`"
+    );
+    // The reconstructed `mod_a.R` must never exist as a registered def — the bug
+    // was binding it (or failing closed) instead of the real source type.
+    assert!(
+        !checker.type_defs.contains_key("mod_a.R"),
+        "no `mod_a.R` def should exist; the alias binds the source `Reply`"
+    );
+}
+
+/// P3-alias-no-conflation — `import m::{ Reply as Other }` where `m` ALSO exports
+/// a DISTINCT `Other` must bind the alias to the SOURCE `m.Reply`, never the
+/// same-named export `m.Other`. Source-name matching opts in only `Reply`; the
+/// real `Other` is not opted in by the alias, and the published-bare map records
+/// the source identity so the binding cannot conflate the two nominal types.
+#[test]
+fn alias_import_does_not_conflate_with_same_named_export() {
+    let reply = make_pub_struct("Reply", "code");
+    let other = make_pub_struct("Other", "tag");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Reply".to_string(),
+            alias: Some("Other".to_string()),
+        }])),
+        vec![(Item::TypeDecl(reply), 0..0), (Item::TypeDecl(other), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    // Both distinct source types keep their own qualified identity.
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "source `Reply` must register its qualified identity"
+    );
+    assert!(
+        output.type_defs.contains_key("mod_a.Other"),
+        "the distinct source `Other` must register its own qualified identity"
+    );
+    // The bare binding `Other` denotes the ALIASED source `mod_a.Reply`, NOT the
+    // same-named export `mod_a.Other`.
+    assert_eq!(
+        checker.published_bare_type_qualified("Other"),
+        Some("mod_a.Reply".to_string()),
+        "aliased binding `Other` must resolve to `mod_a.Reply`, not the same-named export `mod_a.Other`"
+    );
+    // The real `Other` export is not opted in by the alias, so it is not itself
+    // published under its own bare name.
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "the source name `Reply` is not published bare (only the alias binding `Other` is)"
+    );
+}
+
+/// P7 — a glob import publishes every exported type bare (intentional opt-in).
+#[test]
+fn glob_import_type_publishes_bare_binding() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Glob),
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        module_graph: None,
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+    });
+
+    assert!(
+        output.type_defs.contains_key("mod_a.Reply"),
+        "glob import should still register the qualified type"
+    );
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Reply".to_string())),
+        "glob import must publish the importer-scope bare binding for `Reply`"
+    );
+}
+
+// -- Finding 2: stdlib Hew-source imports obey the same bare-publication gate --
+//
+// A C-backed stdlib module that also ships Hew source registers through
+// `register_stdlib_hew_items`. A plain `import std::…` must NOT expose its
+// types bare (so `Server` is reached only as `websocket.Server`), exactly like
+// a user-package import; a named opt-in publishes the bare binding; and the
+// compiled-in `Prelude` bootstrap surfaces (always-in-scope) keep publishing
+// bare unconditionally. The qualified alias + module export are always
+// recorded so the qualified spelling and the use-time "exported by module X"
+// diagnostic work regardless of the gate.
+
+/// A plain stdlib import (`Import(&None)`) registers the qualified authority
+/// but does NOT publish the bare binding — closing the asymmetry where stdlib
+/// types slipped past the qualified-by-default gate.
+#[test]
+fn stdlib_plain_import_does_not_publish_bare_type() {
+    let server = make_pub_struct("Server", "fd");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("websocket".to_string());
+    checker.register_stdlib_hew_items(
+        "websocket",
+        &[(Item::TypeDecl(server), 0..0)],
+        StdlibBarePublication::Import(&None),
+    );
+
+    assert!(
+        checker.type_defs.contains_key("websocket.Server"),
+        "plain stdlib import must register the qualified type `websocket.Server`"
+    );
+    assert!(
+        checker
+            .module_type_exports
+            .get("websocket")
+            .is_some_and(|s| s.contains("Server")),
+        "plain stdlib import must record the module export so the use-time gate names it"
+    );
+    assert!(
+        !checker
+            .unqualified_to_module
+            .contains_key(&(None, "Server".to_string())),
+        "plain stdlib import must NOT publish bare `Server` (qualified-by-default)"
+    );
+}
+
+/// A named stdlib opt-in (`Import(&Some(Names))`) publishes the bare binding.
+#[test]
+fn stdlib_named_import_publishes_bare_type() {
+    let server = make_pub_struct("Server", "fd");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("websocket".to_string());
+    checker.register_stdlib_hew_items(
+        "websocket",
+        &[(Item::TypeDecl(server), 0..0)],
+        StdlibBarePublication::Import(&Some(ImportSpec::Names(vec![ImportName {
+            name: "Server".to_string(),
+            alias: None,
+        }]))),
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Server".to_string())),
+        "named stdlib opt-in must publish bare `Server`"
+    );
+}
+
+/// A compiled-in `Prelude` bootstrap surface publishes its bare binding
+/// unconditionally — these are always-in-scope and have no user import.
+#[test]
+fn stdlib_prelude_publishes_bare_type() {
+    let close_error = make_pub_struct("CloseError", "code");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("closable".to_string());
+    checker.register_stdlib_hew_items(
+        "closable",
+        &[(Item::TypeDecl(close_error), 0..0)],
+        StdlibBarePublication::Prelude,
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "CloseError".to_string())),
+        "prelude bootstrap surface must publish bare `CloseError` unconditionally"
+    );
+}
+
+/// P2 — the qualified type alias is published for a bare import, and its
+/// definition mirrors the source module's bare def (the alias-copy ordering
+/// canary). If the source module's bare `register_type_decl` is ever dropped,
+/// the qualified def goes empty and this test catches it.
+#[test]
+fn bare_import_type_qualified_alias_has_fields() {
+    let reply = make_pub_struct("Reply", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        None,
+        vec![(Item::TypeDecl(reply), 0..0)],
+    );
+    let output = check_items(vec![(Item::Import(import), 0..0)]);
+
+    let qualified = output
+        .type_defs
+        .get("mod_a.Reply")
+        .expect("qualified type `mod_a.Reply` must be registered");
+    assert!(
+        qualified.fields.contains_key("code"),
+        "qualified alias must carry the source def's fields (alias-copy ordering)"
+    );
+}
+
+// (The machine arm is structurally identical to the type arm; its gate is
+// proven end-to-end by the `import-qual-c2` probe corpus and the examples
+// cutover ratchet rather than a hand-built `MachineDecl` literal.)
 
 // -- Glob import: everything unqualified --
 
@@ -7987,6 +8401,7 @@ fn stdlib_not_in_user_modules() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8104,6 +8519,7 @@ fn import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec!["unknown".to_string(), "pkg".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8142,6 +8558,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8150,6 +8567,7 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
     let fs_import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8183,6 +8601,7 @@ fn file_import_without_resolved_items_emits_unresolved_error() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("missing.hew".to_string()),
         resolved_items: None,
         resolved_item_source_paths: Vec::new(),
@@ -8221,6 +8640,7 @@ fn merged_file_import_duplicate_pub_name_emits_duplicate_definition() {
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![
             (Item::Function(shared_decl.clone()), 0..5),
@@ -8259,6 +8679,7 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
     let import = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("pkg.hew".to_string()),
         resolved_items: Some(vec![(
             Item::Function(make_pub_fn(
@@ -8308,6 +8729,7 @@ fn repeated_stdlib_import_does_not_duplicate_hew_items() {
     let import = ImportDecl {
         path: vec!["std".to_string(), "fs".to_string()],
         spec: None,
+        module_alias: None,
         file_path: None,
         resolved_items: Some(parsed.program.items),
         resolved_item_source_paths: Vec::new(),
@@ -8678,6 +9100,7 @@ fn test_file_import_private_items_not_visible() {
     let import_decl = ImportDecl {
         path: vec![],
         spec: None,
+        module_alias: None,
         file_path: Some("private_lib.hew".to_string()),
         resolved_items: Some(resolved),
         resolved_item_source_paths: Vec::new(),
@@ -15949,6 +16372,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
             resolved_item_source_paths: vec![],
@@ -16228,6 +16652,7 @@ mod warning_source_attribution {
         ImportDecl {
             path: vec![short_name.to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![]),
             resolved_item_source_paths: vec![],
@@ -16399,6 +16824,7 @@ mod warning_source_attribution {
         let import_a_with_items = ImportDecl {
             path: vec!["fakemod".to_string()],
             spec: None,
+            module_alias: None,
             file_path: None,
             resolved_items: Some(vec![(Item::Function(helper_fn), 0..30)]),
             resolved_item_source_paths: vec![],

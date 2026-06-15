@@ -1,0 +1,6 @@
+[package]
+name = "hew::aliassrc"
+version = "0.1.0"
+description = "Aliased-import construction fixture: exports a Payload record and a distinct Other record for the alias source-identity and no-conflation oracles"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,17 @@
+//! Aliased re-exporting sub-trait module.
+//!
+//! Re-imports `hew::reexbase::{ Base as B }` and declares `SubA: B`. The
+//! supertrait edge `B` is an ALIAS binding in this module; it must follow this
+//! module's aliased import binding to the SOURCE identity `reexbase.Base`. There
+//! is no `reexsubalias.B` def, so a `{declaring}.{super}`-only check would miss
+//! and fall back to the bare `B`; the import-binding lookup recovers the owner.
+//! An `impl SubA for T` that provides the inherited `base` inline must have it
+//! checked against `reexbase.Base` (`-> i64`).
+
+import hew::reexbase::{Base as B};
+
+/// Sub-trait of the aliased re-imported `Base`. The super edge `B` resolves to
+/// `reexbase.Base` through this module's aliased import binding.
+pub trait SubA: B {
+    fn tag(val: Self) -> i64;
+}

@@ -1,0 +1,6 @@
+[package]
+name = "hew::supertraitsb"
+version = "0.1.0"
+description = "Same-name supertrait collision fixture (module B): declares a trait `Base` whose `base` returns `bool`, colliding on the bare trait name with hew::supertraits' `Base` (whose `base` returns `i64`). An impl of `hew::supertraits::Sub` that provides `base` inline must check the inherited signature against supertraits.Base (i64), never supertraitsb.Base (bool)."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

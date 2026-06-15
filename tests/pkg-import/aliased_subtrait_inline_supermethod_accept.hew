@@ -1,0 +1,27 @@
+// Accept fixture: an ALIASED sub-trait (`import hew::supertraits::{ Sub as S }`)
+// provides the inherited supertrait method `base` inline. The alias `S` must
+// resolve to its SOURCE identity (`supertraits.Sub`), whose owner-qualified super
+// edge points at `supertraits.Base`; the inline `base`'s signature is checked
+// against `supertraits.Base` (`-> i64`). Proves the super-method signature check
+// is reached through an alias, not only a bare import. Run e2e so the inherited
+// `base` and the sub's own `tag` both dispatch.
+import hew::supertraits::{ Sub as S };
+
+type W {
+    id: i64;
+}
+
+impl S for W {
+    fn base(w: W) -> i64 {
+        w.id
+    }
+
+    fn tag(w: W) -> i64 {
+        w.id + 1
+    }
+}
+
+fn main() {
+    let w = W { id: 4 };
+    println(f"tag {w.tag()} base {w.base()}");
+}

@@ -1,0 +1,9 @@
+[package]
+name = "hew::assocreqimplok"
+version = "0.1.0"
+description = "Opts in hew::assocreq's `Source` and impls it for `W` WITH the required `type Item = i64`. The accept control: a complete impl must still be accepted under the same same-name collision."
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"hew::assocreq" = { version = "0.1.0", path = "../assocreq" }

@@ -1,0 +1,31 @@
+// Accept fixture: a correct ALIASED multi-method trait impl under a same-name
+// collision must ACCEPT and run end-to-end. `hew::multitrait` exports a
+// two-method `Proc` (`tick`, `close` → `Result<Tally, ProcErr>`);
+// `hew::multitraitb` exports a DISTINCT same-named `Proc` (one method, `close`
+// → `i64`). The importer aliases A's trait (`Proc as P`) and plain-imports B, so
+// the bare `Proc::close` key collides. The impl provides EXACTLY A's method set
+// with A's signatures. Conformance must resolve `P` to its owner-qualified
+// identity (`multitrait.Proc`) and ACCEPT — exercising the method-set membership
+// AND per-method signature paths against the collision-free owner key. Run e2e.
+import hew::multitrait::{ Proc as P, Tally, ProcErr };
+import hew::multitraitb;
+
+type W {
+    id: i64;
+}
+
+impl P for W {
+    fn tick(w: W) -> i64 {
+        w.id
+    }
+
+    fn close(w: W) -> Result<Tally, ProcErr> {
+        Ok(Tally { code: w.id * 2 })
+    }
+}
+
+fn main() {
+    let w = W { id: 21 };
+    let t = w.tick();
+    println(f"tick {t}");
+}

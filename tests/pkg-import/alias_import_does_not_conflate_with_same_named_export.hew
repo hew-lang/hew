@@ -1,0 +1,25 @@
+// Aliased construction binds the SOURCE type, not a same-named export.
+//
+// `hew::aliassrc` exports two DISTINCT records: `Payload` (one `code` field)
+// and `Other` (a `tag` field AND a `note` field). The importer aliases
+// `Payload as Other` (`import hew::aliassrc::{ Payload as Other }`). The alias
+// binding `Other` must denote the SOURCE `aliassrc.Payload`, never the
+// same-named export `aliassrc.Other`.
+//
+// The construction `Other { code: … }` proves the binding: it initialises the
+// SOURCE `Payload`'s sole `code` field. Were the alias conflated with the
+// export `aliassrc.Other`, the checker would demand the `tag`/`note` fields and
+// reject `code`; and were HIR to key the StructInit off the bare binding
+// `Other` (rather than the checker-resolved source identity `aliassrc.Payload`)
+// the MIR field-order lookup would miss the registered `Payload` layout and
+// fall through the field-order fail-closed. Reading `code` back confirms the
+// SOURCE layout was constructed.
+//
+// Harness verb: hew run
+// Expected: the aliased construction builds `Payload` and reads `code` as 11.
+import hew::aliassrc::{ Payload as Other };
+
+fn main() {
+    let v = Other { code: 11 };
+    println(f"code={v.code}");
+}

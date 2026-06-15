@@ -1,7 +1,7 @@
 //! Status: runnable
 //! Description: Actor Net Reader example.
 
-import std::net;
+import std::net::{Connection};
 
 actor ServerReader {
     let conn: Connection;

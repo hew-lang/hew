@@ -4740,7 +4740,7 @@ fn lower_function(
         intrinsic_id: func.intrinsic_id.clone(),
         await_deadline_ns: builder.await_deadline_ns.clone(),
         lambda_actor_user_param_locals: Vec::new(),
-        span: Some((func.span.start as u32, func.span.end as u32)),
+        span: Some((u32::try_from(func.span.start).unwrap_or(u32::MAX), u32::try_from(func.span.end).unwrap_or(u32::MAX))),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`

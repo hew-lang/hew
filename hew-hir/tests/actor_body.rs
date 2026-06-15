@@ -50,6 +50,33 @@ fn assert_binding_ref(expr: &HirExpr, expected: hew_hir::BindingId, name: &str) 
     assert_eq!(*resolved, ResolvedRef::Binding(expected));
 }
 
+/// A `receive gen fn` body is wrapped in a `GenBlock` tail (mirroring a
+/// standalone `gen fn`): the handler's outer block carries no statements, and
+/// the real body — including the `let seen = <param>;` referencing the handler
+/// param — lives inside the `GenBlock` body. This routes the handler through
+/// the shared `Terminator::Yield` state-machine path in MIR. Asserts the
+/// handler is a generator and the first `GenBlock`-body statement binds
+/// `param_name`.
+fn assert_generator_handler_param_bound(handler: &hew_hir::HirActorReceiveFn, param_name: &str) {
+    assert!(handler.is_generator);
+    assert!(
+        handler.body.statements.is_empty(),
+        "generator handler outer block should be a thin GenBlock wrapper"
+    );
+    let tail = handler
+        .body
+        .tail
+        .as_ref()
+        .expect("generator handler body must have a GenBlock tail");
+    let HirExprKind::GenBlock { body, .. } = &tail.kind else {
+        panic!("expected GenBlock tail, got {:?}", tail.kind);
+    };
+    let HirStmtKind::Let(_, Some(value)) = &body.statements[0].kind else {
+        panic!("generator body should contain a let initialized from its param");
+    };
+    assert_binding_ref(value, handler.params[0].id, param_name);
+}
+
 #[test]
 fn actor_body_params_are_bound_and_reachable() {
     let output = lower_checked(
@@ -131,11 +158,7 @@ fn main() {}
         .iter()
         .find(|receive| receive.name == "stream")
         .expect("generator receive handler should lower");
-    assert!(stream.is_generator);
-    let HirStmtKind::Let(_, Some(stream_value)) = &stream.body.statements[0].kind else {
-        panic!("generator body should contain a let initialized from its param");
-    };
-    assert_binding_ref(stream_value, stream.params[0].id, "limit");
+    assert_generator_handler_param_bound(stream, "limit");
 
     let echo = actor
         .methods

@@ -2425,6 +2425,24 @@ impl Checker {
         Some(ret)
     }
 
+    /// Extract the signed value of a syntactic integer-literal expression,
+    /// folding a single leading unary negation (`-2` parses as
+    /// `Unary { Negate, Literal::Integer(2) }`).  Returns `None` for any
+    /// non-literal expression — those are validated at runtime, never const.
+    fn literal_integer_value(expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand,
+            } => match &operand.0 {
+                Expr::Literal(Literal::Integer { value, .. }) => Some(value.wrapping_neg()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     fn similar_methods(&self, receiver_ty: &Ty, method_name: &str) -> Vec<String> {
         crate::error::find_similar(
             method_name,
@@ -6115,6 +6133,54 @@ impl Checker {
                         "Receiver<T>",
                     ),
                 }
+            }
+            // Range<T> iterator adapters: `.rev()` (descending iteration) and
+            // `.step_by(k)` (strided iteration).  Both return `Range<T>` so they
+            // compose (`(0..=10).rev().step_by(3)`) and feed the for-loop's
+            // `Range<T>` element-type extraction unchanged.  Crucially the
+            // returned type reuses the receiver's element `T` (not a fresh var),
+            // so the #1857 `deferred_range_bounds` i64-defaulting still resolves
+            // an unconstrained `(0..n).rev()` exactly as a bare range would.
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Range),
+                    args: range_args,
+                    ..
+                },
+                "rev" | "step_by",
+            ) => {
+                let elem_ty = range_args.first().cloned().unwrap_or(Ty::I64);
+                let range_ty = Ty::range(elem_ty.clone());
+                if method == "rev" {
+                    self.check_arity(args, 0, "`Range::rev`", span);
+                } else {
+                    self.check_arity(args, 1, "`Range::step_by`", span);
+                    if let Some(arg) = args.first() {
+                        let (expr, sp) = arg.expr();
+                        // The stride is counted in the range's element type so a
+                        // `for i in (0u32..10).step_by(2)` strides in `u32`.
+                        let _step_ty = self.check_against(expr, sp, &elem_ty);
+                        // Fail-closed: reject a statically-known non-positive
+                        // step at compile time.  A zero step would spin forever
+                        // and a negative step is meaningless for an unsigned
+                        // stride magnitude; `.rev()` is the descending form.
+                        // A non-literal step is validated at runtime (MIR traps
+                        // on a zero step before entering the loop).
+                        if let Some(value) = Self::literal_integer_value(expr) {
+                            if value <= 0 {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "`step_by` requires a positive step; `{value}` is not \
+                                         allowed (use `.rev()` for descending iteration)"
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+                range_ty
             }
             // User-defined struct/actor methods from type_defs
             (

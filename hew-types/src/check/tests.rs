@@ -3437,6 +3437,124 @@ fn for_range_negative_literal_bound_accepted_at_i32() {
     );
 }
 
+/// Range `.rev()` is a `Range<T>` method: the checker accepts `(0..5).rev()`
+/// as a for-loop iterable, deriving an `i64` element type from the literal
+/// bounds exactly as a bare range does.
+#[test]
+fn for_range_rev_adapter_accepted() {
+    let source = r"
+        fn id_i64(x: i64) -> i64 { x }
+        fn main() -> i64 {
+            var sum: i64 = 0;
+            for i in (0..5).rev() {
+                sum = sum + id_i64(i);
+            }
+            sum
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "(0..5).rev() should be accepted as a for-loop iterable: {:#?}",
+        output.errors
+    );
+}
+
+/// Range `.step_by(k)` is a `Range<T>` method returning `Range<T>`, so it
+/// composes with `.rev()`: `(0..=10).rev().step_by(3)` checks clean.
+#[test]
+fn for_range_step_by_and_compose_accepted() {
+    let source = r"
+        fn id_i64(x: i64) -> i64 { x }
+        fn main() -> i64 {
+            var sum: i64 = 0;
+            for i in (0..10).step_by(2) {
+                sum = sum + id_i64(i);
+            }
+            for j in (0..=10).rev().step_by(3) {
+                sum = sum + id_i64(j);
+            }
+            sum
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        ".step_by and .rev().step_by composition should check clean: {:#?}",
+        output.errors
+    );
+}
+
+/// #1857 interaction guard: `.rev()` on a range whose bound element type is
+/// still an unconstrained inference variable at method dispatch must default
+/// through `deferred_range_bounds` to `i64`, never leave a `Ty::Var` hole that
+/// breaks the loop-body arithmetic.  Mirrors
+/// `for_range_loop_var_infers_i32_from_i32_bound` for the descending adapter.
+#[test]
+fn for_range_rev_defaults_unconstrained_bound_to_i64() {
+    let source = r"
+        fn main() -> i64 {
+            var acc: i64 = 0;
+            for i in (0..5).rev() {
+                acc = acc + i;
+            }
+            acc
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "an unconstrained (0..5).rev() must default to i64 like a bare range: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed: a statically-zero `step_by(0)` is rejected at type-check time
+/// (a zero stride would never advance the counter).
+#[test]
+fn for_range_step_by_zero_rejected() {
+    let source = r"
+        fn main() -> i64 {
+            for i in (0..5).step_by(0) {
+                let _ = i;
+            }
+            0
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("step_by") && e.message.contains("positive")),
+        "step_by(0) must be rejected fail-closed: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed: a statically-negative `step_by(-2)` is rejected (a negative
+/// stride is meaningless; `.rev()` is the descending form).
+#[test]
+fn for_range_step_by_negative_rejected() {
+    let source = r"
+        fn main() -> i64 {
+            for i in (0..5).step_by(-2) {
+                let _ = i;
+            }
+            0
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("step_by") && e.message.contains("positive")),
+        "step_by(-2) must be rejected fail-closed: {:#?}",
+        output.errors
+    );
+}
+
 /// Regression for hew-lang/hew#1762: `for i in 0..8 { let x = i.to_f64() }`
 /// must resolve before method lookup.  Both bounds are integer literals so the
 /// range element type starts as a fresh inference variable; method dispatch

@@ -2432,8 +2432,13 @@ pub fn lower_program_with_mono_cap(
                 }
             }
             Item::Actor(actor) => {
-                // P0.1: Fail-closed gate: actors require the actor runtime ABI
-                if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+                // P0.1: Fail-closed gate: actors require the actor runtime ABI.
+                // wasm32 is admitted: `hew-runtime/src/scheduler_wasm.rs` provides
+                // the cooperative actor scheduler, mailbox, and coroutine substrate
+                // with C ABI parity to the native scheduler. `TargetArch::Other`
+                // (unknown/unsupported triples) remains gated — no scheduler exists
+                // for those targets (#1821).
+                if matches!(ctx.target_arch, TargetArch::Other) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
                             target_arch: format!("{:?}", ctx.target_arch),
@@ -2441,7 +2446,7 @@ pub fn lower_program_with_mono_cap(
                         },
                         span.clone(),
                         format!(
-                            "actor '{}' requires the actor runtime ABI (x86_64/aarch64 only)",
+                            "actor '{}' requires the actor runtime ABI (unsupported target)",
                             actor.name
                         ),
                     ));
@@ -2452,7 +2457,10 @@ pub fn lower_program_with_mono_cap(
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
             }
             Item::Supervisor(decl) => {
-                // P0.2: Fail-closed gate: supervisors require the actor runtime ABI
+                // P0.2: Fail-closed gate: supervisor restart machinery
+                // (`SupervisorChildGet`, `Stop`, nested-restart) is not yet
+                // available on wasm32 (#1475). Supervisors remain restricted
+                // to x86_64/aarch64 until that work lands.
                 if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
@@ -2461,7 +2469,8 @@ pub fn lower_program_with_mono_cap(
                         },
                         span.clone(),
                         format!(
-                            "supervisor '{}' requires the actor runtime ABI (x86_64/aarch64 only)",
+                            "supervisor '{}' requires supervisor restart machinery \
+                             (x86_64/aarch64 only; wasm32 support tracked in #1475)",
                             decl.name
                         ),
                     ));
@@ -20258,10 +20267,19 @@ fn describe_select_source_shape(expr: &Expr) -> String {
 /// of allowing runtime panics at `hew-runtime/src/coro.rs:391/:492` (P0.1/P0.2)
 /// or `hew-runtime/src/lib.rs:378/:391` (P0.3/P0.4).
 fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
-    // P0.1 + P0.2: Actor runtime ABI gate.
-    // If target is NOT in {x86_64, aarch64}, reject actors/supervisors.
-    // Suspension itself uses target-agnostic LLVM llvm.coro.*; the gap is the
-    // actor runtime ABI (scheduler, mailbox, supervisor restart machinery).
+    // P0.1: Actor runtime ABI gate.
+    //   - x86_64, aarch64: native multi-threaded work-stealing scheduler — admitted.
+    //   - wasm32: cooperative single-threaded scheduler (`scheduler_wasm.rs`) with
+    //     C ABI parity to native — admitted (#1821).
+    //   - TargetArch::Other: no scheduler — rejected.
+    //
+    // P0.2: Supervisor restart machinery gate.
+    //   Supervisors require `SupervisorChildGet`/`Stop`/nested-restart which are
+    //   not implemented in the wasm32 runtime. Supervisors remain gated on
+    //   {x86_64, aarch64} until #1475 is resolved.
+    //
+    // Suspension itself uses target-agnostic LLVM llvm.coro.*; the gap for
+    // actors on wasm32 was the scheduler/mailbox ABI, now closed.
     if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
         check_coroutine_gate(ctx, program);
     }
@@ -20277,6 +20295,16 @@ fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
 }
 
 /// Check for actor/supervisor usage on targets without the actor runtime ABI.
+///
+/// Called only when `target_arch` is not `x86_64` or `aarch64`.
+///
+/// Actor gate: wasm32 is admitted (cooperative scheduler + mailbox exist in
+/// `scheduler_wasm.rs`; #1821). Only `TargetArch::Other` (unknown triples)
+/// is rejected for actors.
+///
+/// Supervisor gate: wasm32 is still rejected — supervisor restart machinery
+/// (`SupervisorChildGet`/`Stop`/nested-restart) is not yet implemented in
+/// the wasm32 runtime (#1475).
 fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     let target_name = match ctx.target_arch {
         TargetArch::Wasm32 => "wasm32",
@@ -20288,22 +20316,29 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     for (item, span) in &program.items {
         match item {
             Item::Actor(actor_decl) => {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TargetCoroutineUnsupported {
-                        target_arch: target_name.to_string(),
-                        construct: "actor decl".to_string(),
-                    },
-                    span.clone(),
-                    format!(
-                        "actor `{}` cannot be compiled for target `{}`: \
-                         the actor runtime ABI (scheduler, mailbox) is only \
-                         available on x86_64 and aarch64",
-                        actor_decl.name, target_name
-                    ),
-                ));
+                // Actors are admitted on wasm32: the cooperative scheduler
+                // (`hew-runtime/src/scheduler_wasm.rs`) provides the full
+                // actor ABI. Only reject for genuinely unsupported targets.
+                if matches!(ctx.target_arch, TargetArch::Other) {
+                    ctx.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::TargetCoroutineUnsupported {
+                            target_arch: target_name.to_string(),
+                            construct: "actor decl".to_string(),
+                        },
+                        span.clone(),
+                        format!(
+                            "actor `{}` cannot be compiled for target `{}`: \
+                             the actor runtime ABI (scheduler, mailbox) is not \
+                             available on this target",
+                            actor_decl.name, target_name
+                        ),
+                    ));
+                }
             }
             Item::Supervisor(supervisor_decl) => {
-                // Supervisors spawn actors, so they're also coroutine-dependent
+                // Supervisors remain gated on wasm32: supervisor restart
+                // machinery (`SupervisorChildGet`, `Stop`, nested-restart)
+                // is not yet implemented in the wasm32 runtime (#1475).
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TargetCoroutineUnsupported {
                         target_arch: target_name.to_string(),
@@ -20312,8 +20347,8 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                     span.clone(),
                     format!(
                         "supervisor `{}` cannot be compiled for target `{}`: \
-                         supervisors require the actor runtime ABI and supervisor \
-                         restart machinery, only available on x86_64 and aarch64",
+                         supervisor restart machinery is not yet available on \
+                         this target (#1475)",
                         supervisor_decl.name, target_name
                     ),
                 ));

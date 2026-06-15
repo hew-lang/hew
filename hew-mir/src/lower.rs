@@ -28917,11 +28917,20 @@ mod layout_key_shortening_guard {
     //! consumer (field load/store) generic keys from silently diverging.
 
     /// The production (non-test) prefix of `lower.rs`.
-    fn production_source() -> &'static str {
-        let src = include_str!("lower.rs");
+    ///
+    /// Normalises CRLF→LF before splitting: on a Windows checkout
+    /// (`core.autocrlf=true`) the embedded `include_str!` source carries
+    /// `\r\n`, so a split on the LF-anchored `\n#[cfg(test)]\n` never matches
+    /// and would return the WHOLE file — pulling the test module's own
+    /// `mangle_layout_key(name, args)` string literals into the scan and
+    /// breaking the bare-key count guard below. Normalising keeps the guard
+    /// deterministic across line-ending conventions.
+    fn production_source() -> String {
+        let src = include_str!("lower.rs").replace("\r\n", "\n");
         src.split("\n#[cfg(test)]\n")
             .next()
             .expect("lower.rs has a non-test prefix")
+            .to_string()
     }
 
     /// The field-store AND field-read GENERIC arms each shorten the outer name.

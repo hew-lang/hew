@@ -2654,6 +2654,11 @@ fn runtime_ffi_return_abi_bits(symbol: &str) -> Option<u32> {
         // UTF-8 helpers also return i32 (with -1 sentinel on OOB/invalid): must
         // round-trip to the Hew-facing i64 as signed.
         "hew_string_char_count" | "hew_string_char_at_utf8" => Some(32),
+        // `hew_duration_is_zero(i64) -> i32` C boolean (`hew-runtime/src/
+        // io_time.rs`). The catalog row's Hew-facing type is `bool` (`i8`), but
+        // the runtime register is `i32`; declare the true width so the call
+        // boundary reads the correct 32-bit result before narrowing to bool.
+        "hew_duration_is_zero" => Some(32),
         _ => None,
     }
 }
@@ -22406,6 +22411,65 @@ fn lower_call_runtime_abi(
             }
             let _ = (i64_ty, ptr_ty);
         }
+        // `impl duration` receiver methods (`hew-runtime/src/io_time.rs`). Each
+        // takes the i64-backed duration (nanoseconds) and returns the converted
+        // count: `nanos`/`micros`/`millis`/`secs`/`mins`/`hours`/`abs` produce
+        // an `i64` stored straight into the dest; `is_zero` produces the C `i32`
+        // boolean, compared `!= 0` to an `i1` and zero-extended into the `i8`
+        // bool dest (mirrors the `hew_option_is_*` predicate store).
+        F::DurationNanos
+        | F::DurationMicros
+        | F::DurationMillis
+        | F::DurationSecs
+        | F::DurationMins
+        | F::DurationHours
+        | F::DurationAbs
+        | F::DurationIsZero => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (duration), got {}",
+                    args.len()
+                )));
+            }
+            let duration = load_int_arg(fn_ctx, args[0], i64_ty, symbol)?;
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[duration.into()], &format!("{symbol}_call"))
+                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            if let Some(dest_place) = dest {
+                let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed(format!("{symbol} returned void"))
+                })?;
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                let store_val = if symbol == "hew_duration_is_zero" {
+                    // i32 C boolean -> i1 (`!= 0`) -> i8 bool dest.
+                    let i32_result = result.into_int_value();
+                    let predicate = fn_ctx
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            i32_result,
+                            i32_ty.const_zero(),
+                            &format!("{symbol}_pred"),
+                        )
+                        .llvm_ctx_with(|| format!("{symbol} nonzero compare"))?;
+                    zext_bool_i1_to_dest(fn_ctx, predicate, dest_ty, symbol)?
+                } else {
+                    result
+                };
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, store_val)
+                    .llvm_ctx_with(|| format!("{symbol} store"))?;
+            }
+            let _ = (i8_ty, ptr_ty);
+        }
         F::StringIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -23183,14 +23247,6 @@ fn lower_call_runtime_abi(
         | F::DuplexSendHalf
         | F::DuplexTryRecv
         | F::DuplexTrySend
-        | F::DurationAbs
-        | F::DurationHours
-        | F::DurationIsZero
-        | F::DurationMicros
-        | F::DurationMillis
-        | F::DurationMins
-        | F::DurationNanos
-        | F::DurationSecs
         | F::DynBoxAlloc
         | F::DynBoxFree
         | F::HashMapContainsKeyLayout

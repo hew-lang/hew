@@ -16443,6 +16443,16 @@ impl Builder {
             | "hew_result_unwrap_or_i64" => {
                 self.lower_option_result_runtime_call(symbol, hir_args, site, context)
             }
+            "hew_duration_nanos"
+            | "hew_duration_micros"
+            | "hew_duration_millis"
+            | "hew_duration_secs"
+            | "hew_duration_mins"
+            | "hew_duration_hours"
+            | "hew_duration_abs"
+            | "hew_duration_is_zero" => {
+                self.lower_duration_runtime_call(symbol, hir_args, site, context)
+            }
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -16765,6 +16775,48 @@ impl Builder {
         let dest =
             (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
         self.push_runtime_call(symbol, args, dest);
+        dest
+    }
+
+    /// Lower the `impl duration` receiver methods declared in
+    /// `std/builtins.hew` (`#[extern_symbol(hew_duration_*)]`).
+    ///
+    /// Every symbol takes a single i64-backed `duration` receiver. The
+    /// conversion/predicate symbols return `i64`; `hew_duration_is_zero`
+    /// returns the C `i32` boolean (`1`/`0`) that codegen narrows to `i1` at
+    /// the call boundary — declared `Bool` here exactly like the
+    /// `hew_option_is_*` predicates, with no explicit cast.
+    fn lower_duration_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        if hir_args.len() != 1 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects 1 argument (the duration receiver), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        let return_ty = if symbol == "hew_duration_is_zero" {
+            ResolvedTy::Bool
+        } else {
+            ResolvedTy::I64
+        };
+
+        let receiver = self.lower_value(&hir_args[0])?;
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
+        self.push_runtime_call(symbol, vec![receiver], dest);
         dest
     }
 

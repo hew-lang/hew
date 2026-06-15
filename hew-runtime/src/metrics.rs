@@ -289,6 +289,15 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
         NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
+    // Labelled histograms are deferred (the bucketed/labelled surface arrives in
+    // v0.5.3). `register_vec` reserves only the base slot, but a histogram needs
+    // the `base_slot + 1` sum slot that `histogram_record` and the scrape render
+    // assume; accepting one here would alias the sum into the next registered
+    // metric's slot. Reject it until the labelled surface reserves the slots.
+    if kind == MetricKind::Histogram {
+        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return REGISTER_FAILED;
+    }
     if collides_with_builtin(name) {
         COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
         NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -1122,6 +1131,56 @@ mod tests {
         let again = register_counter("foo.bar");
         assert_eq!(again, first, "exact re-register is idempotent get");
         assert_eq!(self_metrics().collision_rejected, 1);
+    }
+
+    #[test]
+    fn collision_with_attributed_turn_series_is_rejected_and_counted() {
+        let _g = guard();
+        // The scrape emits the per-handler attributed-turn series under these
+        // rendered names. A user metric must not shadow them. The canonical
+        // (dotted) form renders onto the reserved series, so it is rejected.
+        let dotted = register_counter("actors.attributed_turns_by_handler_total");
+        assert_eq!(
+            dotted, REGISTER_FAILED,
+            "must not shadow the attributed-turn series"
+        );
+        // The already-rendered (underscored) form must be rejected too.
+        let rendered = register_counter("actors_attributed_turn_duration_ns_by_handler_total");
+        assert_eq!(
+            rendered, REGISTER_FAILED,
+            "rendered attributed-turn name must also be rejected"
+        );
+        assert_eq!(self_metrics().collision_rejected, 2);
+    }
+
+    #[test]
+    fn collision_with_self_metric_is_rejected_and_counted() {
+        let _g = guard();
+        // The registry's own fail-closed self-metrics (`hew_metrics_*_total`)
+        // are scrape-owned reserved names; a user metric that shadowed one would
+        // mask the very drop/reject counters that signal lost data.
+        let h = register_counter("hew_metrics_names_dropped_total");
+        assert_eq!(h, REGISTER_FAILED, "must not shadow a registry self-metric");
+        assert_eq!(self_metrics().collision_rejected, 1);
+    }
+
+    #[test]
+    fn labelled_histogram_register_is_rejected_and_counted() {
+        let _g = guard();
+        // Labelled histograms are deferred: `register_vec` reserves only the
+        // base slot, not the sum slot the histogram path assumes, so accepting
+        // one would alias the sum into the next metric's slot. It is rejected.
+        let h = register_labelled("app.lhist", MetricKind::Histogram, &["route".to_string()]);
+        assert_eq!(h, REGISTER_FAILED, "labelled histogram must be rejected");
+        assert!(self_metrics().names_dropped >= 1);
+        // The FFI vec-register path (kind 2 = histogram) must reject too.
+        let name = CString::new("app.lhist.ffi").unwrap();
+        // SAFETY: valid name, null key array with zero keys.
+        let ffi = unsafe { hew_metric_vec_register(name.as_ptr(), 2, std::ptr::null(), 0) };
+        assert_eq!(
+            ffi, REGISTER_FAILED,
+            "FFI labelled histogram must be rejected"
+        );
     }
 
     #[test]

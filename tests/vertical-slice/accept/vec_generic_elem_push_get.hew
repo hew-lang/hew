@@ -1,0 +1,36 @@
+// #1929 Stage 1: element-typed Vec method dispatch under a type parameter.
+//
+// `store_and_read` is generic over the element type `T`; `push`/`get` resolve
+// to a concrete `hew_vec_*` runtime symbol only once monomorphisation
+// substitutes the concrete element. This fixture round-trips one value per
+// scalar/string ABI plus `set`/`pop`, proving each per-ABI symbol is
+// re-resolved correctly and the exact pushed value is read back.
+
+fn store_and_read<T>(v: Vec<T>, x: T) -> T {
+    v.push(x);
+    v.get(0)
+}
+
+fn set_then_pop<T>(v: Vec<T>, a: T, b: T) -> T {
+    v.push(a);
+    v.set(0, b);
+    v.pop()
+}
+
+fn main() {
+    let vi: Vec<i64> = Vec::new();
+    println(store_and_read(vi, 42));
+
+    let vf: Vec<f64> = Vec::new();
+    println(store_and_read(vf, 3.5));
+
+    let vb: Vec<bool> = Vec::new();
+    let flag = store_and_read(vb, true);
+    if flag { println(1) } else { println(0) }
+
+    let vs: Vec<string> = Vec::new();
+    println(store_and_read(vs, "hello"));
+
+    let vp: Vec<i64> = Vec::new();
+    println(set_then_pop(vp, 10, 99));
+}

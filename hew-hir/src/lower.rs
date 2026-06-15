@@ -3214,6 +3214,7 @@ pub fn lower_program_with_mono_cap(
             type_classes: ctx.type_classes,
             monomorphisations,
             call_site_type_args,
+            vec_generic_element_abi: type_check_output.vec_generic_element_abi.clone(),
             record_layouts,
             enum_layouts,
             machine_instantiations,

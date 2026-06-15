@@ -1094,6 +1094,35 @@ impl Checker {
             })
     }
 
+    /// Returns true when the dispatched call is a `#[resource]` type's inherent
+    /// terminal `close(self)` — the implicit-drop dispatch target (W3.030) that
+    /// also moves its receiver when called explicitly (#1295).
+    ///
+    /// The match is precise: the receiver type must carry the `#[resource]`
+    /// marker, the method must be the discipline-mandated unit-returning
+    /// `close`, and the receiver must be by-value `self` (a `var self` /
+    /// mutable-receiver method takes the in-place-mutation path and is NOT an
+    /// ownership-transfer move — R4). A `#[resource]` type's `close` is required
+    /// to be `fn close(self)` by `check_resource_close_discipline`; this guard
+    /// keeps the consume marking aligned with that contract.
+    fn named_type_inherent_close_consumes_receiver(
+        &self,
+        type_name: &str,
+        method: &str,
+        sig: &FnSig,
+    ) -> bool {
+        if method != "close" || sig.requires_mutable_receiver {
+            return false;
+        }
+        // `resource_types` is keyed by the declared (bare) type name. The
+        // receiver type name may arrive module-qualified (`mod.Conn`) for an
+        // imported handle type; match on the unqualified suffix too.
+        let unqualified = type_name
+            .rsplit_once('.')
+            .map_or(type_name, |(_, suffix)| suffix);
+        self.resource_types.contains(type_name) || self.resource_types.contains(unqualified)
+    }
+
     /// Apply the consume-receiver marker for a trait-dispatched method call:
     /// record the per-call-site flag for codegen and mark the receiver
     /// expression moved so subsequent uses surface `UseAfterMove`. No-op
@@ -6309,11 +6338,21 @@ impl Checker {
                             _ => {}
                         }
                     }
-                    // #1295: stdlib `impl Closable for T { fn close }` flattens
-                    // into the inherent-method table on T; honour any
-                    // `consumes_receiver` declared on a trait whose impl
-                    // contributed this method.
-                    if self.named_type_method_consumes_receiver(name, method) {
+                    // #1295: a terminal consuming `close` moves its receiver, so
+                    // record the per-call-site flag for HIR/codegen AND mark the
+                    // receiver expression moved (a later use surfaces
+                    // `UseAfterMove`). Two surfaces qualify:
+                    //   1. stdlib `impl Closable for T { fn close }` — the trait
+                    //      `close` flattens into T's inherent-method table; honour
+                    //      the `consumes_receiver` declared on the trait.
+                    //   2. a `#[resource]` type's inherent `fn close(self)` — the
+                    //      W3.030 implicit-drop dispatch target, which when called
+                    //      explicitly also moves the receiver so the scope-exit
+                    //      implicit drop is suppressed on the consumed path (no
+                    //      double-close).
+                    let consumes_receiver = self.named_type_method_consumes_receiver(name, method)
+                        || self.named_type_inherent_close_consumes_receiver(name, method, &sig);
+                    if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
                         let resolved_recv = self.subst.resolve(&receiver_ty);
@@ -6396,9 +6435,17 @@ impl Checker {
                                     // does not enumerate user method keys.
                                     descriptor: None,
                                     elem_ty: None,
-                                    // User inherent-impl / trait-method dispatch;
-                                    // not a handle-release consume.
-                                    consumes_receiver: false,
+                                    // #1295: a `#[resource]` type's inherent
+                                    // `close(self)` is a terminal handle-release
+                                    // consume — HIR lowers the receiver with
+                                    // `IntentKind::Consume` so MIR marks it
+                                    // `Consumed` and suppresses the duplicate
+                                    // scope-exit implicit drop. The `consumes`
+                                    // flag was computed above (resource close or
+                                    // a `Closable` trait method flattened onto
+                                    // this type); other inherent/trait methods
+                                    // are not consuming releases.
+                                    consumes_receiver,
                                 },
                             );
                         }

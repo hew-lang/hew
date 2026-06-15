@@ -1429,6 +1429,12 @@ impl Checker {
         if self.type_defs.contains_key(&guard_key) {
             return;
         }
+        // #1295: record `#[resource]` types from pre-registered (imported)
+        // modules too, so an imported handle type's inherent `close(self)`
+        // consumes its receiver at the call site (mirrors `register_type_decl`).
+        if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
+            self.resource_types.insert(td.name.clone());
+        }
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,
@@ -1665,6 +1671,14 @@ impl Checker {
 
     #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn register_type_decl(&mut self, td: &TypeDecl) {
+        // #1295: record `#[resource]` types so their inherent `close(self)`
+        // dispatch can mark the receiver moved + consume it (suppressing the
+        // duplicate scope-exit implicit drop). HIR owns the close-discipline
+        // diagnostics (W3.030); the checker only needs the marker fact here.
+        if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
+            self.resource_types.insert(td.name.clone());
+        }
+
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,

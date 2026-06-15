@@ -2016,6 +2016,13 @@ pub struct Checker {
     /// this set when `trait Closable` is registered. Tests may insert names
     /// directly to exercise the consume-marker path before PR 2 lands.
     pub(super) consume_receiver_methods: HashSet<String>,
+    /// Names of types declared with the `#[resource]` marker. A `#[resource]`
+    /// type's inherent `close(self)` is BOTH the implicit-drop dispatch target
+    /// (W3.030) AND a terminal consuming method: calling it moves the receiver,
+    /// so a subsequent use is `UseAfterMove` and the scope-exit implicit drop is
+    /// suppressed on the consumed path (#1295). Populated at type-decl
+    /// registration; consulted when an inherent `close` call site is dispatched.
+    pub(super) resource_types: HashSet<String>,
     pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
     /// `HashMap` key/value admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
@@ -2628,6 +2635,7 @@ impl Checker {
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),
+            resource_types: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),

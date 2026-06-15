@@ -2351,7 +2351,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write_indent();
                 self.write("if ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_block(then_block, self.source.len());
                 if let Some(eb) = else_block {
@@ -2381,7 +2381,7 @@ impl<'a> Formatter<'a> {
             Stmt::Match { scrutinee, arms } => {
                 self.write_indent();
                 self.write("match ");
-                self.format_expr(&scrutinee.0);
+                self.format_cond_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in
@@ -2460,7 +2460,7 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("while ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2634,6 +2634,12 @@ impl<'a> Formatter<'a> {
     /// ops, range, `is`, `await`, `clone` — must be wrapped in parens so that
     /// re-parsing produces the same AST.  Delimited forms (literals, identifiers,
     /// tuples, arrays, blocks, calls, other postfix) are already unambiguous.
+    ///
+    /// A `StructInit` receiver also needs parens: in `if`/`while` condition or
+    /// `match` scrutinee position a bare struct literal is suppressed (the `{`
+    /// opens the block), so `(Foo { a: 1 }).b` must keep its parens to re-parse
+    /// as a field access. Emitting them unconditionally is always correct — in
+    /// non-condition position the parens are merely redundant, not wrong.
     fn needs_receiver_parens(expr: &Expr) -> bool {
         matches!(
             expr,
@@ -2643,6 +2649,7 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
+                | Expr::StructInit { .. }
         )
     }
 
@@ -2651,6 +2658,27 @@ impl<'a> Formatter<'a> {
     /// re-parsing.
     fn format_receiver(&mut self, expr: &Expr) {
         if Self::needs_receiver_parens(expr) {
+            self.write("(");
+            self.format_expr(expr);
+            self.write(")");
+        } else {
+            self.format_expr(expr);
+        }
+    }
+
+    /// Format an `if`/`while` condition or `match` scrutinee, wrapping a direct
+    /// struct literal in parens so it re-parses correctly.
+    ///
+    /// In condition/scrutinee position the parser suppresses bare struct
+    /// literals (the `{` opens the block / loop body / match arms), so a struct
+    /// literal that is the direct condition must keep its parens: `if (Foo {
+    /// a: 1 }) {}` and `match (Foo { a: 1 }) { … }` would otherwise format to
+    /// `if Foo { a: 1 } {}` / `match Foo { a: 1 } { … }`, which re-parse with
+    /// the struct body swallowing the block. Only a direct `StructInit` needs
+    /// this — every other condition form (binary ops, calls, blocks, nested
+    /// `if`/`match`) re-parses unchanged.
+    fn format_cond_expr(&mut self, expr: &Expr) {
+        if matches!(expr, Expr::StructInit { .. }) {
             self.write("(");
             self.format_expr(expr);
             self.write(")");
@@ -2745,7 +2773,7 @@ impl<'a> Formatter<'a> {
                 else_block,
             } => {
                 self.write("if ");
-                self.format_expr(&condition.0);
+                self.format_cond_expr(&condition.0);
                 self.write(" ");
                 self.format_expr(&then_block.0);
                 if let Some(eb) = else_block {
@@ -2772,7 +2800,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Match { scrutinee, arms } => {
                 self.write("match ");
-                self.format_expr(&scrutinee.0);
+                self.format_cond_expr(&scrutinee.0);
                 self.write(" {\n");
                 self.indent += 1;
                 // advance past the opening `{` so the blank-line heuristic in

@@ -4240,7 +4240,7 @@ fn collect_unknown_self_fields_in_expr(
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
             collect_unknown_self_fields_in_expr(right, state_fields, seen, unknown);
         }
-        HirExprKind::Unary { operand, .. } => {
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_unknown_self_fields_in_expr(operand, state_fields, seen, unknown);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
@@ -7892,6 +7892,24 @@ impl Builder {
                     dest,
                     ctx,
                     yield_ty: yield_ty.clone(),
+                });
+                Some(dest)
+            }
+            HirExprKind::WireCodec {
+                direction,
+                operand,
+                value_ty,
+            } => {
+                let operand_place = self.lower_value(operand)?;
+                // `expr.ty` is checker-authoritative: `bytes` for encode, the
+                // wire-struct type for decode. Allocate the dest with that type
+                // so codegen resolves the right slot layout.
+                let dest = self.alloc_local(expr.ty.clone());
+                self.instructions.push(Instr::WireCodec {
+                    dest,
+                    operand: operand_place,
+                    direction: *direction,
+                    value_ty: value_ty.clone(),
                 });
                 Some(dest)
             }
@@ -22541,6 +22559,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         | Instr::IdentityCompare { dest, lhs, rhs } => vec![*dest, *lhs, *rhs],
         Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
         Instr::GeneratorNext { dest, ctx, .. } => vec![*dest, *ctx],
+        Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -22842,6 +22861,13 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // here (classifying it as a source) would suppress that drop and leak
         // the generator context + thread.
         Instr::GeneratorNext { .. } => vec![],
+        // The wire codec only READS its operand (the serialize thunk walks the
+        // value; the deserialize thunk reads the bytes) — neither copies the
+        // operand's heap pointer out of its slot nor frees it. The caller's
+        // binding stays the sole owner, so the operand is excluded from sources
+        // and its scope-exit drop is preserved (mirrors `GeneratorNext`'s
+        // borrowed `ctx`).
+        Instr::WireCodec { .. } => vec![],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -23179,6 +23205,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
         | Instr::GeneratorNext { .. }
+        | Instr::WireCodec { .. }
         | Instr::NumericCast { .. }
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }
@@ -23363,6 +23390,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::IdentityCompare { .. }
         | Instr::CancellationTokenIsCancelled { .. }
         | Instr::GeneratorNext { .. }
+        | Instr::WireCodec { .. }
         | Instr::Move { .. }
         | Instr::NumericCast { .. }
         | Instr::CallRuntimeAbi(_)

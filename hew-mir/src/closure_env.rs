@@ -348,7 +348,11 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             walk_expr_for_suspend(left, found);
             walk_expr_for_suspend(right, found);
         }
-        HirExprKind::Unary { operand, .. } => walk_expr_for_suspend(operand, found),
+        // Wire codec is a synchronous serialize/deserialize call, never a
+        // suspend point; walk its operand like any other borrowing read.
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            walk_expr_for_suspend(operand, found);
+        }
         HirExprKind::NumericCast { value, .. } => walk_expr_for_suspend(value, found),
         HirExprKind::TupleLiteral { elements } => {
             for elem in elements {

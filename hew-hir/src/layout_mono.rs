@@ -478,7 +478,12 @@ fn walk_expr(
             walk_expr(left, subst, residual_domain, disc);
             walk_expr(right, subst, residual_domain, disc);
         }
-        HirExprKind::Unary { operand, .. } => walk_expr(operand, subst, residual_domain, disc),
+        // Wire codec operates on a concrete `#[wire]` struct (no type
+        // parameters), so `value_ty` needs no substitution; walk the operand
+        // sub-expression like any other borrowing read.
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            walk_expr(operand, subst, residual_domain, disc);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }

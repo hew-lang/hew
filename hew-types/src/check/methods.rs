@@ -4750,6 +4750,26 @@ impl Checker {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
+                // Binary wire codec: `Type.decode(bytes) -> Type` on a `#[wire]`
+                // struct. The static method lives in `fn_sigs` under the dotted
+                // `Type.decode` key but records no rewrite here, so the call
+                // would lower to `MethodCallNoRewrite`. Record a dedicated codec
+                // rewrite so HIR/codegen call the `__hew_deserialize_<key>` thunk
+                // with the correct ABI. The text-format `from_json`/`from_yaml`
+                // static methods are deliberately excluded — no text-format thunk
+                // exists, so they stay fail-closed.
+                if method == "decode" && self.wire_struct_types.contains(name) {
+                    if let Ok(value_ty) = ResolvedTy::from_ty(&self.subst.resolve(&sig.return_type))
+                    {
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::WireCodec {
+                                direction: WireCodecDirection::Decode,
+                                value_ty,
+                            },
+                        );
+                    }
+                }
                 return sig.return_type;
             }
         }
@@ -6331,7 +6351,29 @@ impl Checker {
                             .rsplit_once('.')
                             .map_or(name.as_str(), |(_, unqualified)| unqualified);
                         let method_key = format!("{method_owner}::{method}");
-                        if method_owner == "VecIter" && method == "next" {
+                        // Binary wire codec: `value.encode() -> bytes` on a
+                        // `#[wire]` struct. The instance method is registered in
+                        // `type_def.methods` (not `fn_sigs`), so it never matches
+                        // the `fn_sigs` branch below and would otherwise fall
+                        // through to `MethodCallNoRewrite`. Record a dedicated
+                        // codec rewrite so HIR/codegen call the
+                        // `__hew_serialize_<key>` thunk with the correct ABI. The
+                        // text-format instance methods (`to_json`/`to_yaml`) are
+                        // deliberately excluded — no text-format thunk exists, so
+                        // they stay fail-closed.
+                        if method == "encode" && self.wire_struct_types.contains(name) {
+                            if let Ok(value_ty) =
+                                ResolvedTy::from_ty(&self.subst.resolve(&resolved))
+                            {
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::WireCodec {
+                                        direction: WireCodecDirection::Encode,
+                                        value_ty,
+                                    },
+                                );
+                            }
+                        } else if method_owner == "VecIter" && method == "next" {
                             if let Some(elem_ty) = type_args.first() {
                                 if let Ok(elem_resolved) =
                                     ResolvedTy::from_ty(&self.subst.resolve(elem_ty))

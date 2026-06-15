@@ -968,6 +968,15 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             writeln!(out, "{pad}  generator-next yield_ty={yield_ty:?}").expect("write to string");
             dump_expr(out, receiver, indent + 4);
         }
+        HirExprKind::WireCodec {
+            direction,
+            operand,
+            value_ty,
+        } => {
+            writeln!(out, "{pad}  wire-codec {direction:?} value_ty={value_ty:?}")
+                .expect("write to string");
+            dump_expr(out, operand, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {

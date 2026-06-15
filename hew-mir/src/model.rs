@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
-use hew_types::{NumericWidth, ResolvedTy};
+use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -3430,6 +3430,27 @@ pub enum Instr {
         dest: Place,
         ctx: Place,
         yield_ty: ResolvedTy,
+    },
+    /// Binary wire codec on a `#[wire]` struct.
+    ///
+    /// `Encode`: `operand` holds the value to serialize; `dest` is the `bytes`
+    /// slot. Codegen calls `__hew_serialize_<key>(value_ptr, &out_len)` and
+    /// wraps the returned malloc'd buffer into a refcounted `bytes` value.
+    ///
+    /// `Decode`: `operand` holds the `bytes` to read; `dest` is the `value_ty`
+    /// slot. Codegen calls `__hew_deserialize_<key>(data, len, &struct_size)`
+    /// and loads the reconstructed value out of the malloc'd result.
+    ///
+    /// `value_ty` is the wire-struct type. Codegen derives the thunk key from it
+    /// via `mangle_resolved_ty` — the same encoder the actor message path uses —
+    /// so a direct call and an actor send of the same type share one thunk. The
+    /// `operand` is borrowed; the caller's binding stays live for its own
+    /// scope-exit drop.
+    WireCodec {
+        dest: Place,
+        operand: Place,
+        direction: WireCodecDirection,
+        value_ty: ResolvedTy,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },

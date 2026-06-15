@@ -663,6 +663,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
         Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
         Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest]),
+        Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest]),
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
         | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),

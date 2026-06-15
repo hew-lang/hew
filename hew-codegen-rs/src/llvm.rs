@@ -62,7 +62,7 @@ use hew_mir::{
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
 };
-use hew_types::{NumericWidth, ResolvedTy};
+use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
@@ -72,7 +72,7 @@ use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
     HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE,
+    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
 };
 
 use inkwell::builder::Builder;
@@ -9555,11 +9555,15 @@ fn collect_record_inplace_drop_seeds(
 /// module with "Global is external, but doesn't have external or weak linkage".
 /// WHEN-OBSOLETE: if `emit_de_drop_owned` is refactored to emit the body
 /// in-place rather than relying on a separately-seeded synthesis pass.
-/// WHAT: seed by walking actor handler `param_tys`/`return_ty`; the key
-/// resolution mirrors `xnode_registry_key` so the declared name and the body
-/// name agree.  Returns `(record_seeds, enum_seeds)`.
+/// WHAT: seed by walking actor handler `param_tys`/`return_ty` AND the value
+/// types of every direct `.encode()` / `.decode()` call (`wire_codec_types`) —
+/// the deserialize thunk's fail-path drop walk references the same inplace-drop
+/// helper regardless of whether the codec was reached via an actor message or a
+/// direct call.  The key resolution mirrors `xnode_registry_key` so the declared
+/// name and the body name agree.  Returns `(record_seeds, enum_seeds)`.
 fn collect_xnode_codec_drop_seeds(
     actor_layouts: &[hew_mir::ActorLayout],
+    wire_codec_types: &[ResolvedTy],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> (Vec<String>, Vec<String>) {
@@ -9640,7 +9644,40 @@ fn collect_xnode_codec_drop_seeds(
             );
         }
     }
+    // Direct `.encode()` / `.decode()` value types need the same drop-seed
+    // bodies: the deserialize thunk's fail-path walk references the inplace
+    // drop helper for the reconstructed value.
+    for ty in wire_codec_types {
+        try_add(
+            ty,
+            &mut rec_seeds,
+            &mut enum_seeds,
+            &mut rec_seen,
+            &mut enum_seen,
+        );
+    }
     (rec_seeds, enum_seeds)
+}
+
+/// Collect the distinct wire `value_ty`s referenced by every direct
+/// `.encode()` / `.decode()` (`Instr::WireCodec`) call across the MIR. Feeds
+/// `collect_xnode_codec_drop_seeds` and `emit_wire_codec_call_thunks` so a wire
+/// type reached only through a direct codec call still gets its thunk bodies and
+/// drop-seed helpers emitted.
+fn collect_wire_codec_value_types(pipeline: &IrPipeline) -> Vec<ResolvedTy> {
+    let mut out: Vec<ResolvedTy> = Vec::new();
+    for func in &pipeline.raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Instr::WireCodec { value_ty, .. } = instr {
+                    if !out.contains(value_ty) {
+                        out.push(value_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Walk every raw-MIR function's local/param/return types and collect the
@@ -12167,6 +12204,14 @@ fn lower_instruction(
                 .llvm_ctx("gen next Some br")?;
 
             fn_ctx.builder.position_at_end(cont_bb);
+        }
+        Instr::WireCodec {
+            dest,
+            operand,
+            direction,
+            value_ty,
+        } => {
+            lower_wire_codec_instr(fn_ctx, *dest, *operand, *direction, value_ty)?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -14983,6 +15028,218 @@ fn lower_actor_state_field_store(
         .build_store(field_ptr, src_val)
         .llvm_ctx("ActorStateFieldStore store")?;
     Ok(())
+}
+
+/// Lower an `Instr::WireCodec` (`value.encode()` / `Type.decode(bytes)`) to a
+/// call into the `__hew_serialize_<key>` / `__hew_deserialize_<key>` thunk pair.
+///
+/// The thunk bodies are emitted module-wide by `emit_wire_codec_call_thunks`
+/// (and shared with the actor-message codec path), so this only declares the
+/// thunk and wires the ABI:
+///
+/// - `Encode`: pass the operand value's address and an `out_len` slot; the thunk
+///   returns a `libc::malloc`'d byte buffer (length in `*out_len`). Wrap it into
+///   a refcounted `bytes` value via `hew_bytes_from_static_raw` (which copies),
+///   then free the thunk's intermediate buffer with `hew_ser_free_bytes`.
+/// - `Decode`: read `(base_ptr, offset, len)` from the operand `bytes` triple,
+///   pass `base_ptr + offset` and `len` plus an `out_struct_size` slot; the
+///   thunk returns a `libc::malloc`'d reconstructed value. Load it into `dest`
+///   and free the malloc'd value with `libc::free`.
+fn lower_wire_codec_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    operand: Place,
+    direction: WireCodecDirection,
+    value_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let builder = &fn_ctx.builder;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let key = hew_hir::mangle_resolved_ty(value_ty);
+
+    match direction {
+        WireCodecDirection::Encode => {
+            // The serialize thunk reads the value through its address.
+            let (value_ptr, _value_slot_ty) = place_pointer(fn_ctx, operand)?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+            if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "wire encode dest must be a `{{ptr, i32, i32}}` bytes slot, got {dest_ty:?}"
+                )));
+            }
+            // `out_len: *mut usize` — match the runtime `hew_ser_finish` ABI.
+            let size_ty = runtime_size_ty(ctx, fn_ctx.llvm_mod);
+            let out_len = builder
+                .build_alloca(size_ty, "wire_encode_out_len")
+                .llvm_ctx("wire encode out_len alloca")?;
+            let ser_fn = get_or_declare_serialize_thunk(ctx, fn_ctx.llvm_mod, &key);
+            let raw = builder
+                .build_call(
+                    ser_fn,
+                    &[value_ptr.into(), out_len.into()],
+                    "wire_encode_call",
+                )
+                .llvm_ctx("wire encode serialize call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("wire serialize thunk returned void".into())
+                })?
+                .into_pointer_value();
+            let len_usize = builder
+                .build_load(size_ty, out_len, "wire_encode_len")
+                .llvm_ctx("wire encode len load")?
+                .into_int_value();
+            // `hew_bytes_from_static_raw` takes a u32 length; narrow the usize
+            // out-length to i32 (the BytesTriple length field is i32 — a wire
+            // payload exceeding 4 GiB is not a supported shape).
+            let len_i32 = builder
+                .build_int_truncate_or_bit_cast(len_usize, i32_ty, "wire_encode_len_i32")
+                .llvm_ctx("wire encode len truncate")?;
+            let from_raw = declare_codec_prim(
+                ctx,
+                fn_ctx.llvm_mod,
+                "hew_bytes_from_static_raw",
+                ctx.void_type()
+                    .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    from_raw,
+                    &[raw.into(), len_i32.into(), dest_ptr.into()],
+                    "wire_encode_bytes",
+                )
+                .llvm_ctx("wire encode bytes_from_static_raw")?;
+            // `hew_bytes_from_static_raw` copied the bytes into its own
+            // refcounted buffer; free the thunk's intermediate malloc'd buffer.
+            let free_buf = declare_codec_prim(
+                ctx,
+                fn_ctx.llvm_mod,
+                "hew_ser_free_bytes",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(free_buf, &[raw.into()], "wire_encode_free")
+                .llvm_ctx("wire encode free intermediate")?;
+            Ok(())
+        }
+        WireCodecDirection::Decode => {
+            // Read `(base_ptr, offset, len)` from the operand `bytes` triple.
+            let (triple_ptr, triple_ty) = place_pointer(fn_ctx, operand)?;
+            let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "wire decode operand must be a `{{ptr, i32, i32}}` bytes slot, got {triple_ty:?}"
+                )));
+            };
+            let base_gep = builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 0, "wire_decode_ptr_gep")
+                .llvm_ctx("wire decode ptr GEP")?;
+            let base_ptr = builder
+                .build_load(ptr_ty, base_gep, "wire_decode_base_ptr")
+                .llvm_ctx("wire decode ptr load")?
+                .into_pointer_value();
+            let offset_gep = builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 1, "wire_decode_offset_gep")
+                .llvm_ctx("wire decode offset GEP")?;
+            let offset_val = builder
+                .build_load(i32_ty, offset_gep, "wire_decode_offset")
+                .llvm_ctx("wire decode offset load")?
+                .into_int_value();
+            let len_gep = builder
+                .build_struct_gep(triple_struct_ty, triple_ptr, 2, "wire_decode_len_gep")
+                .llvm_ctx("wire decode len GEP")?;
+            let len_i32 = builder
+                .build_load(i32_ty, len_gep, "wire_decode_len")
+                .llvm_ctx("wire decode len load")?
+                .into_int_value();
+            // `data = base_ptr + offset` (the bytes view's first byte).
+            let i8_ty = ctx.i8_type();
+            let data_ptr = unsafe {
+                builder
+                    .build_in_bounds_gep(i8_ty, base_ptr, &[offset_val], "wire_decode_data_ptr")
+                    .llvm_ctx("wire decode data GEP")?
+            };
+            // The deserialize thunk's `len: usize` is i32 on wasm32; widen the
+            // BytesTriple i32 length to the runtime size width.
+            let size_ty = runtime_size_ty(ctx, fn_ctx.llvm_mod);
+            let len_size = builder
+                .build_int_z_extend_or_bit_cast(len_i32, size_ty, "wire_decode_len_size")
+                .llvm_ctx("wire decode len widen")?;
+            // `out_struct_size: *mut usize` — written by the thunk; not consumed
+            // here (the struct type is statically known from `value_ty`).
+            let out_size = builder
+                .build_alloca(size_ty, "wire_decode_out_size")
+                .llvm_ctx("wire decode out_size alloca")?;
+            let de_fn = get_or_declare_deserialize_thunk(ctx, fn_ctx.llvm_mod, &key);
+            let value_ptr = builder
+                .build_call(
+                    de_fn,
+                    &[data_ptr.into(), len_size.into(), out_size.into()],
+                    "wire_decode_call",
+                )
+                .llvm_ctx("wire decode deserialize call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("wire deserialize thunk returned void".into())
+                })?
+                .into_pointer_value();
+            // FAIL CLOSED on malformed/adversarial input. The deserialize thunk
+            // returns null when the bytes are not a valid encoding of the type
+            // (after dropping its partial reconstruction and freeing the malloc
+            // shell — see `emit_wire_codec_call_thunks`' `de_fail` block). The
+            // null return MUST NOT be loaded or freed: loading dereferences null
+            // (SIGSEGV) and freeing double-frees the already-freed shell. Branch
+            // on null and trap `HEW_TRAP_WIRE_DECODE_FAILED` so bad input aborts
+            // cleanly instead of segfaulting (LESSONS: fail-closed-not-pretend).
+            let de_is_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    value_ptr,
+                    ptr_ty.const_null(),
+                    "wire_decode_is_null",
+                )
+                .llvm_ctx("wire decode null compare")?;
+            let parent_fn = builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .ok_or_else(|| {
+                    CodegenError::Llvm(
+                        "wire decode block has no parent function for the null branch".into(),
+                    )
+                })?;
+            let fail_bb = ctx.append_basic_block(parent_fn, "wire_decode_fail");
+            let ok_bb = ctx.append_basic_block(parent_fn, "wire_decode_ok");
+            builder
+                .build_conditional_branch(de_is_null, fail_bb, ok_bb)
+                .llvm_ctx("wire decode null branch")?;
+            // null path: the thunk already freed the partial state; only trap.
+            builder.position_at_end(fail_bb);
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_WIRE_DECODE_FAILED as u64,
+                "wire_decode_fail",
+            )?;
+            // non-null path: the existing load-into-dest + free-the-shell.
+            builder.position_at_end(ok_bb);
+            // Load the reconstructed value out of the malloc'd struct into dest.
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
+            let loaded = builder
+                .build_load(dest_ty, value_ptr, "wire_decode_value")
+                .llvm_ctx("wire decode value load")?;
+            builder
+                .build_store(dest_ptr, loaded)
+                .llvm_ctx("wire decode value store")?;
+            // The thunk handed us a `libc::malloc`'d value; the load copied it
+            // into the dest slot, so free the malloc'd struct now.
+            let free_fn = get_or_declare_libc_free(ctx, fn_ctx.llvm_mod);
+            builder
+                .build_call(free_fn, &[value_ptr.into()], "wire_decode_free")
+                .llvm_ctx("wire decode free value")?;
+            Ok(())
+        }
+    }
 }
 
 /// The canonical `BytesTriple { ptr, i32, i32 }` LLVM struct shape — must
@@ -38201,8 +38458,10 @@ fn build_module_for_target<'ctx>(
     // ("Global is external, but doesn't have external or weak linkage") for any
     // record or enum used as a handler type but not reachable from an actor
     // state field.
+    let wire_codec_value_types = collect_wire_codec_value_types(pipeline);
     let (xnode_codec_record_seeds, xnode_codec_enum_seeds) = collect_xnode_codec_drop_seeds(
         &pipeline.actor_layouts,
+        &wire_codec_value_types,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
     );
@@ -38332,6 +38591,18 @@ fn build_module_for_target<'ctx>(
     )? {
         module_init_ctors.push(f);
     }
+    // Emit serialize/deserialize thunk bodies for wire types referenced by a
+    // direct `.encode()` / `.decode()` call. Idempotent with the actor-message
+    // codec emission above — a type used in both shares one thunk pair.
+    emit_wire_codec_call_thunks(
+        ctx,
+        &llvm_mod,
+        pipeline,
+        &record_layouts,
+        &machine_layouts,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+    )?;
     // Materialise the single @llvm.global_ctors from all collected module inits.
     emit_global_ctors(ctx, &llvm_mod, &module_init_ctors)?;
     // Synthesize one erased method thunk per `(vtable_id, method_index)`
@@ -40663,6 +40934,50 @@ fn emit_global_ctors<'ctx>(
     );
     g.set_initializer(&arr);
     g.set_linkage(Linkage::Appending);
+    Ok(())
+}
+
+/// Emit the serialize/deserialize thunk bodies for every wire type that a
+/// direct `.encode()` / `.decode()` call references in the MIR.
+///
+/// Unlike [`emit_xnode_codec_module_init`] (which seeds + registers codecs for
+/// actor message types so cross-node payloads survive a process hop), this pass
+/// only needs the thunk BODIES to exist so the per-`Instr::WireCodec` call site
+/// can link to them — no runtime registry entry is required for a direct codec
+/// call. `emit_xnode_codec_thunks` is idempotent (it no-ops once a thunk body is
+/// present), so a wire type used both in an actor message and a direct
+/// `.encode()` shares the one thunk pair, regardless of emission order.
+fn emit_wire_codec_call_thunks<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    pipeline: &IrPipeline,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let mut seen: Vec<ResolvedTy> = Vec::new();
+    for func in &pipeline.raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                if let Instr::WireCodec { value_ty, .. } = instr {
+                    if seen.contains(value_ty) {
+                        continue;
+                    }
+                    seen.push(value_ty.clone());
+                    emit_xnode_codec_thunks(
+                        ctx,
+                        llvm_mod,
+                        value_ty,
+                        record_layouts,
+                        machine_layouts,
+                        pipeline_records,
+                        enum_layouts,
+                    )?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 

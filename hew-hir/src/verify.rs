@@ -200,7 +200,9 @@ impl Verifier {
                 self.expr(left);
                 self.expr(right);
             }
-            HirExprKind::Unary { operand, .. } => self.expr(operand),
+            HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+                self.expr(operand);
+            }
             HirExprKind::ConnAwaitRead { conn, .. } => self.expr(conn),
             HirExprKind::ListenerAwaitAccept { listener, .. } => self.expr(listener),
             HirExprKind::ChannelRecvAwait { receiver, .. } => self.expr(receiver),

@@ -26,6 +26,7 @@ use hew_types::{
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
     NumericMethodLowering, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput,
+    WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -3643,7 +3644,9 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(left, out, trait_out);
             collect_call_sites_in_expr(right, out, trait_out);
         }
-        HirExprKind::Unary { operand, .. } => collect_call_sites_in_expr(operand, out, trait_out),
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            collect_call_sites_in_expr(operand, out, trait_out);
+        }
         HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
@@ -6411,7 +6414,7 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(left, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(right, receiver, abi_return_ty);
             }
-            HirExprKind::Unary { operand, .. } => {
+            HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
             }
             HirExprKind::NumericCast { value, .. }
@@ -15303,6 +15306,70 @@ impl LowerCtx {
         (HirExprKind::Block(block), option_ty)
     }
 
+    /// Lower a binary wire-codec call (`value.encode()` / `Type.decode(bytes)`)
+    /// on a `#[wire]` struct to a [`HirExprKind::WireCodec`] node.
+    ///
+    /// `Encode`: the receiver is the value to serialize; the call result is
+    /// `bytes`. `Decode`: the single argument is the `bytes` to read; the call
+    /// result is `value_ty`. The operand is borrowed (`IntentKind::Read`) — the
+    /// codec walks the value/bytes without taking ownership; the caller's
+    /// binding stays live for its own scope-exit drop.
+    fn lower_wire_codec(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        args: &[hew_parser::ast::CallArg],
+        direction: WireCodecDirection,
+        value_ty: ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let (operand, result_ty) = match direction {
+            WireCodecDirection::Encode => {
+                if !args.is_empty() {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "wire `.encode()`".to_string(),
+                            reason: format!("expected zero arguments, found {}", args.len()),
+                        },
+                        span.clone(),
+                        "wire encode lowering takes no arguments",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("wire `.encode()` has invalid arity".into()),
+                        ResolvedTy::Bytes,
+                    );
+                }
+                let operand = self.lower_expr(receiver, IntentKind::Read);
+                (operand, ResolvedTy::Bytes)
+            }
+            WireCodecDirection::Decode => {
+                if args.len() != 1 {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "wire `.decode()`".to_string(),
+                            reason: format!("expected one bytes argument, found {}", args.len()),
+                        },
+                        span.clone(),
+                        "wire decode lowering takes exactly one bytes argument",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("wire `.decode()` has invalid arity".into()),
+                        value_ty,
+                    );
+                }
+                let operand = self.lower_expr(args[0].expr(), IntentKind::Read);
+                (operand, value_ty.clone())
+            }
+        };
+        (
+            HirExprKind::WireCodec {
+                direction,
+                operand: Box::new(operand),
+                value_ty,
+            },
+            result_ty,
+        )
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "for-over-Vec desugars directly to existing Loop/Match HIR nodes"
@@ -16109,6 +16176,10 @@ impl LowerCtx {
             Some(MethodCallRewrite::BuiltinVecIterNext { elem_ty }) => {
                 self.lower_builtin_vec_iter_next(receiver, &elem_ty, span)
             }
+            Some(MethodCallRewrite::WireCodec {
+                direction,
+                value_ty,
+            }) => self.lower_wire_codec(receiver, args, direction, value_ty, span),
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
                 if args.len() != 2 {
@@ -18992,7 +19063,7 @@ fn collect_captures_walk(
             collect_captures_walk(left, param_ids, seen, captures, self_id);
             collect_captures_walk(right, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Unary { operand, .. } => {
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_captures_walk(operand, param_ids, seen, captures, self_id);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
@@ -19286,7 +19357,7 @@ fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(left, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(right, outer_bindings, seen, captures);
         }
-        HirExprKind::Unary { operand, .. } => {
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
@@ -19984,7 +20055,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(left, event_names, out);
             collect_hir_emitted_events_walk(right, event_names, out);
         }
-        HirExprKind::Unary { operand, .. } => {
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_hir_emitted_events_walk(operand, event_names, out);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
@@ -23001,7 +23072,7 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(left, callable, diagnostics);
             scan_expr_for_call_shape(right, callable, diagnostics);
         }
-        HirExprKind::Unary { operand, .. } => {
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             scan_expr_for_call_shape(operand, callable, diagnostics);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {

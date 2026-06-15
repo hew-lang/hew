@@ -60,6 +60,7 @@ pub use self::types::{
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
     StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
+    WireCodecDirection,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

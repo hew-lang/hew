@@ -954,7 +954,21 @@ internal = [
   "hew_pid_set_local_node",
   "hew_register_handler_name",
   "hew_registry_clear",
+  # Tier-B explicit-runtime resolution seam (host/embedder, AOT-only): resolve a
+  # name against an explicit runtime handle instead of the ambient runtime. The
+  # safe-by-construction half of split-by-danger — returns a value the caller
+  # routes; a cross-runtime route is refused by the held-pointer send check.
+  "hew_registry_lookup_with_runtime",
   "hew_runtime_cleanup",
+  # Host/embedder runtime handle lifecycle (AOT-only, never JIT-reachable): the
+  # external owner token for the runtime, refcounted, with leak-on-close
+  # teardown. Same lifecycle/bootstrap tier as hew_runtime_cleanup. `id_of` is
+  # the Tier-B id-resolution form (reads the runtime's discriminant).
+  "hew_runtime_id_of",
+  "hew_runtime_new",
+  "hew_runtime_release",
+  "hew_runtime_retain",
+  "hew_runtime_shutdown",
   "hew_sched_metrics_active_workers",
   "hew_sched_metrics_global_queue_len",
   "hew_sched_metrics_messages_received",

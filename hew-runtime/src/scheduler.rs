@@ -664,6 +664,39 @@ pub fn sched_enqueue(actor: *mut HewActor) {
     sched_try_wake();
 }
 
+/// Fail-closed wake-routing net (R4).
+///
+/// The scheduler wake path resolves its scheduler through [`get_scheduler`] →
+/// [`runtime::rt_default`], **independent** of `rt_current()`, so an `enter()`
+/// (or [`runtime::enter_actor_runtime`]) does NOT reroute the wake. Until M4
+/// reroutes the wake to the actor's owning runtime, a wake for a non-default
+/// actor would silently enqueue on the default runtime's scheduler — the same
+/// silent-default hazard `enter_actor_runtime` traps on the send/teardown side.
+///
+/// This asserts the resolved (default) scheduler's runtime owns the actor about
+/// to be enqueued, and traps otherwise (`no-fail-open-fallback-after-authority`:
+/// assert-net first, reroute/delete at M4). A single-runtime
+/// (`RuntimeId::DEFAULT`) actor never trips it — `rt_default()` IS its runtime —
+/// so the production hot path is unaffected. Full rerouting of the wake to the
+/// owning runtime's scheduler is M4; this lane only installs the trap.
+#[inline]
+fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::RuntimeId) {
+    if actor_runtime_id == crate::runtime_id::RuntimeId::DEFAULT {
+        return;
+    }
+    let resolved = runtime::rt_default().map(RuntimeInner::runtime_id);
+    assert_eq!(
+        resolved,
+        Some(actor_runtime_id),
+        "hew-runtime: enqueue_resume: a wake for an actor owned by runtime {} would route \
+         through the default scheduler (runtime {:?}); the scheduler wake path is not yet \
+         rerouted to the owning runtime (M4) — failing closed rather than waking on a \
+         foreign scheduler",
+        actor_runtime_id.as_u64(),
+        resolved.map(crate::runtime_id::RuntimeId::as_u64),
+    );
+}
+
 /// Wake a `Suspended` actor whose parked continuation has become resumable.
 ///
 /// This is the SINGLE resume edge every readiness source feeds: the seed/test
@@ -715,6 +748,11 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
     // wake is dropped, never dereferenced. The freed caller's continuation is
     // already destroyed by its own C1 teardown, so dropping the wake is correct.
     let enqueued = crate::lifetime::live_actors::with_live_actor(actor, |a| {
+        // Capture the actor's owning-runtime id under the registry lock (the
+        // actor is guaranteed live here). The R4 wake-routing net is asserted
+        // AFTER `with_live_actor` returns and the lock is released (below), so a
+        // trap never poisons the registry lock.
+        let actor_runtime_id = a.runtime_id;
         // If the park has not yet stored a handle, the suspend edge is mid-park
         // (the FG3 window). Record the wake so the suspend edge re-enqueues; do
         // NOT store the handle ourselves (the suspend edge owns the slot write).
@@ -728,7 +766,7 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
             // edge's pending-wake drain. (Two-phase park, both directions.)
             if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
                 let _ = cont; // handle is owned by the suspend edge; nothing to store.
-                return false;
+                return (false, actor_runtime_id);
             }
         }
 
@@ -743,13 +781,13 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
             )
             .is_ok()
         {
-            true
+            (true, actor_runtime_id)
         } else {
             // The actor was not `Suspended` yet (park still completing) — record
             // the wake so the suspend edge observes it. Terminal actors also land
             // here; marking is harmless (the actor will never park again).
             crate::coro_exec::mark_pending_wake(a);
-            false
+            (false, actor_runtime_id)
         }
     });
 
@@ -757,7 +795,15 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
     // dereference the actor, so it is safe to run after dropping the registry lock
     // (the successful `Suspended → Runnable` CAS already latched the actor out of
     // any racing free path, exactly like the `Idle → Runnable` waker discipline).
-    if enqueued == Some(true) {
+    //
+    // R4 wake-routing net: `sched_enqueue` resolves its scheduler through
+    // `get_scheduler()` → `rt_default()`, which `enter()` does not reroute, so an
+    // actor owned by a non-default runtime would wake on the WRONG scheduler.
+    // Fail closed before the enqueue (single-runtime actors pass straight
+    // through). The runtime id was captured under the registry lock above, so
+    // this reads no freed memory.
+    if let Some((true, actor_runtime_id)) = enqueued {
+        assert_wake_routes_to_owning_runtime(actor_runtime_id);
         sched_enqueue(actor);
     }
 }
@@ -2963,6 +3009,53 @@ mod tests {
             sched.pop_global(),
             None,
             "a terminal actor must never be enqueued"
+        );
+    }
+
+    /// R4 wake-routing net: `enqueue_resume` resolves the scheduler it enqueues
+    /// on through `get_scheduler()` → `rt_default()`, which `enter()` (and
+    /// `enter_actor_runtime`) does NOT reroute. A wake for an actor owned by a
+    /// NON-default runtime would silently land on the default runtime's
+    /// scheduler, so the net traps BEFORE the mis-routed enqueue. The DEFAULT
+    /// control is the existing `enqueue_resume_wakes_suspended_actor` — a default
+    /// actor enqueues without tripping the net — so single-runtime behaviour is
+    /// unchanged. Full rerouting of the wake to the owning runtime is M4.
+    #[test]
+    fn enqueue_resume_traps_on_foreign_runtime_wake() {
+        let sched = NoWorkerSchedulerForTest::install();
+        // A tracked, parked, Suspended actor stamped to a non-default runtime.
+        let mut stub = stub_actor();
+        stub.runtime_id = crate::runtime_id::RuntimeId(1);
+        let actor = TrackedTestActor::install(stub);
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        // Park a (non-null sentinel) handle so the wake edge sees a published
+        // slot rather than the FG3 mid-park window; the sentinel is never resumed.
+        actor.suspended_cont.store(
+            ptr::null_mut::<u8>().wrapping_add(1).cast(),
+            Ordering::Release,
+        );
+        actor.cont_tag.store(
+            crate::internal::types::ContTag::Parked as i32,
+            Ordering::Release,
+        );
+        let actor_ptr = actor.ptr();
+
+        let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: actor is live (tracked) for this scope; the sentinel handle
+            // is never resumed. The trap fires after the registry lock is
+            // released, so it does not poison the live-actor registry.
+            unsafe { enqueue_resume(actor_ptr, ptr::null_mut()) };
+        }));
+        assert!(
+            trapped.is_err(),
+            "waking a non-default-runtime actor through the un-rerouted default scheduler must TRAP"
+        );
+        assert_eq!(
+            sched.pop_global(),
+            None,
+            "the trap must fire BEFORE the mis-routed enqueue — nothing reaches the queue"
         );
     }
 

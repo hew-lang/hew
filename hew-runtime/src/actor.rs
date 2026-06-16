@@ -6061,6 +6061,169 @@ mod tests {
         }
     }
 
+    /// V2(a–c): the off-dispatch producer choke point `enter_actor_runtime`
+    /// binds the actor's OWNING runtime, not the process default. A second
+    /// worker-less runtime is minted carrying `RuntimeId(1)`, and an actor is
+    /// stamped to it (both `runtime` pointer and `runtime_id` from that runtime,
+    /// the spawn invariant). Then:
+    ///   (a) WITHOUT `enter_actor_runtime` the thread is bound to the default
+    ///       (`RuntimeId::DEFAULT`) via the test guard, so a held-pointer send
+    ///       fails closed `ErrForeignRuntime` (the existing cross-runtime wall);
+    ///   (b) WITH `enter_actor_runtime(actor)` the guard binds `RuntimeId(1)` —
+    ///       `rt_current_id()` is asserted to OBSERVE it (anti-vacuous: the bind
+    ///       is checked, not assumed, per `static-classification-vacuates-…`) —
+    ///       and the SAME send now succeeds and enqueues; the guard restores the
+    ///       previous (default) binding on drop (`lifecycle-symmetry`);
+    ///   (c) the by-construction skew invariant holds: the actor's owning-runtime
+    ///       stamp id equals its `runtime_id`.
+    #[test]
+    fn enter_actor_runtime_binds_owning_runtime_off_dispatch() {
+        let _guard = crate::runtime_test_guard();
+
+        // Mint a second, worker-less runtime carrying RuntimeId(1). It is a stack
+        // local that outlives every guard/stamp derived from it below: the
+        // actor's `runtime` field points at it and `enter_actor_runtime` borrows
+        // it, and both are dropped before `rt_b` leaves scope.
+        let rt_b = crate::runtime::RuntimeInner::new_with_id_for_test(
+            crate::scheduler::worker_less_scheduler(),
+            crate::runtime_id::RuntimeId(1),
+        );
+
+        // Build a test actor and re-stamp it as if spawned by rt_b: both the
+        // `runtime` pointer and `runtime_id` come from the SAME runtime (the
+        // spawn invariant). `Runnable` state so a successful send does not also
+        // push it onto a scheduler queue — the mailbox enqueue is what (b)
+        // asserts.
+        let (actor, mailbox) = make_stop_test_actor_with_id(0xB2, HewActorState::Runnable);
+        // SAFETY: the test exclusively owns `actor` and never publishes it.
+        unsafe {
+            (*actor).runtime_id = crate::runtime_id::RuntimeId(1);
+            (*actor).runtime = &raw const rt_b;
+        }
+
+        // (c) Skew guard: the owning-runtime stamp's id equals the runtime_id.
+        // SAFETY: the test owns `actor` and `rt_b`; the stamp is non-null here.
+        unsafe {
+            assert!(
+                (*actor).runtime.is_null()
+                    || (*(*actor).runtime).runtime_id() == (*actor).runtime_id,
+                "a spawned actor must carry an owning-runtime stamp whose id equals its runtime_id"
+            );
+        }
+
+        // (a) WITHOUT enter_actor_runtime: the calling thread is bound to the
+        // default runtime, so the foreign actor fails closed and enqueues
+        // nothing.
+        // SAFETY: `actor` is valid and fully owned by this test; null payload.
+        let foreign_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
+        assert_eq!(
+            foreign_rc,
+            HewError::ErrForeignRuntime as i32,
+            "without entering the owner, an off-dispatch send is foreign and fails closed"
+        );
+        // SAFETY: `mailbox` is owned by the test.
+        let refused_count = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+        assert_eq!(
+            refused_count, 0,
+            "a refused cross-runtime send must not enqueue a message"
+        );
+
+        // (b) WITH enter_actor_runtime: the choke point binds rt_b, observed via
+        // rt_current_id; the same send is now in-runtime and reaches the mailbox.
+        {
+            // SAFETY: `actor` is live and owns a non-null `runtime` stamp to
+            // `rt_b`, which outlives this guard.
+            let _bind = unsafe { crate::runtime::enter_actor_runtime(actor) }
+                .expect("entering the owning runtime yields a guard");
+            assert_eq!(
+                crate::runtime::rt_current_id(),
+                Some(crate::runtime_id::RuntimeId(1)),
+                "enter_actor_runtime must bind the actor's owning runtime, not the default"
+            );
+
+            // SAFETY: as above.
+            let bound_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
+            assert_eq!(
+                bound_rc,
+                HewError::Ok as i32,
+                "with the owner bound, the off-dispatch send is in-runtime and succeeds"
+            );
+            // SAFETY: `mailbox` is owned by the test.
+            let accepted_count = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+            assert_eq!(
+                accepted_count, 1,
+                "the accepted send must have enqueued exactly the one message"
+            );
+        }
+
+        // The guard restored the previous (default) binding on drop.
+        assert_eq!(
+            crate::runtime::rt_current_id(),
+            Some(crate::runtime_id::RuntimeId::DEFAULT),
+            "dropping the enter_actor_runtime guard restores the previous (default) binding"
+        );
+
+        // SAFETY: the test fully owns the actor and its mailbox; drop the actor
+        // before `rt_b` leaves scope so its `runtime` stamp is never read after.
+        unsafe {
+            drop(Box::from_raw(actor));
+            mailbox::hew_mailbox_free(mailbox);
+        }
+    }
+
+    /// V2(d): `enter_actor_runtime` TRAPS — it does not silently default and does
+    /// not return `None` — when an actor carries a non-default `runtime_id` but a
+    /// NULL owning-runtime stamp. That pairing is a spawn-invariant contradiction
+    /// (spawn stamps `runtime` and `runtime_id` from the same runtime), so
+    /// silently binding the default would re-open the silent-default hazard the
+    /// stamp closes (`no-fail-open-fallback-after-authority`). The DEFAULT path
+    /// is unaffected: a default actor with a null stamp resolves the default
+    /// fallback exactly as in M2.
+    #[test]
+    fn enter_actor_runtime_traps_on_multi_runtime_null_stamp() {
+        let _guard = crate::runtime_test_guard();
+
+        // Control (the legitimate M2 path): a DEFAULT-stamped actor with a null
+        // `runtime` resolves the default fallback — NO trap, returns Some.
+        let (default_actor, default_mailbox) =
+            make_stop_test_actor_with_id(0xD0, HewActorState::Idle);
+        // SAFETY: the test owns `default_actor`; it carries runtime_id DEFAULT and
+        // a null runtime stamp (the helper defaults).
+        let default_bound = unsafe { crate::runtime::enter_actor_runtime(default_actor) };
+        assert!(
+            default_bound.is_some(),
+            "a DEFAULT actor with a null stamp must resolve the default fallback (no trap)"
+        );
+        drop(default_bound);
+
+        // The trap: a non-default runtime_id with a null stamp must panic rather
+        // than silently default.
+        let (foreign_actor, foreign_mailbox) =
+            make_stop_test_actor_with_id(0xD1, HewActorState::Idle);
+        // SAFETY: the test owns `foreign_actor`; stamp a non-default id but leave
+        // `runtime` null — precisely the contradiction the trap exists to catch.
+        unsafe {
+            (*foreign_actor).runtime_id = crate::runtime_id::RuntimeId(1);
+        }
+        let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: `foreign_actor` is live and owned by the test; the trap
+            // fires before any runtime is entered, so no guard leaks.
+            let _ = unsafe { crate::runtime::enter_actor_runtime(foreign_actor) };
+        }));
+        assert!(
+            trapped.is_err(),
+            "a non-default runtime_id with a null owning-runtime stamp must TRAP, not default"
+        );
+
+        // SAFETY: the test fully owns both actors and mailboxes.
+        unsafe {
+            drop(Box::from_raw(default_actor));
+            mailbox::hew_mailbox_free(default_mailbox);
+            drop(Box::from_raw(foreign_actor));
+            mailbox::hew_mailbox_free(foreign_mailbox);
+        }
+    }
+
     #[test]
     fn actor_crash_cancels_current_task_scope() {
         let _guard = crate::runtime_test_guard();

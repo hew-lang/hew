@@ -777,6 +777,221 @@ fn never_closed_resource_keeps_scope_exit_drop() {
     );
 }
 
+/// #1933 — a `#[resource]` consumed on ONE branch of an `if` (live on the
+/// fall-through) reaches the function's single exit at dataflow state
+/// `MaybeConsumed`. The binding must STAY in the scope-exit drop set there
+/// (so the not-consumed runtime path still closes it — no leak) AND the
+/// surviving `DropKind::Resource` must carry a path-sensitive runtime
+/// drop-flag `guard` (so the consumed runtime path does NOT double-close the
+/// non-idempotent user `close`). Before the fix the consume site removed the
+/// binding from the owned ledger path-insensitively, so the per-exit drop set
+/// was empty and the not-consumed branch leaked.
+#[test]
+fn conditional_resource_close_keeps_flag_guarded_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve(flag: bool) {
+            let c = Conn { id: 1 };
+            if flag {
+                c.close();
+            }
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a conditionally-closed resource must type-check cleanly: {:?}",
+        p.diagnostics
+    );
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    let resource_drops: Vec<_> = serve
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|d| d.kind == hew_mir::DropKind::Resource)
+        .collect();
+    assert!(
+        !resource_drops.is_empty(),
+        "a conditionally-closed `#[resource]` must KEEP a scope-exit resource \
+         drop so the not-consumed branch is still released exactly once (#1933 \
+         leak): {:?}",
+        serve.drop_plans
+    );
+    assert!(
+        resource_drops.iter().all(|d| d.guard.is_some()),
+        "every surviving conditional resource close must carry a \
+         path-sensitive drop-flag guard so the consumed branch does not \
+         double-close the non-idempotent user `close` at the MaybeConsumed \
+         shared exit (#1941 double-free): {:?}",
+        serve.drop_plans
+    );
+}
+
+/// Control for the flag scoping: a `#[resource]` consumed UNCONDITIONALLY (a
+/// single straight-line `close()`) reaches its exit at `Consumed`, so the
+/// per-exit dataflow filter EXCLUDES it entirely — no scope-exit resource
+/// drop, guarded or not. The flag mechanism only does runtime work at a
+/// genuine `MaybeConsumed` join, never on an unconditional consume.
+#[test]
+fn unconditional_resource_close_emits_no_scope_exit_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() {
+            let c = Conn { id: 1 };
+            c.close();
+        }
+    ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    assert!(
+        serve.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|d| d.kind != hew_mir::DropKind::Resource)),
+        "an unconditionally-closed `#[resource]` must earn NO scope-exit \
+         resource drop (the explicit close is the single release): {:?}",
+        serve.drop_plans
+    );
+}
+
+/// A never-closed `#[resource]` earns its implicit scope-exit close, and that
+/// close is FLAG-GUARDED too — the same exactly-once machinery the
+/// conditional case rides, so a never-closed resource on a `MaybeConsumed`
+/// path (e.g. a later move) remains safe. (An unconditional fall-through is
+/// `Live` at exit, not `MaybeConsumed`, but the guard is still attached: it
+/// is keyed by the binding having a user-close drop-flag, not by the exit
+/// state, and reads `flag == 0` so the close always fires here.)
+#[test]
+fn never_closed_resource_keeps_flag_guarded_scope_exit_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn serve() {
+            let c = Conn { id: 1 };
+            let _ = c.id;
+        }
+    ",
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    let resource_drops: Vec<_> = serve
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|d| d.kind == hew_mir::DropKind::Resource)
+        .collect();
+    assert!(
+        !resource_drops.is_empty(),
+        "a never-closed `#[resource]` must keep its implicit scope-exit \
+         close: {:?}",
+        serve.drop_plans
+    );
+    assert!(
+        resource_drops.iter().all(|d| d.guard.is_some()),
+        "the implicit scope-exit close of a non-idempotent user `#[resource]` \
+         must carry a path-sensitive drop-flag guard: {:?}",
+        serve.drop_plans
+    );
+}
+
+/// #1941 — a `#[resource]` moved BY VALUE into an ordinary free function is an
+/// ownership transfer into the callee (Hew has no by-reference parameters):
+/// the callee owns and closes it, so the caller's binding transitions to
+/// `Consumed` and earns NO scope-exit close. Before the fix the argument
+/// lowered `IntentKind::Read`, the caller stayed `Live`, and the caller's
+/// implicit drop double-closed what the callee already closed.
+#[test]
+fn value_move_into_free_fn_consumes_caller_binding() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn { fn close(self) { } }
+        fn sink(c: Conn) { c.close(); }
+        fn run() {
+            let c = Conn { id: 1 };
+            sink(c);
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a clean by-value move of a resource into a consumer must type-check: \
+         {:?}",
+        p.diagnostics
+    );
+    let run = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run function present");
+    assert!(
+        run.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|d| d.kind != hew_mir::DropKind::Resource)),
+        "a `#[resource]` moved by value into a consumer must earn NO \
+         scope-exit close in the CALLER — the callee owns and closes it; a \
+         caller close is the #1941 double-close: {:?}",
+        run.drop_plans
+    );
+}
+
+/// #1941 negative — reading a `#[resource]` after moving it by value into a
+/// free function is a use-after-move. The MIR move-checker must surface
+/// `UseAfterConsume`. Before the fix the by-value argument lowered
+/// `IntentKind::Read`, so the move was invisible and the trailing use
+/// compiled clean (use-after-free admitted).
+#[test]
+fn checked_mir_rejects_use_after_move_into_free_fn() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Conn { id: i64 }
+        impl Conn {
+            fn close(self) { }
+            fn id_of(self) -> i64 { self.id }
+        }
+        fn sink(c: Conn) { c.close(); }
+        fn run() -> i64 {
+            let c = Conn { id: 1 };
+            sink(c);
+            c.id_of()
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
+        )),
+        "reading `c` after moving it by value into `sink` must surface \
+         UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
 #[test]
 fn copy_operands_moved_into_tuple_are_not_flagged() {
     // Copy-operand control: BitCopy ints placed into a tuple are shared,

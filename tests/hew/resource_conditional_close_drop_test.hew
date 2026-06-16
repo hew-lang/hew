@@ -1,0 +1,152 @@
+//! Regression tests for path-sensitive `#[resource]` close gating (#1933)
+//! and the value-move-into-a-consumer sibling (#1941).
+//!
+//! A user `#[resource]` `close` is NOT runtime-idempotent: it consumes the
+//! receiver (and so drops the receiver's owned payload) exactly once. The
+//! compiler must release such a resource EXACTLY ONCE on every control-flow
+//! path — no leak on a not-consumed branch (#1933), no double-close at a
+//! shared exit reached from both a consumed and a not-consumed predecessor
+//! (#1941).
+//!
+//! Each `Buf` owns a heap `Vec<i64>`; `close` consumes the `Buf` and drops
+//! that Vec. A double-close therefore double-frees the backing store and
+//! aborts the run — so a test that runs to its `assert_true` proves the
+//! close fired no more than once on the exercised path. The leak direction
+//! (close fired at least once on the live path) is pinned structurally by
+//! the MIR drop-plan tests in `hew-mir/tests/vertical.rs` and observed
+//! directly by the `CLOSE fd=...` reproducers.
+
+import std::testing;
+
+#[resource]
+type Buf {
+    data: Vec<i64>,
+}
+
+impl Buf {
+    // Consumes `b`; `b.data` (a heap Vec) drops here. Running this twice on
+    // one value double-frees and aborts.
+    fn close(b: Buf) {
+        let _len = b.data.len();
+    }
+}
+
+fn make(n: i64) -> Buf {
+    let v: Vec<i64> = Vec::new();
+    v.push(n);
+    Buf { data: v }
+}
+
+// A free function that takes the resource BY VALUE: the argument is an
+// ownership move into the callee (#1941). The callee closes it; the caller
+// must NOT also drop it.
+fn sink(b: Buf) {
+    b.close();
+}
+
+// close-on-one-branch — the #1933 crux. `b` is consumed on the taken arm and
+// falls through, live, on the other; both arms reach one shared return where
+// the dataflow exit state is `MaybeConsumed`. The path-sensitive drop-flag
+// must close `b` exactly once: skipped where it was already closed, fired
+// where it was not.
+#[test]
+fn test_close_on_one_branch_releases_exactly_once() {
+    let take = true;
+    let b = make(10);
+    if take {
+        b.close();
+    }
+    testing.assert_true(true);
+}
+
+// Same shape, not-consumed path taken at runtime: the implicit scope-exit
+// drop is the sole release. Pre-#1933 this leaked (the consume site removed
+// `b` from the owned ledger path-insensitively, so no exit drop was emitted).
+#[test]
+fn test_one_branch_not_taken_still_releases() {
+    let take = false;
+    let b = make(11);
+    if take {
+        b.close();
+    }
+    testing.assert_true(true);
+}
+
+// close-on-both-branches — each arm owns and closes its own resource. The
+// HIR move-checker pins a single consume site per binding, so "both
+// branches" is two distinct bindings, each released exactly once on its arm.
+#[test]
+fn test_close_on_both_branches() {
+    let cond = true;
+    if cond {
+        let b = make(1);
+        b.close();
+    } else {
+        let b = make(2);
+        b.close();
+    }
+    testing.assert_true(true);
+}
+
+// close-in-loop-body — a fresh resource per iteration, closed each time. The
+// drop-flag is zero-initialised at the loop-body `let`, so it re-arms every
+// iteration; a stale flag would skip a later iteration's release.
+#[test]
+fn test_close_in_loop_body() {
+    for i in 0..4 {
+        let b = make(i);
+        b.close();
+    }
+    testing.assert_true(true);
+}
+
+// close-in-loop-body with a conditional consume — exercises flag re-init
+// across iterations where some iterations close and others fall through to
+// the per-iteration implicit drop. A stale (non-re-initialised) flag would
+// leak a later not-closed iteration; an un-gated keep would double-free a
+// closed one.
+#[test]
+fn test_loop_conditional_close_reinit() {
+    for i in 0..4 {
+        let b = make(i);
+        if i == 1 {
+            b.close();
+        }
+    }
+    testing.assert_true(true);
+}
+
+// conditional-then-move-into-fn — the #1941 sibling joined with the #1933
+// shape. `b` is moved by value into `sink` on the taken arm (an ownership
+// transfer, so the caller must not drop it) and falls through live on the
+// other. The shared exit is `MaybeConsumed`; the drop-flag releases `b`
+// exactly once.
+#[test]
+fn test_conditional_then_move_into_fn() {
+    let cond = true;
+    let b = make(2);
+    if cond {
+        sink(b);
+    }
+    testing.assert_true(true);
+}
+
+// Same, not-moved path: the caller's implicit drop is the sole release.
+#[test]
+fn test_conditional_move_not_taken_releases() {
+    let cond = false;
+    let b = make(3);
+    if cond {
+        sink(b);
+    }
+    testing.assert_true(true);
+}
+
+// Unconditional move into a consumer — the baseline #1941 case: `b` is moved
+// into `sink`, which closes it; the caller must not double-close.
+#[test]
+fn test_unconditional_move_into_fn() {
+    let b = make(4);
+    sink(b);
+    testing.assert_true(true);
+}

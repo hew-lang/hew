@@ -1,0 +1,36 @@
+// Reject fixture for `MirCheck::UseAfterConsume` — value-move into a free
+// function (#1941).
+//
+// `sink(c)` moves the `#[resource]` `c` BY VALUE into a free function. Hew
+// has no by-reference parameters, so this is an ownership transfer: the
+// callee owns and closes `c`. The trailing `c.id_of()` reads `c` after the
+// move, which the Checked MIR move-checker rejects.
+//
+// Before the fix the by-value argument lowered with `IntentKind::Read`, so
+// the move was invisible to the checker: the read compiled clean (a
+// use-after-free) and the caller's implicit scope-exit drop double-closed
+// what `sink` had already closed. `hew compile` now emits a
+// `MirDiagnostic::UseAfterConsume` carrying both the consume site (the
+// `sink(c)` argument) and the offending use site, and exits non-zero without
+// producing a binary.
+#[resource]
+type Conn {
+    id: i64,
+}
+
+impl Conn {
+    fn close(self) {}
+    fn id_of(self) -> i64 {
+        self.id
+    }
+}
+
+fn sink(c: Conn) {
+    c.close();
+}
+
+fn main() -> i64 {
+    let c = Conn { id: 1 };
+    sink(c);
+    c.id_of()
+}

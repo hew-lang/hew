@@ -159,6 +159,9 @@ pub(crate) struct NodeSlot {
     /// Reply routing table correlating this runtime's outbound remote asks with
     /// their replies.
     reply_table: ReplyRoutingTable,
+    /// Node id assigned to this runtime for local PID encoding/routing. Was
+    /// `pid::LOCAL_NODE_ID`.
+    local_node_id: AtomicU16,
 }
 
 impl NodeSlot {
@@ -169,19 +172,22 @@ impl NodeSlot {
             current: PoisonSafeRw::new(0),
             known_nodes: PoisonSafe::new(Vec::new()),
             reply_table: ReplyRoutingTable::new(),
+            local_node_id: AtomicU16::new(0),
         }
     }
 
-    /// Move `other`'s node state (active node, known-node list, pending replies,
-    /// and the request-id counter) into `self`, leaving `other` empty.
+    /// Move `other`'s node state (active node, local node id, known-node list,
+    /// pending replies, and the request-id counter) into `self`, leaving `other`
+    /// empty.
     ///
     /// Test-only. Before de-globalization the active-node pointer, the
-    /// known-node list, and the reply table were process statics that *survived*
-    /// a test scheduler swap (`init_real_scheduler_for_test`). Now that they live
-    /// in `RuntimeInner`, the swap would otherwise discard a node already started
-    /// on the placeholder runtime; this transfer preserves the prior survival
-    /// semantics so node-startup ordering in tests is unchanged. Production never
-    /// swaps the installed runtime, so this has no production counterpart.
+    /// known-node list, local node id, and the reply table were process statics
+    /// that *survived* a test scheduler swap (`init_real_scheduler_for_test`).
+    /// Now that they live in `RuntimeInner`, the swap would otherwise discard a
+    /// node already started on the placeholder runtime; this transfer preserves
+    /// the prior survival semantics so node-startup ordering in tests is
+    /// unchanged. Production never swaps the installed runtime, so this has no
+    /// production counterpart.
     #[cfg(test)]
     pub(crate) fn test_transfer_from(&self, other: &NodeSlot) {
         let current = other.current.access(|guard| std::mem::replace(guard, 0));
@@ -213,6 +219,16 @@ impl NodeSlot {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *map = pending;
         }
+        let local_node_id = other.local_node_id.swap(0, Ordering::AcqRel);
+        self.local_node_id.store(local_node_id, Ordering::Release);
+    }
+
+    pub(crate) fn local_node_id(&self) -> u16 {
+        self.local_node_id.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_local_node_id(&self, node_id: u16) {
+        self.local_node_id.store(node_id, Ordering::Release);
     }
 }
 
@@ -5083,8 +5099,8 @@ mod tests {
     //    over the real transport: node1 sends an ask, node2's actor replies,
     //    and node1 receives the reply.
     //
-    // Both tests run under the shared runtime test lock to ensure CURRENT_NODE / LOCAL_NODE_ID
-    // state is not perturbed by concurrent node tests.
+    // Both tests run under the shared runtime test lock to ensure this runtime's
+    // CURRENT_NODE / local_node_id pair is not perturbed by concurrent node tests.
 
     use std::sync::atomic::AtomicU32;
 

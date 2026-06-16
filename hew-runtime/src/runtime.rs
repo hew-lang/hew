@@ -84,6 +84,12 @@ pub(crate) struct RuntimeInner {
     /// remote-ask reply table. Was the `CURRENT_NODE` + `KNOWN_NODES` +
     /// `REPLY_TABLE` globals.
     pub(crate) node: NodeSlot,
+    /// User-defined metric registry (`std::metrics`) and its fail-closed
+    /// self-metrics. Was the `metrics::REGISTRY` + `NAMES_DROPPED` /
+    /// `SERIES_DROPPED` / `INVALID_OPS` / `COLLISION_REJECTED` globals; resolved
+    /// through `rt_current().metrics` by the `metrics` module. A second runtime
+    /// scrapes its own counters without aliasing another's.
+    pub(crate) metrics: crate::metrics::MetricsState,
 }
 
 impl RuntimeInner {
@@ -97,6 +103,7 @@ impl RuntimeInner {
             shutdown_phase: AtomicI32::new(crate::shutdown::PHASE_RUNNING),
             supervisor_roots: PoisonSafe::new(Vec::new()),
             node: NodeSlot::new(),
+            metrics: crate::metrics::MetricsState::new(),
         }
     }
 
@@ -260,6 +267,28 @@ pub(crate) fn rt_current_id() -> Option<RuntimeId> {
         // `RuntimeInner` that outlives the installing guard on this thread,
         // exactly as in `rt_current`.
         Some(unsafe { (*p).runtime_id() })
+    }
+}
+
+/// Like [`rt_current`] but returns `None` instead of panicking when no runtime
+/// is installed. Same TLS-first → default-slot resolution order.
+///
+/// The observability read/reset surface (`metrics::render_snapshot`,
+/// `metrics::self_metrics`, `metrics::session_reset_metrics`) resolves through
+/// this: a host may scrape or reset before `hew_sched_init` installs a runtime
+/// or after teardown drops it, where there are simply no per-runtime metrics to
+/// read or clear. The register/mutate surface keeps the fail-closed
+/// [`rt_current`] resolver, since emitting a metric requires its owning runtime.
+#[inline]
+pub(crate) fn rt_current_opt() -> Option<&'static RuntimeInner> {
+    let p = CURRENT_RUNTIME.with(Cell::get);
+    if p.is_null() {
+        rt_default()
+    } else {
+        // SAFETY: a non-null TLS pointer was installed by `enter()` against a
+        // `RuntimeInner` that outlives the installing guard on this thread,
+        // exactly as in `rt_current`.
+        Some(unsafe { &*p })
     }
 }
 

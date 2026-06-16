@@ -131,29 +131,98 @@ impl RegistryInner {
     }
 }
 
-/// Process-global user-metric registry.
+/// Per-runtime user-metric state: the bounded registry plus its fail-closed
+/// self-metrics, visible in the scrape so a user discovers dropped data.
 ///
-/// Stored as `Option<RegistryInner>` so the static initialiser stays const
-/// (a `HashMap::new()` is not const for the default hasher). The interior is
-/// materialised on first access. This mirrors `observe::ATTRIBUTED_TURNS`.
-static REGISTRY: PoisonSafe<Option<RegistryInner>> = PoisonSafe::new(None);
+/// Was the process-global `REGISTRY` plus the four free self-metric statics
+/// (`NAMES_DROPPED`, `SERIES_DROPPED`, `INVALID_OPS`, `COLLISION_REJECTED`).
+/// Each runtime now owns its own copy as `RuntimeInner.metrics`, resolved
+/// through [`metrics_state`]: a second runtime counts its own registrations and
+/// rejects into its own scrape without aliasing another's.
+///
+/// The registry interior is stored as `Option<RegistryInner>` so the
+/// constructor stays `const` (a `HashMap::new()` is not const for the default
+/// hasher); the interior is materialised on first access. The self-metrics stay
+/// lock-free `AtomicI64`s beside the registry lock so a rejection on an
+/// early-return validation path counts without taking the registry mutex.
+#[derive(Debug)]
+pub(crate) struct MetricsState {
+    /// The bounded name directory and boxed-atomic slot arena, behind one lock.
+    registry: PoisonSafe<Option<RegistryInner>>,
+    /// Names rejected because the name cap was hit, the name was malformed, or
+    /// it collided with a runtime built-in.
+    names_dropped: AtomicI64,
+    /// Label series rejected because the per-metric series cap was hit.
+    series_dropped: AtomicI64,
+    /// Mutations rejected at runtime: a negative counter add, or an unknown
+    /// handle.
+    invalid_ops: AtomicI64,
+    /// Registrations rejected because the name equalled a runtime built-in.
+    collision_rejected: AtomicI64,
+}
+
+impl MetricsState {
+    /// The empty metric state for a fresh runtime. `const` so the WASM module
+    /// global and the `RuntimeInner` field initialiser share one constructor.
+    pub(crate) const fn new() -> Self {
+        Self {
+            registry: PoisonSafe::new(None),
+            names_dropped: AtomicI64::new(0),
+            series_dropped: AtomicI64::new(0),
+            invalid_ops: AtomicI64::new(0),
+            collision_rejected: AtomicI64::new(0),
+        }
+    }
+}
+
+/// The single metric state for the WASM cooperative runtime, which has no
+/// `RuntimeInner`. Mirrors the other ungated subsystems (`registry`) that keep
+/// a module static on wasm while the native build resolves a per-runtime field.
+#[cfg(target_arch = "wasm32")]
+static WASM_METRICS: MetricsState = MetricsState::new();
+
+/// Resolve this thread's metric state: the current runtime's `metrics` field on
+/// native, the single cooperative-runtime state on wasm.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn metrics_state() -> &'static MetricsState {
+    &crate::runtime::rt_current().metrics
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+fn metrics_state() -> &'static MetricsState {
+    &WASM_METRICS
+}
+
+/// Resolve this thread's metric state without panicking when no runtime is
+/// installed. Backs the observability read/reset surface (`render_snapshot`,
+/// `self_metrics`, `session_reset_metrics`), which a host may call before a
+/// runtime exists or after teardown: with no runtime there are no per-runtime
+/// metrics to read or clear, so those callers treat `None` as "empty".
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn metrics_state_opt() -> Option<&'static MetricsState> {
+    crate::runtime::rt_current_opt().map(|rt| &rt.metrics)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature mirrors the native arm, which is genuinely fallible; the \
+              single cooperative-runtime state is always present on wasm"
+)]
+fn metrics_state_opt() -> Option<&'static MetricsState> {
+    Some(&WASM_METRICS)
+}
 
 /// Run `f` with exclusive access to the (lazily-initialised) registry interior.
 fn with_registry<R>(f: impl FnOnce(&mut RegistryInner) -> R) -> R {
-    REGISTRY.access(|slot| f(slot.get_or_insert_with(RegistryInner::default)))
+    metrics_state()
+        .registry
+        .access(|slot| f(slot.get_or_insert_with(RegistryInner::default)))
 }
-
-// --- Self-metrics: visible in the scrape so a user discovers dropped data. ---
-
-/// Names rejected because the name cap was hit, the name was malformed, or it
-/// collided with a runtime built-in.
-static NAMES_DROPPED: AtomicI64 = AtomicI64::new(0);
-/// Label series rejected because the per-metric series cap was hit.
-static SERIES_DROPPED: AtomicI64 = AtomicI64::new(0);
-/// Mutations rejected at runtime: a negative counter add, or an unknown handle.
-static INVALID_OPS: AtomicI64 = AtomicI64::new(0);
-/// Registrations rejected because the name equalled a runtime built-in metric.
-static COLLISION_REJECTED: AtomicI64 = AtomicI64::new(0);
 
 /// Sentinel returned by every register entry point when registration fails a
 /// cap, charset, or collision check. Distinguishable from a valid slot index
@@ -219,16 +288,16 @@ fn rendered_name_collides_with_existing(reg: &RegistryInner, name: &str) -> bool
 /// collision check fails (the matching self-metric is incremented).
 fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
     if !name_is_valid(name) {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if collides_with_builtin(name) {
-        COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if kind == MetricKind::Histogram && buckets.len() > MAX_HISTOGRAM_BUCKETS {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -239,20 +308,20 @@ fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
             if existing.kind == kind {
                 return i64_slot(existing.base_slot);
             }
-            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         // A distinct canonical name that renders to the same Prometheus series
         // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
         // duplicate `# TYPE` block and an aliased series. Reject it.
         if rendered_name_collides_with_existing(reg, name) {
-            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         if reg.names.len() >= MAX_NAMES {
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
 
@@ -286,7 +355,7 @@ fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
 /// base handle; concrete series are materialised lazily by [`series_slot`].
 fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
     if !name_is_valid(name) {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     // Labelled histograms are deferred (the bucketed/labelled surface arrives in
@@ -295,16 +364,16 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
     // assume; accepting one here would alias the sum into the next registered
     // metric's slot. Reject it until the labelled surface reserves the slots.
     if kind == MetricKind::Histogram {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if collides_with_builtin(name) {
-        COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if label_keys.len() > MAX_LABEL_KEYS || label_keys.iter().any(|k| !label_key_is_valid(k)) {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -313,20 +382,20 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
             if existing.kind == kind && existing.label_keys == label_keys {
                 return i64_slot(existing.base_slot);
             }
-            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         // A distinct canonical name that renders to the same Prometheus series
         // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
         // duplicate `# TYPE` block and an aliased series. Reject it.
         if rendered_name_collides_with_existing(reg, name) {
-            COLLISION_REJECTED.fetch_add(1, Ordering::Relaxed);
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         if reg.names.len() >= MAX_NAMES {
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         let base_slot = reg.alloc_slot();
@@ -350,11 +419,11 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
 /// handle, label-arity mismatch, over-long label value, or series-cap breach.
 fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
     let Ok(base_slot) = usize::try_from(base_handle) else {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     };
     if label_values.iter().any(|v| v.len() > MAX_LABEL_LEN) {
-        SERIES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().series_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -364,7 +433,7 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
             .iter()
             .find(|n| reg.names.get(*n).is_some_and(|e| e.base_slot == base_slot))
         else {
-            INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         };
         let name = name.clone();
@@ -375,7 +444,7 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
             .get(&name)
             .is_some_and(|e| e.label_keys.len() == label_values.len());
         if !arity_ok {
-            INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         let key = canonical_series_key(
@@ -392,7 +461,7 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
             .get(&name)
             .is_some_and(|e| e.series.len() >= MAX_SERIES_PER_METRIC)
         {
-            SERIES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().series_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         let slot = reg.alloc_slot();
@@ -437,14 +506,14 @@ fn i64_slot(slot: usize) -> i64 {
 /// nothing when the handle is out of range.
 fn with_slot<R>(handle: i64, f: impl FnOnce(&AtomicI64) -> R) -> Option<R> {
     let Ok(idx) = usize::try_from(handle) else {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return None;
     };
     with_registry(|reg| {
         if let Some(slot) = reg.slots.get(idx) {
             Some(f(slot))
         } else {
-            INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
             None
         }
     })
@@ -495,7 +564,7 @@ pub fn inc(handle: i64) {
 /// monotonic).
 pub fn counter_add(handle: i64, n: i64) {
     if n < 0 {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return;
     }
     with_slot(handle, |slot| {
@@ -530,7 +599,7 @@ pub fn gauge_set(handle: i64, n: i64) {
 /// `<= upper_bound` count.
 pub fn histogram_record(handle: i64, value: i64) {
     let Ok(base_idx) = usize::try_from(handle) else {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return;
     };
     with_registry(|reg| {
@@ -542,7 +611,7 @@ pub fn histogram_record(handle: i64, value: i64) {
             .find(|e| e.base_slot == base_idx && e.kind == MetricKind::Histogram)
             .map(|e| e.buckets.clone())
         else {
-            INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+            metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
             return;
         };
         if let Some(count) = reg.slots.get(base_idx) {
@@ -586,10 +655,17 @@ pub struct RenderedMetric {
 }
 
 /// Snapshot every user metric for the scrape render. Returns metrics in
-/// registration order so the scrape output is deterministic.
+/// registration order so the scrape output is deterministic. Empty when no
+/// runtime is installed (a host scrape outside the runtime lifecycle).
 #[must_use]
 pub fn render_snapshot() -> Vec<RenderedMetric> {
-    with_registry(|reg| {
+    let Some(state) = metrics_state_opt() else {
+        return Vec::new();
+    };
+    state.registry.access(|slot| {
+        let Some(reg) = slot.as_ref() else {
+            return Vec::new();
+        };
         let mut out = Vec::with_capacity(reg.name_order.len());
         for name in &reg.name_order {
             let Some(entry) = reg.names.get(name) else {
@@ -689,30 +765,39 @@ pub struct SelfMetrics {
     pub collision_rejected: i64,
 }
 
-/// Read the registry self-metrics.
+/// Read the registry self-metrics. All zero when no runtime is installed.
 #[must_use]
 pub fn self_metrics() -> SelfMetrics {
+    let Some(state) = metrics_state_opt() else {
+        return SelfMetrics::default();
+    };
     SelfMetrics {
-        names_dropped: NAMES_DROPPED.load(Ordering::Relaxed),
-        series_dropped: SERIES_DROPPED.load(Ordering::Relaxed),
-        invalid_ops: INVALID_OPS.load(Ordering::Relaxed),
-        collision_rejected: COLLISION_REJECTED.load(Ordering::Relaxed),
+        names_dropped: state.names_dropped.load(Ordering::Relaxed),
+        series_dropped: state.series_dropped.load(Ordering::Relaxed),
+        invalid_ops: state.invalid_ops.load(Ordering::Relaxed),
+        collision_rejected: state.collision_rejected.load(Ordering::Relaxed),
     }
 }
 
 /// Clear the registry. Wired into `observe::reset_all`, the registered
 /// session-reset hook on both the native and the wasm scheduler paths, so a
-/// fresh session never observes a prior session's metrics.
+/// fresh session never observes a prior session's metrics. A no-op when no
+/// runtime is installed (nothing to clear).
 pub fn session_reset_metrics() {
-    with_registry(|reg| {
-        reg.names.clear();
-        reg.name_order.clear();
-        reg.slots.clear();
+    let Some(state) = metrics_state_opt() else {
+        return;
+    };
+    state.registry.access(|slot| {
+        if let Some(reg) = slot.as_mut() {
+            reg.names.clear();
+            reg.name_order.clear();
+            reg.slots.clear();
+        }
     });
-    NAMES_DROPPED.store(0, Ordering::Relaxed);
-    SERIES_DROPPED.store(0, Ordering::Relaxed);
-    INVALID_OPS.store(0, Ordering::Relaxed);
-    COLLISION_REJECTED.store(0, Ordering::Relaxed);
+    state.names_dropped.store(0, Ordering::Relaxed);
+    state.series_dropped.store(0, Ordering::Relaxed);
+    state.invalid_ops.store(0, Ordering::Relaxed);
+    state.collision_rejected.store(0, Ordering::Relaxed);
 }
 
 // =============================================================================
@@ -889,7 +974,7 @@ pub extern "C" fn hew_metric_histogram_record(handle: i64, value: f64) {
     // Bucket bounds are integers; floor the observation to the bucket scale.
     // A non-finite observation is rejected and counted.
     if !value.is_finite() {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return;
     }
     #[allow(
@@ -925,13 +1010,13 @@ pub unsafe extern "C" fn hew_metric_vec_register(
         1 => MetricKind::Gauge,
         2 => MetricKind::Histogram,
         _ => {
-            NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
     };
     // SAFETY: forwarded contract on `keys`.
     let Some(label_keys) = (unsafe { cstr_array(keys, n_keys) }) else {
-        NAMES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     };
     register_labelled(name, kind, &label_keys)
@@ -952,7 +1037,7 @@ pub unsafe extern "C" fn hew_metric_vec_with(
 ) -> i64 {
     // SAFETY: forwarded contract on `vals`.
     let Some(label_values) = (unsafe { cstr_array(vals, n_vals) }) else {
-        INVALID_OPS.fetch_add(1, Ordering::Relaxed);
+        metrics_state().invalid_ops.fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     };
     resolve_series(base_handle, &label_values)
@@ -964,37 +1049,53 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    // Every test mutates the process-global registry. Serialise them through a
-    // single lock and reset at entry so they do not observe each other's state.
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // The metric registry now lives in `RuntimeInner.metrics`, so each test owns
+    // a *private* runtime and `enter`s it on its own thread; `rt_current()`
+    // resolves that runtime through thread-local state. Two metrics tests on two
+    // threads therefore touch independent registries — there is no
+    // process-global registry left to serialise, so the dedicated `TEST_LOCK`
+    // this commit deletes is gone. The observe scrape tests keep using
+    // `runtime_test_guard()` (the default slot under `SchedTestLock`); a
+    // private-runtime metrics test cannot alias their registry, so the two
+    // families no longer need a shared mutual-exclusion point over one global.
 
-    /// Combined guard: holds the metrics `TEST_LOCK` *and* the scheduler test
-    /// lock for the test's duration.
-    ///
-    /// The observe-module scrape tests (`observe::tests`) read the same
-    /// process-global registry under `SchedTestLock`. Holding only `TEST_LOCK`
-    /// here would let a metrics test reset the registry concurrently with an
-    /// observe scrape test, corrupting the scrape under test. Acquiring both
-    /// locks gives metrics and observe tests one mutual-exclusion point over the
-    /// shared registry.
-    struct TestGuard {
-        _metrics: std::sync::MutexGuard<'static, ()>,
-        _sched: crate::scheduler::SchedTestLock,
+    /// A test's private runtime, entered on the test thread for its duration.
+    /// `_enter` is declared before `rt` so it drops first: the thread-local
+    /// selection is restored before the runtime it named is freed.
+    struct MetricsTestGuard {
+        _enter: crate::runtime::EnterGuard,
+        rt: Box<crate::runtime::RuntimeInner>,
     }
 
-    fn guard() -> TestGuard {
-        // Acquire the scheduler lock first (observe tests acquire it via
-        // `runtime_test_guard`) to keep a single, consistent lock order.
-        let sched = crate::scheduler::SchedTestLock::acquire();
-        let metrics = TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        session_reset_metrics();
-        TestGuard {
-            _metrics: metrics,
-            _sched: sched,
+    impl MetricsTestGuard {
+        /// Pointer to the entered runtime, so a spawned worker can `enter` the
+        /// *same* per-runtime registry (thread-local state is per-thread, so a
+        /// worker thread must re-enter the runtime explicitly).
+        fn runtime_ptr(&self) -> *const crate::runtime::RuntimeInner {
+            std::ptr::from_ref(&*self.rt)
         }
     }
+
+    fn guard() -> MetricsTestGuard {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: the guard owns `rt` and drops `_enter` before it, so the
+        // entered runtime outlives the thread-local selection that names it.
+        let enter = unsafe { crate::runtime::enter(&rt) };
+        MetricsTestGuard { _enter: enter, rt }
+    }
+
+    /// `*const RuntimeInner` that may cross into a worker thread. The pointer is
+    /// dereferenced only while the owning [`MetricsTestGuard`] keeps the runtime
+    /// alive — every test that shares it joins its workers before dropping the
+    /// guard.
+    #[derive(Clone, Copy)]
+    struct SharedRuntime(*const crate::runtime::RuntimeInner);
+    // SAFETY: deref is bounded by the owning guard's lifetime (workers are
+    // joined before the guard drops), and `RuntimeInner`'s metric state is
+    // internally synchronised (a `PoisonSafe` lock plus atomics).
+    unsafe impl Send for SharedRuntime {}
 
     #[test]
     fn counter_inc_accumulates_exact_value() {
@@ -1350,15 +1451,22 @@ mod tests {
 
     #[test]
     fn concurrent_inc_reaches_exact_final_value() {
-        let _g = guard();
+        let g = guard();
         let h = register_counter("app.concurrent");
         let threads: i64 = 8;
         let per: i64 = 1000;
+        // Workers share the test's private runtime: each re-enters it so `inc`
+        // resolves the same per-runtime registry (thread-local is per-thread).
+        let shared = SharedRuntime(g.runtime_ptr());
         let start = Arc::new(Barrier::new(usize::try_from(threads).unwrap()));
         let mut joins = Vec::new();
         for _ in 0..threads {
             let start = Arc::clone(&start);
             joins.push(thread::spawn(move || {
+                let shared = shared; // capture the Send wrapper whole, not its raw field
+                // SAFETY: `g` is held until after every join below, so the
+                // shared runtime stays alive for this enter.
+                let _enter = unsafe { crate::runtime::enter(&*shared.0) };
                 start.wait();
                 for _ in 0..per {
                     inc(h);
@@ -1377,6 +1485,47 @@ mod tests {
             m.series[0].1,
             threads * per,
             "concurrent increments must sum to the exact total"
+        );
+        drop(g);
+    }
+
+    #[test]
+    fn independent_runtimes_keep_separate_metric_registries() {
+        // The de-globalization dividend: each runtime owns its metric registry,
+        // so two threads — each with its *own* runtime — register the SAME
+        // metric name and mutate it concurrently to independent values. The old
+        // process-global registry needed the now-deleted `TEST_LOCK` serializer
+        // for this; independent runtimes stay isolated with no lock at all.
+        let start = Arc::new(Barrier::new(2));
+        let workers: Vec<_> = [3_i64, 7_i64]
+            .into_iter()
+            .map(|increments| {
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    let _g = guard(); // a private runtime for this thread
+                    start.wait(); // register + mutate concurrently
+                    let h = register_counter("app.same_name");
+                    assert!(h >= 0);
+                    for _ in 0..increments {
+                        inc(h);
+                    }
+                    render_snapshot()
+                        .iter()
+                        .find(|m| m.canonical_name == "app.same_name")
+                        .expect("each runtime sees its own metric")
+                        .series[0]
+                        .1
+                })
+            })
+            .collect();
+        let mut seen: Vec<i64> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        seen.sort_unstable();
+        // A shared registry would read 10 (3 + 7) on both threads (or race);
+        // independent registries each see only their own increments.
+        assert_eq!(
+            seen,
+            vec![3, 7],
+            "each runtime's counter reflects only its own increments"
         );
     }
 

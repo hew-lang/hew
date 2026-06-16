@@ -374,9 +374,8 @@ fn find_response_header(header_section: string, name: string) -> string {
     let target = string.to_lower(name);
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
-    var i: i64 = 0;
     var found = "";
-    while i < n {
+    for i in 0 .. n {
         let line = lines.get(i);
         let colon = line.find(":");
         if colon > 0 {
@@ -385,7 +384,6 @@ fn find_response_header(header_section: string, name: string) -> string {
                 found = string.trim(line.slice(colon + 1, line.len()));
             }
         }
-        i = i + 1;
     }
     found
 }
@@ -418,13 +416,11 @@ fn declared_content_length(header_section: string) -> i64 {
 /// inject extra CRLF-delimited headers or split the request line.
 fn contains_control_char(s: string) -> bool {
     let n = s.len();
-    var i: i64 = 0;
-    while i < n {
+    for i in 0 .. n {
         let b = s.char_at(i);
         if b < 32 || b == 127 {
             return true;
         }
-        i = i + 1;
     }
     false
 }

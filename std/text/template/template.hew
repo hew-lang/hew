@@ -141,12 +141,10 @@ fn template_error_message(e: TemplateError) -> string {
 // ── Internal context helpers ──────────────────────────────────────────
 fn lookup_scalar(ctx: Ctx, key: string) -> string {
     let n = ctx.skeys.len();
-    var i = 0;
-    while i < n {
+    for i in 0 .. n {
         if ctx.skeys.get(i) == key {
             return ctx.svals.get(i);
         }
-        i = i + 1;
     }
     ""
 }
@@ -158,24 +156,20 @@ fn is_truthy(ctx: Ctx, key: string) -> bool {
 
 fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    var i = 0;
-    while i < n {
+    for i in 0 .. n {
         if ctx.lkeys.get(i) == key {
             return ctx.lstart.get(i);
         }
-        i = i + 1;
     }
     -1
 }
 
 fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
-    var i = 0;
-    while i < n {
+    for i in 0 .. n {
         if ctx.lkeys.get(i) == key {
             return ctx.llen.get(i);
         }
-        i = i + 1;
     }
     0
 }
@@ -339,8 +333,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     let list_len = lookup_list_len(ctx, key);
     var out = "";
     if list_start >= 0 {
-        var i = 0;
-        while i < list_len {
+        for i in 0 .. list_len {
             let elem = ctx.litems.get(list_start + i);
             let rendered = render_segment(body, ctx, elem, true);
             match rendered {
@@ -351,7 +344,6 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
                     return Err(e);
                 },
             }
-            i = i + 1;
         }
     }
     Ok(RenderPair { text: out, next_pos: end_pos })
@@ -601,10 +593,8 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
     ctx.lkeys.push(key);
     ctx.lstart.push(start);
     ctx.llen.push(n);
-    var i = 0;
-    while i < n {
+    for i in 0 .. n {
         ctx.litems.push(items.get(i));
-        i = i + 1;
     }
 }
 

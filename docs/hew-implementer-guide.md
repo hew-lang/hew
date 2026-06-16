@@ -210,12 +210,17 @@ fn main() {
 
 ```hew
 fn main() {
-    var i = 0;
-    while i < 3 { println(i); i += 1; }
+    var n = 27;
+    var steps = 0;
+    while n != 1 {
+        if n % 2 == 0 { n = n / 2; } else { n = 3 * n + 1; }
+        steps += 1;
+    }
+    println(steps);   // 111
 }
 ```
 
-Condition is a bare expression (no parens); body is a brace block. Compound-assign (`+=`) is available.
+Condition is a bare expression (no parens); body is a brace block. Compound-assign (`+=`) is available. Reach for `while` only when the loop is genuinely condition-driven — for a fixed count use `for i in 0..n` (or `(0..n).rev()` / `.step_by(k)`), which says the iteration bound up front instead of hand-rolling an init/increment.
 
 ### loop + break (statement form)
 

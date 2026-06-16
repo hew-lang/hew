@@ -115,6 +115,12 @@ fn collect_test_files(dir: &std::path::Path, out: &mut Vec<String>) -> Result<()
         if path.is_dir() {
             collect_test_files(&path, out)?;
         } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            // Belt-and-braces: skip any leftover hew_test_*.hew temp files that
+            // survived a killed test run.  The runner now writes them to the OS
+            // temp dir, but a pre-existing stale file should not poison discovery.
+            if name.starts_with("hew_test_") {
+                continue;
+            }
             let is_hew = std::path::Path::new(name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("hew"));
@@ -246,5 +252,35 @@ fn test_panic() {
         assert!(discovered.tests.is_empty());
         assert!(discovered.has_parse_errors());
         assert!(!discovered.parse_errors.is_empty());
+    }
+
+    #[test]
+    fn hew_test_prefix_excluded_from_discovery() {
+        // A leftover hew_test_*.hew temp file inside a tests/ dir must NOT be
+        // collected.  If it were picked up, the next run would inject a second
+        // synthetic `fn main()` into the compilation unit and fail with
+        // "main is defined multiple times".
+        let dir = tempdir().unwrap();
+        let tests_dir = dir.path().join("tests");
+        std::fs::create_dir_all(&tests_dir).unwrap();
+
+        // Plant a legitimate test file.
+        std::fs::write(
+            tests_dir.join("real_test.hew"),
+            "#[test]\nfn real() { assert(true); }\n",
+        )
+        .unwrap();
+
+        // Plant the stale temp file that the runner previously left behind.
+        std::fs::write(tests_dir.join("hew_test_xq7r9abc.hew"), "fn main() { }\n").unwrap();
+
+        let files = discover_test_files(dir.path().to_str().unwrap()).unwrap();
+
+        // Only the real fixture — the hew_test_ file must be excluded.
+        assert_eq!(files.len(), 1, "expected exactly 1 file, got: {files:?}");
+        assert!(
+            files[0].ends_with("real_test.hew"),
+            "collected file should be real_test.hew, got: {files:?}",
+        );
     }
 }

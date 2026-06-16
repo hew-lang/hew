@@ -151,14 +151,15 @@ fn compile_test(
 
     let hew_binary = crate::util::find_hew_binary()?;
 
-    let test_dir = std::path::Path::new(&test.file)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-
+    // Write synthetic source and the emit dir to the system temp directory,
+    // NOT to the test file's own parent.  If the process is killed mid-run,
+    // a leftover hew_test_*.hew inside a tests/ directory would be picked up
+    // by the next discovery scan and cause a spurious "main is defined multiple
+    // times" compile error.  The OS temp dir is outside any scanned tree.
     let tmp_source = tempfile::Builder::new()
         .prefix("hew_test_")
         .suffix(".hew")
-        .tempfile_in(test_dir)
+        .tempfile_in(std::env::temp_dir())
         .map_err(|e| format!("cannot create temp file: {e}"))?;
 
     std::fs::write(tmp_source.path(), &synthetic)
@@ -166,7 +167,7 @@ fn compile_test(
 
     let emit_dir = tempfile::Builder::new()
         .prefix("hew_test_emit_")
-        .tempdir_in(test_dir)
+        .tempdir_in(std::env::temp_dir())
         .map_err(|e| format!("cannot create temp emit dir: {e}"))?;
 
     let binary_name = tmp_source

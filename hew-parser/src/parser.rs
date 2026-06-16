@@ -1212,6 +1212,66 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn is_match_arm_pattern_start(&self) -> bool {
+        match self.peek() {
+            Some(Token::Minus) => matches!(
+                self.peek_at(self.pos + 1),
+                Some(Token::Integer(_) | Token::Float(_))
+            ),
+            Some(Token::Dot) => matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))),
+            Some(
+                Token::Identifier(_)
+                | Token::LeftParen
+                | Token::Integer(_)
+                | Token::StringLit(_)
+                | Token::CharLit(_)
+                | Token::RawString(_)
+                | Token::RegexLiteral(_)
+                | Token::True
+                | Token::False,
+            ) => true,
+            Some(tok) => Self::contextual_keyword_name(tok).is_some(),
+            None => false,
+        }
+    }
+
+    /// Recover after a malformed match arm by consuming the bad arm, then
+    /// stopping before the closing `}` or the next arm's pattern.
+    fn skip_to_match_arm_boundary(&mut self) {
+        let mut depth: usize = 0;
+        let mut closed_top_level_block = false;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::RightBrace) if depth == 0 => break,
+                Some(Token::Comma) if depth == 0 => {
+                    self.advance();
+                    break;
+                }
+                Some(Token::LeftBrace) => {
+                    depth += 1;
+                    closed_top_level_block = false;
+                    self.advance();
+                }
+                Some(Token::RightBrace) => {
+                    depth -= 1;
+                    self.advance();
+                    closed_top_level_block = depth == 0;
+                }
+                Some(_)
+                    if depth == 0
+                        && closed_top_level_block
+                        && self.is_match_arm_pattern_start() =>
+                {
+                    break;
+                }
+                _ => {
+                    closed_top_level_block = false;
+                    self.advance();
+                }
+            }
+        }
+    }
+
     /// Returns true when the token can start a top-level item.
     fn is_top_level_item_start(tok: &Token<'_>) -> bool {
         matches!(
@@ -5842,7 +5902,15 @@ impl<'src> Parser<'src> {
 
                 let mut arms = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                    arms.push(self.parse_match_arm()?);
+                    let before = self.pos;
+                    if let Some(arm) = self.parse_match_arm() {
+                        arms.push(arm);
+                    } else {
+                        self.skip_to_match_arm_boundary();
+                        if self.pos == before && !self.at_end() {
+                            self.advance();
+                        }
+                    }
                 }
 
                 self.expect(&Token::RightBrace)?;
@@ -6943,7 +7011,15 @@ impl<'src> Parser<'src> {
 
                 let mut arms = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                    arms.push(self.parse_match_arm()?);
+                    let before = self.pos;
+                    if let Some(arm) = self.parse_match_arm() {
+                        arms.push(arm);
+                    } else {
+                        self.skip_to_match_arm_boundary();
+                        if self.pos == before && !self.at_end() {
+                            self.advance();
+                        }
+                    }
                 }
 
                 self.expect(&Token::RightBrace)?;
@@ -8909,6 +8985,33 @@ mod tests {
         let source = "fn main() { match opt { Some(x) => { x } None => { 0 } } }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
+        let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";
+        let result = parse(source);
+        assert_eq!(
+            result.errors.len(),
+            1,
+            "bad arm pattern should not cascade: {:?}",
+            result.errors
+        );
+        assert!(
+            matches!(
+                result.errors[0].kind,
+                ParseDiagnosticKind::InvalidPattern { .. }
+            ),
+            "expected invalid-pattern diagnostic, got: {:?}",
+            result.errors
+        );
+        let Item::Function(function) = &result.program.items[0].0 else {
+            panic!("expected function item");
+        };
+        let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+            panic!("expected trailing match expression");
+        };
+        assert_eq!(arms.len(), 2, "valid later arms should still parse");
     }
 
     #[test]

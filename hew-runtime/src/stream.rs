@@ -4459,9 +4459,21 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
-        // Peer thread: connect, set SO_LINGER=0, then drop to send RST.
+        // The peer must not reset until the listener has accepted the
+        // connection. On the BSDs a RST that arrives before `accept()` removes
+        // the half-open connection from the queue and makes `accept()` return
+        // ECONNABORTED (os error 53); with only one peer connecting, a retry
+        // would then block forever on an empty queue. Linux instead returns the
+        // RST-marked connection and surfaces the reset on the first read. Gating
+        // the reset on an explicit "accepted" signal removes that race and
+        // exercises the same accepted-then-reset read path on every platform.
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel::<()>();
+
+        // Peer thread: connect, wait until accepted, set SO_LINGER=0, drop → RST.
         let t = std::thread::spawn(move || {
             let peer = TcpStream::connect(addr).unwrap();
+            // Hold the connection open until the listener side has accepted it.
+            accepted_rx.recv().unwrap();
             // Force RST on close by setting SO_LINGER with l_onoff=1, l_linger=0.
             #[cfg(unix)]
             // SAFETY: setsockopt is called with a valid fd and a stack-allocated
@@ -4490,20 +4502,9 @@ mod tests {
             drop(peer);
         });
 
-        // On FreeBSD (and other BSDs), `accept()` may return ECONNABORTED
-        // (os error 53) when the peer's RST arrives before the accept
-        // completes. This is POSIX-permitted BSD behaviour; Linux silently
-        // drops the aborted connection and waits for the next one.  Retry
-        // until we get a connection or a genuinely unexpected error.
-        let accepted = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => {
-                    // Peer RST arrived before accept completed; retry.
-                }
-                Err(e) => panic!("listener.accept() failed unexpectedly: {e}"),
-            }
-        };
+        let (accepted, _) = listener.accept().unwrap();
+        // The connection is established; tell the peer it may reset now.
+        accepted_tx.send(()).unwrap();
         t.join().unwrap();
 
         // Give the RST time to arrive.

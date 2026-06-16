@@ -308,6 +308,51 @@ pub(crate) unsafe fn enter(rt: &RuntimeInner) -> EnterGuard {
     EnterGuard { prev }
 }
 
+/// Enter the runtime that owns `actor`, falling back to the current default.
+///
+/// This is the single choke point off-dispatch producers will call when they
+/// already have an actor pointer but no worker-thread `enter()` binding. Actors
+/// spawned by this runtime carry a non-owning pointer to their owning
+/// [`RuntimeInner`], sourced from the same `rt_current()` read that stamps
+/// `runtime_id`. Legacy/test actors may carry null, and null preserves the
+/// current single-runtime behaviour by entering [`rt_default`] instead.
+///
+/// # Safety
+///
+/// If `actor` is non-null, it must point to a live [`crate::actor::HewActor`] for
+/// the duration of this call. The stored runtime pointer is non-owning: it is
+/// valid because `RuntimeInner` owns/outlives its actors and cleanup drops the
+/// runtime only after actors/workers are drained. No ownership or refcount is
+/// taken, so this avoids a runtime→actor→runtime cycle.
+#[allow(
+    dead_code,
+    reason = "Stage 1 installs the choke point; Stage 2 producer cutovers call it"
+)]
+#[must_use]
+pub(crate) unsafe fn enter_actor_runtime(
+    actor: *const crate::actor::HewActor,
+) -> Option<EnterGuard> {
+    let rt = if actor.is_null() {
+        rt_default()?
+    } else {
+        // SAFETY: caller guarantees a non-null actor pointer is live for this
+        // read; the field is an immutable spawn-time stamp.
+        let actor_rt = unsafe { (*actor).runtime };
+        if actor_rt.is_null() {
+            rt_default()?
+        } else {
+            // SAFETY: the actor's non-owning runtime pointer outlives the actor
+            // by the RuntimeInner owns/outlives actors contract documented above.
+            unsafe { &*actor_rt }
+        }
+    };
+
+    // SAFETY: `rt` came from either the actor's owning-runtime stamp or the
+    // installed default runtime; both outlive the returned guard under their
+    // respective lifecycle contracts.
+    Some(unsafe { enter(rt) })
+}
+
 /// RAII guard returned by [`enter`]; restores the previous [`CURRENT_RUNTIME`]
 /// pointer when dropped.
 ///

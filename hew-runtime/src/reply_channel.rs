@@ -1135,6 +1135,7 @@ mod tests {
                 suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
                 suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
                 runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+                runtime: ptr::null(),
             })
         }
 

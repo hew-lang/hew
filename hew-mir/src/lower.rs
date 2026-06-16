@@ -19012,18 +19012,39 @@ impl Builder {
         let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
         for (name, arg) in args {
             if !expected_arg_names.iter().any(|expected| expected == name) {
+                let parameters = format!(
+                    "[{}]",
+                    expected_arg_names
+                        .iter()
+                        .map(|expected| format!("`{expected}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let note = if explicit_init {
+                    if layout.state_field_names.iter().any(|field| field == name) {
+                        format!(
+                            "`{name}` is a state field on actor `{actor_name}` but not an `init()` \
+                             parameter; init() parameters are: {parameters}"
+                        )
+                    } else {
+                        format!(
+                            "actor `{actor_name}` has no init() parameter named `{name}`; \
+                             parameters are: {parameters}"
+                        )
+                    }
+                } else {
+                    format!(
+                        "actor `{actor_name}` has no state field named `{name}`; \
+                         fields are: {parameters}"
+                    )
+                };
                 self.diagnostics.push(MirDiagnostic {
-                    kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: format!(
-                            "spawn `{actor_name}` unknown {} argument `{name}`",
-                            if explicit_init { "init" } else { "state" }
-                        ),
+                    kind: MirDiagnosticKind::InvalidActorSpawnArgument {
+                        actor: actor_name.to_string(),
+                        argument: name.clone(),
                         site: expr.site,
                     },
-                    note: format!(
-                        "actor `{actor_name}` has no {} parameter or field named `{name}`",
-                        if explicit_init { "init" } else { "state" }
-                    ),
+                    note,
                 });
                 return None;
             }

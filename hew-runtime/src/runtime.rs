@@ -90,6 +90,10 @@ pub(crate) struct RuntimeInner {
     /// through `rt_current().metrics` by the `metrics` module. A second runtime
     /// scrapes its own counters without aliasing another's.
     pub(crate) metrics: crate::metrics::MetricsState,
+    /// Actor monitor table and monitor-reference counter. Was the
+    /// `monitor::MONITOR_TABLE` + `MONITOR_REF_COUNTER` globals; resolved
+    /// through `rt_current().monitors` by the monitor module.
+    pub(crate) monitors: crate::monitor::MonitorState,
 }
 
 impl RuntimeInner {
@@ -104,6 +108,7 @@ impl RuntimeInner {
             supervisor_roots: PoisonSafe::new(Vec::new()),
             node: NodeSlot::new(),
             metrics: crate::metrics::MetricsState::new(),
+            monitors: crate::monitor::MonitorState::new(),
         }
     }
 

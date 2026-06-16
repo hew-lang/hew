@@ -191,6 +191,19 @@ retries = 1
 test-group = "real-timing"
 
 [[profile.ci.overrides]]
+# tcp_stream_backing_records_error_on_reset is a real loopback-TCP timing test:
+# it connects a peer, forces a RST via SO_LINGER=0, and spins an accept-retry
+# loop (FreeBSD/BSD return ECONNABORTED when the RST beats the accept). On the
+# native runners this completes in milliseconds, but inside the FreeBSD VM under
+# QEMU emulation the connect/accept/RST round-trip is slow enough that the loop
+# can exceed the default 300s ci slow-timeout — VM scheduling latency, not a
+# logic hang. Widen the kill window for this one test so the FreeBSD gate does
+# not false-fail on emulated networking jitter; the assertion stays strict
+# (next() must return None on RST/EOF), so a genuine regression still fails.
+filter = "test(tcp_stream_backing_records_error_on_reset)"
+slow-timeout = { period = "120s", terminate-after = 6 }
+
+[[profile.ci.overrides]]
 # child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
 # rebuild across escalation; 0.21s isolated, but at the tail of a fully loaded
 # 16-core run it can exceed its 10s in-test budget (contention-flake, 50x

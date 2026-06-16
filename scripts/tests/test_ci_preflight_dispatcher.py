@@ -538,6 +538,114 @@ def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     ), f"Expected narrow types lane, not full fallback.\nstdout:\n{result.stdout}"
 
 
+# ---------------------------------------------------------------------------
+# Slice 2: positive bucket-routing assertions (codegen/cli/wasm + mixed)
+# ---------------------------------------------------------------------------
+
+
+def test_hew_hir_routes_to_compiler_pipeline_lane() -> None:
+    """hew-hir/* changes route to the compiler-pipeline lane.
+
+    is_compiler_pipeline_path matches hew-hir/*, hew-mir/*, hew-codegen-rs/*.
+    The lane runs test-compiler-pipeline + test-vertical-slice.
+    """
+    result = run_dispatcher("hew-hir/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, (
+        f"Expected compiler-pipeline for hew-hir change.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    assert "make test-vertical-slice" in result.stdout, result.stdout
+
+
+def test_hew_codegen_rs_routes_to_compiler_pipeline_lane() -> None:
+    """hew-codegen-rs/* changes route to the compiler-pipeline lane."""
+    result = run_dispatcher("hew-codegen-rs/src/emit.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, (
+        f"Expected compiler-pipeline for hew-codegen-rs change.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+
+
+def test_hew_compile_routes_to_cli_lane() -> None:
+    """hew-compile/* changes route to the cli lane.
+
+    is_cli_path matches hew-cli/*, adze-cli/*, hew-compile/*,
+    hew-cabi/*, hew-capability-gen/*.
+    """
+    result = run_dispatcher("hew-compile/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: cli" in result.stdout, (
+        f"Expected cli lane for hew-compile change.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-cli" in result.stdout, result.stdout
+
+
+def test_hew_cabi_routes_to_cli_lane() -> None:
+    """hew-cabi/* changes route to the cli lane (C ABI helpers)."""
+    result = run_dispatcher("hew-cabi/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: cli" in result.stdout, (
+        f"Expected cli lane for hew-cabi change.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-cli" in result.stdout, result.stdout
+
+
+def test_hew_capability_gen_routes_to_cli_lane() -> None:
+    """hew-capability-gen/* changes route to the cli lane."""
+    result = run_dispatcher("hew-capability-gen/src/main.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: cli" in result.stdout, (
+        f"Expected cli lane for hew-capability-gen change.\nstdout:\n{result.stdout}"
+    )
+    assert "make test-cli" in result.stdout, result.stdout
+
+
+def test_hew_wasm_routes_to_wasm_lane() -> None:
+    """hew-wasm/* changes route to the wasm lane.
+
+    The wasm lane runs cargo test -p hew-wasm --lib (not the full test
+    suite) plus make playground-check for the wasm-pack build smoke test.
+    """
+    result = run_dispatcher("hew-wasm/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: wasm" in result.stdout, (
+        f"Expected wasm lane for hew-wasm change.\nstdout:\n{result.stdout}"
+    )
+    assert "cargo test -p hew-wasm --lib" in result.stdout, (
+        f"Expected 'cargo test -p hew-wasm --lib' in wasm lane.\nstdout:\n{result.stdout}"
+    )
+    assert "make playground-check" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full test suite.
+    assert (
+        "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
+    ), f"Wasm lane must not run full make test.\nstdout:\n{result.stdout}"
+
+
+def test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff() -> None:
+    """A diff spanning both hew-hir/* (codegen bucket) and hew-types/* stays
+    on the compiler-pipeline lane rather than falling back.
+
+    When compiler_related=1, the dispatcher zeroes out has_types (and
+    has_parser/has_cli) before computing bucket_count, so the mix counts
+    as a single compiler-pipeline bucket and selects the narrow lane.
+    """
+    result = run_dispatcher("hew-hir/src/lib.rs", "hew-types/src/lib.rs")
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: compiler-pipeline" in result.stdout, (
+        f"Expected compiler-pipeline for hew-hir + hew-types diff.\n"
+        f"stdout:\n{result.stdout}"
+    )
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    # Must NOT have fallen back to the full suite.
+    assert (
+        "  - make test\n" not in result.stdout and "make test\n" not in result.stdout
+    ), (
+        f"Expected narrow compiler-pipeline lane, not full fallback.\nstdout:\n{result.stdout}"
+    )
+
+
 _TESTS = [
     test_makefile_routes_to_scripts_config_profile,
     test_scripts_path_routes_to_scripts_config_profile,
@@ -573,6 +681,14 @@ _TESTS = [
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
     test_ci_parity_script_passes,
+    # Slice 2 positive bucket-routing tests
+    test_hew_hir_routes_to_compiler_pipeline_lane,
+    test_hew_codegen_rs_routes_to_compiler_pipeline_lane,
+    test_hew_compile_routes_to_cli_lane,
+    test_hew_cabi_routes_to_cli_lane,
+    test_hew_capability_gen_routes_to_cli_lane,
+    test_hew_wasm_routes_to_wasm_lane,
+    test_compiler_pipeline_absorbs_types_bucket_in_mixed_diff,
 ]
 
 if __name__ == "__main__":

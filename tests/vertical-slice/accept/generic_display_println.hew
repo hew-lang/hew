@@ -1,0 +1,28 @@
+// #1565 / #1929 Stage 3: generic `println` / `print` / `to_string` of a
+// value typed by a `T: Display` type parameter. The builtin surfaces route
+// through the checker-verified `Display` obligation and dispatch to the
+// concrete `Display::fmt` impl per monomorphisation — primitive, string, and
+// user-defined receivers all flow through the same static-trait-dispatch
+// spine.
+type Color { r: i64; g: i64; b: i64; }
+
+impl Display for Color {
+    fn fmt(c: Color) -> string { "Color" }
+}
+
+fn p<T: Display>(x: T) {
+    println(x);
+}
+
+fn render<T: Display>(x: T) -> string {
+    to_string(x)
+}
+
+fn main() {
+    p(42);
+    p("hi");
+    p(Color { r: 1, g: 2, b: 3 });
+    print(render(7));
+    println("");
+    println(render("yo"));
+}

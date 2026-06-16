@@ -1,5 +1,7 @@
 //! Signal forwarding: when `hew run` receives SIGTERM or SIGINT, forward it to
-//! the compiled child binary so it is not orphaned.
+//! the compiled child binary so it is not orphaned. Restore SIGPIPE's default
+//! disposition so closed output pipes terminate cleanly instead of surfacing as
+//! Rust I/O panics.
 
 #![allow(
     dead_code,
@@ -45,6 +47,8 @@ pub fn forward_signals_to_child(child_pid: u32) {
     // performs only async-signal-safe operations.  SA_RESTART ensures that
     // syscalls interrupted by the signal (e.g. waitpid) are restarted.
     unsafe {
+        let pipe_result = libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = forward_to_child as *const () as libc::sighandler_t;
         libc::sigemptyset(&raw mut sa.sa_mask);
@@ -53,9 +57,9 @@ pub fn forward_signals_to_child(child_pid: u32) {
         let term_result = libc::sigaction(libc::SIGTERM, &raw const sa, std::ptr::null_mut());
         let int_result = libc::sigaction(libc::SIGINT, &raw const sa, std::ptr::null_mut());
 
-        if term_result != 0 || int_result != 0 {
+        if pipe_result == libc::SIG_ERR || term_result != 0 || int_result != 0 {
             clear_child_pid();
-            eprintln!("hew: warning: failed to install signal forwarding handlers");
+            eprintln!("hew: warning: failed to install signal handlers");
         }
     }
 }

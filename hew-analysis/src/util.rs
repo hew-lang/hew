@@ -27,6 +27,13 @@ pub fn compute_line_offsets(source: &str) -> Vec<usize> {
 /// Convert byte offset to (line, character) — both 0-based, character in UTF-16 code units.
 #[must_use]
 pub fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -> (usize, usize) {
+    // Defensive clamp: a diagnostic span computed against a different (larger)
+    // source unit must never index past this source. Saturating to the source
+    // length degrades a mis-attributed offset to end-of-file instead of
+    // panicking the analysis pipeline. The authoritative fix is correct span
+    // attribution at the diagnostic's origin; this clamp is the last line of
+    // defense so one bad span can never take down the LSP.
+    let offset = offset.min(source.len());
     let line = line_offsets
         .partition_point(|&o| o <= offset)
         .saturating_sub(1);
@@ -241,5 +248,56 @@ pub fn simple_word_at_offset(source: &str, offset: usize) -> Option<(String, Off
         None
     } else {
         Some((word.to_string(), OffsetSpan { start, end }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compute_line_offsets, offset_to_line_col, span_to_line_col_range};
+
+    #[test]
+    fn offset_to_line_col_maps_in_range_offsets() {
+        let source = "abc\ndef";
+        let lo = compute_line_offsets(source);
+        assert_eq!(offset_to_line_col(source, &lo, 0), (0, 0));
+        assert_eq!(offset_to_line_col(source, &lo, 2), (0, 2));
+        // Offset 4 is the first byte of the second line ('d').
+        assert_eq!(offset_to_line_col(source, &lo, 4), (1, 0));
+        assert_eq!(offset_to_line_col(source, &lo, 5), (1, 1));
+        // Offset at source.len() is the end-of-file position.
+        assert_eq!(offset_to_line_col(source, &lo, source.len()), (1, 3));
+    }
+
+    #[test]
+    fn offset_to_line_col_clamps_out_of_range_offset_to_eof() {
+        // A span computed against a larger source unit (e.g. a stdlib file) must
+        // not panic when applied to this shorter source. It degrades to EOF.
+        let source = "abc\ndef";
+        let lo = compute_line_offsets(source);
+        let eof = offset_to_line_col(source, &lo, source.len());
+        assert_eq!(offset_to_line_col(source, &lo, 1289), eof);
+        assert_eq!(offset_to_line_col(source, &lo, usize::MAX), eof);
+    }
+
+    #[test]
+    fn offset_to_line_col_counts_utf16_code_units() {
+        // '𝄞' (U+1D11E) is 4 UTF-8 bytes and 2 UTF-16 code units.
+        let source = "a𝄞b";
+        let lo = compute_line_offsets(source);
+        // After 'a' (1 byte) + '𝄞' (4 bytes) = offset 5, the column is 1 + 2 = 3.
+        assert_eq!(offset_to_line_col(source, &lo, 5), (0, 3));
+    }
+
+    #[test]
+    fn span_to_line_col_range_survives_out_of_range_end() {
+        // Reproduces the LSP crash shape: an out-of-bounds end offset attributed
+        // to a short user document must clamp instead of panicking.
+        let source = "import std::net;\nfn main() {}\n";
+        let lo = compute_line_offsets(source);
+        let (sl, sc, el, ec) = span_to_line_col_range(source, &lo, 0, 1306);
+        assert_eq!((sl, sc), (0, 0));
+        // The end clamps to EOF (last line start, end column).
+        let (last_l, last_c) = offset_to_line_col(source, &lo, source.len());
+        assert_eq!((el as usize, ec as usize), (last_l, last_c));
     }
 }

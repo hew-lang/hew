@@ -634,6 +634,19 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
     })
 }
 
+/// Read the base value for an unlabelled user metric by canonical name.
+#[must_use]
+pub fn read_u64(name: &str) -> Option<u64> {
+    with_registry(|reg| {
+        let entry = reg.names.get(name)?;
+        if !entry.label_keys.is_empty() {
+            return None;
+        }
+        let value = reg.slots.get(entry.base_slot)?.load(Ordering::Relaxed);
+        u64::try_from(value).ok()
+    })
+}
+
 /// Decode a [`canonical_series_key`] back into its label-value list.
 ///
 /// The key is a flat sequence of length-prefixed `<byte_len>:<bytes>` fields,

@@ -15,7 +15,7 @@
 // producing a binary.
 #[resource]
 type Conn {
-    id: i64,
+    id: i64;
 }
 
 impl Conn {

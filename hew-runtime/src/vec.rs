@@ -2768,6 +2768,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn test_vec_push_get_str() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -2837,6 +2841,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn test_vec_pop_str() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -2951,6 +2959,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn test_vec_push_layout_stub_fails_closed() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -3004,6 +3016,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn test_vec_get_generic_oob() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "vec::tests::_helper_vec_get_generic_oob"])
@@ -3459,6 +3475,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn vec_remove_at_layout_oob_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "vec::tests::_helper_vec_remove_at_layout_oob"])
@@ -3496,6 +3516,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn vec_remove_at_layout_layout_managed_aborts() {
         // Non-Plain (LayoutManaged) layout must fail closed — the BitCopy
         // operation gate must abort rather than corrupt ownership.
@@ -3540,6 +3564,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn slice_range_str_retains_each_element_so_drops_are_refcount_independent() {
         // SAFETY: FFI calls use valid vec pointer and header-aware C strings.
         unsafe {
@@ -3626,6 +3654,10 @@ mod tests {
     /// second vec releases the last owner. The refcount ladder (1→2→1→…→0) is
     /// asserted directly, and `ASan` confirms exactly-once frees with no UAF.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn vec_string_element_survives_until_last_owner_freed() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -3682,6 +3714,10 @@ mod tests {
     /// retains the new one, leaving the original vec's slot intact and readable.
     /// This is the element-level copy-on-write the migration delivers.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn vec_set_str_is_element_cow_against_a_clone() {
         // SAFETY: FFI calls use valid string HewVecs and header-aware strings.
         unsafe {
@@ -3739,6 +3775,10 @@ mod tests {
     /// releasing the remaining element must each free exactly once — no
     /// double-free (`ASan`).
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn vec_pop_str_transfers_owner_without_double_free() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -3776,6 +3816,10 @@ mod tests {
     /// surviving prefix is untouched and readable. `ASan` confirms no
     /// double-free or UAF, and free-at-zero when the clone is freed.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn vec_truncate_releases_dropped_string_elements() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware strings.
         unsafe {
@@ -3921,6 +3965,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn vec_clone_layout_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "vec::tests::_helper_vec_clone_layout_managed"])
@@ -4005,6 +4053,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "String-element drop/clone reads the loader image extent via is_static_string (extern static); Miri cannot model the executable image"
+    )]
     fn vec_clone_managed_string_elements_are_independent() {
         // SAFETY: FFI calls use a valid string HewVec and header-aware C strings.
         unsafe {
@@ -4089,6 +4141,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn vec_clone_managed_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -4135,6 +4191,10 @@ mod tests {
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn vec_free_managed_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -4476,6 +4536,10 @@ mod vec_owned_tests {
     /// by `should_panic`, so this uses the repo's death-test subprocess pattern.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn constructor_rejects_missing_clone_thunk_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -4522,6 +4586,10 @@ mod vec_owned_tests {
     /// (codegen routed a non-owned vec into the owned path).
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn owned_op_rejects_missing_descriptor_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

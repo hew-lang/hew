@@ -110,6 +110,52 @@ fn block_comment<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::FilterResu
     logos::FilterResult::Error(())
 }
 
+fn skip_quoted(bytes: &[u8], mut i: usize, quote: u8, escapes: bool) -> usize {
+    i += 1;
+    while i < bytes.len() {
+        if escapes && bytes[i] == b'\\' {
+            i = (i + 2).min(bytes.len());
+        } else if bytes[i] == quote {
+            return i + 1;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+fn interpolated_string<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> Result<&'s str, ()> {
+    let bytes = lex.remainder().as_bytes();
+    let mut i = 0;
+    let mut brace_depth: usize = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'{' => {
+                brace_depth += 1;
+                i += 1;
+            }
+            b'}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                i += 1;
+            }
+            b'"' if brace_depth == 0 => {
+                lex.bump(i + 1);
+                return Ok(lex.slice());
+            }
+            b'r' if brace_depth > 0 && matches!(bytes.get(i + 1), Some(b'"')) => {
+                i = skip_quoted(bytes, i + 1, b'"', false);
+            }
+            b'"' | b'\'' if brace_depth > 0 => {
+                i = skip_quoted(bytes, i, bytes[i], true);
+            }
+            _ => i += 1,
+        }
+    }
+    lex.bump(bytes.len());
+    Err(())
+}
+
 // ---------------------------------------------------------------------------
 // Token enum
 // ---------------------------------------------------------------------------
@@ -428,7 +474,7 @@ pub enum Token<'src> {
     Integer(&'src str),
 
     /// Interpolated string literal `f"..."`.
-    #[regex(r#"f"([^"\\]|\\.)*""#)]
+    #[regex(r#"f""#, interpolated_string)]
     InterpolatedString(&'src str),
 
     /// Raw string literal `r"..."` (no escape processing).
@@ -977,6 +1023,25 @@ mod tests {
             vec![
                 Token::RawString(r#"r"raw\nstring""#),
                 Token::InterpolatedString("f\"hello {name}\""),
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_allows_nested_string_literals() {
+        assert_eq!(
+            tokens(r#"f"x={func("a")}""#),
+            vec![Token::InterpolatedString(r#"f"x={func("a")}""#)]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_still_stops_at_outer_quote() {
+        assert_eq!(
+            tokens(r#"f"x={func("a")}" "tail""#),
+            vec![
+                Token::InterpolatedString(r#"f"x={func("a")}""#),
+                Token::StringLit(r#""tail""#),
             ]
         );
     }

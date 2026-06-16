@@ -9409,6 +9409,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_interpolated_string_with_nested_string_literal() {
+        let result = parse(r#"fn main() { let s = f"x={func("a")}"; }"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected interpolated string");
+        };
+        assert!(
+            matches!(parts.as_slice(), [StringPart::Literal(prefix), StringPart::Expr(_)] if prefix == "x=")
+        );
+    }
+
+    #[test]
     fn parse_interpolated_string_shared_escapes_decode_and_escaped_delimiters_stay_literal() {
         let result = parse(r#"fn main() { let s = f"left \{ \x41 {name}"; }"#);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);

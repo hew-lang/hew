@@ -37196,6 +37196,42 @@ fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
 /// `spawn` site (which also calls `hew_sched_init`) would otherwise trap.
 /// `hew_sched_init` is idempotent (a second call CAS-fails to a no-op), so the
 /// spawn-site and supervisor-bootstrap calls remain harmless.
+/// Stage 2 (gdb `-g`): set the builder's current debug location from a
+/// per-instruction / per-terminator source span (`(start_byte, end_byte)`),
+/// scoped to the function's `DISubprogram`.
+///
+/// Fail-closed no-op when the function carries no subprogram (it is not a
+/// plain, in-file, non-suspend `fn`), when there is no span for this position
+/// (the previous, nearest-enclosing location persists — legal at -O0, never a
+/// fabricated line), or when the span's start maps outside the compiled file
+/// (a monomorphised stdlib body carries an offset into the stdlib source, not
+/// the user's). Reuses the Stage-1 byte→line index as the single line
+/// authority.
+fn set_debug_location_for_span<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
+    subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
+    span: Option<&(u32, u32)>,
+) {
+    let (Some(dctx), Some(subprogram), Some(&(start, _end))) = (debug, subprogram, span) else {
+        return;
+    };
+    if !dctx.line_index.contains(start as usize) {
+        return;
+    }
+    let line = dctx.line_index.line(start as usize);
+    let column = dctx.line_index.column(start as usize);
+    let loc = dctx.di_builder.create_debug_location(
+        ctx,
+        line,
+        column,
+        subprogram.as_debug_info_scope(),
+        None,
+    );
+    builder.set_current_debug_location(loc);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -37298,6 +37334,11 @@ fn lower_function<'ctx>(
     // than mapped to a wrong line in `dbg.hew`. Suspend-carrying coroutine
     // bodies are skipped too — their `DISubprogram` must survive `CoroSplit`,
     // a later stage — so emitting one now would risk verifier/codegen breakage.
+    //
+    // `fn_subprogram` is captured for the body walk below: Stage 2 sets a
+    // per-instruction `DILocation` scoped to this subprogram so gdb steps the
+    // body line-by-line.
+    let mut fn_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>> = None;
     let entry_debug_loc = match (debug, func.span) {
         (Some(dctx), Some((start, _end))) if !has_suspend && dctx.line_index.contains(start as usize) => {
             let line = dctx.line_index.line(start as usize);
@@ -37322,6 +37363,7 @@ fn lower_function<'ctx>(
                 /* is_optimized */ false,
             );
             llvm_fn.set_subprogram(subprogram);
+            fn_subprogram = Some(subprogram);
             let loc = dctx.di_builder.create_debug_location(
                 ctx,
                 line,
@@ -38162,7 +38204,22 @@ fn lower_function<'ctx>(
     for block in &func.blocks {
         let bb = *blocks.get(&block.id).expect("block in map");
         fn_ctx.builder.position_at_end(bb);
-        for instr in &block.instructions {
+        for (instr_idx, instr) in block.instructions.iter().enumerate() {
+            // Stage 2 (gdb `-g`): refine the current debug location to this
+            // instruction's originating statement line so the body steps
+            // line-by-line. Fail-closed inside the helper: no subprogram / no
+            // side-table span / out-of-file span leaves the nearest-enclosing
+            // location in place rather than fabricating a line. The
+            // function-entry location seeded before this loop keeps every call
+            // site `!dbg`-tagged for the verifier.
+            set_debug_location_for_span(
+                ctx,
+                &fn_ctx.builder,
+                debug,
+                fn_subprogram,
+                func.instr_spans
+                    .get(&(block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX))),
+            );
             lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
         }
         if cooperate_sites
@@ -38175,6 +38232,21 @@ fn lower_function<'ctx>(
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
+        // Stage 2 (gdb `-g`): a call / branch / return lowers to a TERMINATOR,
+        // not an `Instr`, so a call-statement (`println(r)`) would otherwise
+        // inherit the previous instruction's line. The terminator span is keyed
+        // one slot past the last instruction (`block.instructions.len()`), kept
+        // aligned through any post-seal splices by `shift_instr_spans_on_insert`.
+        set_debug_location_for_span(
+            ctx,
+            &fn_ctx.builder,
+            debug,
+            fn_subprogram,
+            func.instr_spans.get(&(
+                block.id,
+                u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
+            )),
+        );
         lower_terminator(
             &fn_ctx,
             fn_symbols,
@@ -42304,6 +42376,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -42692,6 +42765,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -42733,6 +42807,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -42813,6 +42888,7 @@ mod tests {
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -42940,6 +43016,7 @@ mod tests {
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -43041,6 +43118,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43174,6 +43252,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43301,6 +43380,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43380,6 +43460,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43453,6 +43534,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43729,6 +43811,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43937,6 +44020,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -44640,6 +44724,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         let pipeline = IrPipeline {
@@ -44726,6 +44811,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44834,6 +44920,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
@@ -44868,6 +44955,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44940,6 +45028,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45031,6 +45120,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let layout = GenStateLayout {
             function_name: body_name.to_string(),
@@ -45527,6 +45617,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45637,6 +45728,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45700,6 +45792,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45762,6 +45855,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45819,6 +45913,7 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         let cases = [
@@ -47701,6 +47796,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -47848,6 +47944,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -48199,6 +48296,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let elab = ElaboratedMirFunction {
             name: "frame_owned_drop_with_drop_fn".to_string(),
@@ -48402,6 +48500,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         // Minimal stub actor: no state fields, no handlers, no clone/drop
         // symbols.  The trampoline emits a vacuous dispatch switch; the
@@ -48649,6 +48748,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -48837,6 +48937,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -49018,6 +49119,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -49128,6 +49230,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }
     }
 
@@ -49154,6 +49257,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }
     }
 
@@ -49182,6 +49286,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
@@ -50081,6 +50186,7 @@ fn main() {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline =
             pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);

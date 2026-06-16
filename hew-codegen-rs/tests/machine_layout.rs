@@ -98,6 +98,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }];
     let ll = emit_ll(&pipeline, "traffic_light_layout").expect("TrafficLight must emit");
 
@@ -134,6 +135,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }];
 
     let ll = emit_ll(&pipeline, "traffic_light_cache").expect("TrafficLight must emit");
@@ -179,6 +181,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }];
 
     let ll = emit_ll(&pipeline, "wide_tags").expect("WideTags must emit");
@@ -246,6 +249,7 @@ fn constructor_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let mut pipeline = empty_pipeline(vec![layout]);

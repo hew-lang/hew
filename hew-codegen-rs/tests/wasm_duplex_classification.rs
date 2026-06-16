@@ -83,6 +83,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -163,6 +164,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -245,6 +247,7 @@ fn pipeline_no_duplex() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

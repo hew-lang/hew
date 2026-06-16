@@ -65,6 +65,7 @@ fn impl_method_stub(name: &str) -> RawMirFunction {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 

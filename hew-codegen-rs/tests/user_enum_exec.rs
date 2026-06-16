@@ -103,6 +103,7 @@ fn colour_red_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),

@@ -85,6 +85,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -256,6 +257,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

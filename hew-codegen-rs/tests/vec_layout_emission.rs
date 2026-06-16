@@ -55,6 +55,7 @@ fn base_pipeline(
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -636,6 +637,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

@@ -65,6 +65,7 @@ fn pipeline_with_entry_terminator(
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

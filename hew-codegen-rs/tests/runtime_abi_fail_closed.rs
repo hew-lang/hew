@@ -67,6 +67,7 @@ fn pipeline_with_call_runtime_abi_parts(
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),

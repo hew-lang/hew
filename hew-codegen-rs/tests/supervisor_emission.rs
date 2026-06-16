@@ -99,6 +99,7 @@ fn supervisor_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     // `main` exits 42 — the fixture shape. Returns i64 so the produced
@@ -131,6 +132,7 @@ fn supervisor_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -317,6 +319,7 @@ fn on_crash_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let bootstrap_fn = RawMirFunction {
@@ -337,6 +340,7 @@ fn on_crash_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let main_fn = RawMirFunction {
@@ -366,6 +370,7 @@ fn on_crash_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let supervisor_layout = SupervisorLayout {

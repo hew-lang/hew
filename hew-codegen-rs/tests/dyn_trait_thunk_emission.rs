@@ -76,6 +76,7 @@ fn impl_method_stub(
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -399,6 +400,7 @@ fn impl_method_stub_value_recv(name: &str, ret: ResolvedTy) -> RawMirFunction {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 

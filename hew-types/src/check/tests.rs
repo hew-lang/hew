@@ -12741,6 +12741,126 @@ fn dyn_trait_coercion_rejects_record_with_owned_heap_field() {
 }
 
 #[test]
+fn dyn_trait_coercion_rejects_enum_with_owned_heap_variant_payload() {
+    let output = check_source(
+        r#"
+        trait Show {
+            fn show(val: Self) -> i64;
+        }
+
+        enum Value {
+            Nil;
+            Text(string);
+        }
+
+        impl Show for Value {
+            fn show(val: Value) -> i64 { 1 }
+        }
+
+        fn make() {
+            let boxed: dyn Show = Text("x");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error
+                    .message
+                    .contains("cannot coerce enum `Value` to `dyn Show`")
+                && error.message.contains("variant `Text`")
+                && error.message.contains("owned-heap")
+                && error.message.contains("all-BitCopy")
+        }),
+        "dyn over enum with owned-heap variant payload must be rejected: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.dyn_trait_coercions.is_empty(),
+        "rejected owned-heap dyn coercion must not be recorded"
+    );
+}
+
+#[test]
+fn dyn_trait_coercion_rejects_record_holding_owned_heap_enum() {
+    let output = check_source(
+        r#"
+        trait Show {
+            fn show(val: Self) -> i64;
+        }
+
+        enum Value {
+            Nil;
+            Text(string);
+        }
+
+        type Wrapped {
+            v: Value;
+        }
+
+        impl Show for Wrapped {
+            fn show(val: Wrapped) -> i64 { 1 }
+        }
+
+        fn make() {
+            let boxed: dyn Show = Wrapped { v: Text("x") };
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error
+                    .message
+                    .contains("cannot coerce record `Wrapped` to `dyn Show`")
+                && error.message.contains("field `v`")
+                && error.message.contains("owned-heap")
+                && error.message.contains("all-BitCopy")
+        }),
+        "dyn over record holding owned-heap enum must be rejected: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.dyn_trait_coercions.is_empty(),
+        "rejected owned-heap dyn coercion must not be recorded"
+    );
+}
+
+#[test]
+fn dyn_trait_coercion_allows_bitcopy_enum() {
+    let output = check_source(
+        r"
+        trait Show {
+            fn show(val: Self) -> i64;
+        }
+
+        enum Color {
+            Red;
+            Green;
+            Blue;
+        }
+
+        impl Show for Color {
+            fn show(val: Color) -> i64 { 1 }
+        }
+
+        fn make() {
+            let boxed: dyn Show = Red;
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "all-BitCopy enum should still coerce to dyn: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.dyn_trait_coercions.is_empty(),
+        "accepted BitCopy dyn coercion should still be recorded"
+    );
+}
+
+#[test]
 fn dyn_trait_coercion_allows_bitcopy_record() {
     let output = check_source(
         r"

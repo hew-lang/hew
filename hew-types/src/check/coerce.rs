@@ -580,7 +580,7 @@ impl Checker {
             per_bound.push((bound.trait_name.clone(), methods));
         }
 
-        if let Some((field_name, field_ty)) = self.dyn_owned_heap_field(concrete_type) {
+        if let Some(member) = self.dyn_owned_heap_member(concrete_type) {
             self.report_error(
                 TypeErrorKind::Mismatch {
                     expected: format!("dyn {}", dyn_trait_names_for_message(traits)),
@@ -588,10 +588,13 @@ impl Checker {
                 },
                 span,
                 format!(
-                    "cannot coerce record `{type_name}` to `dyn {}`: field `{field_name}` has \
+                    "cannot coerce {} `{type_name}` to `dyn {}`: {} `{}` has \
                      type `{}` which carries owned-heap data; dyn-boxed concretes must be all-BitCopy",
+                    member.aggregate_kind,
                     dyn_trait_names_for_message(traits),
-                    field_ty.user_facing()
+                    member.member_kind,
+                    member.member_name,
+                    member.ty.user_facing()
                 ),
             );
             return true;
@@ -645,7 +648,7 @@ impl Checker {
         true
     }
 
-    fn dyn_owned_heap_field(&self, concrete_type: &Ty) -> Option<(String, Ty)> {
+    fn dyn_owned_heap_member(&self, concrete_type: &Ty) -> Option<DynOwnedHeapMember> {
         let Ty::Named {
             name,
             args,
@@ -663,7 +666,7 @@ impl Checker {
             type_def.field_order.clone()
         };
         field_names.retain(|field_name| type_def.fields.contains_key(field_name));
-        field_names.into_iter().find_map(|field_name| {
+        let field_member = field_names.into_iter().find_map(|field_name| {
             let field_ty = type_def.fields.get(&field_name)?;
             let instantiated =
                 Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
@@ -672,10 +675,31 @@ impl Checker {
                 .resolve(&instantiated)
                 .materialize_literal_defaults();
             if self.ty_carries_owned_heap_for_dyn(&resolved, &mut Vec::new()) {
-                Some((field_name, resolved))
+                Some(DynOwnedHeapMember {
+                    aggregate_kind: "record",
+                    member_kind: "field",
+                    member_name: field_name,
+                    ty: resolved,
+                })
             } else {
                 None
             }
+        });
+        if field_member.is_some() {
+            return field_member;
+        }
+
+        let mut variant_names: Vec<String> = type_def.variants.keys().cloned().collect();
+        variant_names.sort();
+        variant_names.into_iter().find_map(|variant_name| {
+            let variant = type_def.variants.get(&variant_name)?;
+            self.dyn_owned_heap_variant_payload(variant, &type_def.type_params, args)
+                .map(|ty| DynOwnedHeapMember {
+                    aggregate_kind: "enum",
+                    member_kind: "variant",
+                    member_name: variant_name,
+                    ty,
+                })
         })
     }
 
@@ -719,7 +743,7 @@ impl Checker {
                     return false;
                 };
                 seen.push(name.clone());
-                let carries = type_def.fields.values().any(|field_ty| {
+                let fields_carry = type_def.fields.values().any(|field_ty| {
                     let instantiated =
                         Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
                     let resolved = self
@@ -728,12 +752,102 @@ impl Checker {
                         .materialize_literal_defaults();
                     self.ty_carries_owned_heap_for_dyn(&resolved, seen)
                 });
+                let variants_carry = type_def.variants.values().any(|variant| {
+                    self.variant_carries_owned_heap_for_dyn(
+                        variant,
+                        &type_def.type_params,
+                        args,
+                        seen,
+                    )
+                });
                 seen.pop();
-                carries
+                fields_carry || variants_carry
             }
             _ => false,
         }
     }
+
+    fn dyn_owned_heap_variant_payload(
+        &self,
+        variant: &VariantDef,
+        type_params: &[String],
+        args: &[Ty],
+    ) -> Option<Ty> {
+        match variant {
+            VariantDef::Unit => None,
+            VariantDef::Tuple(payloads) => payloads.iter().find_map(|payload| {
+                let resolved = self
+                    .subst
+                    .resolve(&Self::instantiate_type_def_member(
+                        payload,
+                        type_params,
+                        args,
+                    ))
+                    .materialize_literal_defaults();
+                if self.ty_carries_owned_heap_for_dyn(&resolved, &mut Vec::new()) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }),
+            VariantDef::Struct(fields) => fields.iter().find_map(|(_, payload)| {
+                let resolved = self
+                    .subst
+                    .resolve(&Self::instantiate_type_def_member(
+                        payload,
+                        type_params,
+                        args,
+                    ))
+                    .materialize_literal_defaults();
+                if self.ty_carries_owned_heap_for_dyn(&resolved, &mut Vec::new()) {
+                    Some(resolved)
+                } else {
+                    None
+                }
+            }),
+        }
+    }
+
+    fn variant_carries_owned_heap_for_dyn(
+        &self,
+        variant: &VariantDef,
+        type_params: &[String],
+        args: &[Ty],
+        seen: &mut Vec<String>,
+    ) -> bool {
+        match variant {
+            VariantDef::Unit => false,
+            VariantDef::Tuple(payloads) => payloads.iter().any(|payload| {
+                let resolved = self
+                    .subst
+                    .resolve(&Self::instantiate_type_def_member(
+                        payload,
+                        type_params,
+                        args,
+                    ))
+                    .materialize_literal_defaults();
+                self.ty_carries_owned_heap_for_dyn(&resolved, seen)
+            }),
+            VariantDef::Struct(fields) => fields.iter().any(|(_, payload)| {
+                let resolved = self
+                    .subst
+                    .resolve(&Self::instantiate_type_def_member(
+                        payload,
+                        type_params,
+                        args,
+                    ))
+                    .materialize_literal_defaults();
+                self.ty_carries_owned_heap_for_dyn(&resolved, seen)
+            }),
+        }
+    }
+}
+
+struct DynOwnedHeapMember {
+    aggregate_kind: &'static str,
+    member_kind: &'static str,
+    member_name: String,
+    ty: Ty,
 }
 
 /// Map a resolved concrete `Ty` to the type-name string used by the impl

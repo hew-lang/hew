@@ -63,7 +63,7 @@ fn add(a: i64, b: i64) -> i64 {
     );
 
     // Every recorded span is a well-formed in-file byte range.
-    for (_, &(start, end)) in &f.instr_spans {
+    for &(start, end) in f.instr_spans.values() {
         assert!(
             usize::try_from(start).unwrap() <= source.len(),
             "span start {start} must lie within the source ({} bytes)",

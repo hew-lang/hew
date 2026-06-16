@@ -2251,6 +2251,11 @@ pub struct Checker {
     pub(super) trait_import_bindings: HashMap<(String, String), String>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     pub(super) trait_impls_set: HashSet<(String, String)>,
+    /// Method names provided by each concrete trait impl block, keyed by
+    /// (`type_name`, `trait_name`) as written on the impl. This preserves
+    /// provenance that is lost when impl methods are flattened onto the type's
+    /// receiver-method table.
+    pub(super) trait_impl_method_names: HashMap<(String, String), HashSet<String>>,
     /// Trait impls keyed by canonical receiver kind for primitives and
     /// compiler-builtin generics (e.g. `int`, `bool`, `String`, `Vec`,
     /// `HashMap`, `HashSet`, `Bytes`).  Method dispatch on these receivers
@@ -2720,6 +2725,7 @@ impl Checker {
             trait_super: HashMap::new(),
             trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),
+            trait_impl_method_names: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),

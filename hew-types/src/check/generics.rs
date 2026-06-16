@@ -549,6 +549,12 @@ impl Checker {
     ) {
         for bound in bounds {
             if self.type_satisfies_trait_bound(resolved_arg, bound) {
+                self.report_missing_dispatchable_supertrait_impls(
+                    param_name,
+                    bound,
+                    resolved_arg,
+                    span,
+                );
                 continue;
             }
             let msg = format!(
@@ -563,6 +569,234 @@ impl Checker {
                 suggestions,
             );
         }
+    }
+
+    fn report_missing_dispatchable_supertrait_impls(
+        &mut self,
+        param_name: &str,
+        declared_bound: &str,
+        resolved_arg: &Ty,
+        span: &Span,
+    ) {
+        let Some(type_name) = Self::impl_lookup_type_name(resolved_arg) else {
+            return;
+        };
+        if !self.has_explicit_trait_impl_for_static_dispatch(&type_name, declared_bound) {
+            return;
+        }
+        let declared_key = self.trait_defs_key_for_bound(declared_bound);
+        let mut stack = self
+            .trait_super
+            .get(&declared_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut visited = HashSet::new();
+
+        while let Some(super_trait) = stack.pop() {
+            if !visited.insert(super_trait.clone()) {
+                continue;
+            }
+            if let Some(nested) = self.trait_super.get(&super_trait) {
+                stack.extend(nested.iter().cloned());
+            }
+
+            let abstract_methods = self.abstract_method_names_declared_by_trait(&super_trait);
+            if abstract_methods.is_empty()
+                || self.has_explicit_trait_impl_for_static_dispatch(&type_name, &super_trait)
+                || self.trait_chain_impl_provides_all_declared_methods(
+                    &type_name,
+                    declared_bound,
+                    &super_trait,
+                    &abstract_methods,
+                )
+            {
+                continue;
+            }
+
+            let method_label = if abstract_methods.len() == 1 {
+                format!("method `{}`", abstract_methods[0])
+            } else {
+                format!(
+                    "methods {}",
+                    abstract_methods
+                        .iter()
+                        .map(|method| format!("`{method}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "type `{}` implements `{declared_bound}` but not its declared supertrait `{}`; \
+                     {method_label} (from `{}`) is not callable for `{param_name}` without \
+                     `impl {}` for `{}`",
+                    resolved_arg.user_facing(),
+                    super_trait,
+                    super_trait,
+                    super_trait,
+                    resolved_arg.user_facing(),
+                ),
+            );
+        }
+    }
+
+    fn impl_lookup_type_name(ty: &Ty) -> Option<String> {
+        match ty {
+            Ty::Named { name, .. } => Some(name.clone()),
+            _ => ty
+                .canonical_lowering_name()
+                .or(match ty {
+                    Ty::IntLiteral => Some("i64"),
+                    Ty::FloatLiteral => Some("f64"),
+                    _ => None,
+                })
+                .map(str::to_string),
+        }
+    }
+
+    fn abstract_method_names_declared_by_trait(&self, trait_name: &str) -> Vec<String> {
+        let mut methods: Vec<String> = self
+            .trait_defs
+            .get(trait_name)
+            .map(|info| {
+                info.methods
+                    .iter()
+                    .filter(|method| method.body.is_none())
+                    .map(|method| method.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        methods.sort();
+        methods.dedup();
+        methods
+    }
+
+    fn has_explicit_trait_impl_for_static_dispatch(
+        &self,
+        type_name: &str,
+        trait_name: &str,
+    ) -> bool {
+        let type_candidates = self.impl_lookup_type_candidates(type_name);
+        let trait_candidates = self.trait_lookup_candidates(trait_name);
+        type_candidates.iter().any(|ty| {
+            trait_candidates
+                .iter()
+                .any(|tr| self.trait_impls_set.contains(&(ty.clone(), tr.clone())))
+        })
+    }
+
+    fn trait_chain_impl_provides_all_declared_methods(
+        &self,
+        type_name: &str,
+        declared_bound: &str,
+        declaring_trait: &str,
+        methods: &[String],
+    ) -> bool {
+        let type_candidates = self.impl_lookup_type_candidates(type_name);
+        let declaring_candidates = self.trait_lookup_candidates(declaring_trait);
+        let impl_trait_candidates = self.trait_chain_lookup_candidates(declared_bound);
+        type_candidates.iter().any(|ty| {
+            impl_trait_candidates.iter().any(|impl_trait| {
+                let key = (ty.clone(), impl_trait.clone());
+                self.trait_impl_method_names
+                    .get(&key)
+                    .is_some_and(|provided| {
+                        methods.iter().all(|method| {
+                            provided.contains(method)
+                                && self
+                                    .first_declaring_trait_for_impl_method(impl_trait, method)
+                                    .is_some_and(|origin| {
+                                        declaring_candidates
+                                            .iter()
+                                            .any(|candidate| candidate == &origin)
+                                    })
+                        })
+                    })
+            })
+        })
+    }
+
+    fn trait_chain_lookup_candidates(&self, trait_name: &str) -> Vec<String> {
+        let root = self.trait_defs_key_for_bound(trait_name);
+        let mut stack = vec![root];
+        let mut out = Vec::new();
+        let mut visited = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            out.extend(self.trait_lookup_candidates(&current));
+            if let Some(supers) = self.trait_super.get(&current) {
+                stack.extend(supers.iter().cloned());
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn first_declaring_trait_for_impl_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Option<String> {
+        let trait_key = self.trait_defs_key_for_bound(trait_name);
+        if self
+            .trait_defs
+            .get(&trait_key)
+            .is_some_and(|info| info.methods.iter().any(|m| m.name == method))
+        {
+            return Some(trait_key);
+        }
+
+        let mut stack = self
+            .trait_super
+            .get(&trait_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut visited = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if self
+                .trait_defs
+                .get(&current)
+                .is_some_and(|info| info.methods.iter().any(|m| m.name == method))
+            {
+                return Some(current);
+            }
+            if let Some(supers) = self.trait_super.get(&current) {
+                stack.extend(supers.iter().cloned());
+            }
+        }
+        None
+    }
+
+    fn impl_lookup_type_candidates(&self, type_name: &str) -> Vec<String> {
+        let mut candidates = vec![type_name.to_string()];
+        if let Some((module, bare)) = type_name.split_once('.') {
+            if self.modules.contains(module) {
+                candidates.push(bare.to_string());
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    }
+
+    fn trait_lookup_candidates(&self, trait_name: &str) -> Vec<String> {
+        let mut candidates = vec![trait_name.to_string()];
+        if let Some((module, bare)) = trait_name.split_once('.') {
+            if self.modules.contains(module) {
+                candidates.push(bare.to_string());
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        candidates
     }
 
     fn report_unsatisfied_assoc_type_bindings(

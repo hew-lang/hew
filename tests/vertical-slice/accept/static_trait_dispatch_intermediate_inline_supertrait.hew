@@ -1,0 +1,23 @@
+trait Base {
+    fn name(val: Self) -> string;
+}
+
+trait Mid: Base {}
+trait Leaf: Mid {}
+
+type Widget { label: string; }
+
+impl Mid for Widget {
+    fn name(w: Widget) -> string { "intermediate" }
+}
+
+impl Leaf for Widget {}
+
+fn get_name<T: Leaf>(item: T) -> string {
+    item.name()
+}
+
+fn main() -> i64 {
+    println(get_name(Widget { label: "mid" }));
+    0
+}

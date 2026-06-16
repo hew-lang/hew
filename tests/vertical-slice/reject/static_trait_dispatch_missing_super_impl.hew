@@ -1,0 +1,9 @@
+// Reject fixture: generic static dispatch may reach a method declared by a
+// supertrait through a subtrait bound, but a concrete type implementing only the
+// subtrait has no dispatch target for the supertrait method.
+trait Super { fn name(val: Self) -> string; }
+trait Sub: Super {}
+type Widget { label: string; }
+impl Sub for Widget {}
+fn get_name<T: Sub>(item: T) -> string { item.name() }
+fn main() -> i64 { let w = Widget { label: "ok" }; if get_name(w) == "ok" { 0 } else { 1 } }

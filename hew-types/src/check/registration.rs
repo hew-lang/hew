@@ -4220,6 +4220,11 @@ impl Checker {
 
                     // Register default trait methods not overridden in this impl
                     if let Some(tb) = &id.trait_bound {
+                        self.record_trait_impl_methods(
+                            type_name,
+                            &tb.name,
+                            id.methods.iter().map(|method| method.name.clone()),
+                        );
                         self.record_trait_impl(type_name, &tb.name);
 
                         let overridden: HashSet<&str> =
@@ -6213,6 +6218,19 @@ impl Checker {
             .insert((type_name.to_string(), trait_name.to_string()));
     }
 
+    pub(super) fn record_trait_impl_methods(
+        &mut self,
+        type_name: &str,
+        trait_name: &str,
+        method_names: impl IntoIterator<Item = String>,
+    ) {
+        let entry = self
+            .trait_impl_method_names
+            .entry((type_name.to_string(), trait_name.to_string()))
+            .or_default();
+        entry.extend(method_names);
+    }
+
     /// Canonical receiver key used by the primitive-and-builtin trait impl
     /// table.  Returns `Some(canonical)` for any receiver kind whose user
     /// trait impls cannot be hung off `type_defs`:
@@ -7109,6 +7127,11 @@ impl Checker {
                     }
                     if let Some(tb) = &id.trait_bound {
                         self.mark_imported_trait_used_for_module_aliases(module_short, &tb.name);
+                        self.record_trait_impl_methods(
+                            type_name,
+                            &tb.name,
+                            id.methods.iter().map(|method| method.name.clone()),
+                        );
                         self.record_trait_impl(type_name, &tb.name);
                     }
 
@@ -7305,6 +7328,11 @@ impl Checker {
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
                             self.mark_imported_trait_used(None, &tb.name);
+                            self.record_trait_impl_methods(
+                                type_name,
+                                &tb.name,
+                                id.methods.iter().map(|method| method.name.clone()),
+                            );
                             self.record_trait_impl(type_name, &tb.name);
                         }
                     }

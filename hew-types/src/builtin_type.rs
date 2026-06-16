@@ -51,11 +51,11 @@ pub enum BuiltinType {
     Iterator,
     Unit,
     Duration,
-    /// `Instant` — a monotonic timestamp in nanoseconds. ABI-identical to a
+    /// `instant` — a monotonic timestamp in nanoseconds. ABI-identical to a
     /// bare `i64` (the runtime's `hew_instant_*` symbols take/return `i64`),
     /// so it lowers to `ResolvedTy::I64` at the MIR boundary. Kept distinct in
-    /// the checker only so `Instant::now()` / `.elapsed()` / `.duration_since()`
-    /// dispatch to the `impl Instant` block rather than the integer methods.
+    /// the checker only so `instant::now()` / `.elapsed()` / `.duration_since()`
+    /// dispatch to the `impl instant` block rather than the integer methods.
     Instant,
     Trap,
     CancellationToken,
@@ -177,7 +177,7 @@ builtin_types! {
     Iterator => "Iterator",
     Unit => "Unit",
     Duration => "Duration",
-    Instant => "Instant",
+    Instant => "instant",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
     TimeoutError => "TimeoutError",

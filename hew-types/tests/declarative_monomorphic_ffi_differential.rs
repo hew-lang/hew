@@ -2,7 +2,7 @@
 //!
 //! The assertions pin checker-owned method rewrites to the
 //! `#[extern_symbol]` annotations declared in stdlib source for
-//! `duration`, `Instant`, and `LambdaActorHandle`.
+//! `duration`, `instant`, and `LambdaActorHandle`.
 
 mod common;
 
@@ -57,13 +57,13 @@ fn duration_methods_resolve_through_extern_symbol_annotations() {
 
 #[test]
 fn instant_methods_resolve_through_extern_symbol_annotations() {
-    // `Instant` is a compiler builtin scalar (i64-backed nanosecond timestamp),
-    // not a record: instances come from `Instant::now()`, and the receiver
+    // `instant` is a compiler builtin scalar (i64-backed nanosecond timestamp),
+    // not a record: instances come from `instant::now()`, and the receiver
     // methods rewrite to their `hew_instant_*` runtime symbols.
     let source = r"
         fn main() {
-            let start: Instant = Instant::now();
-            let end: Instant = Instant::now();
+            let start: instant = instant::now();
+            let end: instant = instant::now();
             let _: duration = start.elapsed();
             let _: duration = end.duration_since(start);
         }
@@ -71,7 +71,7 @@ fn instant_methods_resolve_through_extern_symbol_annotations() {
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "Instant extern-symbol canaries should typecheck; got: {:#?}",
+        "instant extern-symbol canaries should typecheck; got: {:#?}",
         output.errors
     );
     for symbol in ["hew_instant_elapsed", "hew_instant_duration_since"] {

@@ -22524,7 +22524,7 @@ fn lower_call_runtime_abi(
             }
             let _ = (i8_ty, ptr_ty);
         }
-        // `impl Instant` methods (`hew-runtime/src/io_time.rs`). `Instant` is
+        // `impl instant` methods (`hew-runtime/src/io_time.rs`). `instant` is
         // i64-backed (a monotonic nanosecond timestamp), so every argument and
         // result is a bare `i64`: `now()` takes no args and returns the clock;
         // `elapsed(now)` and `duration_since(now, earlier)` take 1 / 2 i64

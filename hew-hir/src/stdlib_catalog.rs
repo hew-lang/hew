@@ -848,12 +848,12 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_duration_is_zero",
         },
     ),
-    // Runtime targets for the `impl Instant` methods declared in
-    // `std/builtins.hew`. `Instant` is i64-backed (a nanosecond timestamp),
+    // Runtime targets for the `impl instant` methods declared in
+    // `std/builtins.hew`. `instant` is i64-backed (a nanosecond timestamp),
     // mirroring the `hew_duration_*` rows above. `elapsed` and `duration_since`
     // are receiver-method rewrites whose `c_symbol` HIR resolves through the
     // seeded `fn_registry`. `hew_instant_now` carries no receiver: the static
-    // `Instant::now()` callee resolves by name through the typed registry seed
+    // `instant::now()` callee resolves by name through the typed registry seed
     // (`builtin_family = InstantNow`), but the symbol still needs a catalog row
     // here so codegen declares the extern with the real `() -> i64` C ABI and
     // resolves it to an `FnSymbol::Real` at the `Terminator::Call` boundary.

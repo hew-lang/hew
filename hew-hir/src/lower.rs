@@ -268,15 +268,15 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
 
-/// Synthetic-builtin sentinel `ItemId` for the static `Instant::now()`
-/// constructor. The `impl Instant` block in `std/builtins.hew` binds it via
+/// Synthetic-builtin sentinel `ItemId` for the static `instant::now()`
+/// constructor. The `impl instant` block in `std/builtins.hew` binds it via
 /// `#[extern_symbol(hew_instant_now)]`, but a no-receiver static call resolves
-/// through the bare callee name `"Instant::now"` (the parser joins the `::`
+/// through the bare callee name `"instant::now"` (the parser joins the `::`
 /// path into one identifier). Seeding it here with `builtin_family`
 /// (`InstantNow`) makes `lower_identifier` resolve the callee to
 /// `ResolvedRef::Builtin(InstantNow)`, so MIR's `runtime_symbol_for_call_expr`
 /// reads `hew_instant_now` off the catalog bijection — mirroring `link` /
-/// `monitor` / `duplex_pair`. `Instant` is i64-backed, so `return_ty` is `I64`.
+/// `monitor` / `duplex_pair`. `instant` is i64-backed, so `return_ty` is `I64`.
 const SYNTHETIC_INSTANT_NOW_ITEM: ItemId = ItemId(u32::MAX / 2 - 19);
 
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
@@ -6008,14 +6008,14 @@ impl LowerCtx {
                 builtin_family: Some(RuntimeCallFamily::DuplexPair),
             },
         );
-        // `Instant::now() -> Instant`. The static (no-receiver) call resolves
-        // by the joined callee name `"Instant::now"`; `builtin_family` makes
+        // `instant::now() -> instant`. The static (no-receiver) call resolves
+        // by the joined callee name `"instant::now"`; `builtin_family` makes
         // `lower_identifier` produce `ResolvedRef::Builtin(InstantNow)` so MIR
-        // reads `hew_instant_now` off the catalog bijection. `Instant` is
+        // reads `hew_instant_now` off the catalog bijection. `instant` is
         // i64-backed, so the entry returns `I64`. No params (the runtime symbol
         // reads the monotonic clock).
         self.fn_registry.insert(
-            "Instant::now".to_string(),
+            "instant::now".to_string(),
             FnEntry {
                 id: SYNTHETIC_INSTANT_NOW_ITEM,
                 return_ty: ResolvedTy::I64,

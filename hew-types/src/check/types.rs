@@ -1223,7 +1223,7 @@ pub enum MethodCallRewrite {
     /// [`crate::runtime_call::RuntimeCallFamily`] catalog enumerates. It is
     /// `None` for every open-set string: user-trait method keys like `i64::fmt`
     /// AND every `#[extern_symbol]` FFI method — including stdlib `duration` /
-    /// `Instant` / `LambdaActorHandle` bindings — *even when that method's raw
+    /// `instant` / `LambdaActorHandle` bindings — *even when that method's raw
     /// symbol collides with a catalog name* (e.g. `hew_duration_hours`). An
     /// `#[extern_symbol]` method is open-set by mechanism: its family is only
     /// recoverable by reverse-parsing the symbol string, which the

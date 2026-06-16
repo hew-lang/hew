@@ -17055,10 +17055,10 @@ impl Builder {
         self_handle
     }
 
-    /// Lower the `impl Instant` methods declared in `std/builtins.hew`
+    /// Lower the `impl instant` methods declared in `std/builtins.hew`
     /// (`#[extern_symbol(hew_instant_*)]`).
     ///
-    /// `Instant` is i64-backed (a monotonic nanosecond timestamp), so every
+    /// `instant` is i64-backed (a monotonic nanosecond timestamp), so every
     /// argument and result is a bare `i64`:
     /// - `hew_instant_now()` -> `i64` (no receiver; reads the monotonic clock).
     /// - `hew_instant_elapsed(now: i64)` -> `i64` (a `duration` in ns).

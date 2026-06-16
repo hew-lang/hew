@@ -1,8 +1,8 @@
-//! Tests for the `impl Instant` methods declared in `std/builtins.hew`
-//! (`now`/`elapsed`/`duration_since`). `Instant` is a compiler builtin scalar
+//! Tests for the `impl instant` methods declared in `std/builtins.hew`
+//! (`now`/`elapsed`/`duration_since`). `instant` is a compiler builtin scalar
 //! that is ABI-identical to a bare `i64` (a monotonic nanosecond timestamp):
 //! it lowers to `ResolvedTy::I64` at the MIR boundary and binds to the
-//! `hew_instant_*` runtime symbols. The static `Instant::now()` resolves
+//! `hew_instant_*` runtime symbols. The static `instant::now()` resolves
 //! through the typed `fn_registry` seed; `.elapsed()` / `.duration_since()`
 //! are receiver-method rewrites routed through catalog rows.
 //!
@@ -17,7 +17,7 @@ import std::testing;
 // ── elapsed since an instant is never negative ───────────────────────
 #[test]
 fn test_instant_elapsed_non_negative() {
-    let t = Instant::now();
+    let t = instant::now();
     let e: duration = t.elapsed();
     testing.assert_true(e.nanos() >= 0);
 }
@@ -25,7 +25,7 @@ fn test_instant_elapsed_non_negative() {
 // ── duration_since of the same instant is zero ───────────────────────
 #[test]
 fn test_instant_duration_since_self_is_zero() {
-    let t = Instant::now();
+    let t = instant::now();
     let d: duration = t.duration_since(t);
     testing.assert_eq(d.nanos(), 0);
     testing.assert_true(d.is_zero());
@@ -36,9 +36,9 @@ fn test_instant_duration_since_self_is_zero() {
 // call never reached the runtime).
 #[test]
 fn test_instant_duration_since_is_positive_after_sleep() {
-    let earlier = Instant::now();
+    let earlier = instant::now();
     sleep_ms(5);
-    let later = Instant::now();
+    let later = instant::now();
     let span: duration = later.duration_since(earlier);
     testing.assert_true(span.nanos() > 0);
     testing.assert_true(span.millis() >= 5);
@@ -47,7 +47,7 @@ fn test_instant_duration_since_is_positive_after_sleep() {
 // ── elapsed is at least the sleep we waited ──────────────────────────
 #[test]
 fn test_instant_elapsed_advances_after_sleep() {
-    let start = Instant::now();
+    let start = instant::now();
     sleep_ms(5);
     let waited: duration = start.elapsed();
     testing.assert_true(waited.millis() >= 5);
@@ -57,11 +57,11 @@ fn test_instant_elapsed_advances_after_sleep() {
 //    `duration` method surface (Part 1) ────────────────────────────────
 #[test]
 fn test_instant_result_interops_with_duration_methods() {
-    let earlier = Instant::now();
+    let earlier = instant::now();
     sleep_ms(5);
-    let later = Instant::now();
+    let later = instant::now();
     let span: duration = later.duration_since(earlier);
-    // Every `duration` accessor accepts the Instant-derived span.
+    // Every `duration` accessor accepts the instant-derived span.
     testing.assert_true(span.nanos() >= span.micros());
     testing.assert_true(span.micros() >= span.millis());
     testing.assert_true(!span.is_zero());

@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::LazyLock;
 #[cfg(test)]
 use std::sync::{Arc, Barrier, Mutex};
+#[cfg(test)]
+use std::sync::LazyLock;
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
@@ -23,9 +24,6 @@ use crate::supervisor::SYS_MSG_DOWN;
 
 /// Number of shards for monitor table to reduce contention.
 const MONITOR_SHARDS: usize = 16;
-
-/// Unique reference ID generator for monitors.
-static MONITOR_REF_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Entry in the monitor table.
 #[derive(Debug, Clone)]
@@ -50,22 +48,52 @@ struct MonitorShard {
     terminal_reasons: HashMap<u64, i32>,
 }
 
-/// Global sharded monitor table — migrated from `[RwLock<MonitorShard>; 16]`
-/// to `[PoisonSafeRw<MonitorShard>; 16]`.
+/// Per-runtime actor-monitor state: the sharded monitor table plus the
+/// reference-id counter for entries in that table.
 ///
-/// The `terminal_reasons` field inside each `MonitorShard` was added by #1202
-/// and is preserved intact by this migration.
-// native-only: monitor globals use OS thread primitives absent in single-threaded WASM
-static MONITOR_TABLE: LazyLock<[PoisonSafeRw<MonitorShard>; MONITOR_SHARDS]> =
-    LazyLock::new(|| {
-        std::array::from_fn(|_| {
-            PoisonSafeRw::new(MonitorShard {
-                monitors: HashMap::new(),
-                ref_to_monitor: HashMap::new(),
-                terminal_reasons: HashMap::new(),
-            })
-        })
-    });
+/// Was the process-global `MONITOR_TABLE` plus `MONITOR_REF_COUNTER`. Each
+/// runtime now owns its own shards as `RuntimeInner.monitors`, resolved through
+/// [`monitor_state`], so two runtimes can monitor identical actor ids without
+/// sharing entries or DOWN delivery.
+pub(crate) struct MonitorState {
+    table: [PoisonSafeRw<MonitorShard>; MONITOR_SHARDS],
+    ref_counter: AtomicU64,
+}
+
+impl MonitorState {
+    /// Construct an empty monitor table for a fresh runtime.
+    pub(crate) fn new() -> Self {
+        Self {
+            table: std::array::from_fn(|_| {
+                PoisonSafeRw::new(MonitorShard {
+                    monitors: HashMap::new(),
+                    ref_to_monitor: HashMap::new(),
+                    terminal_reasons: HashMap::new(),
+                })
+            }),
+            ref_counter: AtomicU64::new(1),
+        }
+    }
+}
+
+#[inline]
+fn monitor_state() -> &'static MonitorState {
+    &crate::runtime::rt_current().monitors
+}
+
+#[cfg(test)]
+#[inline]
+fn monitor_table_for_test() -> &'static [PoisonSafeRw<MonitorShard>; MONITOR_SHARDS] {
+    &monitor_state().table
+}
+
+#[cfg(test)]
+fn monitor_shard_for_runtime_test(
+    rt: &crate::runtime::RuntimeInner,
+    actor_id: u64,
+) -> &PoisonSafeRw<MonitorShard> {
+    &rt.monitors.table[get_shard_index(actor_id)]
+}
 
 /// Get shard index for an actor ID.
 fn get_shard_index(actor_id: u64) -> usize {
@@ -167,7 +195,8 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     let target_id = target_ref.id;
 
     // Generate unique reference ID.
-    let ref_id = MONITOR_REF_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let state = monitor_state();
+    let ref_id = state.ref_counter.fetch_add(1, Ordering::Relaxed);
 
     let monitor_entry = MonitorEntry {
         monitoring_actor: watcher as usize,
@@ -176,7 +205,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let terminal_reason = MONITOR_TABLE[shard_index].access(|shard| {
+    let terminal_reason = state.table[shard_index].access(|shard| {
         if let Some(&reason) = shard.terminal_reasons.get(&target_id) {
             Some(reason)
         } else if let Some(reason) =
@@ -233,8 +262,9 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
+    let state = monitor_state();
     for shard_index in 0..MONITOR_SHARDS {
-        let removed = MONITOR_TABLE[shard_index].access(|shard| {
+        let removed = state.table[shard_index].access(|shard| {
             if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
                 // Remove from monitors list
                 if let Some(monitor_list) = shard.monitors.get_mut(&target_id) {
@@ -261,9 +291,10 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 /// dead actor and sends DOWN messages to all monitoring actors.
 pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     let shard_index = get_shard_index(actor_id);
+    let state = monitor_state();
 
     // Take all monitors for this actor ID.
-    let monitors = MONITOR_TABLE[shard_index].access(|shard| {
+    let monitors = state.table[shard_index].access(|shard| {
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         shard.terminal_reasons.insert(actor_id, reason);
 
@@ -334,10 +365,11 @@ impl Drop for NotifyMonitorsHookGuard {
 /// `notify_monitors_on_death` from dereferencing freed memory.
 pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
     let actor_usize = actor_addr as usize;
+    let state = monitor_state();
 
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
-    MONITOR_TABLE[own_shard].access(|shard| {
+    state.table[own_shard].access(|shard| {
         shard.terminal_reasons.remove(&actor_id);
         if let Some(monitors) = shard.monitors.remove(&actor_id) {
             for m in &monitors {
@@ -348,7 +380,7 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewA
 
     // Scan all shards and remove this actor's address from other actors'
     // monitor watcher lists (where this actor was the watcher).
-    for shard_rw in MONITOR_TABLE.iter() {
+    for shard_rw in &state.table {
         shard_rw.access(|shard| {
             let mut refs_to_remove = Vec::new();
             for monitor_list in shard.monitors.values_mut() {
@@ -388,15 +420,16 @@ struct DownMessage {
 pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
     let actor_usize = actor_addr as usize;
     let own_shard = get_shard_index(actor_id);
+    let state = monitor_state();
 
     let found_as_target =
-        MONITOR_TABLE[own_shard].read_access(|shard| shard.monitors.contains_key(&actor_id));
+        state.table[own_shard].read_access(|shard| shard.monitors.contains_key(&actor_id));
     if found_as_target {
         return true;
     }
 
     // Check if this actor appears as a watcher in any shard.
-    for shard_rw in MONITOR_TABLE.iter() {
+    for shard_rw in &state.table {
         let found = shard_rw.read_access(|shard| {
             shard
                 .monitors
@@ -491,8 +524,27 @@ mod tests {
         }
     }
 
+    struct MonitorTestGuard {
+        _enter: crate::runtime::EnterGuard,
+        _rt: Box<crate::runtime::RuntimeInner>,
+    }
+
+    fn guard() -> MonitorTestGuard {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: the guard owns `rt` and drops `_enter` before it, so the
+        // entered runtime outlives the thread-local selection that names it.
+        let enter = unsafe { crate::runtime::enter(&rt) };
+        MonitorTestGuard {
+            _enter: enter,
+            _rt: rt,
+        }
+    }
+
     #[test]
     fn test_monitor_creation_and_demonitor() {
+        let _g = guard();
         // Use unique IDs to avoid collisions with parallel tests.
         let watcher_id = 10_100;
         let target_id = 10_200;
@@ -510,7 +562,7 @@ mod tests {
 
         // Verify monitor exists
         let shard_index = get_shard_index(target_id);
-        MONITOR_TABLE[shard_index].read_access(|shard| {
+        monitor_table_for_test()[shard_index].read_access(|shard| {
             let monitors = shard
                 .monitors
                 .get(&target_id)
@@ -527,7 +579,7 @@ mod tests {
         hew_actor_demonitor(ref_id);
 
         // Verify monitor is removed
-        MONITOR_TABLE[shard_index].read_access(|shard| {
+        monitor_table_for_test()[shard_index].read_access(|shard| {
             assert!(
                 !shard.monitors.contains_key(&target_id)
                     || shard
@@ -541,6 +593,7 @@ mod tests {
 
     #[test]
     fn test_multiple_monitors_same_target() {
+        let _g = guard();
         // Use unique IDs to avoid collisions with parallel tests.
         let mut watcher1 = create_test_actor(20_100);
         let mut watcher2 = create_test_actor(20_110);
@@ -560,7 +613,7 @@ mod tests {
 
         // Verify both monitors exist
         let shard_index = get_shard_index(20_200);
-        MONITOR_TABLE[shard_index].read_access(|shard| {
+        monitor_table_for_test()[shard_index].read_access(|shard| {
             let monitors = shard.monitors.get(&20_200).expect("monitors should exist");
             assert_eq!(monitors.len(), 2);
         });
@@ -569,7 +622,7 @@ mod tests {
         hew_actor_demonitor(ref_id1);
 
         // Verify only second monitor remains
-        MONITOR_TABLE[shard_index].read_access(|shard| {
+        monitor_table_for_test()[shard_index].read_access(|shard| {
             let monitors = shard
                 .monitors
                 .get(&20_200)
@@ -582,7 +635,7 @@ mod tests {
         hew_actor_demonitor(ref_id2);
 
         // Verify all monitors removed
-        MONITOR_TABLE[shard_index].read_access(|shard| {
+        monitor_table_for_test()[shard_index].read_access(|shard| {
             assert!(
                 !shard.monitors.contains_key(&20_200)
                     || shard
@@ -595,6 +648,7 @@ mod tests {
 
     #[test]
     fn test_null_actor_handling() {
+        let _g = guard();
         let mut actor = create_test_actor(300);
         let actor_ptr = &raw mut actor;
 
@@ -616,6 +670,7 @@ mod tests {
 
     #[test]
     fn remove_all_monitors_clears_target_and_watcher_entries() {
+        let _g = guard();
         // Use unique IDs (40xxx) to avoid collisions.
         let mut watcher = create_test_actor(40_100);
         let mut target = create_test_actor(40_200);
@@ -641,6 +696,7 @@ mod tests {
 
     #[test]
     fn remove_all_monitors_as_watcher_clears_watcher_entries() {
+        let _g = guard();
         // Unique IDs (41xxx).
         let mut watcher = create_test_actor(41_100);
         let mut target = create_test_actor(41_200);
@@ -656,7 +712,7 @@ mod tests {
 
         // Watcher's address should be purged from target's monitor list.
         let shard = get_shard_index(41_200);
-        MONITOR_TABLE[shard].read_access(|table| {
+        monitor_table_for_test()[shard].read_access(|table| {
             let remaining = table.monitors.get(&41_200);
             assert!(
                 remaining.is_none() || remaining.unwrap().is_empty(),
@@ -667,6 +723,7 @@ mod tests {
 
     #[test]
     fn remove_all_monitors_no_monitors_does_not_panic() {
+        let _g = guard();
         let actor = create_test_actor(40_300);
         let ptr = (&raw const actor).cast_mut();
         remove_all_monitors_for_actor(40_300, ptr);
@@ -762,6 +819,7 @@ mod tests {
     ///     Drop must clear the table entry.
     #[test]
     fn monitor_ref_drop_clears_table_entry() {
+        let _g = guard();
         let mut watcher = create_test_actor(50_100);
         let mut target = create_test_actor(50_200);
         let watcher_ptr = &raw mut watcher;
@@ -777,7 +835,7 @@ mod tests {
 
         // Verify: entry is gone from both maps.
         let shard = get_shard_index(50_200);
-        MONITOR_TABLE[shard].read_access(|table| {
+        monitor_table_for_test()[shard].read_access(|table| {
             assert!(
                 !table.ref_to_monitor.contains_key(&ref_id),
                 "ref_to_monitor must not contain the removed ref_id"
@@ -793,6 +851,7 @@ mod tests {
     /// (b) Explicit close followed by the consumed value's Drop must be safe.
     #[test]
     fn monitor_ref_close_then_drop_is_safe() {
+        let _g = guard();
         let mut watcher = create_test_actor(51_100);
         let mut target = create_test_actor(51_200);
         let watcher_ptr = &raw mut watcher;
@@ -806,7 +865,7 @@ mod tests {
 
         // Confirm idempotence: the table is clean after both calls.
         let shard = get_shard_index(51_200);
-        MONITOR_TABLE[shard].read_access(|table| {
+        monitor_table_for_test()[shard].read_access(|table| {
             assert!(
                 !table.ref_to_monitor.contains_key(&ref_id),
                 "ref_to_monitor must not contain the ref_id after double-demonitor"
@@ -823,6 +882,7 @@ mod tests {
     ///     (simulating actor-free path) — still resolves silently.
     #[test]
     fn monitor_ref_close_after_target_freed_ok() {
+        let _g = guard();
         let mut watcher = create_test_actor(52_100);
         let mut target = create_test_actor(52_200);
         let watcher_ptr = &raw mut watcher;
@@ -840,7 +900,7 @@ mod tests {
         TestMonitorRef::new(ref_id).close();
 
         let shard = get_shard_index(52_200);
-        MONITOR_TABLE[shard].read_access(|table| {
+        monitor_table_for_test()[shard].read_access(|table| {
             assert!(
                 !table.ref_to_monitor.contains_key(&ref_id),
                 "stale ref_id must remain absent after actor-free close"
@@ -856,11 +916,72 @@ mod tests {
     /// (d) Demonitor with zero or arbitrary invalid `ref_id` values — must be silent no-ops.
     #[test]
     fn demonitor_invalid_ref_id_is_silent_noop() {
+        let _g = guard();
         // ref_id == 0: early-return guard.
         hew_actor_demonitor(0);
 
         // ref_id that was never registered: unknown-id scan path.
         hew_actor_demonitor(u64::MAX);
         hew_actor_demonitor(99_999_999);
+    }
+
+    #[test]
+    fn independent_runtimes_keep_separate_monitor_tables() {
+        let rt_a = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        let rt_b = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+
+        let mut watcher_a = create_test_actor(60_100);
+        let mut target_a = create_test_actor(60_200);
+        let mut watcher_b = create_test_actor(60_100);
+        let mut target_b = create_test_actor(60_200);
+
+        {
+            // SAFETY: rt_a lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            let ref_a = unsafe { hew_actor_monitor(&raw mut watcher_a, &raw mut target_a) };
+            assert_eq!(ref_a, 1);
+        }
+
+        {
+            // SAFETY: rt_b lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            let ref_b = unsafe { hew_actor_monitor(&raw mut watcher_b, &raw mut target_b) };
+            assert_eq!(
+                ref_b, 1,
+                "each runtime owns an independent monitor reference counter"
+            );
+        }
+
+        {
+            // SAFETY: rt_a lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            notify_monitors_on_death(60_200, HewActorState::Stopped as i32);
+        }
+
+        monitor_shard_for_runtime_test(&rt_a, 60_200).read_access(|shard| {
+            assert!(
+                !shard.monitors.contains_key(&60_200),
+                "runtime A notification removes only runtime A's monitor"
+            );
+            assert!(
+                shard.terminal_reasons.contains_key(&60_200),
+                "runtime A records only its own terminal sweep"
+            );
+        });
+        monitor_shard_for_runtime_test(&rt_b, 60_200).read_access(|shard| {
+            assert_eq!(
+                shard.monitors.get(&60_200).map(Vec::len),
+                Some(1),
+                "runtime B's monitor with the same actor id must not be cross-notified"
+            );
+            assert!(
+                !shard.terminal_reasons.contains_key(&60_200),
+                "runtime B must not inherit runtime A's terminal reason"
+            );
+        });
     }
 }

@@ -355,7 +355,7 @@ fn parse_string_parts(
         // Handle escape sequences — prevents `\{` or `\$` from opening an expr
         if c == '\\' {
             let (consumed, unescape_err) =
-                push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '$', '`']);
+                push_unescaped_sequence(&chars, idx, &mut literal_buf, &['{', '}', '$', '`']);
             if let Some(msg) = unescape_err {
                 let abs_off = inner_offset + chars[idx].0;
                 errors.push(ParseError {
@@ -9429,7 +9429,7 @@ mod tests {
 
     #[test]
     fn parse_interpolated_string_shared_escapes_decode_and_escaped_delimiters_stay_literal() {
-        let result = parse(r#"fn main() { let s = f"left \{ \x41 {name}"; }"#);
+        let result = parse(r#"fn main() { let s = f"left \{ \} \x41 {name}"; }"#);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let Item::Function(f) = &result.program.items[0].0 else {
             panic!("expected function");
@@ -9443,7 +9443,7 @@ mod tests {
         };
 
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0], StringPart::Literal("left { A ".to_string()));
+        assert_eq!(parts[0], StringPart::Literal("left { } A ".to_string()));
         assert!(matches!(
             parts[1],
             StringPart::Expr((Expr::Identifier(ref name), _)) if name == "name"

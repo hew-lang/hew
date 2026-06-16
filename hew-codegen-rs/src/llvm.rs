@@ -24291,6 +24291,28 @@ fn emit_elab_drops(
 /// over-free cannot reach codegen output.
 /// LESSONS: boundary-fail-closed, lifecycle-symmetry.
 fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
+    // #1933 / #1941 — a non-idempotent user `#[resource]` close carries a
+    // path-sensitive runtime drop-flag (`ElabDrop::guard`). The user `close`
+    // ritual is NOT runtime idempotent (`lower_drop_user_fn` unconditionally
+    // loads-calls-zeroes, and a zero payload is a legitimate field value,
+    // not a closed flag), so a resource reached at a `MaybeConsumed`
+    // control-flow join — Live on one predecessor, Consumed on another —
+    // would close twice without discrimination. Gate the ENTIRE emission
+    // (including the borrow-mode handling below) on `flag == 0` so the close
+    // fires exactly once on the still-live path and is skipped where the
+    // value was already moved into a consumer. Every idempotent / refcounted
+    // / null-after-free drop carries `guard == None` and is unaffected.
+    if let Some(flag) = drop.guard {
+        return emit_flag_gated_elab_drop(fn_ctx, flag, drop);
+    }
+    emit_one_elab_drop_borrow_aware(fn_ctx, drop)
+}
+
+/// Borrow-mode-aware drop emission (the pre-#1933 `emit_one_elab_drop`
+/// body). Split out so the path-sensitive resource drop-flag guard can wrap
+/// it: a flag-gated resource close still honours the borrow-mode suppression
+/// on its live path.
+fn emit_one_elab_drop_borrow_aware(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
     // P5-RX Stage 2a (A625): a value derived from a borrowed `String` receive
     // payload is a non-owning view under `borrow_mode != 0` — the envelope's
     // `hew_msg_envelope_release` is its sole owner. Suppress this drop in
@@ -24307,6 +24329,65 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
         }
     }
     emit_one_elab_drop_unguarded(fn_ctx, drop)
+}
+
+/// #1933 / #1941 — emit `drop` only when its path-sensitive drop-flag reads
+/// 0 (not-yet-consumed on this control-flow path). The flag is a MIR `i64`
+/// local, zero-initialised at the resource's `let` and set to 1 at each
+/// `IntentKind::Consume` use site. Wraps the (possibly borrow-gated) close
+/// body in a `flag == 0` conditional region, mirroring
+/// `emit_borrow_gated_elab_drop`. This is the exactly-once mechanism for a
+/// non-idempotent user `#[resource]` close at a `MaybeConsumed` join.
+fn emit_flag_gated_elab_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    flag: Place,
+    drop: &ElabDrop,
+) -> CodegenResult<()> {
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("flag-gated drop has no parent function".into()))?;
+    let (flag_ptr, flag_ty) = place_pointer(fn_ctx, flag)?;
+    let int_ty = match flag_ty {
+        BasicTypeEnum::IntType(i) => i,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "resource drop-flag {flag:?} is not an integer local: {other:?}"
+            )));
+        }
+    };
+    let flag_val = fn_ctx
+        .builder
+        .build_load(int_ty, flag_ptr, "resource_drop_flag")
+        .llvm_ctx("resource drop-flag load")?
+        .into_int_value();
+    let drop_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "resource_drop_live_only");
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "resource_drop_merge");
+    let zero = int_ty.const_zero();
+    let not_consumed = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            flag_val,
+            zero,
+            "resource_drop_not_consumed",
+        )
+        .llvm_ctx("resource drop-flag cmp")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(not_consumed, drop_bb, merge_bb)
+        .llvm_ctx("resource drop-flag branch")?;
+    fn_ctx.builder.position_at_end(drop_bb);
+    emit_one_elab_drop_borrow_aware(fn_ctx, drop)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("resource drop-flag merge br")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
 }
 
 /// P5-RX Stage 2a (A625): emit `drop` only when `borrow_mode == 0` (copy
@@ -44323,6 +44404,7 @@ mod tests {
                             "NotARealType::close".to_string(),
                         )),
                         kind: DropKind::Resource,
+                        guard: None,
                     }],
                 },
             )],
@@ -44391,6 +44473,7 @@ mod tests {
                             hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
                         )),
                         kind: DropKind::DuplexClose,
+                        guard: None,
                     }],
                 },
             )],
@@ -44445,6 +44528,7 @@ mod tests {
                             hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
                         )),
                         kind: DropKind::DuplexClose,
+                        guard: None,
                     }],
                 },
             )],
@@ -44902,6 +44986,7 @@ mod tests {
                         ty: ResolvedTy::Unit,
                         drop_fn: Some(hew_mir::DropFnSpec::UserClose("Conn::close".to_string())),
                         kind: DropKind::Resource,
+                        guard: None,
                     }],
                 },
             )],
@@ -45293,6 +45378,7 @@ mod tests {
             kind: DropKind::CowHeap {
                 drop_fn: "hew_string_drop",
             },
+            guard: None,
         };
         emit_one_elab_drop(&fn_ctx, &drop).expect("CowHeap string drop must emit");
         finish_test_fn(&fn_ctx);
@@ -45334,6 +45420,7 @@ mod tests {
             kind: DropKind::CowHeap {
                 drop_fn: "hew_bytes_drop",
             },
+            guard: None,
         };
         emit_one_elab_drop(&fn_ctx, &drop).expect("CowHeap bytes drop must emit");
         finish_test_fn(&fn_ctx);
@@ -45379,6 +45466,7 @@ mod tests {
                 // In the closed set, but the wrong release for Bytes.
                 drop_fn: "hew_string_drop",
             },
+            guard: None,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
             .expect_err("non-hew_bytes_drop symbol on a Bytes drop must fail closed");
@@ -45424,6 +45512,7 @@ mod tests {
             kind: DropKind::CowHeap {
                 drop_fn: "hew_vec_free",
             },
+            guard: None,
         };
         emit_one_elab_drop(&fn_ctx, &drop).expect("CowHeap vec drop must emit");
         finish_test_fn(&fn_ctx);
@@ -45452,6 +45541,7 @@ mod tests {
             ty: tuple_ty,
             drop_fn: None,
             kind: DropKind::AggregateRecursive,
+            guard: None,
         };
         emit_one_elab_drop(&fn_ctx, &drop).expect("AggregateRecursive tuple drop must emit");
         finish_test_fn(&fn_ctx);
@@ -45520,6 +45610,7 @@ mod tests {
             kind: DropKind::CowHeap {
                 drop_fn: "free", // not in the closed release table
             },
+            guard: None,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
             .expect_err("unknown CowHeap release symbol must fail closed");
@@ -45561,6 +45652,7 @@ mod tests {
                 // In the closed set, but the wrong release for `String`.
                 drop_fn: "hew_vec_free",
             },
+            guard: None,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
             .expect_err("type-incongruent CowHeap release symbol must fail closed");
@@ -45597,6 +45689,7 @@ mod tests {
             kind: DropKind::CowHeap {
                 drop_fn: "hew_string_drop",
             },
+            guard: None,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
             .expect_err("CowHeap with populated drop_fn must fail closed");
@@ -45626,6 +45719,7 @@ mod tests {
             ty: tuple_ty,
             drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
             kind: DropKind::AggregateRecursive,
+            guard: None,
         };
         let err = emit_one_elab_drop(&fn_ctx, &drop)
             .expect_err("AggregateRecursive with drop_fn must fail closed");
@@ -47196,6 +47290,7 @@ mod tests {
                         kind: DropKind::TraitObject {
                             storage: TraitObjectStorage::FrameOwned,
                         },
+                        guard: None,
                     }],
                 },
             )],

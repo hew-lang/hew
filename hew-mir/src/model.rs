@@ -4701,6 +4701,28 @@ pub struct ElabDrop {
     /// variants. Defaults to `Resource` so existing call sites that
     /// only populate the pre-M2 fields stay correct.
     pub kind: DropKind,
+    /// Path-sensitive exactly-once gate for a non-idempotent user
+    /// `#[resource]` close (#1933 / #1941).
+    ///
+    /// `None` for every idempotent / null-tolerant drop (Duplex, lambda,
+    /// half-handle, `CowHeap`, record/enum/tuple in-place, dyn-trait) — those
+    /// either refcount or null-after-free at runtime and never double-free
+    /// on a shared (`MaybeConsumed`) control-flow join.
+    ///
+    /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
+    /// `DropFnSpec::UserClose`: the user `close` ritual is NOT runtime
+    /// idempotent (`lower_drop_user_fn` unconditionally loads-calls-zeroes,
+    /// and a zero payload is a legitimate field value, not a closed flag).
+    /// `flag` is an `i64` local initialised to 0 at the binding's
+    /// introduction and set to 1 at each `IntentKind::Consume` use site.
+    /// Codegen gates the close on `flag == 0` so a resource reached at a
+    /// `MaybeConsumed` join — Live on one predecessor, Consumed on the
+    /// other — closes exactly once on the live path and is skipped on the
+    /// already-consumed path. The drop-plan validator re-derives only
+    /// `kind` (via the Place-driven `drop_kind_for` SSOT) and never
+    /// inspects `guard`, so this runtime-gating annotation is orthogonal to
+    /// the structural drop-kind contract.
+    pub guard: Option<Place>,
 }
 
 /// Drop-kind discriminator for `ElabDrop`. Each variant pins a

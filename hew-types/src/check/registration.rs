@@ -6859,14 +6859,22 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
-        for (item, span) in items {
+        for (item, _span) in items {
             let Item::Import(decl) = item else {
                 continue;
             };
             if decl.resolved_items.is_some() {
+                // Load the imported stdlib module so its re-exported traits become
+                // visible to the eager trait-use path. Pass `None` for the import
+                // span deliberately: this import statement lives in a stdlib source
+                // file, so its span indexes that file — not the user document the
+                // diagnostics are reported against. Recording it in `import_spans`
+                // would make it a user-facing unused-import lint candidate whose
+                // span cannot be resolved to any user source, mis-attributing a
+                // stdlib-internal offset to the user's document.
                 let saved_current_module = self.current_module.clone();
                 self.current_module = Some(module_short.to_string());
-                self.register_import(decl, Some(span));
+                self.register_import(decl, None);
                 self.current_module = saved_current_module;
             }
         }

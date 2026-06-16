@@ -516,6 +516,11 @@ impl Drop for LambdaActorLifecycle {
     fn drop(&mut self) {
         // Close the mailbox first so the dispatch thread's blocking recv()
         // observes Closed after draining buffered messages.
+        // SAFETY: `LambdaActorLifecycle::drop` runs exactly once, when the
+        // last `Arc<LambdaActorLifecycle>` is dropped. Dropping `mailbox_in` is
+        // the close-before-join primitive: it closes the mailbox so the
+        // dispatch thread's `recv()` returns `Closed` and the loop exits,
+        // enabling the join below. `mailbox_in` is never accessed after this.
         unsafe { ManuallyDrop::drop(&mut self.mailbox_in) };
 
         let handle = self
@@ -623,13 +628,12 @@ impl HewLambdaActor {
                 // — so drain-all observes counter==0 only AFTER
                 // state_drop has run on this dispatch thread.)
             });
-        if spawn_result.is_err() {
+        let Ok(dispatch_thread) = spawn_result else {
             // Spawn failed: roll back the counter so a later drain-all
             // doesn't wait for a thread that never started.
             live_actors.lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
             return None;
-        }
-        let dispatch_thread = spawn_result.expect("checked is_err above");
+        };
         let lifecycle = Arc::new(LambdaActorLifecycle::new(mailbox_in, dispatch_thread));
         Some(Self { inner, lifecycle })
     }
@@ -1767,6 +1771,35 @@ mod tests {
         42 // non-zero → actor stops
     }
 
+    struct SlowReleaseState {
+        started: Arc<AtomicBool>,
+        finished: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    unsafe extern "C-unwind" fn slow_release_body(
+        state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        let state = unsafe { &*(state.cast::<SlowReleaseState>()) };
+        state.started.store(true, Ord::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        state.finished.store(true, Ord::SeqCst);
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    unsafe extern "C-unwind" fn slow_release_state_drop(state: *mut core::ffi::c_void) {
+        let state = unsafe { Box::from_raw(state.cast::<SlowReleaseState>()) };
+        state.dropped.store(true, Ord::SeqCst);
+    }
+
     /// State-drop callback that increments a shared counter. Cast
     /// `Arc<AtomicUsize>` pointer to `*mut c_void` via `Arc::into_raw`.
     unsafe extern "C-unwind" fn counting_state_drop(state: *mut core::ffi::c_void) {
@@ -1995,6 +2028,7 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_returns_actor_stopped_after_release() {
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
@@ -2014,6 +2048,7 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_succeeds_while_strong_alive() {
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
@@ -2378,6 +2413,63 @@ mod tests {
             counter.load(Ord::SeqCst),
             1,
             "state_drop must be called exactly once"
+        );
+    }
+
+    #[test]
+    fn release_waits_for_inflight_body_and_state_drop() {
+        let _guard = crate::runtime_test_guard();
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let state = Box::new(SlowReleaseState {
+            started: Arc::clone(&started),
+            finished: Arc::clone(&finished),
+            dropped: Arc::clone(&dropped),
+        });
+        let state_raw = Box::into_raw(state).cast::<core::ffi::c_void>();
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(slow_release_body),
+                state_raw,
+                Some(slow_release_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let msg = b"slow";
+        assert_eq!(
+            unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) },
+            SendError::Ok as i32
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !started.load(Ord::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "slow body must start before release"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !finished.load(Ord::SeqCst),
+            "test must release while body is still running"
+        );
+
+        assert_eq!(
+            unsafe { hew_lambda_actor_release(actor) },
+            SendError::Ok as i32
+        );
+        assert!(
+            finished.load(Ord::SeqCst),
+            "release must join the in-flight body before returning"
+        );
+        assert!(
+            dropped.load(Ord::SeqCst),
+            "release must wait until state_drop has run"
         );
     }
 

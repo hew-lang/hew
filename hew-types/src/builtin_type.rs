@@ -51,6 +51,12 @@ pub enum BuiltinType {
     Iterator,
     Unit,
     Duration,
+    /// `instant` — a monotonic timestamp in nanoseconds. ABI-identical to a
+    /// bare `i64` (the runtime's `hew_instant_*` symbols take/return `i64`),
+    /// so it lowers to `ResolvedTy::I64` at the MIR boundary. Kept distinct in
+    /// the checker only so `instant::now()` / `.elapsed()` / `.duration_since()`
+    /// dispatch to the `impl instant` block rather than the integer methods.
+    Instant,
     Trap,
     CancellationToken,
     /// `TimeoutError` — the error arm of `await rx.recv() | after d` /
@@ -171,6 +177,7 @@ builtin_types! {
     Iterator => "Iterator",
     Unit => "Unit",
     Duration => "Duration",
+    Instant => "instant",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
     TimeoutError => "TimeoutError",
@@ -282,6 +289,7 @@ impl BuiltinType {
             | Self::Iterator
             | Self::Unit
             | Self::Duration
+            | Self::Instant
             | Self::Trap
             | Self::CancellationToken
             | Self::TimeoutError => 0,

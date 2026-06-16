@@ -4,7 +4,7 @@
 //!
 //! The typed `RewriteToFunction.descriptor` is reserved for closed-set builtin
 //! calls the checker resolves with first-class family knowledge. Open-set
-//! `#[extern_symbol]` symbols — stdlib `duration` / `Instant` /
+//! `#[extern_symbol]` symbols — stdlib `duration` / `instant` /
 //! `LambdaActorHandle` bindings as well as user-authored FFI on inherent impls
 //! — are open-set *by mechanism*: their family is only recoverable by
 //! reverse-parsing the symbol string. So they carry `descriptor: None` and

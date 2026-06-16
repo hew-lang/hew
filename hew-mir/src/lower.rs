@@ -16662,6 +16662,9 @@ impl Builder {
             | "hew_duration_is_zero" => {
                 self.lower_duration_runtime_call(symbol, hir_args, site, context)
             }
+            "hew_instant_now" | "hew_instant_elapsed" | "hew_instant_duration_since" => {
+                self.lower_instant_runtime_call(symbol, hir_args, site, context)
+            }
             _ => {
                 // Known-allowlisted symbol but no producer arm yet.  Fail closed
                 // so the pipeline rejects the program before codegen runs.
@@ -17050,6 +17053,54 @@ impl Builder {
         });
         self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
         self_handle
+    }
+
+    /// Lower the `impl instant` methods declared in `std/builtins.hew`
+    /// (`#[extern_symbol(hew_instant_*)]`).
+    ///
+    /// `instant` is i64-backed (a monotonic nanosecond timestamp), so every
+    /// argument and result is a bare `i64`:
+    /// - `hew_instant_now()` -> `i64` (no receiver; reads the monotonic clock).
+    /// - `hew_instant_elapsed(now: i64)` -> `i64` (a `duration` in ns).
+    /// - `hew_instant_duration_since(now: i64, earlier: i64)` -> `i64`.
+    ///
+    /// The arity is derived from the symbol so a malformed call fails closed
+    /// before codegen rather than silently mis-marshalling the ABI.
+    fn lower_instant_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+    ) -> Option<Place> {
+        let expected_arity = match symbol {
+            "hew_instant_now" => 0,
+            "hew_instant_elapsed" => 1,
+            "hew_instant_duration_since" => 2,
+            _ => unreachable!("instant lowering called for non-instant symbol `{symbol}`"),
+        };
+        if hir_args.len() != expected_arity {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` arity"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` expects {expected_arity} argument(s), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            arg_places.push(self.lower_value(arg)?);
+        }
+        let dest =
+            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::I64));
+        self.push_runtime_call(symbol, arg_places, dest);
+        dest
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.

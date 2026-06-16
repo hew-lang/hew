@@ -402,6 +402,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
+            | BuiltinType::Instant
             | BuiltinType::Trap
             | BuiltinType::TimeoutError,
         )

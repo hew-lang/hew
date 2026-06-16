@@ -1322,7 +1322,7 @@ impl Checker {
     ///
     /// Unlike [`Self::record_runtime_method_call_rewrite`], the typed
     /// `descriptor` is unconditionally `None`. An `#[extern_symbol]` method —
-    /// stdlib `duration` / `Instant` / `LambdaActorHandle` bindings as well as
+    /// stdlib `duration` / `instant` / `LambdaActorHandle` bindings as well as
     /// user-authored FFI on inherent impls — is open-set *by mechanism*: the
     /// checker has no first-class runtime-call-family knowledge for it. The
     /// family would only be recoverable by reverse-parsing the symbol string,
@@ -4958,6 +4958,38 @@ impl Checker {
                 },
                 _,
             ) => self.check_rc_method(type_args, method, args, span),
+            // instant receiver methods (`.elapsed()`, `.duration_since()`) are
+            // declared in the `impl instant` block in `std/builtins.hew` with
+            // monomorphic `#[extern_symbol(hew_instant_*)]` annotations, mirroring
+            // the `Ty::Duration` arm below. `instant` is i64-backed at the MIR
+            // boundary, so the receiver lowers as a bare `i64` nanos timestamp.
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Instant),
+                    ..
+                },
+                _,
+            ) => {
+                if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+                    "instant",
+                    &[],
+                    method,
+                    args,
+                    span,
+                ) {
+                    return ret_ty;
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `instant`"),
+                );
+                Ty::Error
+            }
             // bytes methods are declared in `std/io.hew` with monomorphic
             // `#[extern_symbol]` annotations over the current Vec<i32>-backed
             // bytes ABI.

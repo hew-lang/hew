@@ -437,10 +437,10 @@ impl Display for string {
 // ---------------------------------------------------------------------------
 // Time canaries
 // ---------------------------------------------------------------------------
-pub type Instant {
-    nanos: i64;
-}
-
+// `instant` is a monotonic timestamp in nanoseconds, ABI-identical to a bare
+// `i64` (the `hew_instant_*` runtime symbols take/return `i64`). It is a
+// compiler builtin scalar — there is no record declaration; the `impl instant`
+// block below binds its three methods to the runtime via `#[extern_symbol]`.
 impl duration {
     #[extern_symbol(hew_duration_nanos)]
     fn nanos(d: duration) -> i64 {
@@ -476,17 +476,17 @@ impl duration {
     }
 }
 
-impl Instant {
+impl instant {
     #[extern_symbol(hew_instant_now)]
-    fn now() -> Instant {
-        Instant { nanos: 0 }
+    fn now() -> instant {
+        instant::now()
     }
     #[extern_symbol(hew_instant_elapsed)]
-    fn elapsed(i: Instant) -> duration {
+    fn elapsed(i: instant) -> duration {
         0ns
     }
     #[extern_symbol(hew_instant_duration_since)]
-    fn duration_since(i: Instant, earlier: Instant) -> duration {
+    fn duration_since(i: instant, earlier: instant) -> duration {
         0ns
     }
 }

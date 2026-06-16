@@ -318,7 +318,9 @@ impl Checker {
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
             for (key, (import_span, stored_module)) in &self.import_spans {
-                if !self.used_modules.borrow().contains(key) {
+                if !self.used_modules.borrow().contains(key)
+                    && !self.imported_trait_module_has_recorded_use(key)
+                {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedImport,

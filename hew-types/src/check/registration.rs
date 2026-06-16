@@ -282,6 +282,104 @@ fn jit_stable_symbols() -> &'static std::collections::HashSet<&'static str> {
 }
 
 impl Checker {
+    fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
+        self.used_modules
+            .borrow_mut()
+            .insert(ImportKey::new(owner, imported_module.to_string()));
+    }
+
+    pub(super) fn imported_trait_module_has_recorded_use(&self, key: &ImportKey) -> bool {
+        let prefix = format!("{}.", key.short_name);
+        let exported_trait_names: Vec<String> = self
+            .trait_defs
+            .keys()
+            .filter_map(|trait_key| trait_key.strip_prefix(&prefix))
+            .filter(|trait_name| !trait_name.contains('.'))
+            .map(str::to_string)
+            .collect();
+
+        exported_trait_names.iter().any(|trait_name| {
+            let qualified = format!("{}.{}", key.short_name, trait_name);
+            self.trait_impls_set
+                .iter()
+                .any(|(_, implemented)| implemented == trait_name || implemented == &qualified)
+                || self
+                    .trait_super
+                    .values()
+                    .flatten()
+                    .any(|super_trait| super_trait == trait_name || super_trait == &qualified)
+        })
+    }
+
+    fn mark_loaded_trait_owner_import_used(&self, module: Option<&str>, trait_name: &str) {
+        let candidate_owners = [
+            module.map(str::to_string),
+            self.current_module.clone(),
+            None::<String>,
+        ];
+        let mut used = self.used_modules.borrow_mut();
+        for key in self.import_spans.keys() {
+            if !candidate_owners
+                .iter()
+                .any(|owner| owner.as_ref() == key.owner_module.as_ref())
+            {
+                continue;
+            }
+            let qualified = format!("{}.{}", key.short_name, trait_name);
+            if self.trait_defs.contains_key(&qualified) {
+                used.insert(key.clone());
+            }
+        }
+    }
+
+    fn mark_imported_trait_used(&self, module: Option<&str>, trait_name: &str) {
+        if let Some((imported_module, _)) = trait_name.split_once('.') {
+            if self.modules.contains(imported_module) {
+                self.mark_import_module_used_for_owner(module.map(str::to_string), imported_module);
+                if self.current_module.as_deref() != module {
+                    self.mark_import_module_used_for_owner(
+                        self.current_module.clone(),
+                        imported_module,
+                    );
+                }
+            }
+            return;
+        }
+
+        if let Some(source_key) = self.trait_import_bindings.get(&(
+            module.unwrap_or_default().to_string(),
+            trait_name.to_string(),
+        )) {
+            if let Some((imported_module, _)) = source_key.split_once('.') {
+                if Some(imported_module) == module {
+                    return;
+                }
+                self.mark_import_module_used_for_owner(module.map(str::to_string), imported_module);
+                if self.current_module.as_deref() != module {
+                    self.mark_import_module_used_for_owner(
+                        self.current_module.clone(),
+                        imported_module,
+                    );
+                }
+            }
+        } else if let Some(imported_module) = self
+            .unqualified_to_module
+            .get(&(module.map(str::to_string), trait_name.to_string()))
+        {
+            self.mark_import_module_used_for_owner(
+                module.map(str::to_string),
+                imported_module.as_str(),
+            );
+            if self.current_module.as_deref() != module {
+                self.mark_import_module_used_for_owner(
+                    self.current_module.clone(),
+                    imported_module.as_str(),
+                );
+            }
+        } else {
+            self.mark_loaded_trait_owner_import_used(module, trait_name);
+        }
+    }
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
         // deferred-refresh fix (see `ensure_handle_bearing_fresh`).
@@ -1342,8 +1440,13 @@ impl Checker {
                     self.local_trait_defs.insert(td.name.clone());
                     // Record super-trait relationships
                     if let Some(supers) = &td.super_traits {
-                        let super_names: Vec<String> =
-                            supers.iter().map(|s| s.name.clone()).collect();
+                        let super_names: Vec<String> = supers
+                            .iter()
+                            .map(|s| {
+                                self.mark_imported_trait_used(None, &s.name);
+                                s.name.clone()
+                            })
+                            .collect();
                         self.trait_super.insert(td.name.clone(), super_names);
                     }
                     // Harvest `#[lang_item("…")]` attributes into the
@@ -6757,6 +6860,8 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
+        self.record_trait_import_bindings(module_short, items);
+
         // Temporarily scope local_type_defs so that locally_non_generic in
         // resolve_type_expr suppresses fresh-var injection for opaque handle
         // types (e.g. Sender, Receiver) declared in this module.  Without
@@ -6854,6 +6959,11 @@ impl Checker {
                     }
                 }
                 Item::Trait(tr) => {
+                    if let Some(supers) = &tr.super_traits {
+                        for super_trait in supers {
+                            self.mark_imported_trait_used(Some(module_short), &super_trait.name);
+                        }
+                    }
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -6976,6 +7086,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
+                        self.mark_imported_trait_used(Some(module_short), &tb.name);
                         self.record_trait_impl(type_name, &tb.name);
                     }
 
@@ -7099,6 +7210,11 @@ impl Checker {
                     self.known_types.insert(format!("{}Event", md.name));
                 }
                 Item::Trait(tr) => {
+                    if let Some(supers) = &tr.super_traits {
+                        for super_trait in supers {
+                            self.mark_imported_trait_used(None, &super_trait.name);
+                        }
+                    }
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -7166,6 +7282,7 @@ impl Checker {
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
+                            self.mark_imported_trait_used(None, &tb.name);
                             self.record_trait_impl(type_name, &tb.name);
                         }
                     }
@@ -7263,12 +7380,6 @@ impl Checker {
         for (item, _) in items {
             match item {
                 Item::Import(decl) => {
-                    let Some(ImportSpec::Names(names)) = &decl.spec else {
-                        // Whole-module / glob imports publish no bare trait binding
-                        // into this module's namespace, so there is no re-export
-                        // edge to record.
-                        continue;
-                    };
                     let imported_short = decl
                         .module_alias
                         .clone()
@@ -7276,14 +7387,52 @@ impl Checker {
                     let Some(imported_short) = imported_short else {
                         continue;
                     };
-                    for import_name in names {
-                        let binding = import_name
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| import_name.name.clone());
-                        let source_identity = format!("{imported_short}.{}", import_name.name);
-                        self.trait_import_bindings
-                            .insert((module_short.to_string(), binding), source_identity);
+                    match &decl.spec {
+                        Some(ImportSpec::Names(names)) => {
+                            for import_name in names {
+                                let binding = import_name
+                                    .alias
+                                    .clone()
+                                    .unwrap_or_else(|| import_name.name.clone());
+                                let source_identity =
+                                    format!("{imported_short}.{}", import_name.name);
+                                self.trait_import_bindings
+                                    .insert((module_short.to_string(), binding), source_identity);
+                            }
+                        }
+                        None => {
+                            let prefix = format!("{imported_short}.");
+                            let loaded_traits: Vec<String> = self
+                                .trait_defs
+                                .keys()
+                                .filter_map(|key| key.strip_prefix(&prefix))
+                                .filter(|name| !name.contains('.'))
+                                .map(str::to_string)
+                                .collect();
+                            for trait_name in loaded_traits {
+                                self.trait_import_bindings.insert(
+                                    (module_short.to_string(), trait_name.clone()),
+                                    format!("{imported_short}.{trait_name}"),
+                                );
+                            }
+                            if let Some(resolved_items) = &decl.resolved_items {
+                                for (imported_item, _) in resolved_items {
+                                    if let Item::Trait(tr) = imported_item {
+                                        if tr.visibility.is_pub() {
+                                            self.trait_import_bindings.insert(
+                                                (module_short.to_string(), tr.name.clone()),
+                                                format!("{imported_short}.{}", tr.name),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Glob imports publish trait names through the normal import
+                        // surface, but they do not carry resolved names in the AST.
+                        // The loaded-owner fallback below handles their unused-import
+                        // marking without manufacturing binding entries here.
+                        Some(ImportSpec::Glob) => {}
                     }
                 }
                 // Self-register the module's own pub traits so a re-export chain
@@ -7443,6 +7592,11 @@ impl Checker {
                     }
                 }
                 Item::Trait(tr) => {
+                    if let Some(supers) = &tr.super_traits {
+                        for super_trait in supers {
+                            self.mark_imported_trait_used(Some(module_short), &super_trait.name);
+                        }
+                    }
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -7486,7 +7640,10 @@ impl Checker {
                     if let Some(supers) = &tr.super_traits {
                         let super_keys: Vec<String> = supers
                             .iter()
-                            .map(|s| self.resolve_super_trait_edge(module_short, &s.name))
+                            .map(|s| {
+                                self.mark_imported_trait_used(Some(module_short), &s.name);
+                                self.resolve_super_trait_edge(module_short, &s.name)
+                            })
                             .collect();
                         self.trait_super
                             .insert(qualified.clone(), super_keys.clone());

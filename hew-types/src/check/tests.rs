@@ -12702,6 +12702,77 @@ fn make_test_type_def(
 }
 
 #[test]
+fn dyn_trait_coercion_rejects_record_with_owned_heap_field() {
+    let output = check_source(
+        r#"
+        trait Show {
+            fn show(val: Self) -> i64;
+        }
+
+        type Heapy {
+            name: string;
+        }
+
+        impl Show for Heapy {
+            fn show(val: Heapy) -> i64 { 1 }
+        }
+
+        fn make() {
+            let boxed: dyn Show = Heapy { name: "x" };
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && error
+                    .message
+                    .contains("cannot coerce record `Heapy` to `dyn Show`")
+                && error.message.contains("owned-heap")
+                && error.message.contains("all-BitCopy")
+        }),
+        "dyn over owned-heap record must be rejected at type check: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.dyn_trait_coercions.is_empty(),
+        "rejected owned-heap dyn coercion must not be recorded"
+    );
+}
+
+#[test]
+fn dyn_trait_coercion_allows_bitcopy_record() {
+    let output = check_source(
+        r"
+        trait Show {
+            fn show(val: Self) -> i64;
+        }
+
+        type Plain {
+            value: i64;
+        }
+
+        impl Show for Plain {
+            fn show(val: Plain) -> i64 { val.value }
+        }
+
+        fn make() {
+            let boxed: dyn Show = Plain { value: 1 };
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "all-BitCopy record should still coerce to dyn: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output.dyn_trait_coercions.is_empty(),
+        "accepted BitCopy dyn coercion should still be recorded"
+    );
+}
+
+#[test]
 fn structural_satisfies_returns_false_for_unknown_trait() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     assert!(

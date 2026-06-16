@@ -580,6 +580,23 @@ impl Checker {
             per_bound.push((bound.trait_name.clone(), methods));
         }
 
+        if let Some((field_name, field_ty)) = self.dyn_owned_heap_field(concrete_type) {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: format!("dyn {}", dyn_trait_names_for_message(traits)),
+                    actual: concrete_type.user_facing().to_string(),
+                },
+                span,
+                format!(
+                    "cannot coerce record `{type_name}` to `dyn {}`: field `{field_name}` has \
+                     type `{}` which carries owned-heap data; dyn-boxed concretes must be all-BitCopy",
+                    dyn_trait_names_for_message(traits),
+                    field_ty.user_facing()
+                ),
+            );
+            return true;
+        }
+
         // Composite trait_name: `A` for single-bound, `A+B` for multi-bound.
         let composite_trait_name = if per_bound.len() == 1 {
             per_bound[0].0.clone()
@@ -627,6 +644,96 @@ impl Checker {
         );
         true
     }
+
+    fn dyn_owned_heap_field(&self, concrete_type: &Ty) -> Option<(String, Ty)> {
+        let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = concrete_type
+        else {
+            return None;
+        };
+        let type_def = self.lookup_type_def(name)?;
+        let mut field_names = if type_def.field_order.is_empty() {
+            let mut names: Vec<String> = type_def.fields.keys().cloned().collect();
+            names.sort();
+            names
+        } else {
+            type_def.field_order.clone()
+        };
+        field_names.retain(|field_name| type_def.fields.contains_key(field_name));
+        field_names.into_iter().find_map(|field_name| {
+            let field_ty = type_def.fields.get(&field_name)?;
+            let instantiated =
+                Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+            let resolved = self
+                .subst
+                .resolve(&instantiated)
+                .materialize_literal_defaults();
+            if self.ty_carries_owned_heap_for_dyn(&resolved, &mut Vec::new()) {
+                Some((field_name, resolved))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn ty_carries_owned_heap_for_dyn(&self, ty: &Ty, seen: &mut Vec<String>) -> bool {
+        match ty {
+            Ty::String | Ty::Bytes => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|elem| self.ty_carries_owned_heap_for_dyn(elem, seen)),
+            Ty::Array(elem, _) => self.ty_carries_owned_heap_for_dyn(elem, seen),
+            Ty::Named {
+                builtin:
+                    Some(
+                        crate::BuiltinType::Vec
+                        | crate::BuiltinType::HashMap
+                        | crate::BuiltinType::HashSet
+                        | crate::BuiltinType::Rc
+                        | crate::BuiltinType::Task
+                        | crate::BuiltinType::Stream
+                        | crate::BuiltinType::Sink
+                        | crate::BuiltinType::Duplex,
+                    ),
+                ..
+            } => true,
+            Ty::Named { args, .. }
+                if args
+                    .iter()
+                    .any(|arg| self.ty_carries_owned_heap_for_dyn(arg, seen)) =>
+            {
+                true
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } => {
+                if seen.contains(name) {
+                    return false;
+                }
+                let Some(type_def) = self.lookup_type_def(name) else {
+                    return false;
+                };
+                seen.push(name.clone());
+                let carries = type_def.fields.values().any(|field_ty| {
+                    let instantiated =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    let resolved = self
+                        .subst
+                        .resolve(&instantiated)
+                        .materialize_literal_defaults();
+                    self.ty_carries_owned_heap_for_dyn(&resolved, seen)
+                });
+                seen.pop();
+                carries
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Map a resolved concrete `Ty` to the type-name string used by the impl
@@ -667,6 +774,14 @@ fn canonical_dyn_assoc_bindings(traits: &[crate::ty::TraitObjectBound]) -> Vec<D
             .then_with(|| a.assoc_name.cmp(&b.assoc_name))
     });
     bindings
+}
+
+fn dyn_trait_names_for_message(traits: &[crate::ty::TraitObjectBound]) -> String {
+    traits
+        .iter()
+        .map(|bound| bound.trait_name.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Conservative AST predicate: does this type expression mention `Self`

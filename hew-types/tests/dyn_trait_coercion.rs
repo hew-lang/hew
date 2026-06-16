@@ -370,24 +370,24 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
         }
 
         type IntCounter { value: i32; }
-        type StringCounter { value: string; }
+        type BoolCounter { value: bool; }
 
         impl Iterator for IntCounter {
             type Item = i32;
             fn next(iter: IntCounter) -> Option<i32> { Some(iter.value) }
         }
 
-        impl Iterator for StringCounter {
-            type Item = string;
-            fn next(iter: StringCounter) -> Option<string> { Some(iter.value) }
+        impl Iterator for BoolCounter {
+            type Item = bool;
+            fn next(iter: BoolCounter) -> Option<bool> { Some(iter.value) }
         }
 
         fn use_int(iter: dyn Iterator<Item = i32>) {}
-        fn use_string(iter: dyn Iterator<Item = string>) {}
+        fn use_bool(iter: dyn Iterator<Item = bool>) {}
 
         fn main() {
             use_int(IntCounter { value: 1 });
-            use_string(StringCounter { value: "x" });
+            use_bool(BoolCounter { value: true });
         }
         "#,
     );
@@ -410,7 +410,7 @@ fn dyn_distinct_bindings_get_distinct_vtables() {
     assert!(keys.iter().any(|key| key
         .assoc_bindings
         .iter()
-        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::String)));
+        .any(|binding| binding.assoc_name == "Item" && binding.ty == Ty::Bool)));
 }
 
 #[test]
@@ -458,8 +458,8 @@ fn dyn_trait_method_signature_substituted() {
     );
 }
 
-/// A bare `impl T { fn name(self) -> string }` that structurally matches a
-/// trait `Named { fn name(self) -> string }` (no explicit `impl Named for T`)
+/// A bare `impl T { fn name(self) -> i64 }` that structurally matches a
+/// trait `Named { fn name(self) -> i64 }` (no explicit `impl Named for T`)
 /// still populates the `method_table` for a `T → dyn Named` coercion.  This
 /// is the structural-trait-impl path: codegen vtable emission cannot
 /// distinguish nominal from structural matches when building the slot
@@ -469,13 +469,13 @@ fn structural_impl_populates_method_table_for_dyn_named() {
     let output = typecheck_isolated(
         r#"
         trait Named {
-            fn name(val: Self) -> string;
+            fn name(val: Self) -> i64;
         }
 
-        type Widget { label: string; }
+        type Widget { label: i64; }
 
         impl Widget {
-            fn name(val: Widget) -> string {
+            fn name(val: Widget) -> i64 {
                 val.label
             }
         }
@@ -483,7 +483,7 @@ fn structural_impl_populates_method_table_for_dyn_named() {
         fn use_named(value: dyn Named) {}
 
         fn main() {
-            let w = Widget { label: "x" };
+            let w = Widget { label: 1 };
             use_named(w);
         }
         "#,

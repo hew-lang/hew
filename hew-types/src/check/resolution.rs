@@ -923,13 +923,14 @@ impl Checker {
             }
             1 => {
                 let trait_name = matches.into_iter().next().expect("len==1");
+                let source_trait_name = self.trait_defs_source_name_for_bound(&trait_name);
                 Some(Ty::AssocType {
                     base: Box::new(Ty::Named {
                         builtin: None,
                         name: base_name.to_string(),
                         args: vec![],
                     }),
-                    trait_name: trait_name.into_boxed_str(),
+                    trait_name: source_trait_name.into_boxed_str(),
                     assoc_name: assoc_name.to_string().into_boxed_str(),
                 })
             }

@@ -106,6 +106,12 @@ fixtures=(
   # then ACCEPT the matching impl. Run end-to-end so the aliased impl is also
   # exercised through codegen + receiver dispatch.
   aliased_trait_sig
+  # An ALIASED trait opt-in (`Carrier as A`) whose trait method returns
+  # `Self::Item`; the impl binds `type Item = i64` but declares the method's
+  # return as concrete `i64`. The associated-type binding must be keyed under the
+  # source trait name (`Carrier`), not the alias `A`, so the trait-side
+  # projection collapses before signature comparison.
+  aliased_trait_assoc_projection_accept
   # Two imported packages (`hew::srccollidea`, `hew::srccollideb`) each export a
   # trait literally named `Source` with DIVERGENT signatures (`Result<Payload,
   # ErrA>` vs `i64`). The importer aliases module A's trait (`Source as A`) and

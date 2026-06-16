@@ -3677,45 +3677,15 @@ impl Checker {
         // a non-enforcing registration sweep. The first writer wins;
         // subsequent calls with the same impl idempotently re-resolve.
         if let Some(tb) = &id.trait_bound {
-            // Snapshot trait-side assoc-type list to avoid double-borrow
-            // of trait_defs while we call resolve_type_expr.
-            //
-            // Keyed on the BARE `tb.name`, deliberately. This site POPULATES
-            // `impl_assoc_type_bindings` for call-site projection collapse, and
-            // its `(target, trait, assoc)` key — plus the carrier `trait_name`
-            // the projection lookups (`substitute_trait_sig_for_impl`,
-            // `project_assoc_types`) build from the bound AS WRITTEN — are all on
-            // the bound's in-scope spelling. Re-keying the `trait_defs` read on
-            // the owner-qualified identity here makes `trait_defs.get` SUCCEED for
-            // an aliased bound (`import m::{ Carrier as A }`) where the bare alias
-            // has no entry, writing a binding that was previously absent and
-            // making the projection collapse fire asymmetrically (the trait side
-            // collapses to the concrete assoc while the impl side, written as
-            // `Self::Item`, does not) — a false signature-mismatch on a sound
-            // impl. The poisoning H12 closes is the required-assoc-type ENFORCEMENT
-            // (the `enforce` block below) and the default registration, not this
-            // projection-binding population, which is keyed end-to-end on the
-            // bound spelling.
-            //
-            // FAIL-CLOSED, with a KNOWN LIMITATION (deferred to v0.5.3). No
-            // invalid program is accepted through this path. There IS, however, a
-            // valid program it over-rejects: an ALIASED trait
-            // (`import m::{ Carrier as A }`) whose impl uses an associated-type
-            // PROJECTION in a method signature (`fn item(w) -> Self::Item`). The
-            // bare `tb.name` is the alias `A`, which has no `trait_defs` entry, so
-            // no binding is populated and the `Self::Item` projection never
-            // collapses to the concrete assoc type — yielding a false
-            // `returns i64 but trait requires W::Item` mismatch. Re-keying this
-            // read alone fixes the alias lookup but desyncs the carrier
-            // `trait_name` the projection lookups build from the bound as written,
-            // collapsing the trait side without the impl side. The full fix is the
-            // aliased-assoc-type projection-collapse reshape — populate AND project
-            // through the one owner-qualified identity together — tracked as a
-            // v0.5.3 follow-up. Until then the alias+projection case is rejected,
-            // not accepted: a deferred over-rejection, never a soundness hole.
+            // Snapshot trait-side assoc-type list to avoid double-borrow of
+            // trait_defs while we resolve binding annotations. Key through the
+            // trait's source name so aliased imports (`Carrier as A`) populate the
+            // same projection key the trait-signature carriers use.
+            let trait_key = self.trait_defs_key_for_bound(&tb.name);
+            let source_trait_name = self.trait_defs_source_name_for_bound(&tb.name);
             let assoc_names: Vec<String> = self
                 .trait_defs
-                .get(&tb.name)
+                .get(&trait_key)
                 .map(|info| {
                     info.associated_types
                         .iter()
@@ -3723,10 +3693,13 @@ impl Checker {
                         .collect()
                 })
                 .unwrap_or_default();
-            let tb_name = tb.name.clone();
             let target_owned = target_name.to_string();
             for assoc_name in assoc_names {
-                let key = (target_owned.clone(), tb_name.clone(), assoc_name.clone());
+                let key = (
+                    target_owned.clone(),
+                    source_trait_name.clone(),
+                    assoc_name.clone(),
+                );
                 if self.impl_assoc_type_bindings.contains_key(&key) {
                     continue;
                 }
@@ -4510,10 +4483,11 @@ impl Checker {
         bindings: &mut HashMap<(String, String, String), Ty>,
         hole_vars: &mut Vec<TypeVar>,
     ) {
+        let source_trait_name = self.trait_defs_source_name_for_bound(&bound.name);
         for binding in &bound.assoc_type_bindings {
             let key = (
                 param_name.to_string(),
-                bound.name.clone(),
+                source_trait_name.clone(),
                 binding.name.clone(),
             );
             bindings
@@ -5441,6 +5415,14 @@ impl Checker {
     pub(super) fn trait_defs_key_for_bound(&self, name: &str) -> String {
         let identity = self.resolve_trait_conformance_identity(name);
         self.trait_defs_key_for_identity(&identity)
+    }
+
+    pub(super) fn trait_defs_source_name_for_bound(&self, name: &str) -> String {
+        let trait_key = self.trait_defs_key_for_bound(name);
+        trait_key
+            .rsplit_once('.')
+            .map_or(trait_key.as_str(), |(_, source)| source)
+            .to_string()
     }
 
     /// Resolve which trait DECLARES `method_name` for an `impl <Trait>`: the

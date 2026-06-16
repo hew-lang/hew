@@ -1,0 +1,6 @@
+//! Source trait for aliased associated-type projection regression fixtures.
+
+pub trait Carrier {
+    type Item;
+    fn item(c: Self) -> Self::Item;
+}

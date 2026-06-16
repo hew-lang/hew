@@ -344,6 +344,65 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     );
 }
 
+#[test]
+fn test_alias_imported_trait_assoc_projection_impl_accepts_source_identity() {
+    let root_source = r"
+        import myapp::carrier::{Carrier as A};
+
+        type W {
+            value: i64;
+        }
+
+        impl A for W {
+            type Item = i64;
+
+            fn item(w: W) -> i64 {
+                w.value
+            }
+        }
+    ";
+    let module_source = r"
+        pub trait Carrier {
+            type Item;
+            fn item(c: Self) -> Self::Item;
+        }
+    ";
+
+    let mut root = hew_parser::parse(root_source);
+    assert!(
+        root.errors.is_empty(),
+        "root parse errors: {:?}",
+        root.errors
+    );
+
+    let module = hew_parser::parse(module_source);
+    assert!(
+        module.errors.is_empty(),
+        "module parse errors: {:?}",
+        module.errors
+    );
+
+    let import_decl = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import should exist");
+    import_decl.resolved_items = Some(module.program.items.clone());
+
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&root.program);
+
+    assert!(
+        output.errors.is_empty(),
+        "aliased trait associated-type projection impl should type-check: {:?}",
+        output.errors
+    );
+}
+
 // ── pub visibility across modules ─────────────────────────────────────────────
 
 #[test]

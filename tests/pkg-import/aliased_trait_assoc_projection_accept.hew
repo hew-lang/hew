@@ -1,0 +1,23 @@
+// ACCEPT: an associated-type projection from an ALIAS-imported trait must key
+// through the source trait identity (`carrier.Carrier`), not the alias `A`.
+// Before the resolver-completeness fix, `impl A for W` wrote `Item = i64` under
+// the alias but compared the trait method through the source name, leaving
+// `Self::Item` unresolved and falsely rejecting this valid impl.
+import hew::carrier::{ Carrier as A };
+
+type W {
+    value: i64;
+}
+
+impl A for W {
+    type Item = i64;
+
+    fn item(w: W) -> i64 {
+        w.value
+    }
+}
+
+fn main() {
+    let w = W { value: 7 };
+    println(f"item={w.item()}");
+}

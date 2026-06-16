@@ -1,0 +1,6 @@
+[package]
+name = "hew::carrier"
+version = "0.1.0"
+description = "Aliased associated-type projection source trait fixture"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

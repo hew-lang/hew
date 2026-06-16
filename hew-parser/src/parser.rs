@@ -386,6 +386,50 @@ fn parse_string_parts(
                 inner.len()
             };
 
+            // Detect Python-style `{{` doubled-brace — invalid in Hew.
+            //
+            // Hew uses `\{` / `\}` for literal braces, not `{{` / `}}`.
+            // When `expr_open` is `{` and the very next character is also `{`,
+            // the user is most likely applying Python-style escaping.  Emit a
+            // clear diagnostic and skip the entire interpolation so that no
+            // cascade errors are produced from the block-expression parse.
+            if expr_open == "{" {
+                if let Some(&(_, '{')) = chars.get(idx) {
+                    let abs_open = inner_offset + byte_pos;
+                    errors.push(ParseError {
+                        message: "f-string interpolation opened with `{{`; literal braces in Hew \
+                             use `\\{` and `\\}`, not `{{` and `}}`"
+                            .to_string(),
+                        span: abs_open..abs_open + 2,
+                        hint: Some(
+                            "to include a literal `{` in an f-string, write `\\{`".to_string(),
+                        ),
+                        severity: Severity::Error,
+                        kind: ParseDiagnosticKind::InvalidLiteral,
+                    });
+                    // Skip from the second `{` through the matching closing `}`.
+                    let mut depth: u32 = 1;
+                    while idx < chars.len() {
+                        match chars[idx].1 {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        idx += 1;
+                    }
+                    // Advance past the closing `}`.
+                    if idx < chars.len() {
+                        idx += 1;
+                    }
+                    continue;
+                }
+            }
+
             // Scan for matching `}`, respecting nested braces and string literals
             let mut depth: u32 = 1;
             while idx < chars.len() {
@@ -434,13 +478,16 @@ fn parse_string_parts(
                     kind: ParseDiagnosticKind::InvalidLiteral,
                 });
             } else if !expr_text.is_empty() {
-                let mut sub_parser = Parser::new(expr_text);
+                // Parse the sub-expression with its spans pre-shifted to
+                // absolute source positions.  Every AST node span and every
+                // diagnostic emitted by the sub-parser therefore refers to the
+                // original source without any further rebasing.
+                let base = inner_offset + expr_start_byte;
+                let mut sub_parser = Parser::new_with_offset(expr_text, base);
                 let parsed = sub_parser.parse_expr();
                 errors.extend(sub_parser.errors);
-                if let Some((expr, sub_span)) = parsed {
-                    let adjusted_start = inner_offset + expr_start_byte + sub_span.start;
-                    let adjusted_end = inner_offset + expr_start_byte + sub_span.end;
-                    parts.push(StringPart::Expr((expr, adjusted_start..adjusted_end)));
+                if let Some(spanned_expr) = parsed {
+                    parts.push(StringPart::Expr(spanned_expr));
                 } else {
                     errors.push(ParseError {
                         message: "failed to parse interpolation expression".to_string(),
@@ -503,6 +550,9 @@ struct SavedPos {
     pos: usize,
     error_count: usize,
     angle_mutation_count: usize,
+    /// Preserves `last_token_end` so a backtracking restore does not leave a
+    /// stale end position that would corrupt EOF-based span calculations.
+    last_token_end: usize,
 }
 
 #[derive(Debug, Default)]
@@ -565,6 +615,19 @@ pub struct Parser<'src> {
     /// can restore the previous value on drop without borrowing the parser for
     /// its whole lifetime.
     no_struct_literal: Rc<Cell<bool>>,
+    /// End byte of the most recently consumed token (absolute).
+    ///
+    /// For a full-program parse this starts at 0.  For an f-string sub-parser
+    /// it is initialised to the byte offset of the extracted expression in the
+    /// original source — so token spans are already absolute at construction —
+    /// and then updated on every `advance()`.
+    ///
+    /// `peek_span()` falls back to `last_token_end..last_token_end` at EOF so
+    /// that span-end calculations like `let end = self.peek_span().start` in
+    /// `parse_primary` return the correct position even when no token follows —
+    /// in particular in f-string sub-parsers that parse a short expression with
+    /// no trailing delimiter.
+    last_token_end: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -645,11 +708,22 @@ pub struct ParseResult {
 impl<'src> Parser<'src> {
     #[must_use]
     pub fn new(source: &'src str) -> Self {
+        Self::new_with_offset(source, 0)
+    }
+
+    /// Build a parser whose every token span is shifted by `offset` bytes.
+    ///
+    /// Used when parsing a sub-expression extracted from an interpolated string:
+    /// the lexer produces 0-based spans over the extracted text, but all spans
+    /// must refer to the original source.  Shifting at construction time means
+    /// that every AST node span — including deeply nested sub-nodes — and every
+    /// parse error emitted by this parser is already absolute on return.
+    fn new_with_offset(source: &'src str, offset: usize) -> Self {
         let raw_tokens = hew_lexer::lex(source);
         let mut errors = Vec::new();
         let mut tokens = Vec::new();
         for (t, s) in raw_tokens {
-            let span = s.start..s.end;
+            let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
                 errors.push(ParseError {
                     message: "unexpected character".to_string(),
@@ -672,6 +746,7 @@ impl<'src> Parser<'src> {
             scope_expr_depth: 0,
             fork_block_depth: 0,
             no_struct_literal: Rc::new(Cell::new(false)),
+            last_token_end: offset,
         }
     }
 
@@ -681,12 +756,15 @@ impl<'src> Parser<'src> {
     }
 
     fn peek_span(&self) -> Span {
-        self.tokens.get(self.pos).map_or(0..0, |(_, s)| s.clone())
+        self.tokens
+            .get(self.pos)
+            .map_or(self.last_token_end..self.last_token_end, |(_, s)| s.clone())
     }
 
     fn advance(&mut self) -> Option<(Token<'src>, Span)> {
         if self.pos < self.tokens.len() {
             let tok = self.tokens[self.pos].clone();
+            self.last_token_end = tok.1.end;
             self.pos += 1;
             Some(tok)
         } else {
@@ -1338,6 +1416,7 @@ impl<'src> Parser<'src> {
             pos: self.pos,
             error_count: self.errors.len(),
             angle_mutation_count: self.angle_mutations.len(),
+            last_token_end: self.last_token_end,
         }
     }
 
@@ -1348,6 +1427,7 @@ impl<'src> Parser<'src> {
     fn restore_pos(&mut self, saved: SavedPos) {
         self.pos = saved.pos;
         self.errors.truncate(saved.error_count);
+        self.last_token_end = saved.last_token_end;
         // Undo any token mutations made by eat_closing_angle since this save point
         while self.angle_mutations.len() > saved.angle_mutation_count {
             let (idx, tok) = self.angle_mutations.pop().unwrap();

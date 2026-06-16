@@ -204,7 +204,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
                                hew links object + libhew.a → executable
 ```
 
-> **Detailed diagrams:** See [`docs/diagrams.md`](docs/diagrams.md) for Mermaid sequence diagrams, state machines, and architecture visuals. Compilation-pipeline diagrams in that file are marked historical where they describe the retired v0.4 C++ backend.
+> **Detailed diagrams:** See [`docs/diagrams.md`](docs/diagrams.md) for Mermaid diagrams of the compilation pipeline, actor/supervisor state machines, runtime architecture, and wire format.
 
 ## Repository Structure
 

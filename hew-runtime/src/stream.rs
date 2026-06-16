@@ -4403,12 +4403,28 @@ mod tests {
         // SAFETY: standard test ownership. The second poll must abort.
         unsafe {
             let pair = hew_stream_channel(4);
+            // Hold the sink so the channel stays open. With the sink extracted,
+            // `hew_stream_pair_free` no longer drops it, so `close_sink` never
+            // runs and the channel never reports EOF. The first poll's park
+            // thread then blocks in `blocking_recv` instead of seeing a closed
+            // channel and clearing `pending_read`; the live registration
+            // persists, so the second poll's CAS deterministically fails and the
+            // abort fires regardless of scheduling pressure or instrumentation.
+            let _sink_ptr = hew_stream_pair_sink(pair);
             let stream_ptr = hew_stream_pair_stream(pair);
             hew_stream_pair_free(pair);
 
             let sink = CallbackSink::default();
             let userdata = std::ptr::addr_of!(sink).cast::<c_void>().cast_mut();
             let _id = hew_stream_poll(stream_ptr, record_callback, userdata);
+            // The registration the abort depends on must still be live: the
+            // held-open sink keeps the park thread blocked, so `pending_read`
+            // stays set between the two polls.
+            assert_ne!(
+                (*stream_ptr).pending_read.load(Ordering::Acquire),
+                0,
+                "held-open sink must keep the pending read registered"
+            );
             // This second call must abort the process.
             hew_stream_poll(stream_ptr, record_callback, userdata);
         }

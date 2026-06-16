@@ -52,6 +52,7 @@
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
+#   make miri         — run the curated rust-runtime Miri allowlist locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
@@ -60,7 +61,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -102,6 +103,7 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(DARWIN_NATIVE_LIB_TRIPLES)
 SANITIZER_RUST_TARGET ?= $(HOST_TRIPLE)
 RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
 RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
+RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
 FUZZ_TARGETS := fuzz_parse fuzz_lex fuzz_structured fuzz_machine fuzz_check fuzz_mir
 FUZZ_SMOKE_SECONDS ?= 45
 
@@ -787,6 +789,40 @@ else
 		--lib \
 		-- --test-threads=1
 endif
+
+# Curated rust-runtime Miri command (aliasing / uninit-read / provenance axis).
+#
+# Miri interprets MIR, so it catches the Stacked/Tree-Borrows aliasing,
+# uninitialised-read, and pointer-provenance bugs that ASan/TSan cannot — and it
+# runs on any host (no sanitizer-capable target required).  The lane is scoped to
+# hew-runtime's pure-Rust unsafe data structures; the FFI / syscall / socket
+# surface stays on ASan because Miri cannot execute foreign code.  Optional
+# features (tokio/quinn/profiler) are excluded for the same reason TSan excludes
+# them — they pull in async + network FFI that Miri cannot interpret.
+#
+# One-time setup:  rustup component add --toolchain $(MIRI_TOOLCHAIN) miri rust-src
+# CI pins nightly-2026-06-14 (see .github/workflows/nightly-sanitizers.yml); the
+# default floats to the host `nightly` so a dev box with Miri installed just works.
+#
+# MIRIFLAGS:
+#   -Zmiri-disable-isolation       — timer/clock/random reads need host time/entropy.
+#   -Zmiri-permissive-provenance   — silences the benign int->ptr cast warning from
+#     cross-thread pointer hand-off in tests; does not weaken UB detection.
+#
+# The trailing filters are the GREEN allowlist (substring-matched, `::`-anchored
+# to module boundaries).  arena runs against the `cfg(miri)` std::alloc shim that
+# replaces mmap/VirtualAlloc.  send_ptr/tagged_union carry no dedicated unit tests
+# yet (exercised transitively) but stay listed as curated-surface members.
+MIRI_TOOLCHAIN ?= nightly
+MIRI_ALLOWLIST := send_ptr:: rc:: arc:: tagged_union:: arena:: bytes:: vecdeque:: vec::
+miri:
+	CARGO_TARGET_DIR=$(RUNTIME_MIRI_TARGET_DIR) \
+	MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \
+	cargo +$(MIRI_TOOLCHAIN) miri test \
+		-p hew-runtime \
+		--no-default-features \
+		--lib \
+		-- $(MIRI_ALLOWLIST)
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 

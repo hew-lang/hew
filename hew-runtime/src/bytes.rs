@@ -1410,24 +1410,40 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_index_oob_aborts() {
         run_aborting_subprocess("bytes_index_oob_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_index_negative_aborts() {
         run_aborting_subprocess("bytes_index_negative_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_slice_oob_aborts() {
         run_aborting_subprocess("bytes_slice_oob_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_slice_inverted_aborts() {
         run_aborting_subprocess("bytes_slice_inverted_aborts");
     }
@@ -1441,12 +1457,20 @@ mod tests {
     // catches it; these tests exercise the abort.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_index_offset_overflow_aborts() {
         run_aborting_subprocess("bytes_index_offset_overflow_aborts");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_slice_offset_overflow_aborts() {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
     }
@@ -1457,6 +1481,10 @@ mod tests {
     /// `hew-cabi`'s `cstring_retain_aborts_on_refcount_overflow`).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    )]
     fn bytes_clone_ref_overflow_aborts() {
         run_aborting_subprocess("bytes_clone_ref_overflow_aborts");
     }

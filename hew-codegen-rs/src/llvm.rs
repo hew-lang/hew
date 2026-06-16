@@ -22524,6 +22524,51 @@ fn lower_call_runtime_abi(
             }
             let _ = (i8_ty, ptr_ty);
         }
+        // `impl Instant` methods (`hew-runtime/src/io_time.rs`). `Instant` is
+        // i64-backed (a monotonic nanosecond timestamp), so every argument and
+        // result is a bare `i64`: `now()` takes no args and returns the clock;
+        // `elapsed(now)` and `duration_since(now, earlier)` take 1 / 2 i64
+        // timestamps and return an i64-backed `duration`. Load each i64 arg,
+        // call the extern, store the i64 result straight into the dest.
+        F::InstantNow | F::InstantElapsed | F::InstantDurationSince => {
+            let expected = match symbol {
+                "hew_instant_now" => 0,
+                "hew_instant_elapsed" => 1,
+                "hew_instant_duration_since" => 2,
+                _ => unreachable!("instant codegen reached for non-instant symbol `{symbol}`"),
+            };
+            if args.len() != expected {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi({symbol}): expected {expected} i64 arg(s), got {}",
+                    args.len()
+                )));
+            }
+            let mut call_args = Vec::with_capacity(args.len());
+            for &arg in args {
+                call_args.push(load_int_arg(fn_ctx, arg, i64_ty, symbol)?.into());
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &call_args, &format!("{symbol}_call"))
+                .llvm_ctx_with(|| format!("{symbol} call"))?;
+            if let Some(dest_place) = dest {
+                let result = call.try_as_basic_value().basic().ok_or_else(|| {
+                    CodegenError::FailClosed(format!("{symbol} returned void"))
+                })?;
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, result)
+                    .llvm_ctx_with(|| format!("{symbol} store"))?;
+            }
+            let _ = (i8_ty, ptr_ty);
+        }
         F::StringIndex => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -23320,9 +23365,6 @@ fn lower_call_runtime_abi(
         | F::HashSetNew
         | F::HashSetNewWithLayout
         | F::HashSetRemoveLayout
-        | F::InstantDurationSince
-        | F::InstantElapsed
-        | F::InstantNow
         | F::LambdaBodyAllocReplyBuf
         | F::LambdaActorClone
         | F::LambdaActorDowngrade

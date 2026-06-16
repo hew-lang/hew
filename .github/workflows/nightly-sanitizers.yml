@@ -135,3 +135,65 @@ jobs:
             --no-default-features \
             --lib \
             -- --test-threads=1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rust runtime Miri — aliasing / uninit-read / provenance for the runtime
+  #
+  # Scope: hew-runtime's pure-Rust unsafe data structures (send_ptr, rc, arc,
+  # tagged_union, arena, bytes, vecdeque, vec).  Miri interprets MIR, so it is
+  # the only tool in this file that covers Stacked/Tree-Borrows aliasing,
+  # uninitialised reads, and pointer provenance — none of which ASan or TSan
+  # catch.  It is also the only lane that needs no sanitizer-capable target,
+  # because it executes no native code.
+  #
+  # continue-on-error / advisory only — this lane is being grown incrementally
+  # toward a curated green surface (issue #1826).  The FFI / syscall / socket
+  # boundary deliberately stays on ASan: Miri cannot execute foreign functions,
+  # so subprocess death-tests and libc-backed paths are `#[cfg_attr(miri, ignore)]`
+  # and the arena chunk allocator swaps mmap/VirtualAlloc for a `cfg(miri)`
+  # std::alloc shim.  --no-default-features excludes the tokio/quinn/profiler
+  # optional features for the same reason TSan excludes them (async + network FFI
+  # Miri cannot interpret).  Green here means "the curated non-FFI surface is
+  # clean", NOT whole-crate coverage.
+  #
+  # MIRIFLAGS: -Zmiri-disable-isolation lets timer/clock/random read host
+  # time/entropy; -Zmiri-permissive-provenance silences the benign int->ptr cast
+  # warning from cross-thread pointer hand-off in tests without weakening UB
+  # detection.  The toolchain is pinned (nightly + rust-src + miri) so the lane is
+  # reproducible — mirrors the determinism the TSan lane is moving toward.
+  # ─────────────────────────────────────────────────────────────────────────
+  rust-runtime-miri:
+    name: Rust runtime Miri (advisory)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: nightly-2026-06-14
+          components: miri, rust-src
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/miri-runtime/
+          key: runtime-miri-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: runtime-miri-${{ runner.os }}-
+
+      - name: Run hew-runtime Miri allowlist
+        env:
+          CARGO_TARGET_DIR: target/miri-runtime
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-permissive-provenance
+        run: |
+          # The trailing filters are the curated GREEN allowlist (substring match,
+          # `::`-anchored to module boundaries).  Keep this in sync with the
+          # `make miri` MIRI_ALLOWLIST.
+          cargo +nightly-2026-06-14 miri test \
+            -p hew-runtime \
+            --no-default-features \
+            --lib \
+            -- send_ptr:: rc:: arc:: tagged_union:: arena:: bytes:: vecdeque:: vec::

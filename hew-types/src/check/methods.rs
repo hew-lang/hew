@@ -4958,6 +4958,38 @@ impl Checker {
                 },
                 _,
             ) => self.check_rc_method(type_args, method, args, span),
+            // Instant receiver methods (`.elapsed()`, `.duration_since()`) are
+            // declared in the `impl Instant` block in `std/builtins.hew` with
+            // monomorphic `#[extern_symbol(hew_instant_*)]` annotations, mirroring
+            // the `Ty::Duration` arm below. `Instant` is i64-backed at the MIR
+            // boundary, so the receiver lowers as a bare `i64` nanos timestamp.
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::Instant),
+                    ..
+                },
+                _,
+            ) => {
+                if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+                    "Instant",
+                    &[],
+                    method,
+                    args,
+                    span,
+                ) {
+                    return ret_ty;
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `Instant`"),
+                );
+                Ty::Error
+            }
             // bytes methods are declared in `std/io.hew` with monomorphic
             // `#[extern_symbol]` annotations over the current Vec<i32>-backed
             // bytes ABI.

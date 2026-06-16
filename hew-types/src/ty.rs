@@ -64,6 +64,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
+            | BuiltinType::Instant
             | BuiltinType::Trap
             | BuiltinType::TimeoutError,
         )

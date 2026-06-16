@@ -386,6 +386,12 @@ impl ResolvedTy {
         Self::from_ty_scoped(ty, type_params)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single exhaustive `Ty` -> `ResolvedTy` boundary conversion; \
+                  every arm is a fail-closed mapping and splitting would scatter \
+                  the total match across helpers"
+    )]
     fn from_ty_scoped(
         ty: &Ty,
         type_params: &std::collections::HashSet<String>,
@@ -431,6 +437,17 @@ impl ResolvedTy {
             } if args.is_empty() && name == "CancellationToken" => {
                 Ok(ResolvedTy::CancellationToken)
             }
+            // `Instant` is a monotonic timestamp in nanoseconds; its runtime
+            // ABI (`hew_instant_now`/`_elapsed`/`_duration_since`) is a bare
+            // `i64`, so it lowers to `ResolvedTy::I64` at the MIR boundary. The
+            // checker keeps `Instant` distinct (`Ty::Named { Instant }`) only to
+            // route method dispatch to the `impl Instant` block; MIR and codegen
+            // see an ordinary `i64` and need no `Instant`-specific arm.
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::Instant),
+            } if args.is_empty() && name == "Instant" => Ok(ResolvedTy::I64),
             // A bare, non-builtin `Named` whose name is a declared generic
             // parameter of the enclosing item is the abstract-parameter form
             // (A622). The unscoped `from_ty` passes an empty scope, so it

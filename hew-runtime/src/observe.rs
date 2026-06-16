@@ -1153,6 +1153,31 @@ mod tests {
     }
 
     #[test]
+    fn observe_read_u64_returns_exact_value_for_user_counter() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+
+        // A user-registered counter is unknown to observe's built-in match arms,
+        // so `observe::read_u64` must fall through to `crate::metrics::read_u64`
+        // and return the exact counter value directly — not via `scrape_text`,
+        // not a sentinel, not None.
+        let handle = crate::metrics::register_counter("app.observe_reads");
+        assert!(handle >= 0);
+        for _ in 0..7 {
+            crate::metrics::inc(handle);
+        }
+
+        assert_eq!(
+            read_u64("app.observe_reads"),
+            Some(7),
+            "observe::read_u64 must report the exact user-counter value via the fallthrough",
+        );
+
+        // An absent user name still propagates None through the same fallthrough.
+        assert_eq!(read_u64("app.never.registered"), None);
+    }
+
+    #[test]
     fn scrape_escapes_user_label_values() {
         let _guard = crate::runtime_test_guard();
         reset_all();

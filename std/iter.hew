@@ -13,7 +13,7 @@
 //! `Iterator::next` takes a mutable receiver (`fn next(var self) -> Option<Self::Item>`).
 //! Call sites write the returned `Self` state back into the caller binding; the
 //! for-loop desugar that will introduce and drive that binding lands in a later
-//! stage of the iteration-foundation lane.
+//! iteration-foundation stage.
 //!
 //! ## Lazy combinator surface
 //!
@@ -52,7 +52,7 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
         // DEFERRED — fail loud, not silent: returning `None` here would
         // make Map look like an empty iterator to every caller.
         //
-        // Q004 (separate lane, branch `feat/q004-checker-authority`
+        // Q004 (separate branch `feat/q004-checker-authority`
         // commit 4c9667a8): the checker substitutes `Self::Item` from
         // the where-clause `I: Iterator<Item = A>` projection in place
         // of the impl's declared `type Item = B`, so the literal
@@ -186,7 +186,7 @@ pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
 // every consumer's reduction look correct while never advancing the
 // iterator.
 //
-// Q004 (separate lane, branch `feat/q004-checker-authority` commit
+// Q004 (separate branch `feat/q004-checker-authority` commit
 // 4c9667a8): the checker rejects an explicit pump-through body
 // (`match it.next() { Some(x) => f(acc, x), None => break }`) because
 // `<I as Iterator>::Item` is not unified with the bound projection
@@ -219,7 +219,7 @@ pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
 // `Vec<T>` directly. They are retained for callers in `tests/hew/` and
 // downstream while `Vec<T>: IntoIterator` is being wired; once the lazy
 // API can drive a `Vec` end-to-end, this section is retired in a single
-// subtractive commit (Stage 3+ of the iteration-foundation lane).
+// subtractive commit (Stage 3+ of iteration-foundation).
 /// Apply `f` to every element and return a new vector of results.
 ///
 /// # Examples

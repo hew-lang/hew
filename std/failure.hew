@@ -15,8 +15,8 @@
 //!
 //! WHY: the codegen-rs spine does not yet accept `string` / `Function` /
 //! `Closure` types as struct fields (S9 in the spine-widening registry).
-//! WHEN: replace `code` with a richer payload after the spine-widening
-//! lane (Q20 (c) of the failure-philosophy plan) lands.
+//! WHEN: replace `code` with a richer payload after spine-widening
+//! (Q20 (c) of the failure-philosophy plan) lands.
 //! WHAT: the real shape grows a string field carrying the panic message
 //! and a stack-pointer-style cursor for trampoline diagnostics.  Until
 //! then, `code` is an opaque integer discriminator the runtime sets per
@@ -55,7 +55,7 @@ pub enum CrashAction {
 
 /// Identity + class of a crash that propagated to a linked actor.
 ///
-/// Delivered (in a future v0.5.x / v0.6 lane) to a linked-actor exit
+/// Delivered (in a future v0.5.x / v0.6 edition) to a linked-actor exit
 /// hook when an actor this one is linked to crashes.  Carries the
 /// crashed actor's identity and the class of crash — nothing else.
 ///
@@ -71,7 +71,7 @@ pub enum CrashAction {
 /// `SYS_MSG_EXIT` in the linked actor's mailbox at the crashed actor's
 /// teardown phase, before any supervisor restart decision).  The user-
 /// facing hook attribute that surfaces this delivery is reserved for a
-/// future lane; this type is the stable name that lane will use.
+/// future edition; this type is the stable name it will use.
 ///
 /// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
 /// crashed actor's id as a raw `u64`.  Future widening to a typed

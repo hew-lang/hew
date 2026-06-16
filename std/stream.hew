@@ -64,7 +64,7 @@ type Sink<T> {
 // ── Constructors ──────────────────────────────────────────────────────
 /// Create a bounded in-memory string pipe with the given capacity.
 ///
-/// This is the convenience text ABI lane over the same bounded, blocking,
+/// This is the convenience text ABI over the same bounded, blocking,
 /// backpressured contract as `bytes_pipe()`.
 /// Returns a `(Sink<string>, Stream<string>)` pair for writing and reading.
 pub fn pipe(capacity: i64) -> (Sink<string>, Stream<string>) {

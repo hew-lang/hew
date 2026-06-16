@@ -64,6 +64,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
                 hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
             )),
             kind: DropKind::DuplexClose,
+            guard: None,
         }],
     };
     IrPipeline {
@@ -231,6 +232,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
             ty: ResolvedTy::I64,
             drop_fn: Some(hew_mir::DropFnSpec::UserClose(unknown_drop_fn.to_string())),
             kind: DropKind::Resource,
+            guard: None,
         }],
     };
     let pipeline = IrPipeline {

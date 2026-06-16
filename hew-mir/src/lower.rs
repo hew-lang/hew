@@ -5738,6 +5738,24 @@ struct Builder {
     /// then skips the binding, and the pipeline aborts at the MIR
     /// boundary instead of fabricating a default storage.
     dyn_trait_storage: HashMap<BindingId, TraitObjectStorage>,
+    /// Path-sensitive drop-flag for each non-idempotent user `#[resource]`
+    /// binding (#1933 / #1941). Keyed by the resource's `BindingId` (same
+    /// key as `binding_locals` / `owned_locals`); the value is a fresh
+    /// `i64` `Place::Local` initialised to 0 at the binding's introduction
+    /// and set to 1 at each `IntentKind::Consume` use site.
+    ///
+    /// Populated ONLY for bindings that satisfy `resource_needs_drop_flag`
+    /// (a `DropKind::Resource` whose ritual is a `DropFnSpec::UserClose`).
+    /// A binding present here is KEPT in `owned_locals` across its consume
+    /// (we do NOT call `mark_binding_moved` for it), so the per-exit
+    /// `drops_for_exit` dataflow filter narrows the drop per control-flow
+    /// path and codegen gates the surviving close on `flag == 0` — exactly
+    /// once on a `MaybeConsumed` join. A user resource absent here (no flag
+    /// allocated) falls back to the legacy path-insensitive
+    /// `mark_binding_moved` removal: fail-closed to no-double-close (it may
+    /// leak on a not-consumed branch, the pre-#1933 posture, but never
+    /// double-frees the non-idempotent close).
+    resource_drop_flags: HashMap<BindingId, Place>,
     /// Stack of active scope IDs in nesting order (outermost at index 0,
     /// innermost at the end). Pushed when entering a `Block` expression or
     /// `function_body`; popped on exit. Read by `emit_defers_for_return` to
@@ -7297,6 +7315,13 @@ impl Builder {
                         }
                     }
                 }
+                // #1933 / #1941 — allocate the path-sensitive drop-flag for a
+                // non-idempotent user `#[resource]` binding now that its backend
+                // Place is wired into `binding_locals`. Zero-initialised here so
+                // the flag dominates every `Consume` use site and every
+                // scope-exit drop; set to 1 at each consume. A no-op for every
+                // other binding class (see `resource_needs_drop_flag`).
+                self.maybe_alloc_resource_drop_flag(binding.id, &binding_ty);
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
@@ -7622,7 +7647,25 @@ impl Builder {
                     if expr.intent == IntentKind::Consume
                         && ValueClass::of_ty(&use_ty, &self.type_classes) != ValueClass::BitCopy
                     {
-                        self.mark_binding_moved(*id);
+                        // #1933 / #1941 — a non-idempotent user `#[resource]`
+                        // with an allocated path-sensitive drop-flag is KEPT in
+                        // `owned_locals` so the per-exit `drops_for_exit`
+                        // dataflow filter narrows its close per control-flow
+                        // path. Mark the flag consumed (set 1) so codegen's
+                        // `flag == 0` gate skips the now-callee-owned close on
+                        // this path; the dataflow's own `Use{Consume}` transition
+                        // (independent of `owned_locals`) still drives the
+                        // move-checker and the per-exit `BindingState`. Every
+                        // other consumed owned class keeps the legacy
+                        // path-insensitive `owned_locals` removal.
+                        if let Some(flag) = self.resource_drop_flags.get(id).copied() {
+                            self.instructions.push(Instr::ConstI64 {
+                                dest: flag,
+                                value: 1,
+                            });
+                        } else {
+                            self.mark_binding_moved(*id);
+                        }
                     }
                 }
                 if let Some(source) = self.capture_env_sources.get(id).cloned() {
@@ -21095,6 +21138,36 @@ impl Builder {
     /// suppresses the aggregate's own in-place drop, while the value-flow pass
     /// independently suppresses the member handles' drops (they remain in
     /// `owned_locals`, which the pass reads from). LESSONS: raii-null-after-move.
+    /// Allocate (once) the path-sensitive drop-flag for a non-idempotent
+    /// user `#[resource]` binding (#1933 / #1941). Called at the binding's
+    /// introducing `let` after its backend `Place` is wired into
+    /// `binding_locals`. A no-op unless `resource_needs_drop_flag` holds, so
+    /// every non-resource binding and every idempotent / refcounted handle
+    /// (Duplex, lambda, half, `Runtime`-descriptor close) is untouched.
+    ///
+    /// The flag is a fresh `i64` local zero-initialised at this point so the
+    /// initialisation dominates every later `Consume` use site and every
+    /// scope-exit drop; codegen gates the close on `flag == 0`. Re-entrant:
+    /// a rebind of the same binding id keeps the existing flag (the
+    /// dominating zero-init already fired).
+    fn maybe_alloc_resource_drop_flag(&mut self, binding_id: BindingId, ty: &ResolvedTy) {
+        let Some(place) = self.binding_locals.get(&binding_id).copied() else {
+            return;
+        };
+        if !resource_needs_drop_flag(place, ty, &self.type_classes) {
+            return;
+        }
+        if self.resource_drop_flags.contains_key(&binding_id) {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.resource_drop_flags.insert(binding_id, flag);
+    }
+
     fn mark_returned_binding_moved(&mut self, expr: &HirExpr) {
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
@@ -21987,6 +22060,7 @@ fn elaborate(
         &closure_pair_drop_allowed,
         &closure_vec_drop_allowed,
         &plain_vec_drop_allowed,
+        &builder.resource_drop_flags,
     );
     let (elab_blocks, drop_plans) = enumerate_exits(
         &checked.blocks,
@@ -27755,7 +27829,47 @@ fn place_aware_drop_fn(
     }
 }
 
-/// LIFO drop sequence for an owned-locals ledger. Only `AffineResource`
+/// True when an owned `AffineResource` binding needs a path-sensitive
+/// runtime drop-flag (#1933 / #1941).
+///
+/// The flag is needed ONLY when the binding's scope-exit release is a
+/// non-idempotent user `#[resource]` close: a `DropKind::Resource` (the
+/// generic close path, selected for a `Place::Local` user-resource value)
+/// whose ritual resolves to a `DropFnSpec::UserClose` (an open-set
+/// generated symbol, NOT a closed-set runtime descriptor). The M2 handle
+/// classes — Duplex (`DropKind::DuplexClose`), half-handles
+/// (`DropKind::DuplexHalfClose`), lambda-actor (`DropKind::LambdaActorRelease`),
+/// and the `Runtime`-descriptor closes (`CancellationToken`, the builtin
+/// stream/sink handles) — are refcounted or null-after-free at runtime, so
+/// a double-close on a `MaybeConsumed` join is already a no-op for them and
+/// no flag is allocated.
+///
+/// This is the single predicate keyed by all three flag sites (allocation
+/// at the binding's introduction, the `Consume` set + `mark_binding_moved`
+/// skip, and the `build_lifo_drops` guard attachment), so they cannot
+/// drift on which bindings are flag-gated.
+fn resource_needs_drop_flag(
+    place: Place,
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> bool {
+    // Check the close-ritual classification FIRST: `resource_drop_fn` /
+    // `place_aware_drop_fn` never panic and return `UserClose` ONLY for a
+    // user `#[resource]` Named type (an open-set generated symbol). Gating
+    // on it here keeps `drop_kind_for` — which `expect`s a
+    // `TraitObjectStorage` hint for a `ResolvedTy::TraitObject` and would
+    // panic with the `None` we pass — off every dyn-trait / non-resource
+    // binding. A `UserClose` ritual implies a `Place::Local` non-dyn value,
+    // so the subsequent `drop_kind_for` call is panic-free and resolves to
+    // `DropKind::Resource`.
+    if !matches!(
+        place_aware_drop_fn(place, resource_drop_fn(ty, type_classes)),
+        Some(crate::model::DropFnSpec::UserClose(_))
+    ) {
+        return false;
+    }
+    matches!(drop_kind_for(place, ty, None), DropKind::Resource)
+}
 /// contributes; `Linear` is the move-checker's responsibility (`MustConsume`),
 /// and other classes have no implicit drop.
 ///
@@ -28166,6 +28280,7 @@ fn build_lifo_drops(
     closure_pair_drop_allowed: &HashSet<BindingId>,
     closure_vec_drop_allowed: &HashSet<BindingId>,
     plain_vec_drop_allowed: &HashSet<BindingId>,
+    resource_drop_flags: &HashMap<BindingId, Place>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -28222,6 +28337,7 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     drop_fn: "hew_vec_free_closure_pairs",
                 },
+                guard: None,
             });
             continue;
         }
@@ -28240,6 +28356,7 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     drop_fn: "hew_vec_free_owned",
                 },
+                guard: None,
             });
             continue;
         }
@@ -28276,6 +28393,7 @@ fn build_lifo_drops(
                 kind: DropKind::CowHeap {
                     drop_fn: "hew_vec_free",
                 },
+                guard: None,
             });
             continue;
         }
@@ -28313,6 +28431,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
+                guard: None,
             });
             continue;
         }
@@ -28351,6 +28470,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
+                guard: None,
             });
             continue;
         }
@@ -28378,6 +28498,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
+                guard: None,
             });
             continue;
         }
@@ -28405,6 +28526,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::RecordInPlace,
+                guard: None,
             });
             continue;
         }
@@ -28435,6 +28557,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::TupleInPlace,
+                guard: None,
             });
             continue;
         }
@@ -28465,6 +28588,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::ClosurePair,
+                guard: None,
             });
             continue;
         }
@@ -28505,6 +28629,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::TraitObject { storage },
+                guard: None,
             });
             continue;
         }
@@ -28555,11 +28680,27 @@ fn build_lifo_drops(
                 // for the storage hint.
                 // LESSONS: cleanup-all-exits, raii-null-after-move.
                 let kind = drop_kind_for(place, ty, None);
+                // #1933 / #1941 — gate a non-idempotent user `#[resource]`
+                // close on its path-sensitive runtime drop-flag so it fires
+                // exactly once on a `MaybeConsumed` control-flow join (Live on
+                // one predecessor, Consumed on another). The flag presence in
+                // `resource_drop_flags` is the authority: it is populated iff
+                // `resource_needs_drop_flag` held at the binding's `let`, the
+                // same predicate that decided to KEEP this binding in
+                // `owned_locals` across its consume (no `mark_binding_moved`).
+                // So a flagged binding is exactly one that survived to here and
+                // must be guarded; an unflagged AffineResource (Duplex / lambda
+                // / half / `Runtime`-descriptor close) is idempotent and drops
+                // unguarded as before. `drops_for_exit` independently excludes
+                // the drop entirely on an unconditionally-`Consumed` exit, so
+                // the guard only does runtime work at a genuine join.
+                let guard = resource_drop_flags.get(binding).copied();
                 drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
                     drop_fn,
                     kind,
+                    guard,
                 });
             }
             // Linear, BitCopy, PersistentShare, View, Unknown: no implicit
@@ -28601,6 +28742,7 @@ fn build_lifo_drops(
                             ty: ty.clone(),
                             drop_fn: None,
                             kind: drop_kind_for(*place, ty, None),
+                            guard: None,
                         });
                     }
                 }
@@ -29565,6 +29707,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose,
+            guard: None,
         }];
         let elab = make_elab_with_drops(drops);
         assert!(
@@ -29586,6 +29729,7 @@ mod slice3_invariants {
                 hew_types::runtime_call::RuntimeDropDescriptor::DuplexClose,
             )),
             kind: DropKind::Resource,
+            guard: None,
         }];
         let elab = make_elab_with_drops(drops);
         let findings = validate_drop_plan(&elab);
@@ -29610,6 +29754,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose,
+            guard: None,
         }];
         let elab = make_elab_with_drops(drops);
         let findings = validate_drop_plan(&elab);
@@ -29626,6 +29771,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose,
+            guard: None,
         }];
         let elab = make_elab_with_drops(drops);
         assert_eq!(validate_drop_plan(&elab).len(), 1);
@@ -29640,6 +29786,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexHalfClose(Direction::Send),
+            guard: None,
         }];
         let elab = make_elab_with_drops(drops);
         assert_eq!(validate_drop_plan(&elab).len(), 1);
@@ -29657,12 +29804,14 @@ mod slice3_invariants {
                 ty: duplex_int_int_ty(),
                 drop_fn: None,
                 kind: DropKind::DuplexHalfClose(Direction::Send),
+                guard: None,
             },
             ElabDrop {
                 place: Place::RecvHalf(0),
                 ty: duplex_int_int_ty(),
                 drop_fn: None,
                 kind: DropKind::DuplexHalfClose(Direction::Recv),
+                guard: None,
             },
         ];
         let elab = make_elab_with_drops(drops);
@@ -29681,6 +29830,7 @@ mod slice3_invariants {
             ty,
             drop_fn: None,
             kind,
+            guard: None,
         }
     }
 
@@ -29891,6 +30041,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::Resource, // wrong: DuplexHandle wants DuplexClose
+            guard: None,
         };
         let elab = make_elab_with_exit_and_drops(ExitPath::Panic { block: 5 }, vec![bad]);
         let findings = validate_drop_plan(&elab);
@@ -29914,6 +30065,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose, // wrong: SendHalf wants DuplexHalfClose(Send)
+            guard: None,
         };
         let elab = make_elab_with_exit_and_drops(ExitPath::Cancel { block: 9 }, vec![bad]);
         let findings = validate_drop_plan(&elab);
@@ -29936,6 +30088,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::Resource,
+            guard: None,
         };
         for exit in [
             ExitPath::Yield { block: 1, next: 99 },
@@ -29967,6 +30120,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose, // wrong
+            guard: None,
         };
         for exit in [
             ExitPath::Goto {
@@ -30017,6 +30171,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexHalfClose(Direction::Send), // wrong queue
+            guard: None,
         };
         let elab = ElaboratedMirFunction {
             name: "synthetic".to_string(),
@@ -30087,6 +30242,7 @@ mod slice3_invariants {
             ty: duplex_int_int_ty(),
             drop_fn: None,
             kind: DropKind::DuplexClose,
+            guard: None,
         };
         let elab = make_elab_with_drops(vec![kept.clone()]);
         let return_plan = elab
@@ -30121,6 +30277,7 @@ mod slice3_invariants {
                 ty: duplex_int_int_ty(),
                 drop_fn: None,
                 kind: DropKind::DuplexClose,
+                guard: None,
             })
             .collect();
         let elab = make_elab_with_drops(drops.clone());
@@ -30450,6 +30607,7 @@ mod slice3_narrowing_proptests {
                 ty: duplex_ty(),
                 drop_fn: None,
                 kind: DropKind::DuplexClose,
+                guard: None,
             })
             .collect()
     }
@@ -30701,6 +30859,7 @@ mod slice35_cross_block_proptests {
                         ty: duplex_ty(),
                         drop_fn: None,
                         kind: DropKind::DuplexClose,
+                        guard: None,
                     }],
                 },
             )],
@@ -30786,6 +30945,7 @@ mod slice35_cross_block_proptests {
                         ty: duplex_ty(),
                         drop_fn: None,
                         kind: DropKind::DuplexClose,
+                        guard: None,
                     }],
                 },
             )];
@@ -30889,6 +31049,7 @@ mod slice35_cross_block_proptests {
                         ty: duplex_ty(),
                         drop_fn: None,
                         kind: DropKind::DuplexClose,
+                        guard: None,
                     }],
                 },
             )];
@@ -30986,6 +31147,7 @@ mod slice35_cross_block_proptests {
                             ty: duplex_ty(),
                             drop_fn: None,
                             kind: DropKind::DuplexClose,
+                            guard: None,
                         }],
                     },
                 ),
@@ -30997,6 +31159,7 @@ mod slice35_cross_block_proptests {
                             ty: duplex_ty(),
                             drop_fn: None,
                             kind: DropKind::DuplexClose,
+                            guard: None,
                         }],
                     },
                 ),

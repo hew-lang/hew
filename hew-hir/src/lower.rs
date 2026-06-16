@@ -4697,6 +4697,92 @@ impl LowerCtx {
         self.resolved_expr_types.get(&self.mk_key(span))
     }
 
+    /// True when the checker typed the expression at `span` as a move-only
+    /// USER-declared `#[resource]` VALUE — a `ResolvedTy::Named` carrying NO
+    /// builtin discriminant whose `ValueClass::of_ty` is `AffineResource`.
+    ///
+    /// ## Why user resources only — the FFI-borrow exclusion
+    ///
+    /// `ValueClass::AffineResource` also covers the builtin runtime handles
+    /// (`Duplex` / `Sender` / `Receiver` / `Sink` / `Stream` / `Generator` /
+    /// `CancellationToken`), which are seeded with `ResourceMarker::Resource`.
+    /// But those handles are routinely passed BY VALUE into borrowing FFI
+    /// intrinsics — `hew_sink_is_valid(s)`, `hew_stream_last_error()`, the
+    /// channel/stream witnesses — whose C ABI takes the handle pointer for the
+    /// duration of the call and never takes ownership (it neither frees nor
+    /// stores it). Lowering those arguments `Consume` would falsely transition
+    /// the caller's handle to `Consumed`, so a perfectly valid later use (e.g.
+    /// `Ok(s)` after a validity probe) would be rejected as use-after-move and
+    /// the std library would not compile.
+    ///
+    /// A user `#[resource]` type, by contrast, is never an FFI argument: it
+    /// only ever flows into user Hew functions, where a by-value parameter IS
+    /// an ownership move (Hew has no by-reference parameters). Restricting the
+    /// consume decision to `Named { builtin: None }` resources therefore fixes
+    /// the by-value double-close (#1941) without touching the borrowing
+    /// handle-into-intrinsic calls. The narrower builtin-handle-moved-into-a-
+    /// user-function case keeps the pre-existing borrowing `Read` lowering
+    /// (fail-closed: a potential leak, never a new double-free) and is out of
+    /// this lane's scope.
+    ///
+    /// ## Why this gates the call-argument intent
+    ///
+    /// Passing a user resource as an ordinary (non-receiver) call argument is
+    /// an ownership MOVE into the callee. Such an argument must lower with
+    /// `IntentKind::Consume` so the MIR dataflow checker sees a
+    /// `Use { intent: Consume }` and transitions the caller's binding to
+    /// `Consumed`. Without it the argument lowers as `Read` (a borrow in MIR),
+    /// the caller binding stays `Live`, and the resource is released twice —
+    /// once by the callee, once by the caller's implicit scope-exit drop —
+    /// while a later use of the moved binding is not refused. This mirrors the
+    /// consuming-receiver treatment a `close(self)` method already gets and the
+    /// channel-handle treatment an actor-send argument gets.
+    ///
+    /// Resolves through `ResolvedTy::from_ty` so the decision rides the typed
+    /// value-class, never a name string. Absent or unconvertible entries answer
+    /// `false` — the conservative no-ownership-transfer default.
+    fn checked_span_is_user_resource(&self, span: &Span) -> bool {
+        self.expr_types
+            .get(&self.mk_key(span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .is_some_and(|resolved| {
+                // Builtin runtime handles (`builtin: Some(_)`) and the
+                // non-`Named` affine variants (`CancellationToken`) are
+                // excluded: they reach borrowing FFI intrinsics by value.
+                matches!(resolved, ResolvedTy::Named { builtin: None, .. })
+                    && crate::value_class::ValueClass::of_ty(&resolved, &self.type_classes)
+                        == ValueClass::AffineResource
+            })
+    }
+
+    /// Intent for an ordinary (non-receiver) call argument at `span`: `Consume`
+    /// when the argument is a by-value user-`#[resource]` move (see
+    /// `checked_span_is_user_resource`), otherwise the borrowing `Read`
+    /// default that every non-owning argument keeps.
+    fn arg_move_intent(&self, span: &Span) -> IntentKind {
+        if self.checked_span_is_user_resource(span) {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
+        }
+    }
+
+    /// Lower a call's ordinary (non-receiver) arguments, choosing each
+    /// argument's move-vs-borrow intent through `arg_move_intent`. A by-value
+    /// user-`#[resource]` argument is lowered `Consume` (an ownership move into
+    /// the callee); every other argument — builtin handles passed to borrowing
+    /// intrinsics included — keeps the borrowing `Read` default. This is the
+    /// single funnel every free-call and method-call argument list flows
+    /// through so the value-move consume decision lives in exactly one place.
+    fn lower_call_args(&mut self, args: &[CallArg]) -> Vec<HirExpr> {
+        args.iter()
+            .map(|arg| {
+                let intent = self.arg_move_intent(&arg.expr().1);
+                self.lower_expr(arg.expr(), intent)
+            })
+            .collect()
+    }
+
     /// True when the checker typed the expression at `span` as a channel
     /// handle (`Sender<T>` / `Receiver<T>`). Resolves through
     /// `ResolvedTy::from_ty` so the decision rides the typed builtin
@@ -10656,10 +10742,7 @@ impl LowerCtx {
             }
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
-                let mut args = args
-                    .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect::<Vec<_>>();
+                let mut args = self.lower_call_args(args);
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
@@ -14236,10 +14319,7 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let lowered_args: Vec<HirExpr> = args
-            .iter()
-            .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-            .collect();
+        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
         let call = self.make_expr(
             HirExprKind::Call {
                 callee: Box::new(fn_ref),
@@ -16257,10 +16337,7 @@ impl LowerCtx {
         // `MethodCallNoRewrite`. MIR/codegen consumers wire this in slice 6.
         if let Some(dispatch) = self.machine_method_dispatch.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let lowered_args: Vec<HirExpr> = args
-                .iter()
-                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                .collect();
+            let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             return match dispatch {
                 hew_types::MachineMethodKind::Step { machine_name } => {
                     let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
@@ -16299,10 +16376,7 @@ impl LowerCtx {
         // collapse the dispatch indirection that the vtable provides).
         if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let lowered_args: Vec<HirExpr> = args
-                .iter()
-                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                .collect();
+            let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             // Result type comes from the checker's expr_types side-table
             // (the call's full span). Fail-closed if absent or poisoned.
             let ret_ty = self
@@ -16432,10 +16506,7 @@ impl LowerCtx {
                     // the same boundary obligation.
                     self.try_register_enum_instantiation(&span);
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                    let lowered_args: Vec<HirExpr> = args
-                        .iter()
-                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                        .collect();
+                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::ResolvedImplCall {
                             receiver: Box::new(lowered_receiver),
@@ -16583,10 +16654,7 @@ impl LowerCtx {
                         &span,
                         site,
                     );
-                    let lowered_args: Vec<HirExpr> = args
-                        .iter()
-                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                        .collect();
+                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
                             receiver: Box::new(lowered_receiver),
@@ -16639,7 +16707,8 @@ impl LowerCtx {
                 );
                 let mut lowered_args = vec![lowered_receiver];
                 for arg in args {
-                    lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
+                    let intent = self.arg_move_intent(&arg.expr().1);
+                    lowered_args.push(self.lower_expr(arg.expr(), intent));
                 }
                 let callee_ty = ResolvedTy::Function {
                     params: Vec::new(),
@@ -16685,10 +16754,7 @@ impl LowerCtx {
                 )
             }
             Some(MethodCallRewrite::GenericMathIntrinsic { op }) => {
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect();
+                let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 let checked_ret_ty = self
                     .expr_types
                     .get(&key)
@@ -16779,10 +16845,7 @@ impl LowerCtx {
                 // codegen `add_function`) see the same mangled key.  Stdlib
                 // `hew_*` symbols contain no dots, so mangling is identity.
                 let symbol = crate::mangle_dotted_name(&c_symbol);
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect();
+                let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 let ret_ty = self
                     .expr_types
                     .get(&key)
@@ -16924,7 +16987,8 @@ impl LowerCtx {
                             let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                             let mut lowered_args = vec![lowered_receiver];
                             for arg in args {
-                                lowered_args.push(self.lower_expr(arg.expr(), IntentKind::Read));
+                                let intent = self.arg_move_intent(&arg.expr().1);
+                                lowered_args.push(self.lower_expr(arg.expr(), intent));
                             }
                             let callee_ty = ResolvedTy::Function {
                                 params: Vec::new(),
@@ -16962,10 +17026,7 @@ impl LowerCtx {
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
-                    let lowered_args: Vec<HirExpr> = args
-                        .iter()
-                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                        .collect();
+                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
                             receiver: Box::new(lowered_receiver),
@@ -16986,10 +17047,7 @@ impl LowerCtx {
                 // the structured metadata. MIR resolves the concrete callee from
                 // the monomorphization substitution map.
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                    .collect();
+                let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 (
                     HirExprKind::CallTraitMethodStatic {
                         receiver: Box::new(lowered_receiver),
@@ -17006,10 +17064,7 @@ impl LowerCtx {
             None => {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
-                        let lowered_args: Vec<HirExpr> = args
-                            .iter()
-                            .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
-                            .collect();
+                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                         let name = format!("{module_name}.{method}");
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ImportMissing {

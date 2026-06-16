@@ -1091,6 +1091,9 @@ impl Checker {
             .filter(|(ty, _)| ty == type_name)
             .any(|(_, trait_name)| {
                 self.is_consume_receiver_method(&format!("{trait_name}::{method}"))
+                    || trait_name.rsplit_once('.').is_some_and(|(_, bare)| {
+                        self.is_consume_receiver_method(&format!("{bare}::{method}"))
+                    })
             })
     }
 

@@ -57,6 +57,54 @@ pub(super) fn cast_is_valid(actual: &Ty, target: &Ty) -> bool {
 }
 
 impl Checker {
+    fn report_dyn_trait_wrong_owner_impl(
+        &mut self,
+        concrete_type_name: &str,
+        requested_trait: &str,
+        span: &Span,
+    ) {
+        let requested_bare = requested_trait
+            .rsplit_once('.')
+            .map_or(requested_trait, |(_, bare)| bare);
+        let suffix = format!(".{requested_bare}");
+        let concrete_unqualified = concrete_type_name
+            .rsplit_once('.')
+            .map_or(concrete_type_name, |(_, bare)| bare);
+        let mut implemented_owners: Vec<String> = self
+            .trait_impls_set
+            .iter()
+            .filter(|(type_name, trait_name)| {
+                (type_name == concrete_type_name || type_name == concrete_unqualified)
+                    && trait_name != requested_trait
+                    && (trait_name == requested_bare || trait_name.ends_with(&suffix))
+            })
+            .map(|(_, trait_name)| trait_name.clone())
+            .collect();
+        implemented_owners.extend(
+            self.primitive_trait_impls
+                .keys()
+                .filter(|(type_name, trait_name)| {
+                    type_name == concrete_type_name
+                        && trait_name != requested_trait
+                        && (trait_name == requested_bare || trait_name.ends_with(&suffix))
+                })
+                .map(|(_, trait_name)| trait_name.clone()),
+        );
+        implemented_owners.sort();
+        implemented_owners.dedup();
+        if implemented_owners.is_empty() {
+            return;
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "cannot coerce `{concrete_type_name}` to `dyn {requested_trait}`: `{concrete_type_name}` implements same-name trait owner(s) {}, not requested owner `{requested_trait}`",
+                implemented_owners.join(", ")
+            ),
+        );
+    }
+
     fn dyn_assoc_bindings_complete(
         trait_info: &TraitInfo,
         bound: &crate::ty::TraitObjectBound,
@@ -506,9 +554,17 @@ impl Checker {
         // Build the method-table. Prefer the nominal impl registries; fall
         // back to the structural match path so bare `impl T { fn ... }` that
         // structurally satisfies a trait also gets a populated table.
+        let concrete_impl_key = concrete_type_name
+            .rsplit_once('.')
+            .map(|(_, bare)| bare)
+            .filter(|unqualified| {
+                self.trait_impls_set
+                    .contains(&(unqualified.to_string(), trait_name.to_string()))
+            })
+            .unwrap_or(concrete_type_name);
         let nominal_impl = self
             .trait_impls_set
-            .contains(&(concrete_type_name.to_string(), trait_name.to_string()));
+            .contains(&(concrete_impl_key.to_string(), trait_name.to_string()));
 
         let primitive_impl_methods = self
             .primitive_trait_impls
@@ -520,6 +576,7 @@ impl Checker {
             && self.type_structurally_satisfies(concrete_type_name, trait_name);
 
         if !nominal_impl && primitive_impl_methods.is_none() && !structural_ok {
+            self.report_dyn_trait_wrong_owner_impl(concrete_type_name, trait_name, span);
             return None;
         }
         if !self.validate_dyn_assoc_binding_projections(trait_name, bound, concrete_type, span) {
@@ -528,7 +585,7 @@ impl Checker {
 
         let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
         for method in &trait_info.methods {
-            let impl_fn_key = format!("{concrete_type_name}::{}", method.name);
+            let impl_fn_key = format!("{concrete_impl_key}::{}", method.name);
             let Some(mut signature) = self.lookup_trait_method(trait_name, &method.name) else {
                 // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,
                 // and this loop iterates its own `methods`. If lookup fails,

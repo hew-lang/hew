@@ -4113,9 +4113,10 @@ impl Checker {
                         if let (Some(canonical), Some(tb)) =
                             (primitive_key.clone(), id.trait_bound.as_ref())
                         {
+                            let trait_key = self.trait_defs_key_for_bound(&tb.name);
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                tb.name.clone(),
+                                trait_key,
                                 method.name.clone(),
                                 sig,
                             );
@@ -4124,7 +4125,8 @@ impl Checker {
 
                     // Register default trait methods not overridden in this impl
                     if let Some(tb) = &id.trait_bound {
-                        self.record_trait_impl(type_name, &tb.name);
+                        let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                        self.record_trait_impl(type_name, &trait_key);
 
                         let overridden: HashSet<&str> =
                             id.methods.iter().map(|m| m.name.as_str()).collect();
@@ -5228,6 +5230,28 @@ impl Checker {
             .then(|| qualified.clone())
     }
 
+    pub(super) fn ambiguous_trait_owner_candidates(&self, name: &str) -> Vec<String> {
+        let mut owners: Vec<String> = self
+            .published_bare_trait_owners
+            .get(&(self.current_module.clone(), name.to_string()))
+            .into_iter()
+            .flat_map(|set| set.iter().cloned())
+            .collect();
+        let suffix = format!(".{name}");
+        owners.extend(
+            self.trait_defs
+                .keys()
+                .filter(|key| key.ends_with(&suffix))
+                .filter_map(|key| {
+                    key.split_once('.')
+                        .and_then(|(module, _)| self.modules.contains(module).then(|| key.clone()))
+                }),
+        );
+        owners.sort();
+        owners.dedup();
+        owners
+    }
+
     /// THE canonical trait-reference resolver. Resolves a trait name spelled in a
     /// given scope to one owner-qualified `ResolvedTraitIdentity`, composing on
     /// the proven `published_bare_trait_owners` single-publisher-or-fail-closed
@@ -5420,7 +5444,7 @@ impl Checker {
     /// the sub-trait the impl wrote — so a declaring SUPERTRAIT identity reached
     /// through the super chain keys on the supertrait's own name (`Base`), never
     /// the sub-trait's (`Sub`).
-    fn trait_defs_key_for_identity(&self, identity: &ResolvedTraitIdentity) -> String {
+    pub(super) fn trait_defs_key_for_identity(&self, identity: &ResolvedTraitIdentity) -> String {
         identity
             .owner
             .as_ref()
@@ -5440,6 +5464,11 @@ impl Checker {
     /// exactly as `check_impl_method_set_against_trait` does for the method set.
     pub(super) fn trait_defs_key_for_bound(&self, name: &str) -> String {
         let identity = self.resolve_trait_conformance_identity(name);
+        self.trait_defs_key_for_identity(&identity)
+    }
+
+    pub(super) fn trait_defs_key_for_declaring_bound(&self, module: &str, name: &str) -> String {
+        let identity = self.resolve_trait_ref(name, TraitRefScope::Declaring { module });
         self.trait_defs_key_for_identity(&identity)
     }
 
@@ -6967,16 +6996,18 @@ impl Checker {
                         if let (Some(canonical), Some(tb)) =
                             (primitive_key.clone(), id.trait_bound.as_ref())
                         {
+                            let trait_key = self.trait_defs_key_for_bound(&tb.name);
                             self.record_primitive_trait_impl_method(
                                 canonical,
-                                tb.name.clone(),
+                                trait_key,
                                 method.name.clone(),
                                 sig,
                             );
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.record_trait_impl(type_name, &tb.name);
+                        let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                        self.record_trait_impl(type_name, &trait_key);
                     }
 
                     // Restore previous self type
@@ -7156,9 +7187,10 @@ impl Checker {
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())
                             {
+                                let trait_key = self.trait_defs_key_for_bound(&tb.name);
                                 self.record_primitive_trait_impl_method(
                                     canonical,
-                                    tb.name.clone(),
+                                    trait_key,
                                     method.name.clone(),
                                     sig,
                                 );
@@ -7166,7 +7198,8 @@ impl Checker {
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.name);
+                            let trait_key = self.trait_defs_key_for_bound(&tb.name);
+                            self.record_trait_impl(type_name, &trait_key);
                         }
                     }
                 }
@@ -7562,16 +7595,20 @@ impl Checker {
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())
                             {
+                                let trait_key =
+                                    self.trait_defs_key_for_declaring_bound(module_short, &tb.name);
                                 self.record_primitive_trait_impl_method(
                                     canonical,
-                                    tb.name.clone(),
+                                    trait_key,
                                     method.name.clone(),
                                     sig,
                                 );
                             }
                         }
                         if let Some(tb) = &id.trait_bound {
-                            self.record_trait_impl(type_name, &tb.name);
+                            let trait_key =
+                                self.trait_defs_key_for_declaring_bound(module_short, &tb.name);
+                            self.record_trait_impl(type_name, &trait_key);
                         }
 
                         // Restore previous self type

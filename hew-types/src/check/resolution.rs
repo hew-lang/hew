@@ -126,6 +126,10 @@ impl Checker {
         false
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "dyn trait object resolution keeps assoc binding validation and owner-key selection together"
+    )]
     fn resolve_trait_object_bound(
         &mut self,
         bound: &hew_parser::ast::TraitBound,
@@ -137,6 +141,30 @@ impl Checker {
                 .map(|t| self.resolve_type_expr_tracking_holes(t, hole_vars))
                 .collect()
         });
+        let trait_identity = self.resolve_trait_conformance_identity(&bound.name);
+        let published_trait_key = self
+            .published_bare_trait_owners
+            .get(&(self.current_module.clone(), bound.name.clone()))
+            .and_then(|owners| {
+                (owners.len() == 1)
+                    .then(|| owners.iter().next().cloned())
+                    .flatten()
+            })
+            .filter(|qualified| self.trait_defs.contains_key(qualified));
+        let trait_key = published_trait_key
+            .unwrap_or_else(|| self.trait_defs_key_for_identity(&trait_identity));
+        let owner_candidates = self.ambiguous_trait_owner_candidates(&bound.name);
+        if trait_key == bound.name && owner_candidates.len() > 1 {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "ambiguous dyn trait `{}` resolves to multiple owners: {}; use an explicit module-qualified trait name",
+                    bound.name,
+                    owner_candidates.join(", ")
+                ),
+            );
+        }
         let mut assoc_bindings = Vec::with_capacity(bound.assoc_type_bindings.len());
         let mut seen_assoc = HashSet::new();
         for binding in &bound.assoc_type_bindings {
@@ -166,7 +194,7 @@ impl Checker {
         }
         assoc_bindings.sort_by(|a, b| a.0.cmp(&b.0));
 
-        if let Some(associated_type_names) = self.trait_defs.get(&bound.name).map(|trait_info| {
+        if let Some(associated_type_names) = self.trait_defs.get(&trait_key).map(|trait_info| {
             trait_info
                 .associated_types
                 .iter()
@@ -186,13 +214,13 @@ impl Checker {
                         && matches!(
                             &err.kind,
                             TypeErrorKind::MissingAssocTypeBinding { trait_name, missing: prev }
-                                if trait_name == &bound.name && prev == &missing
+                                if trait_name == &trait_key && prev == &missing
                         )
                 });
                 if !already_reported {
                     self.report_error(
                         TypeErrorKind::MissingAssocTypeBinding {
-                            trait_name: bound.name.clone(),
+                            trait_name: trait_key.clone(),
                             missing: missing.clone(),
                         },
                         span,
@@ -230,7 +258,7 @@ impl Checker {
         }
 
         crate::ty::TraitObjectBound {
-            trait_name: bound.name.clone(),
+            trait_name: trait_key,
             args,
             assoc_bindings,
         }

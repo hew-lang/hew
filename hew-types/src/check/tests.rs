@@ -6608,7 +6608,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     assert!(
         checker
             .trait_impls_set
-            .contains(&("Label".to_string(), "Describable".to_string())),
+            .contains(&("Label".to_string(), "string.Describable".to_string())),
         "stdlib Hew items should register trait impls for downstream generic bound checks"
     );
 }

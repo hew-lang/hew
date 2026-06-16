@@ -17,35 +17,11 @@ impl Checker {
         sig: &mut FnSig,
         bound: &crate::ty::TraitObjectBound,
     ) {
-        // Keyed on the BARE `bound.trait_name`, deliberately. This is part of the
-        // `dyn`-trait subsystem, which is internally consistent on the bare trait
-        // name across BOTH its write side (`record_trait_impl` /
-        // `record_primitive_trait_impl_method` key `trait_impls_set` /
-        // `primitive_trait_impls` on the bare `tb.name`) and its read side
-        // (`validate_dyn_trait_bound`, the slot lookup in `methods.rs`,
-        // `actor_satisfies_handler_trait`). Re-keying THIS lookup on the
-        // owner-qualified identity in isolation would desync it from the caller
-        // in `validate_dyn_trait_bound`, which fetched `trait_info` and built the
-        // method table from the bare entry — under a same-name arity collision
-        // the substitution would then use a different trait's type-params than
-        // the vtable was built from. Routing the `dyn` family to owner-qualified
-        // identity requires moving its WRITE keys together (the owner-qualified
-        // write+read key reshape across `record_trait_impl` /
-        // `primitive_trait_impls` / the `coerce.rs` vtable build), which is out of
-        // scope for this change.
-        //
-        // FAIL-CLOSED, with a KNOWN LIMITATION (deferred to v0.5.3). No invalid
-        // program is accepted: a wrong-owner `dyn` coercion with no structural
-        // match IS rejected. But because this family keys on the bare trait name,
-        // a same-name collision (an importer brings in a `Widget` whose method set
-        // differs from the impl's owner `Widget`) is not caught HERE in the
-        // checker — it is carried far enough to build a vtable and only then
-        // rejected by codegen-front's `E_CODEGEN_FRONT` invalid-vtable
-        // fail-closed (a vtable slot referencing an impl fn the module never
-        // declared). The full fix is the dyn-family owner-qualified write+read key
-        // reshape so the bad coercion is rejected at the type boundary with a
-        // checker diagnostic, tracked as a v0.5.3 follow-up. Until then the
-        // wrong-owner case is rejected at a later layer, never accepted.
+        // `resolve_trait_object_bound` owner-qualifies `bound.trait_name`, and
+        // the dyn family writes impl registries under the same key. Keep the
+        // substitution lookup on that resolved identity so method signatures,
+        // associated-type projection, vtable construction, and codegen lookup
+        // remain symmetric under same-bare-name trait collisions.
         if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
             let type_params = &trait_info.type_params;
             if type_params.len() == bound.args.len() {
@@ -857,14 +833,7 @@ impl Checker {
             return true;
         }
         // Strip known module prefix: "json.Value" → "Value"
-        let unqualified_type = type_name.find('.').and_then(|dot| {
-            let prefix = &type_name[..dot];
-            if self.modules.contains(prefix) {
-                Some(&type_name[dot + 1..])
-            } else {
-                None
-            }
-        });
+        let unqualified_type = type_name.rsplit_once('.').map(|(_, bare)| bare);
         if let Some(uq) = unqualified_type {
             if self
                 .trait_impls_set
@@ -873,22 +842,34 @@ impl Checker {
                 return true;
             }
         }
-        // Also try unqualified trait name
-        let unqualified_trait = trait_name.find('.').and_then(|dot| {
-            let prefix = &trait_name[..dot];
-            if self.modules.contains(prefix) {
-                Some(&trait_name[dot + 1..])
-            } else {
-                None
-            }
-        });
-        if let Some(uq_trait) = unqualified_trait {
-            let tn = unqualified_type.unwrap_or(type_name);
-            if self
-                .trait_impls_set
-                .contains(&(tn.to_string(), uq_trait.to_string()))
-            {
+        if !trait_name.contains('.') {
+            let trait_suffix = format!(".{trait_name}");
+            let effective_type = unqualified_type.unwrap_or(type_name);
+            if self.trait_impls_set.iter().any(|(tn, tn_trait)| {
+                (tn == type_name || tn.as_str() == effective_type)
+                    && tn_trait.ends_with(&trait_suffix)
+            }) {
                 return true;
+            }
+        }
+        // Also try unqualified trait name
+        if !self.trait_defs.contains_key(trait_name) {
+            let unqualified_trait = trait_name.find('.').and_then(|dot| {
+                let prefix = &trait_name[..dot];
+                if self.modules.contains(prefix) {
+                    Some(&trait_name[dot + 1..])
+                } else {
+                    None
+                }
+            });
+            if let Some(uq_trait) = unqualified_trait {
+                let tn = unqualified_type.unwrap_or(type_name);
+                if self
+                    .trait_impls_set
+                    .contains(&(tn.to_string(), uq_trait.to_string()))
+                {
+                    return true;
+                }
             }
         }
         // Check if type implements a sub-trait that extends this trait
@@ -1078,17 +1059,25 @@ impl Checker {
         // Convert to owned strings immediately so the shared borrow on self ends
         // before any &mut self calls below.
         let trait_name: String = {
-            let uq = self.strip_module_qualifier(trait_name);
-            match uq {
-                Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
-                _ => trait_name.to_string(),
+            if self.trait_defs.contains_key(trait_name) {
+                trait_name.to_string()
+            } else {
+                let uq = self.strip_module_qualifier(trait_name);
+                match uq {
+                    Some(uq) if self.trait_defs.contains_key(uq) => uq.to_string(),
+                    _ => trait_name.to_string(),
+                }
             }
         };
         let type_name: String = {
-            let uq = self.strip_module_qualifier(type_name);
-            match uq {
-                Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
-                _ => type_name.to_string(),
+            if self.type_defs.contains_key(type_name) {
+                type_name.to_string()
+            } else {
+                let uq = self.strip_module_qualifier(type_name);
+                match uq {
+                    Some(uq) if self.type_defs.contains_key(uq) => uq.to_string(),
+                    _ => type_name.to_string(),
+                }
             }
         };
 

@@ -17,9 +17,89 @@
 mod common;
 
 use common::{typecheck, typecheck_isolated};
+use hew_parser::ast::{ImportDecl, ImportSpec, Item, Program, Spanned};
 use hew_types::error::TypeErrorKind;
 use hew_types::DynCoercion;
 use hew_types::Ty;
+
+fn import_with_items(path: &[&str], spec: Option<ImportSpec>, items: Vec<Spanned<Item>>) -> Item {
+    Item::Import(ImportDecl {
+        path: path.iter().map(|part| (*part).to_string()).collect(),
+        spec,
+        module_alias: None,
+        file_path: None,
+        resolved_items: Some(items),
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    })
+}
+
+fn parsed_items(source: &str) -> Vec<Spanned<Item>> {
+    common::parse_program(source).items
+}
+
+fn typecheck_dyn_owner_collision_main(
+    left_spec: Option<ImportSpec>,
+    right_spec: Option<ImportSpec>,
+    main_source: &str,
+) -> hew_types::TypeCheckOutput {
+    let left_items = parsed_items(
+        r"
+pub trait Carrier {
+    fn left_value(self) -> i64;
+}
+",
+    );
+    let right_items = parsed_items(
+        r"
+pub trait Carrier {
+    fn right_value(self) -> i64;
+}
+
+pub type Parcel {
+    value: i64;
+}
+
+pub fn parcel(value: i64) -> Parcel {
+    Parcel { value: value }
+}
+
+impl Carrier for Parcel {
+    fn right_value(self) -> i64 {
+        self.value
+    }
+}
+",
+    );
+    let mut root_items = common::parse_program(main_source).items;
+    let mut items: Vec<Spanned<Item>> = Vec::new();
+    let mut rest = Vec::new();
+    for item in root_items.drain(..) {
+        if matches!(&item.0, Item::Trait(_)) {
+            items.push(item);
+        } else {
+            rest.push(item);
+        }
+    }
+    if left_spec.is_some() {
+        items.push((
+            import_with_items(&["pkg", "left"], left_spec, left_items),
+            0..0,
+        ));
+    }
+    items.push((
+        import_with_items(&["pkg", "right"], right_spec, right_items),
+        0..0,
+    ));
+    items.extend(rest);
+    let program = Program {
+        items,
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = common::isolated_checker();
+    checker.check_program(&program)
+}
 
 /// `i64 → dyn Display` records a `DynCoercion` whose `concrete_type` is the
 /// canonical integer kind (`i64` after defaulting from `i64`), whose
@@ -110,6 +190,67 @@ fn two_concrete_types_to_dyn_display_produce_distinct_entries() {
     assert_eq!(
         int_entry.method_table,
         vec![("fmt".to_string(), "i64::fmt".to_string())]
+    );
+}
+
+#[test]
+fn dyn_trait_same_name_wrong_owner_impl_rejected_at_type_boundary() {
+    let output = typecheck_dyn_owner_collision_main(
+        Some(ImportSpec::Glob),
+        Some(ImportSpec::Glob),
+        r"
+fn take_left(value: dyn Carrier) {}
+
+fn main() {
+    take_left(parcel(7));
+}
+",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "same-name owner collision must be rejected at type boundary"
+    );
+    assert!(
+        output.dyn_trait_coercions.is_empty(),
+        "rejected wrong-owner coercion must not record a vtable: {:#?}",
+        output.dyn_trait_coercions
+    );
+}
+
+#[test]
+fn dyn_trait_same_name_right_owner_impl_uses_qualified_vtable_key() {
+    let output = typecheck_dyn_owner_collision_main(
+        None,
+        Some(ImportSpec::Glob),
+        r"
+fn read_right(value: dyn Carrier) -> i64 {
+    7
+}
+
+fn main() {
+    let got = read_right(parcel(7));
+    assert_eq(got, 7);
+}
+",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "expected right-owner dyn coercion to type-check, got: {:#?}",
+        output.errors
+    );
+    let entry = output
+        .dyn_trait_coercions
+        .values()
+        .next()
+        .expect("right-owner coercion entry");
+    assert_eq!(entry.trait_name, "right.Carrier");
+    assert_eq!(entry.vtable_key.trait_name, "right.Carrier");
+    assert_eq!(entry.vtable_entries[0].trait_name, "right.Carrier");
+    assert_eq!(
+        entry.method_table,
+        vec![("right_value".to_string(), "Parcel::right_value".to_string())],
     );
 }
 

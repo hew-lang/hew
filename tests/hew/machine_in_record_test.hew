@@ -1,0 +1,134 @@
+//! Regression tests for a `machine` held as a field of a user `type`/record.
+//!
+//! A machine classifies by its state-variant payloads exactly like an enum
+//! (a tagged union), so it can be a field of a record and flow through
+//! aggregate value-class inference. Before the machine-as-enum view reached
+//! the user-function value-class classifier, every such record was rejected
+//! at MIR with `UnsupportedUserRecordValueClass` ("value class Unknown").
+//!
+//! Each test reads the machine field back out of the record and asserts an
+//! EXACT value, proving the field is a live machine value carried through the
+//! record — not a zeroed slot — and (for the string payload) that the owned
+//! clone/drop spine round-trips the non-BitCopy payload.
+
+import std::testing;
+
+// ── Payload-free machine field ────────────────────────────────────────────
+machine F {
+    events {
+        a;
+    }
+
+    state S1;
+    state S2;
+
+    on a: S1 => S2 {
+        S2
+    }
+    on a: _ => _ {
+        state
+    }
+}
+
+type P {
+    f: F;
+    x: i64;
+}
+
+fn state_tag(p: P) -> i64 {
+    match p.f {
+        S1 => 1,
+        S2 => 2,
+    }
+}
+
+#[test]
+fn payload_free_machine_field_carries_scalar_and_tag() {
+    let p = P { f: F::S1, x: 7 };
+    testing.assert_eq(p.x, 7);
+    testing.assert_eq(state_tag(p), 1);
+}
+
+#[test]
+fn payload_free_machine_field_preserves_non_zero_tag() {
+    // F::S2 is variant 1, not the zero tag — proves the record carries the
+    // live machine tag, not a default-initialised slot.
+    let p = P { f: F::S2, x: 42 };
+    testing.assert_eq(p.x, 42);
+    testing.assert_eq(state_tag(p), 2);
+}
+
+// ── i64-payload machine field ─────────────────────────────────────────────
+machine G {
+    events {
+        Step;
+    }
+
+    state Idle;
+    state Running { count: i64; }
+
+    on Step: Idle => Running {
+        Running { count: 1 }
+    }
+    on Step: _ => _ {
+        state
+    }
+}
+
+type Q {
+    g: G;
+    x: i64;
+}
+
+fn running_count(q: Q) -> i64 {
+    match q.g {
+        Idle => -1,
+        Running { count } => count,
+    }
+}
+
+#[test]
+fn i64_payload_machine_field_reads_payload_back() {
+    let q = Q { g: G::Running { count: 99 }, x: 3 };
+    testing.assert_eq(q.x, 3);
+    testing.assert_eq(running_count(q), 99);
+}
+
+// ── string-payload (non-BitCopy) machine field ────────────────────────────
+machine H {
+    events {
+        Set;
+    }
+
+    state Empty;
+    state Named { label: string; }
+
+    on Set: Empty => Named {
+        Named { label: "x" }
+    }
+    on Set: _ => _ {
+        state
+    }
+}
+
+type R {
+    h: H;
+    x: i64;
+}
+
+fn label_of(r: R) -> string {
+    match r.h {
+        Empty => "empty",
+        Named { label } => label,
+    }
+}
+
+#[test]
+fn string_payload_machine_field_round_trips_the_payload() {
+
+    // The non-BitCopy string payload rides the record's clone/drop spine;
+    // reading it back proves no leak / no abort and the exact value survives.
+    let r = R { h: H::Named { label: "hello-payload" }, x: 9 };
+    testing.assert_eq(r.x, 9);
+    testing.assert_eq_str(label_of(r), "hello-payload");
+}

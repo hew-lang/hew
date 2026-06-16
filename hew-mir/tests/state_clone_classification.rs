@@ -772,3 +772,129 @@ fn heap_payload_machine_state_field_classifies_as_enum() {
         "heap-payload machine field must classify as Enum {{ name: \"Conn\" }}; got {kinds:?}",
     );
 }
+
+// ─── Machine-handle field in a user record/type ──────────────────────
+//
+// A `machine` held as a field of a user `type` classifies through the
+// same enum clone/drop authority that admits a machine as actor state:
+// the machine projects into an enum-layout view and the field takes the
+// `Enum` arm of the owned-aggregate record classifier. Before the view
+// reached the user-function builder, every such record was rejected with
+// `UnsupportedUserRecordValueClass` ("field `f` has value class Unknown").
+// The honest oracle is the absence of that diagnostic — it fires on the
+// unfixed path.
+
+/// True when any pipeline diagnostic is an `UnsupportedUserRecordValueClass`
+/// naming `record_name`.
+fn has_unsupported_record_value_class(pipeline: &hew_mir::IrPipeline, record_name: &str) -> bool {
+    pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { name, .. }
+                if name == record_name
+        )
+    })
+}
+
+/// A payload-free machine field in a user record classifies clean — the
+/// record is admitted, mirroring a payload-free enum field.
+#[test]
+fn payload_free_machine_record_field_admits() {
+    let pipeline = lower_source(
+        "
+        machine F {
+            events { a; }
+            state S1;
+            state S2;
+            on a: S1 => S2 { S2 }
+            on a: _ => _ { state }
+        }
+
+        type P { f: F, x: i64 }
+
+        fn main() {
+            let p = P { f: F::S1, x: 0 };
+            println(p.x);
+        }
+    ",
+    );
+    assert!(
+        !has_unsupported_record_value_class(&pipeline, "P"),
+        "payload-free machine record field must not be rejected; got: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "payload-free machine record must lower clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// An i64-payload machine field in a user record classifies clean: the
+/// payload is `BitCopy`, so the enum-view walk admits the record.
+#[test]
+fn i64_payload_machine_record_field_admits() {
+    let pipeline = lower_source(
+        "
+        machine G {
+            events { Step; }
+            state Idle;
+            state Running { count: i64; }
+            on Step: Idle => Running { Running { count: 1 } }
+            on Step: _ => _ { state }
+        }
+
+        type Q { g: G, x: i64 }
+
+        fn main() {
+            let q = Q { g: G::Idle, x: 0 };
+            println(q.x);
+        }
+    ",
+    );
+    assert!(
+        !has_unsupported_record_value_class(&pipeline, "Q"),
+        "i64-payload machine record field must not be rejected; got: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "i64-payload machine record must lower clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// A string-payload (non-`BitCopy`) machine field in a user record classifies
+/// clean and routes through the `CowValue` clone/drop spine — the record earns
+/// a `RecordInPlace` thunk exactly as a string-payload enum field does.
+#[test]
+fn string_payload_machine_record_field_admits() {
+    let pipeline = lower_source(
+        "
+        machine H {
+            events { Set; }
+            state Empty;
+            state Named { label: string; }
+            on Set: Empty => Named { Named { label: \"x\" } }
+            on Set: _ => _ { state }
+        }
+
+        type R { h: H, x: i64 }
+
+        fn main() {
+            let r = R { h: H::Empty, x: 0 };
+            println(r.x);
+        }
+    ",
+    );
+    assert!(
+        !has_unsupported_record_value_class(&pipeline, "R"),
+        "string-payload machine record field must not be rejected; got: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "string-payload machine record must lower clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+}

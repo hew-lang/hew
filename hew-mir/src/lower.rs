@@ -1258,6 +1258,19 @@ pub fn lower_hir_module_with_facts(
     //
     // The classification view = real enum layouts + machine-as-enum
     // projections, so machine-typed fields take the Enum arm.
+    //
+    // This same view is threaded into every function-body builder below
+    // (user/generic functions, actor handlers, supervisor bootstrap, and
+    // machine `__step` fns) as their `enum_layouts`, so a machine held as a
+    // field of a user `type`/record classifies through the one enum-view
+    // authority — `owned_aggregate_record_field_kinds_for_key` resolves the
+    // machine field via `classify_enum` exactly as it does an enum field,
+    // payload-free and payload-bearing alike. The bare `enum_layouts`
+    // (machine-free) still flows to codegen's `register_enum_layouts` and
+    // the layout diagnostics, which register machines separately via
+    // `machine_layouts`. Without the augmented view the user-record
+    // classifier missed the machine layout and the record was rejected with
+    // `UnsupportedUserRecordValueClass` ("value class Unknown").
     let classification_enum_layouts: Vec<crate::model::EnumLayout> = enum_layouts
         .iter()
         .cloned()
@@ -1871,7 +1884,7 @@ pub fn lower_hir_module_with_facts(
                         &actor_layout_map,
                         &supervisor_layout_map,
                         &machine_layout_names,
-                        &enum_layouts,
+                        &classification_enum_layouts,
                         &opaque_handle_names,
                         None,
                         &module_fn_names,
@@ -1918,7 +1931,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &supervisor_layout_map,
                     &machine_layout_names,
-                    &enum_layouts,
+                    &classification_enum_layouts,
                     &opaque_handle_names,
                     None,
                     &module_fn_names,
@@ -1959,7 +1972,7 @@ pub fn lower_hir_module_with_facts(
                     &record_field_orders,
                     &actor_layout_map,
                     &machine_layout_names,
-                    &enum_layouts,
+                    &classification_enum_layouts,
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
@@ -2002,7 +2015,7 @@ pub fn lower_hir_module_with_facts(
                     &record_field_orders,
                     &actor_layout_map,
                     &machine_layout_names,
-                    &enum_layouts,
+                    &classification_enum_layouts,
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
@@ -2077,7 +2090,7 @@ pub fn lower_hir_module_with_facts(
                     &actor_layout_map,
                     &supervisor_layout_map,
                     &machine_layout_names,
-                    &enum_layouts,
+                    &classification_enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
                     &module.call_site_type_args,
@@ -2138,7 +2151,7 @@ pub fn lower_hir_module_with_facts(
             &actor_layout_map,
             &supervisor_layout_map,
             &machine_layout_names,
-            &enum_layouts,
+            &classification_enum_layouts,
             &opaque_handle_names,
             None,
             &module_fn_names,

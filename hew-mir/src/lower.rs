@@ -3308,6 +3308,7 @@ fn synthesize_machine_step_fn(
         await_deadline_ns: std::collections::HashMap::new(),
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let thir = ThirFunction {
@@ -4693,7 +4694,22 @@ fn lower_function(
     // monotone in block id.
     let mut blocks = builder.finalize_blocks(Terminator::Return);
     if call_conv.carries_execution_context() {
+        // `bracket_actor_handler_blocks` splices `EnterContext` at index 0 of
+        // the entry block when it is not already present. That shifts the
+        // Stage 2 side-table indices for the entry block — realign them. (A
+        // ctx-bearing body that is also a suspend coroutine is skipped by
+        // codegen's debug path anyway, but keeping the table correct here is
+        // cheap and fail-closed for any non-suspend ctx-bearing `fn`.)
+        let entry_had_enter = matches!(
+            blocks.first().and_then(|b| b.instructions.first()),
+            Some(Instr::EnterContext)
+        );
         bracket_actor_handler_blocks(&mut blocks);
+        if !entry_had_enter {
+            if let Some(entry_id) = blocks.first().map(|b| b.id) {
+                shift_instr_spans_on_insert(&mut builder.instr_spans, entry_id, 0);
+            }
+        }
     }
     // W5.011 P3 — release nested fresh-`string` temporaries (the bare-temp
     // shapes `(a + b).len()`, `s.to_uppercase().len()`, `xs[i].len()`, and the
@@ -4702,7 +4718,12 @@ fn lower_function(
     // observes each inline drop as a read of its temp and codegen emits the
     // release. Fail-closed: only provably fresh, borrow-only/discarded,
     // single-predecessor-dominated temps earn an inline `hew_string_drop`.
-    apply_nested_fresh_string_temp_drops(&mut blocks, &builder.locals, &builder.binding_locals);
+    apply_nested_fresh_string_temp_drops(
+        &mut blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &mut builder.instr_spans,
+    );
     // THIR's `statements` is the union of every block's checker stream
     // in CFG-construction order — the THIR snapshot's job is preserving
     // the pre-CFG flat-stream shape for diagnostic readers that haven't
@@ -4741,6 +4762,11 @@ fn lower_function(
         await_deadline_ns: builder.await_deadline_ns.clone(),
         lambda_actor_user_param_locals: Vec::new(),
         span: Some((u32::try_from(func.span.start).unwrap_or(u32::MAX), u32::try_from(func.span.end).unwrap_or(u32::MAX))),
+        // Stage 2 (gdb `-g`): the per-instruction line table threaded from the
+        // lowering cursor (`push_instr`), already realigned for the post-seal
+        // splices above. Cloned (not moved) — `builder` is still read by
+        // `check_function` below.
+        instr_spans: builder.instr_spans.clone(),
     };
     // Checked MIR's `checks` field is populated by `check_function`
     // from real dataflow over the checker-authority `MirStatement`
@@ -5804,6 +5830,23 @@ struct Builder {
     /// `copy ⊥ sendable` (P0) — derived SOLELY from this table, never from
     /// a `Copy`-marker check.
     actor_send_aliasing: HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    /// Stage 2 (gdb `-g`): byte-offset span `(start, end)` of the HIR
+    /// statement / tail expression currently being lowered. Set at each
+    /// statement boundary (`stmt`) and at the function tail (`function_body`);
+    /// read by `push_instr` to attribute every emitted `Instr` to its
+    /// originating source line. `None` outside any statement (synthesised
+    /// prologue/epilogue work) — those instructions get NO side-table entry
+    /// and inherit the nearest enclosing `DILocation` at codegen (fail-closed:
+    /// a real but coarser line, never a fabricated one).
+    current_span: Option<(u32, u32)>,
+    /// Stage 2 (gdb `-g`): per-instruction source spans for THIS function,
+    /// keyed by `(block_id, instruction_index)` and valued by the enclosing
+    /// statement/expression byte span. Populated incrementally by `push_instr`
+    /// (the index is the live `instructions.len()` before the push — the
+    /// instruction's final position in its block, because the per-block buffer
+    /// is moved out whole by `finish_current_block` / `finalize_blocks`).
+    /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
+    instr_spans: HashMap<(u32, u32), (u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6206,7 +6249,7 @@ impl Builder {
                 continue;
             };
             self.owned_locals.retain(|(b, _, _)| *b != binding);
-            self.instructions.push(Instr::Drop {
+            self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
@@ -6306,7 +6349,7 @@ impl Builder {
             })
             .collect();
         for (place, ty) in to_drop {
-            self.instructions.push(Instr::Drop {
+            self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
@@ -6382,7 +6425,7 @@ impl Builder {
                 // releases at its own drop site, no leak.
                 continue;
             }
-            self.instructions.push(Instr::Drop {
+            self.push_instr(Instr::Drop {
                 place,
                 ty,
                 drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
@@ -6487,6 +6530,27 @@ impl Builder {
         id
     }
 
+    /// Append `instr` to the current block's backend-authority stream,
+    /// recording its originating source span (when the lowering cursor is
+    /// inside a statement) into the per-function `instr_spans` side-table.
+    ///
+    /// The key is `(current_block_id, instruction_index)`, where the index is
+    /// the live `instructions.len()` BEFORE the push — which is the
+    /// instruction's final position in its block, because the per-block buffer
+    /// is moved out whole by `finish_current_block` / `finalize_blocks` (order
+    /// preserved). Recording at push time means the index is self-correcting:
+    /// it always reflects the true position regardless of how earlier
+    /// instructions in the same block were appended. Stage 2 (gdb `-g`): this
+    /// is what threads the per-statement line table to codegen WITHOUT
+    /// reshaping the `Instr` enum or its codegen match sites.
+    fn push_instr(&mut self, instr: Instr) {
+        if let Some(span) = self.current_span {
+            let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
+            self.instr_spans.insert((self.current_block_id, idx), span);
+        }
+        self.instructions.push(instr);
+    }
+
     /// Seal the current basic block with `terminator` and move its
     /// statements + instructions into `pending_blocks`. The cursor is
     /// left at the just-sealed block's id; `start_block(new_id)` must
@@ -6497,6 +6561,7 @@ impl Builder {
         reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
     )]
     fn finish_current_block(&mut self, terminator: Terminator) {
+        self.record_terminator_span();
         let block = BasicBlock {
             id: self.current_block_id,
             statements: std::mem::take(&mut self.statements),
@@ -6504,6 +6569,22 @@ impl Builder {
             terminator,
         };
         self.pending_blocks.push(block);
+    }
+
+    /// Stage 2 (gdb `-g`): attribute the span of the statement that seals the
+    /// current block to the block's TERMINATOR, keyed one slot past the last
+    /// instruction (`instructions.len()`). Calls and control-flow exits lower
+    /// to a `Terminator`, not an `Instr`, so without this a call statement
+    /// (e.g. `println(r)`) would inherit the previous instruction's line. The
+    /// post-seal `shift_instr_spans_on_insert` keeps this key aligned to the
+    /// final `block.instructions.len()` — exactly the key codegen looks up
+    /// before lowering the terminator. No span recorded when the cursor is
+    /// outside any statement (fail-closed: terminator inherits nearest loc).
+    fn record_terminator_span(&mut self) {
+        if let Some(span) = self.current_span {
+            let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
+            self.instr_spans.insert((self.current_block_id, idx), span);
+        }
     }
 
     /// Move the cursor to `id`. `statements` and `instructions` must be
@@ -6570,6 +6651,7 @@ impl Builder {
             self.statements.clear();
             self.instructions.clear();
         } else {
+            self.record_terminator_span();
             let last = BasicBlock {
                 id: self.current_block_id,
                 statements: std::mem::take(&mut self.statements),
@@ -7049,6 +7131,13 @@ impl Builder {
             self.stmt(stmt);
         }
         if let Some(tail) = &func.body.tail {
+            // Stage 2 (gdb `-g`): attribute the tail expression's instructions
+            // (including the `Move` into the return slot below) to its own line
+            // so a tail value-expression is a distinct step.
+            self.current_span = Some((
+                u32::try_from(tail.span.start).unwrap_or(u32::MAX),
+                u32::try_from(tail.span.end).unwrap_or(u32::MAX),
+            ));
             let value_place = self.lower_value(tail);
             self.decide(tail);
             self.mark_returned_binding_moved(tail);
@@ -7081,7 +7170,7 @@ impl Builder {
                 // be able to corrupt the returned value. Materialising the
                 // Move first locks in the value the caller observes.
                 if let Some(src) = value_place {
-                    self.instructions.push(Instr::Move {
+                    self.push_instr(Instr::Move {
                         dest: Place::ReturnSlot,
                         src,
                     });
@@ -7107,6 +7196,14 @@ impl Builder {
                   scatter the panic discipline across helper boundaries"
     )]
     fn stmt(&mut self, stmt: &hew_hir::HirStmt) {
+        // Stage 2 (gdb `-g`): every `Instr` this statement lowers is attributed
+        // to the statement's source span so gdb steps line-by-line. The cursor
+        // stays set across the whole statement, so synthesised instructions
+        // (drops, coercions) reuse this nearest-enclosing span fail-closed.
+        self.current_span = Some((
+            u32::try_from(stmt.span.start).unwrap_or(u32::MAX),
+            u32::try_from(stmt.span.end).unwrap_or(u32::MAX),
+        ));
         match &stmt.kind {
             HirStmtKind::Let(binding, Some(value)) => {
                 let binding_ty = self.subst_ty(&binding.ty);
@@ -7378,7 +7475,7 @@ impl Builder {
                         }
                         Place::Local(_) | Place::ReturnSlot => {
                             let slot = self.alloc_local(binding_ty.clone());
-                            self.instructions.push(Instr::Move { dest: slot, src });
+                            self.push_instr(Instr::Move { dest: slot, src });
                             self.binding_locals.insert(binding.id, slot);
                         }
                         // Machine sub-structure places (`MachineTag` and
@@ -7441,7 +7538,7 @@ impl Builder {
                 // Move the return value to ReturnSlot BEFORE executing
                 // defers — the value is secured so defers cannot corrupt it.
                 if let Some(src) = value_place {
-                    self.instructions.push(Instr::Move {
+                    self.push_instr(Instr::Move {
                         dest: Place::ReturnSlot,
                         src,
                     });
@@ -7539,7 +7636,7 @@ impl Builder {
                 ..
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
-                    self.instructions.push(Instr::Move { dest, src });
+                    self.push_instr(Instr::Move { dest, src });
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
@@ -7627,7 +7724,7 @@ impl Builder {
                 let field_offset = FieldOffset(
                     u32::try_from(idx).expect("field index exceeds u32::MAX — impossible in Hew"),
                 );
-                self.instructions.push(Instr::RecordFieldStore {
+                self.push_instr(Instr::RecordFieldStore {
                     record: record_place,
                     field_offset,
                     src,
@@ -7700,7 +7797,7 @@ impl Builder {
             HirExprKind::Literal(lit) => self.lower_literal(lit, &expr.ty, expr.site),
             HirExprKind::ContextReader { reader } => {
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::ContextField {
+                self.push_instr(Instr::ContextField {
                     dest,
                     offset: context_reader_offset(*reader),
                 });
@@ -7762,7 +7859,7 @@ impl Builder {
                 }
                 if let Some(source) = self.capture_env_sources.get(id).cloned() {
                     let dest = self.alloc_local(source.ty.clone());
-                    self.instructions.push(Instr::ClosureEnvFieldLoad {
+                    self.push_instr(Instr::ClosureEnvFieldLoad {
                         env: source.env,
                         env_ty: source.env_ty,
                         field_offset: source.field_offset,
@@ -7795,7 +7892,7 @@ impl Builder {
                 resolved: ResolvedRef::Const(item_id),
             } => {
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::ConstGlobalLoad {
+                self.push_instr(Instr::ConstGlobalLoad {
                     item_id: *item_id,
                     dest,
                 });
@@ -7865,7 +7962,7 @@ impl Builder {
                 // makes codegen store a null pointer constant.
                 let null_env = self.alloc_local(ResolvedTy::Unit);
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::MakeClosure {
+                self.push_instr(Instr::MakeClosure {
                     fn_symbol: shim_name,
                     env: null_env,
                     dest,
@@ -7951,7 +8048,7 @@ impl Builder {
                     return None;
                 }
                 let dest = self.alloc_local(to_ty.clone());
-                self.instructions.push(Instr::NumericCast {
+                self.push_instr(Instr::NumericCast {
                     dest,
                     src,
                     from_ty,
@@ -7978,7 +8075,7 @@ impl Builder {
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
 
                 // Emit the TupleConstruct instruction.
-                self.instructions.push(Instr::TupleConstruct {
+                self.push_instr(Instr::TupleConstruct {
                     elements: lowered_elements,
                     dest,
                 });
@@ -8009,10 +8106,10 @@ impl Builder {
                             IntArithOp::Sub => Instr::IntSub { dest, lhs, rhs },
                             IntArithOp::Mul => Instr::IntMul { dest, lhs, rhs },
                         };
-                        self.instructions.push(instr);
+                        self.push_instr(instr);
                     }
                     NumericMethodFamily::Checked => {
-                        self.instructions.push(Instr::IntArithCheckedOption {
+                        self.push_instr(Instr::IntArithCheckedOption {
                             op,
                             signed,
                             width: *width,
@@ -8022,7 +8119,7 @@ impl Builder {
                         });
                     }
                     NumericMethodFamily::Saturating => {
-                        self.instructions.push(Instr::IntArithSaturating {
+                        self.push_instr(Instr::IntArithSaturating {
                             op,
                             signed,
                             width: *width,
@@ -8047,7 +8144,7 @@ impl Builder {
                 // dest enum slot is allocated with that exact type so codegen
                 // resolves the registered Option layout for the unbox.
                 let dest = self.alloc_local(expr.ty.clone());
-                self.instructions.push(Instr::GeneratorNext {
+                self.push_instr(Instr::GeneratorNext {
                     dest,
                     ctx,
                     yield_ty: yield_ty.clone(),
@@ -8064,7 +8161,7 @@ impl Builder {
                 // wire-struct type for decode. Allocate the dest with that type
                 // so codegen resolves the right slot layout.
                 let dest = self.alloc_local(expr.ty.clone());
-                self.instructions.push(Instr::WireCodec {
+                self.push_instr(Instr::WireCodec {
                     dest,
                     operand: operand_place,
                     direction: *direction,
@@ -8254,7 +8351,7 @@ impl Builder {
                         self.start_block(next);
                         return dest;
                     }
-                    self.instructions.push(Instr::CallClosure {
+                    self.push_instr(Instr::CallClosure {
                         callee: callee_place,
                         args: arg_places,
                         ret_ty,
@@ -8311,7 +8408,7 @@ impl Builder {
                 let result = if let Some(tail) = block.tail.as_ref() {
                     if let Some(src) = self.lower_value(tail) {
                         let secured = self.alloc_local(self.subst_ty(&tail.ty));
-                        self.instructions.push(Instr::Move { dest: secured, src });
+                        self.push_instr(Instr::Move { dest: secured, src });
                         Some(secured)
                     } else {
                         None
@@ -8455,7 +8552,7 @@ impl Builder {
                         // Field absent from the explicit list — load it from base.
                         // The intermediate place carries the declared field type.
                         let intermediate = self.alloc_local(fty.clone());
-                        self.instructions.push(Instr::RecordFieldLoad {
+                        self.push_instr(Instr::RecordFieldLoad {
                             record: base_rec,
                             field_offset: offset,
                             dest: intermediate,
@@ -8480,7 +8577,7 @@ impl Builder {
                 }
 
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::RecordInit {
+                self.push_instr(Instr::RecordInit {
                     // Substitute the monomorphisation's type-arg map so a
                     // generic record constructed inside a substituted body
                     // (`Box { value: x }` in `make$$i64`) carries the concrete
@@ -8657,7 +8754,7 @@ impl Builder {
                 self.mark_owned_string_record_field_site(object);
                 let record_place = self.lower_value(object)?;
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::RecordFieldLoad {
+                self.push_instr(Instr::RecordFieldLoad {
                     record: record_place,
                     field_offset,
                     dest,
@@ -8771,7 +8868,7 @@ impl Builder {
                 let field_index = u32::try_from(*index)
                     .expect("tuple index exceeds u32::MAX — impossible in Hew");
                 let dest = self.alloc_local(self.subst_ty(&expr.ty));
-                self.instructions.push(Instr::TupleFieldLoad {
+                self.push_instr(Instr::TupleFieldLoad {
                     tuple: inner_place,
                     field_index,
                     dest,
@@ -8852,7 +8949,7 @@ impl Builder {
                 // from `expr.ty`), so codegen can pick the 2-word layout.
                 let value_place = self.lower_value(value)?;
                 let dest = self.alloc_local(expr.ty.clone());
-                self.instructions.push(Instr::CoerceToDynTrait {
+                self.push_instr(Instr::CoerceToDynTrait {
                     value: value_place,
                     dest,
                     trait_name: trait_name.clone(),
@@ -8950,7 +9047,7 @@ impl Builder {
                 } else {
                     Some(self.alloc_local(ret_ty.clone()))
                 };
-                self.instructions.push(Instr::CallTraitMethod {
+                self.push_instr(Instr::CallTraitMethod {
                     fat_pointer,
                     dest,
                     trait_name: trait_name.clone(),
@@ -9347,7 +9444,7 @@ impl Builder {
                 // pipeline stages type-correct without silently dropping the
                 // emit. WHEN-OBSOLETE: replaced by CallRuntimeAbi once the
                 // emit-queue ABI lands (see Instr::MachineEmitPlaceholder doc).
-                self.instructions.push(Instr::MachineEmitPlaceholder {
+                self.push_instr(Instr::MachineEmitPlaceholder {
                     event_idx: *event_idx,
                     payload,
                 });
@@ -9373,11 +9470,11 @@ impl Builder {
                 };
                 // Tag store: Place::MachineTag(dest_local) = state_idx.
                 let tag_const = self.alloc_local(ResolvedTy::I64);
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest: tag_const,
                     value: i64::try_from(*state_idx).unwrap_or(i64::MAX),
                 });
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: Place::MachineTag(dest_local),
                     src: tag_const,
                 });
@@ -9394,7 +9491,7 @@ impl Builder {
                             u32::try_from(field_idx).expect("field index exceeds u32::MAX");
                         let variant_idx_u32 =
                             u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
-                        self.instructions.push(Instr::Move {
+                        self.push_instr(Instr::Move {
                             dest: Place::MachineVariant {
                                 local: dest_local,
                                 variant_idx: variant_idx_u32,
@@ -9471,7 +9568,7 @@ impl Builder {
                     u32::try_from(*state_idx).expect("state index exceeds u32::MAX");
                 let field_idx_u32 =
                     u32::try_from(*field_idx).expect("field index exceeds u32::MAX");
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
                         local: self_local,
@@ -9530,7 +9627,7 @@ impl Builder {
                     u32::try_from(*event_idx).expect("event index exceeds u32::MAX");
                 let field_idx_u32 =
                     u32::try_from(*field_idx).expect("field index exceeds u32::MAX");
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
                         local: event_local,
@@ -9639,12 +9736,12 @@ impl Builder {
                 // when the transition was a self-transition the value is
                 // consistent with the helper's return.
                 if let Some(receiver_slot) = receiver_slot {
-                    self.instructions.push(Instr::Move {
+                    self.push_instr(Instr::Move {
                         dest: receiver_slot,
                         src: ret_local,
                     });
                 } else if let Some(field_offset) = field_offset {
-                    self.instructions.push(Instr::ActorStateFieldStore {
+                    self.push_instr(Instr::ActorStateFieldStore {
                         field_offset,
                         src: ret_local,
                     });
@@ -9678,7 +9775,7 @@ impl Builder {
                     return None;
                 };
                 let dest = self.alloc_local(ResolvedTy::String);
-                self.instructions.push(Instr::MachineStateName {
+                self.push_instr(Instr::MachineStateName {
                     machine_name: machine_name.clone(),
                     src_local,
                     dest,
@@ -9896,7 +9993,7 @@ impl Builder {
                         _ => unreachable!("guarded by matches! above"),
                     };
                     let dest = self.alloc_local(ty.clone());
-                    self.instructions.push(Instr::FloatLit {
+                    self.push_instr(Instr::FloatLit {
                         dest,
                         value_bits,
                         width,
@@ -9904,7 +10001,7 @@ impl Builder {
                     return Some(dest);
                 }
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest,
                     value: *value,
                 });
@@ -9919,7 +10016,7 @@ impl Builder {
                 // ConstI64 for integer literals; `Instr::ConstI64`'s
                 // emitter already truncates to the dest local's width.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest,
                     value: i64::from(*value),
                 });
@@ -9964,7 +10061,7 @@ impl Builder {
                     }
                 };
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::FloatLit {
+                self.push_instr(Instr::FloatLit {
                     dest,
                     value_bits,
                     width,
@@ -9982,7 +10079,7 @@ impl Builder {
                 // ran; `s` is a decoded Rust String and `as_bytes()` gives
                 // the correct UTF-8 byte sequence.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::StringLit {
+                self.push_instr(Instr::StringLit {
                     bytes: s.as_bytes().to_vec(),
                     dest,
                 });
@@ -9993,7 +10090,7 @@ impl Builder {
                 // pattern; codegen maps it to an `i32` constant. The cast is
                 // total — Rust's `char` guarantees scalar-value range.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::CharLit {
+                self.push_instr(Instr::CharLit {
                     value: *c as u32,
                     dest,
                 });
@@ -10010,14 +10107,14 @@ impl Builder {
                 // exists for exhaustiveness so a future producer has a
                 // corresponding MIR variant.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::UnitLit { dest });
+                self.push_instr(Instr::UnitLit { dest });
                 Some(dest)
             }
             HirLiteral::Duration(nanos) => {
                 // Duration literals carry nanoseconds already (`i64`) from
                 // parse time. Forward directly — no conversion needed.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::DurationLit {
+                self.push_instr(Instr::DurationLit {
                     nanos: *nanos,
                     dest,
                 });
@@ -10030,7 +10127,7 @@ impl Builder {
                 // call `hew_bytes_from_static_raw(ptr, len, dst)` to build the
                 // refcounted `BytesTriple` at runtime.
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::BytesLit {
+                self.push_instr(Instr::BytesLit {
                     bytes: data.clone(),
                     dest,
                 });
@@ -10117,7 +10214,7 @@ impl Builder {
             if let (Some(lhs_width), Some(rhs_width)) = (float_width(&lhs_ty), float_width(&rhs_ty))
             {
                 if lhs_width == rhs_width {
-                    self.instructions.push(Instr::FloatCmp {
+                    self.push_instr(Instr::FloatCmp {
                         dest,
                         pred,
                         lhs,
@@ -10127,7 +10224,7 @@ impl Builder {
                     return Some(dest);
                 }
             }
-            self.instructions.push(Instr::IntCmp {
+            self.push_instr(Instr::IntCmp {
                 dest,
                 pred,
                 lhs,
@@ -10150,7 +10247,7 @@ impl Builder {
             _ => None,
         };
         if let Some(instr) = wrapping_instr {
-            self.instructions.push(instr);
+            self.push_instr(instr);
             return Some(dest);
         }
 
@@ -10178,7 +10275,7 @@ impl Builder {
             _ => None,
         };
         if let Some(instr) = bitwise_instr {
-            self.instructions.push(instr);
+            self.push_instr(instr);
             return Some(dest);
         }
 
@@ -10232,12 +10329,12 @@ impl Builder {
                     width,
                 },
             };
-            self.instructions.push(float_instr);
+            self.push_instr(float_instr);
             return Some(dest);
         }
 
         if matches!(op, BinaryOp::Add) && matches!(ty, ResolvedTy::String) {
-            self.instructions.push(Instr::CallRuntimeAbi(
+            self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new("hew_string_concat", vec![lhs, rhs], Some(dest))
                     .expect("hew_string_concat is an allowlisted runtime symbol"),
             ));
@@ -10276,7 +10373,7 @@ impl Builder {
         // Allocate the overflow-flag local as a bool. Codegen widens
         // the i1 returned by `extractvalue` to the i8 backing slot.
         let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntArithChecked {
+        self.push_instr(Instr::IntArithChecked {
             op: arith_op,
             signed,
             dest,
@@ -10317,7 +10414,7 @@ impl Builder {
         let dest = self.alloc_local(result_ty.clone());
         match op {
             UnaryOp::Not if operand_ty == &ResolvedTy::Bool && result_ty == &ResolvedTy::Bool => {
-                self.instructions.push(Instr::BoolNot {
+                self.push_instr(Instr::BoolNot {
                     dest,
                     operand: operand_place,
                 });
@@ -10325,7 +10422,7 @@ impl Builder {
             }
             UnaryOp::Negate if operand_ty == result_ty => {
                 if let Some(width) = float_width(result_ty) {
-                    self.instructions.push(Instr::FloatNeg {
+                    self.push_instr(Instr::FloatNeg {
                         dest,
                         operand: operand_place,
                         width,
@@ -10344,7 +10441,7 @@ impl Builder {
                     return None;
                 };
                 let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntNegChecked {
+                self.push_instr(Instr::IntNegChecked {
                     signed,
                     dest,
                     operand: operand_place,
@@ -10367,7 +10464,7 @@ impl Builder {
             UnaryOp::BitNot
                 if operand_ty == result_ty && integer_signedness(result_ty).is_some() =>
             {
-                self.instructions.push(Instr::IntBitNot {
+                self.push_instr(Instr::IntBitNot {
                     dest,
                     operand: operand_place,
                 });
@@ -10467,7 +10564,7 @@ impl Builder {
                 },
                 _ => unreachable!("lower_div_rem called with non-div/rem op"),
             };
-            self.instructions.push(float_instr);
+            self.push_instr(float_instr);
             return Some(dest);
         }
 
@@ -10486,12 +10583,12 @@ impl Builder {
 
         // ── divide-by-zero check ────────────────────────────────────
         let zero_const = self.alloc_local(ty.clone());
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: zero_const,
             value: 0,
         });
         let zero_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: zero_flag,
             pred: CmpPred::Eq,
             lhs: rhs,
@@ -10532,12 +10629,12 @@ impl Builder {
                 return None;
             };
             let min_const = self.alloc_local(ty.clone());
-            self.instructions.push(Instr::ConstI64 {
+            self.push_instr(Instr::ConstI64 {
                 dest: min_const,
                 value: min_val,
             });
             let min_flag = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntCmp {
+            self.push_instr(Instr::IntCmp {
                 dest: min_flag,
                 pred: CmpPred::Eq,
                 lhs,
@@ -10554,12 +10651,12 @@ impl Builder {
             // min_check_bb: check whether rhs == -1
             self.start_block(min_check_bb);
             let negone_const = self.alloc_local(ty.clone());
-            self.instructions.push(Instr::ConstI64 {
+            self.push_instr(Instr::ConstI64 {
                 dest: negone_const,
                 value: -1,
             });
             let negone_flag = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntCmp {
+            self.push_instr(Instr::IntCmp {
                 dest: negone_flag,
                 pred: CmpPred::Eq,
                 lhs: rhs,
@@ -10582,13 +10679,13 @@ impl Builder {
 
         // ── div / rem instruction on the safe path ──────────────────
         match op {
-            BinaryOp::Divide => self.instructions.push(Instr::IntDiv {
+            BinaryOp::Divide => self.push_instr(Instr::IntDiv {
                 signed,
                 dest,
                 lhs,
                 rhs,
             }),
-            BinaryOp::Modulo => self.instructions.push(Instr::IntRem {
+            BinaryOp::Modulo => self.push_instr(Instr::IntRem {
                 signed,
                 dest,
                 lhs,
@@ -10666,12 +10763,12 @@ impl Builder {
 
         // ── out-of-range check: (count as unsigned) >= width ────────
         let width_const = self.alloc_local(ty.clone());
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: width_const,
             value: width,
         });
         let oor_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: oor_flag,
             pred: CmpPred::UnsignedGreaterEq,
             lhs: rhs, // shift count
@@ -10694,8 +10791,8 @@ impl Builder {
 
         // ── shift instruction on the safe path ──────────────────────
         match op {
-            BinaryOp::Shl => self.instructions.push(Instr::IntShl { dest, lhs, rhs }),
-            BinaryOp::Shr => self.instructions.push(Instr::IntShr {
+            BinaryOp::Shl => self.push_instr(Instr::IntShl { dest, lhs, rhs }),
+            BinaryOp::Shr => self.push_instr(Instr::IntShr {
                 signed,
                 dest,
                 lhs,
@@ -10782,7 +10879,7 @@ impl Builder {
         self.start_block(then_bb);
         let then_value = self.lower_value(then_expr);
         if let Some(src) = then_value {
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
             });
@@ -10800,7 +10897,7 @@ impl Builder {
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_value(else_expr);
             if let Some(src) = else_value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -11147,7 +11244,7 @@ impl Builder {
         // generator-yield path — identical fresh-solely-owned-reference shape.
         if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
         {
-            self.instructions.push(Instr::Drop {
+            self.push_instr(Instr::Drop {
                 place,
                 ty: ty.clone(),
                 drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
@@ -11267,7 +11364,7 @@ impl Builder {
         };
         if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
         {
-            self.instructions.push(Instr::Drop {
+            self.push_instr(Instr::Drop {
                 place,
                 ty: ty.clone(),
                 drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
@@ -11739,7 +11836,7 @@ impl Builder {
                 });
                 self.record_binding_scope(*binding_id);
                 let dest = self.alloc_local(binding_ty);
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest,
                     src: Place::Local(scrutinee_local),
                 });
@@ -11763,7 +11860,7 @@ impl Builder {
             // Arm body.
             let value = self.lower_value(&arm.body);
             if let Some(src) = value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -12036,7 +12133,7 @@ impl Builder {
             }
             match &selected.predicate {
                 hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                    self.instructions.push(Instr::RecordFieldLoad {
+                    self.push_instr(Instr::RecordFieldLoad {
                         record: Place::Local(scrutinee_local),
                         field_offset: FieldOffset(binding.field_idx),
                         dest,
@@ -12057,7 +12154,7 @@ impl Builder {
                         });
                         return None;
                     }
-                    self.instructions.push(Instr::TupleFieldLoad {
+                    self.push_instr(Instr::TupleFieldLoad {
                         tuple: Place::Local(scrutinee_local),
                         field_index: binding.field_idx,
                         dest,
@@ -12145,14 +12242,14 @@ impl Builder {
                 let temp = self.alloc_local(field_ty.clone());
                 match &selected.predicate {
                     hew_hir::HirMatchArmPredicate::RecordProject { .. } => {
-                        self.instructions.push(Instr::RecordFieldLoad {
+                        self.push_instr(Instr::RecordFieldLoad {
                             record: Place::Local(scrutinee_local),
                             field_offset: FieldOffset(idx),
                             dest: temp,
                         });
                     }
                     hew_hir::HirMatchArmPredicate::TupleProject { .. } => {
-                        self.instructions.push(Instr::TupleFieldLoad {
+                        self.push_instr(Instr::TupleFieldLoad {
                             tuple: Place::Local(scrutinee_local),
                             field_index: idx,
                             dest: temp,
@@ -12162,7 +12259,7 @@ impl Builder {
                         "owned-field enumeration only populated for project predicates"
                     ),
                 }
-                self.instructions.push(Instr::Drop {
+                self.push_instr(Instr::Drop {
                     place: temp,
                     ty: field_ty,
                     drop_fn: Some(crate::model::DropFnSpec::Release(drop_symbol)),
@@ -12227,7 +12324,7 @@ impl Builder {
         }
 
         if let Some(src) = value {
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
             });
@@ -12350,7 +12447,7 @@ impl Builder {
             if let hew_hir::HirMatchArmPredicate::Literal { lit, ty } = &arm.predicate {
                 let expected = self.lower_match_literal_constant(lit, ty, arm.body.site)?;
                 let cond_local = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntCmp {
+                self.push_instr(Instr::IntCmp {
                     pred: CmpPred::Eq,
                     lhs: Place::Local(scrutinee_local),
                     rhs: expected,
@@ -12395,7 +12492,7 @@ impl Builder {
 
             // Arm body: produce the result and jump to the join.
             if let Some(src) = self.lower_value(&arm.body) {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -12431,7 +12528,7 @@ impl Builder {
                 if ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize) =>
             {
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest,
                     value: *value,
                 });
@@ -12439,7 +12536,7 @@ impl Builder {
             }
             (HirLiteral::Bool(value), ResolvedTy::Bool) => {
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest,
                     value: i64::from(*value),
                 });
@@ -12447,7 +12544,7 @@ impl Builder {
             }
             (HirLiteral::Char(value), ResolvedTy::Char) => {
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::CharLit {
+                self.push_instr(Instr::CharLit {
                     value: *value as u32,
                     dest,
                 });
@@ -12468,7 +12565,7 @@ impl Builder {
                     return None;
                 }
                 let dest = self.alloc_local(ty.clone());
-                self.instructions.push(Instr::StringLit {
+                self.push_instr(Instr::StringLit {
                     bytes: bytes.to_vec(),
                     dest,
                 });
@@ -12658,7 +12755,7 @@ impl Builder {
 
             // ConstI64 for the literal id.
             let lit_local = self.alloc_local(ResolvedTy::I64);
-            self.instructions.push(Instr::ConstI64 {
+            self.push_instr(Instr::ConstI64 {
                 dest: lit_local,
                 value: i64::from(literal_id),
             });
@@ -12670,7 +12767,7 @@ impl Builder {
                 vec![Place::Local(scrutinee_local), lit_local],
                 Some(match_result_local),
             ) {
-                Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                Ok(call) => self.push_instr(Instr::CallRuntimeAbi(call)),
                 Err(e) => {
                     // The symbol must be in the allowlist (we added it in slice 4);
                     // if we reach here it is a code invariant violation.
@@ -12689,12 +12786,12 @@ impl Builder {
 
             // Widen the i32 match result to Bool for the branch condition.
             let zero_local = self.alloc_local(ResolvedTy::I32);
-            self.instructions.push(Instr::ConstI64 {
+            self.push_instr(Instr::ConstI64 {
                 dest: zero_local,
                 value: 0,
             });
             let match_cond_local = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntCmp {
+            self.push_instr(Instr::IntCmp {
                 pred: crate::model::CmpPred::NotEq,
                 lhs: match_result_local,
                 rhs: zero_local,
@@ -12777,7 +12874,7 @@ impl Builder {
                     // group 1=(foo) and group 2=bar; passing `j+1` would return group 1
                     // ("foo") instead of group 2 ("bar").
                     let cap_idx_local = self.alloc_local(ResolvedTy::I64);
-                    self.instructions.push(Instr::ConstI64 {
+                    self.push_instr(Instr::ConstI64 {
                         dest: cap_idx_local,
                         value: i64::from(*group_idx),
                     });
@@ -12789,7 +12886,7 @@ impl Builder {
                         vec![Place::Local(scrutinee_local), lit_local, cap_idx_local],
                         Some(cap_raw_local),
                     ) {
-                        Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                        Ok(call) => self.push_instr(Instr::CallRuntimeAbi(call)),
                         Err(e) => {
                             self.diagnostics.push(MirDiagnostic {
                                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -12807,7 +12904,7 @@ impl Builder {
                     // Store the raw capture pointer into the capture place for
                     // this named capture. The arm body will read from this local
                     // once the HIR producer threads BindingIds for captures.
-                    self.instructions.push(Instr::Move {
+                    self.push_instr(Instr::Move {
                         dest: capture_places[j],
                         src: cap_raw_local,
                     });
@@ -12816,12 +12913,12 @@ impl Builder {
                     // not capture this group → branch to cleanup/next arm (fail closed:
                     // missing capture ≠ empty string, LESSONS `match-fail-closed`).
                     let null_k_local = self.alloc_local(ResolvedTy::I64);
-                    self.instructions.push(Instr::ConstI64 {
+                    self.push_instr(Instr::ConstI64 {
                         dest: null_k_local,
                         value: 0,
                     });
                     let null_cond_local = self.alloc_local(ResolvedTy::Bool);
-                    self.instructions.push(Instr::IntCmp {
+                    self.push_instr(Instr::IntCmp {
                         pred: crate::model::CmpPred::Eq,
                         lhs: capture_places[j],
                         rhs: null_k_local,
@@ -12868,7 +12965,7 @@ impl Builder {
                                 vec![prior_place],
                                 None,
                             ) {
-                                Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                                Ok(call) => self.push_instr(Instr::CallRuntimeAbi(call)),
                                 Err(e) => {
                                     self.diagnostics.push(MirDiagnostic {
                                         kind: MirDiagnosticKind::NotYetImplemented {
@@ -12926,7 +13023,7 @@ impl Builder {
         if let Some(wildcard) = wildcard_arm {
             let value = self.lower_value(&wildcard.body);
             if let Some(src) = value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -12968,7 +13065,7 @@ impl Builder {
                     vec![cap_place],
                     None,
                 ) {
-                    Ok(call) => self.instructions.push(Instr::CallRuntimeAbi(call)),
+                    Ok(call) => self.push_instr(Instr::CallRuntimeAbi(call)),
                     Err(e) => {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
@@ -12984,7 +13081,7 @@ impl Builder {
 
             let value = self.lower_value(&arm.body);
             if let Some(src) = value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -13139,7 +13236,7 @@ impl Builder {
         // is the substrate primitive; codegen GEPs to outer-struct
         // field 0 and the Move arm widens the iW tag to i64 as needed.
         let tag_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: tag_local,
             src: Place::EnumTag(scrutinee_local),
         });
@@ -13175,12 +13272,12 @@ impl Builder {
                     "variant_arms must only contain EnumVariant predicates; got {other:?}"
                 ),
             };
-            self.instructions.push(Instr::ConstI64 {
+            self.push_instr(Instr::ConstI64 {
                 dest: k_local,
                 value: i64::from(variant_idx),
             });
             let cond_local = self.alloc_local(ResolvedTy::Bool);
-            self.instructions.push(Instr::IntCmp {
+            self.push_instr(Instr::IntCmp {
                 pred: crate::model::CmpPred::Eq,
                 lhs: tag_local,
                 rhs: k_local,
@@ -13232,7 +13329,7 @@ impl Builder {
 
             let value = self.lower_value(&wildcard.body);
             if let Some(src) = value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -13290,7 +13387,7 @@ impl Builder {
                 let expected =
                     self.lower_match_literal_constant(&pred.literal, &pred.ty, arm.body.site)?;
                 let cond_local = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntCmp {
+                self.push_instr(Instr::IntCmp {
                     pred: CmpPred::Eq,
                     lhs: field_place,
                     rhs: expected,
@@ -13371,7 +13468,7 @@ impl Builder {
                     ));
                 }
                 let dest = self.alloc_local(binding.ty.clone());
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
                         local: scrutinee_local,
@@ -13459,7 +13556,7 @@ impl Builder {
                         .push((binding.binding, binding.name.clone(), binding_ty));
                 }
                 let dest = self.alloc_local(binding.ty.clone());
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest,
                     src: Place::MachineVariant {
                         local: src_local,
@@ -13557,7 +13654,7 @@ impl Builder {
             }
 
             if let Some(src) = value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -13655,7 +13752,7 @@ impl Builder {
             });
             return None;
         };
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: payload_place,
             src: Place::MachineVariant {
                 local: parent_local,
@@ -13664,17 +13761,17 @@ impl Builder {
             },
         });
         let tag_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: tag_local,
             src: Place::EnumTag(payload_local),
         });
         let k_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: k_local,
             value: i64::from(pred.variant_idx),
         });
         let cond_local = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             pred: CmpPred::Eq,
             lhs: tag_local,
             rhs: k_local,
@@ -13733,7 +13830,7 @@ impl Builder {
         });
         self.record_binding_scope(*binding_id);
         let dest = self.alloc_local(binding_ty);
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest,
             src: scrutinee_local,
         });
@@ -13914,19 +14011,19 @@ impl Builder {
         // primitive that codegen GEPs to outer-struct field 0; widening from
         // the per-enum tag width to i64 happens inside the Move arm.
         let tag_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: tag_local,
             src: Place::EnumTag(scrutinee_local),
         });
 
         // Compare tag against the continue-arm variant index.
         let k_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: k_local,
             value: i64::from(variant_idx),
         });
         let cond_local = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             pred: crate::model::CmpPred::Eq,
             lhs: tag_local,
             rhs: k_local,
@@ -13962,7 +14059,7 @@ impl Builder {
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
             let dest = self.alloc_local(binding.ty.clone());
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
                     local: scrutinee_local,
@@ -14085,17 +14182,17 @@ impl Builder {
         };
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: tag_local,
             src: Place::EnumTag(scrutinee_local),
         });
         let k_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: k_local,
             value: i64::from(variant_idx),
         });
         let cond_local = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             pred: crate::model::CmpPred::Eq,
             lhs: tag_local,
             rhs: k_local,
@@ -14140,7 +14237,7 @@ impl Builder {
                     .push((binding.binding, binding.name.clone(), binding_ty.clone()));
             }
             let dest = self.alloc_local(binding.ty.clone());
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest,
                 src: Place::MachineVariant {
                     local: scrutinee_local,
@@ -14162,7 +14259,7 @@ impl Builder {
             None
         };
         if let Some(src) = then_value {
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
             });
@@ -14200,7 +14297,7 @@ impl Builder {
                 None
             };
             if let Some(src) = else_value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -14327,10 +14424,13 @@ impl Builder {
         // bound (the `start` of the range) the counter must stay `>=`.
         let bound = self.alloc_local(counter_ty.clone());
 
-        // Lower the stride into a local once; both directions reuse it.
+        // Lower the stride into a local once; both directions reuse it. The
+        // step expression is user source (the `step_by(n)` argument), so its
+        // setup Move carries the for-loop statement span — gdb steps onto the
+        // for line, not the prior statement.
         let step_place = self.lower_value(step)?;
         let step_val = self.alloc_local(counter_ty.clone());
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: step_val,
             src: step_place,
         });
@@ -14340,6 +14440,12 @@ impl Builder {
         // (A negative step is impossible for an unsigned width and is rejected
         // by the checker for a signed literal; a dynamic negative signed step
         // is caught by the same `<= 0` test against zero below.)
+        //
+        // SYNTHETIC step-validation guard — no user source statement. The
+        // zero compare and its trap are compiler-inserted fail-closed
+        // infrastructure, not anything the programmer wrote, so they stay
+        // span-less (`instructions.push`); attributing them to the for line
+        // would make gdb stop on a check the user never typed.
         {
             let zero = self.alloc_local(counter_ty.clone());
             self.instructions.push(Instr::ConstI64 {
@@ -14372,14 +14478,17 @@ impl Builder {
 
         if descending {
             // Descending: counter starts at the high element and the header
-            // gates on `counter >= start`.  `bound` holds `start`.
-            self.instructions.push(Instr::Move {
+            // gates on `counter >= start`.  `bound` holds `start`.  The
+            // counter/bound init computes the user's range bounds, so it
+            // carries the for-loop statement span (`push_instr`) — gdb steps
+            // onto the for line for the loop setup.
+            self.push_instr(Instr::Move {
                 dest: bound,
                 src: raw_start,
             });
             if inclusive {
                 // `a..=b` reversed starts at `b`.
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: counter,
                     src: raw_end,
                 });
@@ -14387,12 +14496,12 @@ impl Builder {
                 // `a..b` reversed starts at `b - 1` (checked; trap on
                 // underflow so `a..MIN` fails closed rather than wrapping).
                 let one = self.alloc_local(counter_ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest: one,
                     value: 1,
                 });
                 let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntArithChecked {
+                self.push_instr(Instr::IntArithChecked {
                     op: IntArithOp::Sub,
                     signed: counter_signedness,
                     dest: counter,
@@ -14415,8 +14524,9 @@ impl Builder {
             }
         } else {
             // Ascending: counter starts at `start`; `bound` is the exclusive
-            // upper bound.
-            self.instructions.push(Instr::Move {
+            // upper bound.  The counter/bound init computes the user's range
+            // bounds, so it carries the for-loop statement span (`push_instr`).
+            self.push_instr(Instr::Move {
                 dest: counter,
                 src: raw_start,
             });
@@ -14425,12 +14535,12 @@ impl Builder {
             //                       overflow so `a..=i64::MAX` fails closed).
             if inclusive {
                 let one = self.alloc_local(counter_ty.clone());
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest: one,
                     value: 1,
                 });
                 let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntArithChecked {
+                self.push_instr(Instr::IntArithChecked {
                     op: IntArithOp::Add,
                     signed: counter_signedness,
                     dest: bound,
@@ -14454,7 +14564,7 @@ impl Builder {
                 // allocated below and we Goto it from here.
                 self.start_block(pre_header_bb);
             } else {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: bound,
                     src: raw_end,
                 });
@@ -14478,7 +14588,7 @@ impl Builder {
         // `counter >= bound` (bound == start).  Either way, false → exit.
         self.start_block(header_bb);
         let cond = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: cond,
             pred: if descending {
                 CmpPred::SignedGreaterEq
@@ -14560,8 +14670,10 @@ impl Builder {
         // to the loop exit instead of trapping.  The header's `counter >= start`
         // guard handles every non-underflowing terminus.
         self.start_block(inc_bb);
+        // The counter advance is user-visible loop mechanics (the per-iteration
+        // step), so it carries the for-loop statement span (`push_instr`).
         let advance_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntArithChecked {
+        self.push_instr(Instr::IntArithChecked {
             op: if descending {
                 IntArithOp::Sub
             } else {
@@ -14697,7 +14809,7 @@ impl Builder {
         let result_place = self.alloc_local(result_ty.clone());
         // Write `false` as the pessimistic default (the join block reads
         // result_place, and the else path never writes to it).
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: result_place,
             value: 0,
         });
@@ -14716,7 +14828,7 @@ impl Builder {
         // rhs_bb: lhs was true, evaluate rhs and move into result.
         self.start_block(rhs_bb);
         if let Some(rhs_place) = self.lower_value(rhs_expr) {
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest: result_place,
                 src: rhs_place,
             });
@@ -14758,7 +14870,7 @@ impl Builder {
         let result_place = self.alloc_local(result_ty.clone());
         // Write `true` as the optimistic default (the then path never writes
         // to result_place; the else path writes the rhs value into it).
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: result_place,
             value: 1,
         });
@@ -14777,7 +14889,7 @@ impl Builder {
         // rhs_bb: lhs was false, evaluate rhs and move into result.
         self.start_block(rhs_bb);
         if let Some(rhs_place) = self.lower_value(rhs_expr) {
-            self.instructions.push(Instr::Move {
+            self.push_instr(Instr::Move {
                 dest: result_place,
                 src: rhs_place,
             });
@@ -14851,7 +14963,7 @@ impl Builder {
             match raw_ty {
                 ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => {
                     let wide_place = self.alloc_local(ResolvedTy::I64);
-                    self.instructions.push(Instr::NumericCast {
+                    self.push_instr(Instr::NumericCast {
                         dest: wide_place,
                         src: raw_index_place,
                         from_ty: raw_ty,
@@ -14867,7 +14979,7 @@ impl Builder {
 
         // Step 1: Call hew_vec_len(vec) -> i64 to get the length.
         let len_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
                 .expect("hew_vec_len is an allowlisted runtime symbol"),
         ));
@@ -14877,7 +14989,7 @@ impl Builder {
         // as unsigned, which is ≥ any valid len. This catches both negative
         // and out-of-bounds indices in one compare.
         let oob_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: oob_flag,
             pred: CmpPred::UnsignedGreaterEq,
             lhs: index_place,
@@ -14989,7 +15101,7 @@ impl Builder {
         };
 
         let result_place = self.alloc_local(elem_ty.clone());
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(
                 get_symbol,
                 vec![vec_place, index_place],
@@ -15127,13 +15239,13 @@ impl Builder {
                 // per the checker; overflow on i64::MAX traps as
                 // TrapKind::IntegerOverflow.
                 let one_place = self.alloc_local(ResolvedTy::I64);
-                self.instructions.push(Instr::ConstI64 {
+                self.push_instr(Instr::ConstI64 {
                     dest: one_place,
                     value: 1,
                 });
                 let bumped = self.alloc_local(ResolvedTy::I64);
                 let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-                self.instructions.push(Instr::IntArithChecked {
+                self.push_instr(Instr::IntArithChecked {
                     op: IntArithOp::Add,
                     signed: IntSignedness::Signed,
                     dest: bumped,
@@ -15160,7 +15272,7 @@ impl Builder {
         } else {
             // Open end: probe length via hew_vec_len.
             let p = self.alloc_local(ResolvedTy::I64);
-            self.instructions.push(Instr::CallRuntimeAbi(
+            self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(p))
                     .expect("hew_vec_len is an allowlisted runtime symbol"),
             ));
@@ -15172,7 +15284,7 @@ impl Builder {
         let oob_trap_bb = self.alloc_block();
         let after_check1_bb = self.alloc_block();
         let bad1 = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: bad1,
             pred: CmpPred::SignedGreater,
             lhs: start_place,
@@ -15189,12 +15301,12 @@ impl Builder {
         // end against the current container length.
         self.start_block(after_check1_bb);
         let len_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new("hew_vec_len", vec![vec_place], Some(len_place))
                 .expect("hew_vec_len is an allowlisted runtime symbol"),
         ));
         let bad2 = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             dest: bad2,
             pred: CmpPred::SignedGreater,
             lhs: end_place,
@@ -15217,7 +15329,7 @@ impl Builder {
         // `*mut HewVec<T>` handle (ptr-shaped local typed as Vec<T>).
         self.start_block(after_check2_bb);
         let result_place = self.alloc_local(result_ty.clone());
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(
                 slice_symbol,
                 vec![vec_place, start_place, end_place],
@@ -15313,7 +15425,7 @@ impl Builder {
             let count_i32 = self.alloc_local(ResolvedTy::I32);
             self.push_runtime_call("hew_string_char_count", vec![s_place], Some(count_i32));
             let count_i64 = self.alloc_local(ResolvedTy::I64);
-            self.instructions.push(Instr::NumericCast {
+            self.push_instr(Instr::NumericCast {
                 dest: count_i64,
                 src: count_i32,
                 from_ty: ResolvedTy::I32,
@@ -15402,13 +15514,13 @@ impl Builder {
     /// range lowering; mirrors the same pattern used by the Vec arm.
     fn bump_inclusive_endpoint(&mut self, base: Place) -> Place {
         let one_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: one_place,
             value: 1,
         });
         let bumped = self.alloc_local(ResolvedTy::I64);
         let overflow_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntArithChecked {
+        self.push_instr(Instr::IntArithChecked {
             op: IntArithOp::Add,
             signed: IntSignedness::Signed,
             dest: bumped,
@@ -15482,7 +15594,7 @@ impl Builder {
     }
 
     fn push_runtime_call(&mut self, symbol: &str, args: Vec<Place>, dest: Option<Place>) {
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(symbol, args, dest)
                 .unwrap_or_else(|_| panic!("{symbol} is an allowlisted runtime symbol")),
         ));
@@ -15521,7 +15633,7 @@ impl Builder {
         );
 
         let unit_place = self.alloc_local(ResolvedTy::Unit);
-        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        self.push_instr(Instr::UnitLit { dest: unit_place });
         unit_place
     }
 
@@ -15673,6 +15785,7 @@ impl Builder {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
@@ -15791,7 +15904,7 @@ impl Builder {
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
         self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
-        self.instructions.push(Instr::SpawnTaskDirect {
+        self.push_instr(Instr::SpawnTaskDirect {
             task: task_place,
             callee_symbol,
         });
@@ -15968,7 +16081,7 @@ impl Builder {
             })
             .collect();
         let env_place = self.alloc_local(env_ty.clone());
-        self.instructions.push(Instr::RecordInit {
+        self.push_instr(Instr::RecordInit {
             ty: env_ty.clone(),
             fields: field_pairs,
             dest: env_place,
@@ -15980,7 +16093,7 @@ impl Builder {
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
         self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
-        self.instructions.push(Instr::SpawnTaskClosure {
+        self.push_instr(Instr::SpawnTaskClosure {
             task: task_place,
             fn_symbol: shim_name,
             env: env_place,
@@ -16078,6 +16191,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
         // locals are positional, not HIR bindings).
@@ -16188,7 +16302,7 @@ impl Builder {
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
         self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
-        self.instructions.push(Instr::SpawnTaskClosure {
+        self.push_instr(Instr::SpawnTaskClosure {
             task: task_place,
             fn_symbol,
             env: env_place,
@@ -16286,7 +16400,7 @@ impl Builder {
             None,
         );
         let unit_place = self.alloc_local(ResolvedTy::Unit);
-        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        self.push_instr(Instr::UnitLit { dest: unit_place });
         Some(unit_place)
     }
 
@@ -16334,7 +16448,7 @@ impl Builder {
         self.mark_binding_moved(binding_id);
         self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
-        self.instructions.push(Instr::UnitLit { dest: unit_place });
+        self.push_instr(Instr::UnitLit { dest: unit_place });
         Some(unit_place)
     }
 
@@ -16596,12 +16710,12 @@ impl Builder {
         self.start_block(next);
 
         let result_place = self.alloc_local(resolved_ret_ty);
-        self.instructions.push(Instr::TupleFieldLoad {
+        self.push_instr(Instr::TupleFieldLoad {
             tuple: tuple_place,
             field_index: 0,
             dest: result_place,
         });
-        self.instructions.push(Instr::TupleFieldLoad {
+        self.push_instr(Instr::TupleFieldLoad {
             tuple: tuple_place,
             field_index: 1,
             dest: receiver_slot,
@@ -17015,7 +17129,7 @@ impl Builder {
         let count_i32 = self.alloc_local(ResolvedTy::I32);
         self.push_runtime_call("hew_string_char_count", vec![s], Some(count_i32));
         let count_i64 = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::NumericCast {
+        self.push_instr(Instr::NumericCast {
             dest: count_i64,
             src: count_i32,
             from_ty: ResolvedTy::I32,
@@ -17499,7 +17613,7 @@ impl Builder {
         // (`dest: None`); the two DuplexHandle out-params are in args[2..=3].
         // Codegen (E4) interprets DuplexHandle places in args[2..=3] as
         // "pass the address of this local's alloca as *mut *mut DuplexHandle".
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(
                 "hew_duplex_pair",
                 vec![cap_place, r_cap_place, dh0, dh1],
@@ -17552,7 +17666,7 @@ impl Builder {
             return None;
         }
         let sup_place = self.lower_value(&hir_args[0])?;
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new("hew_supervisor_stop", vec![sup_place], None)
                 .expect("hew_supervisor_stop is an allowlisted runtime symbol"),
         ));
@@ -17608,7 +17722,7 @@ impl Builder {
 
         // Emit a constant for the static slot index.
         let idx_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: idx_place,
             value: i64::from(slot_index),
         });
@@ -17623,7 +17737,7 @@ impl Builder {
         });
 
         // Emit the runtime call. The dest carries the 16-byte struct return value.
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(
                 "hew_supervisor_child_get",
                 vec![sup_place, idx_place],
@@ -17634,7 +17748,7 @@ impl Builder {
 
         // Extract tag (field 0, type i64 — zero-extended from the u8 wire byte).
         let tag_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::RecordFieldLoad {
+        self.push_instr(Instr::RecordFieldLoad {
             record: result_place,
             field_offset: FieldOffset(0),
             dest: tag_place,
@@ -17642,14 +17756,14 @@ impl Builder {
 
         // Emit `zero_place = 0i64` for the comparison.
         let zero_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: zero_place,
             value: 0,
         });
 
         // Branch: tag == 0 (Live) → success_bb; tag != 0 → trap_bb.
         let is_live_flag = self.alloc_local(ResolvedTy::Bool);
-        self.instructions.push(Instr::IntCmp {
+        self.push_instr(Instr::IntCmp {
             pred: CmpPred::Eq,
             lhs: tag_place,
             rhs: zero_place,
@@ -17674,7 +17788,7 @@ impl Builder {
         // S3 emits a `ptrtoint`/`inttoptr` as needed for the wire representation.
         self.start_block(success_bb);
         let raw_handle = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::RecordFieldLoad {
+        self.push_instr(Instr::RecordFieldLoad {
             record: result_place,
             field_offset: FieldOffset(1),
             dest: raw_handle,
@@ -17690,7 +17804,7 @@ impl Builder {
 
         // Move the i64 wire value into the typed ActorHandle slot.
         // S3 emits the appropriate cast; at MIR level they are the same storage.
-        self.instructions.push(Instr::Move {
+        self.push_instr(Instr::Move {
             dest: handle_place,
             src: raw_handle,
         });
@@ -17832,7 +17946,7 @@ impl Builder {
         //   or when hew_duplex_send uses a typed message rather than a byte slice.
         // WHAT: replace with a proper sizeof/alignof expression or a typed ABI.
         let len_place = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: len_place,
             value: 8,
         });
@@ -17842,7 +17956,7 @@ impl Builder {
         // scope-exit drop (LESSONS `raii-null-after-move`, `cleanup-all-exits`).
         // `dest` is `Some` only in value context; codegen materializes the Result
         // there and leaves the rc unobserved when it is `None`.
-        self.instructions.push(Instr::CallRuntimeAbi(
+        self.push_instr(Instr::CallRuntimeAbi(
             crate::model::RuntimeCall::new(symbol, vec![recv_place, msg_place, len_place], dest)
                 .expect("send symbol is an allowlisted runtime symbol"),
         ));
@@ -17936,7 +18050,7 @@ impl Builder {
             })
             .collect();
         let dest = self.alloc_local(packed_ty.clone());
-        self.instructions.push(Instr::RecordInit {
+        self.push_instr(Instr::RecordInit {
             ty: packed_ty,
             fields,
             dest,
@@ -18361,7 +18475,7 @@ impl Builder {
             }
             let body_value = self.lower_value(&arm.body);
             if let Some(src) = body_value {
-                self.instructions.push(Instr::Move {
+                self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
                 });
@@ -19274,7 +19388,7 @@ impl Builder {
             unreachable!("alloc_local returns Place::Local");
         };
         let dest = Place::ActorHandle(local_id);
-        self.instructions.push(Instr::SpawnActor {
+        self.push_instr(Instr::SpawnActor {
             actor_name: actor_name.to_string(),
             state,
             init_args,
@@ -19364,7 +19478,7 @@ impl Builder {
                 src,
             ));
         }
-        self.instructions.push(Instr::RecordInit {
+        self.push_instr(Instr::RecordInit {
             ty: state_ty,
             fields,
             dest,
@@ -19415,11 +19529,11 @@ impl Builder {
             | ResolvedTy::Bool
             | ResolvedTy::Char
             | ResolvedTy::Duration => {
-                self.instructions.push(Instr::ConstI64 { dest, value: 0 });
+                self.push_instr(Instr::ConstI64 { dest, value: 0 });
                 Some(dest)
             }
             ResolvedTy::F32 => {
-                self.instructions.push(Instr::FloatLit {
+                self.push_instr(Instr::FloatLit {
                     dest,
                     value_bits: 0.0f32.to_bits().into(),
                     width: FloatWidth::F32,
@@ -19427,7 +19541,7 @@ impl Builder {
                 Some(dest)
             }
             ResolvedTy::F64 => {
-                self.instructions.push(Instr::FloatLit {
+                self.push_instr(Instr::FloatLit {
                     dest,
                     value_bits: 0.0f64.to_bits(),
                     width: FloatWidth::F64,
@@ -19435,7 +19549,7 @@ impl Builder {
                 Some(dest)
             }
             ResolvedTy::Unit => {
-                self.instructions.push(Instr::UnitLit { dest });
+                self.push_instr(Instr::UnitLit { dest });
                 Some(dest)
             }
             other => {
@@ -19543,7 +19657,7 @@ impl Builder {
             Some(strategy == crate::closure_env::AllocationStrategy::Heap);
 
         let closure_place = self.alloc_local(expr.ty.clone());
-        self.instructions.push(Instr::MakeClosure {
+        self.push_instr(Instr::MakeClosure {
             fn_symbol: shim_name,
             env: env_place,
             dest: closure_place,
@@ -19617,7 +19731,7 @@ impl Builder {
                 place
             } else if let Some(source) = self.capture_env_sources.get(&capture.binding).cloned() {
                 let temp = self.alloc_local(source.ty.clone());
-                self.instructions.push(Instr::ClosureEnvFieldLoad {
+                self.push_instr(Instr::ClosureEnvFieldLoad {
                     env: source.env,
                     env_ty: source.env_ty,
                     field_offset: source.field_offset,
@@ -19646,7 +19760,7 @@ impl Builder {
         }
 
         let env_place = self.alloc_local(env_ty.clone());
-        self.instructions.push(Instr::RecordInit {
+        self.push_instr(Instr::RecordInit {
             ty: env_ty.clone(),
             fields: field_pairs,
             dest: env_place,
@@ -19782,6 +19896,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -19930,6 +20045,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -20268,7 +20384,7 @@ impl Builder {
                     field_tys,
                 });
             let dest = self.alloc_local(env_resolved_ty.clone());
-            self.instructions.push(Instr::RecordInit {
+            self.push_instr(Instr::RecordInit {
                 ty: env_resolved_ty.clone(),
                 fields: init_fields,
                 dest,
@@ -20405,6 +20521,7 @@ impl Builder {
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: user_param_local_ids.clone(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         let thir_statements: Vec<MirStatement> = body_blocks
@@ -20625,7 +20742,7 @@ impl Builder {
         // that path. There is exactly one branch predicate (codegen's
         // struct-type check), so the two ends cannot drift.
         let len_local = self.alloc_local(ResolvedTy::I64);
-        self.instructions.push(Instr::ConstI64 {
+        self.push_instr(Instr::ConstI64 {
             dest: len_local,
             value: 8,
         });
@@ -20717,7 +20834,7 @@ impl Builder {
         }
         .expect("hew_lambda_actor_{send,weak_send,ask} are on the M2 runtime allowlist");
 
-        self.instructions.push(Instr::CallRuntimeAbi(call));
+        self.push_instr(Instr::CallRuntimeAbi(call));
         Some(dest)
     }
 
@@ -21082,6 +21199,7 @@ impl Builder {
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -24948,6 +25066,7 @@ fn apply_nested_fresh_string_temp_drops(
     blocks: &mut [BasicBlock],
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
+    instr_spans: &mut HashMap<(u32, u32), (u32, u32)>,
 ) {
     let insertions = collect_nested_fresh_string_temp_drops(blocks, locals, binding_locals);
     if insertions.is_empty() {
@@ -24974,7 +25093,50 @@ fn apply_nested_fresh_string_temp_drops(
                     drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
                 },
             );
+            // Keep the Stage 2 per-instruction line table aligned with the
+            // splice: every side-table entry for this block at index `>= at`
+            // shifts up by one. The inserted `hew_string_drop` itself gets no
+            // entry — a synthesised drop inherits the nearest enclosing
+            // location at codegen (fail-closed).
+            shift_instr_spans_on_insert(
+                instr_spans,
+                block.id,
+                u32::try_from(at).unwrap_or(u32::MAX),
+            );
         }
+    }
+}
+
+/// Shift the `instr_spans` keys of `block_id` to account for an instruction
+/// spliced into a sealed block at position `at`: every entry at index `>= at`
+/// moves up by one. Post-seal splices (`apply_nested_fresh_string_temp_drops`'s
+/// inline `hew_string_drop`, the `EnterContext` carrier in
+/// `bracket_actor_handler_blocks`) mutate a block's `instructions` after the
+/// per-block buffer was drained, shifting the positions the Stage 2 side-table
+/// keys on; without this the per-statement line table would mis-attribute
+/// every instruction after the splice. The spliced instruction itself is left
+/// without an entry by design.
+fn shift_instr_spans_on_insert(
+    instr_spans: &mut HashMap<(u32, u32), (u32, u32)>,
+    block_id: u32,
+    at: u32,
+) {
+    if instr_spans.is_empty() {
+        return;
+    }
+    // Collect-then-reinsert: removing every shifted key before reinserting at
+    // `idx + 1` avoids a transient collision (the vacated slots all lay at
+    // `>= at`, the destinations at `> at`, and unshifted keys stay `< at`).
+    let shifted: Vec<((u32, u32), (u32, u32))> = instr_spans
+        .iter()
+        .filter(|((bid, idx), _)| *bid == block_id && *idx >= at)
+        .map(|(key, span)| (*key, *span))
+        .collect();
+    for (key, _) in &shifted {
+        instr_spans.remove(key);
+    }
+    for ((bid, idx), span) in shifted {
+        instr_spans.insert((bid, idx.saturating_add(1)), span);
     }
 }
 

@@ -779,5 +779,6 @@ fn build_drop_shim_function(shim_name: &str, state_ty: ResolvedTy) -> RawMirFunc
         await_deadline_ns: std::collections::HashMap::new(),
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
+        instr_spans: std::collections::HashMap::new(),
     }
 }

@@ -73,10 +73,11 @@
 
 use std::mem::ManuallyDrop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::thread::JoinHandle;
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
 use crate::reply_channel::{
@@ -330,15 +331,10 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
 /// Internal shared state. Shared between the dispatch thread (via
 /// `Arc`) and the weak-ref upgrade path.
 ///
-/// `mailbox_in` (the send half) lives in `HewLambdaActor` wrapped in
-/// `Arc<HewSendHalf>`. When the last `HewLambdaActor` clone drops, the
-/// `Arc<HewSendHalf>` drops, `HewSendHalf::drop` calls `release_sender`,
-/// closing the send side of the queue. The dispatch thread's `recv` then
-/// returns `RecvError::Closed` and the loop exits naturally.
-///
-/// Separating `mailbox_in` from `LambdaActorInner` is the key invariant
-/// that allows the dispatch thread to hold `Arc<LambdaActorInner>` without
-/// preventing the mailbox from closing when external handles are released.
+/// `mailbox_in` (the send half) lives in [`LambdaActorLifecycle`], not here.
+/// Separating it from `LambdaActorInner` lets the dispatch thread hold
+/// `Arc<LambdaActorInner>` without keeping the mailbox open after external
+/// handles are released.
 pub struct LambdaActorInner {
     /// Recv-half retained from the body-side pair endpoint. The
     /// body-dispatch loop drains messages here.
@@ -495,23 +491,70 @@ impl Drop for LambdaActorInner {
 
 // ── Strong / Weak handles ──────────────────────────────────────────────────
 
+#[derive(Debug)]
+struct LambdaActorLifecycle {
+    /// Closed before joining the dispatch thread when the last external strong
+    /// handle drops.
+    mailbox_in: ManuallyDrop<HewSendHalf>,
+    dispatch_thread: StdMutex<Option<JoinHandle<()>>>,
+}
+
+impl LambdaActorLifecycle {
+    fn new(mailbox_in: HewSendHalf, dispatch_thread: JoinHandle<()>) -> Self {
+        Self {
+            mailbox_in: ManuallyDrop::new(mailbox_in),
+            dispatch_thread: StdMutex::new(Some(dispatch_thread)),
+        }
+    }
+
+    fn send(&self, msg: Vec<u8>) -> SendError {
+        self.mailbox_in.send(msg)
+    }
+}
+
+impl Drop for LambdaActorLifecycle {
+    fn drop(&mut self) {
+        // Close the mailbox first so the dispatch thread's blocking recv()
+        // observes Closed after draining buffered messages.
+        unsafe { ManuallyDrop::drop(&mut self.mailbox_in) };
+
+        let handle = self
+            .dispatch_thread
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            if handle.thread().id() == std::thread::current().id() {
+                return;
+            }
+            if handle.join().is_err() {
+                crate::set_last_error(
+                    "hew_lambda_actor_release: dispatch thread panicked during teardown"
+                        .to_string(),
+                );
+            }
+        }
+    }
+}
+
 /// Strong lambda-actor handle. Holding a `HewLambdaActor` keeps the
 /// actor alive. When the last strong handle drops:
-/// 1. The `Arc<HewSendHalf>` drops → `HewSendHalf::drop` releases the
-///    sender-cap → the queue's send side closes.
-/// 2. The dispatch thread's next `recv` returns `RecvError::Closed`.
-/// 3. The dispatch thread exits, dropping its `Arc<LambdaActorInner>`.
+/// 1. The handle's `Arc<LambdaActorInner>` drops before lifecycle teardown.
+/// 2. `LambdaActorLifecycle::drop` closes the send half.
+/// 3. The dispatch thread drains the mailbox, exits, and drops its
+///    `Arc<LambdaActorInner>`.
 /// 4. `LambdaActorInner::drop` calls `state_drop(state)`.
-/// 5. Any `HewLambdaActorWeak::upgrade` returns `None` from this point.
-#[derive(Debug, Clone)]
+/// 5. The releasing thread joins the dispatch thread before freeing the C-ABI
+///    wrapper.
+#[derive(Debug)]
 pub struct HewLambdaActor {
-    /// Shared send half. `Arc` ownership so that all clones of this
-    /// handle share a single `HewSendHalf` that closes when the last
-    /// clone drops.
-    mailbox_in: Arc<HewSendHalf>,
     /// Shared inner state. Used for the stopped-flag and weak-ref
     /// upgrade target.
     inner: Arc<LambdaActorInner>,
+    /// Shared external lifecycle. The dispatch thread never holds this Arc, so
+    /// the final external release closes the mailbox and joins the dispatch
+    /// thread before returning.
+    lifecycle: Arc<LambdaActorLifecycle>,
 }
 
 impl HewLambdaActor {
@@ -534,10 +577,6 @@ impl HewLambdaActor {
         let (inner_val, mailbox_in) =
             LambdaActorInner::new(mailbox_capacity, shape, body_fn, state, state_drop);
         let inner = Arc::new(inner_val);
-        // Wrap mailbox_in in Arc so all clones share one send-half.
-        // When the Arc's strong count drops to zero, HewSendHalf::drop
-        // closes the queue and the dispatch thread's recv returns Closed.
-        let mailbox_in = Arc::new(mailbox_in);
         // Drain registry: increment BEFORE spawn so a probe between spawn
         // and increment cannot observe count=0 with a live thread. The
         // counter is decremented by the dispatch closure's `_guard` Drop
@@ -562,8 +601,8 @@ impl HewLambdaActor {
         live_actors.lambda_dispatch_fetch_add(1, Ordering::AcqRel);
         // Spawn the dispatch thread. It holds a strong Arc reference to
         // keep LambdaActorInner alive while the loop runs. The thread
-        // exits when recv returns Closed (i.e., when all external
-        // Arc<HewSendHalf> clones drop).
+        // exits when recv returns Closed (i.e., when the final external
+        // lifecycle closes the send half).
         let dispatch_inner = Arc::clone(&inner);
         let spawn_result = std::thread::Builder::new()
             .name("hew-lambda-dispatch".to_string())
@@ -590,7 +629,9 @@ impl HewLambdaActor {
             live_actors.lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
             return None;
         }
-        Some(Self { mailbox_in, inner })
+        let dispatch_thread = spawn_result.expect("checked is_err above");
+        let lifecycle = Arc::new(LambdaActorLifecycle::new(mailbox_in, dispatch_thread));
+        Some(Self { inner, lifecycle })
     }
 
     /// Send a message envelope. Failure modes:
@@ -602,7 +643,7 @@ impl HewLambdaActor {
         if self.inner.is_stopped() {
             return SendError::ActorStopped;
         }
-        self.mailbox_in.send(msg)
+        self.lifecycle.send(msg)
     }
 
     /// Downgrade to a weak handle. The weak handle does NOT keep the
@@ -612,14 +653,17 @@ impl HewLambdaActor {
     pub fn downgrade(&self) -> HewLambdaActorWeak {
         HewLambdaActorWeak {
             inner: Arc::downgrade(&self.inner),
-            mailbox_in: Arc::downgrade(&self.mailbox_in),
+            lifecycle: Arc::downgrade(&self.lifecycle),
         }
     }
 
     /// Refcount-bump clone of the strong handle.
     #[must_use = "the clone bumps the actor's external refcount; drop releases it"]
     pub fn clone_handle(&self) -> Self {
-        self.clone()
+        Self {
+            inner: Arc::clone(&self.inner),
+            lifecycle: Arc::clone(&self.lifecycle),
+        }
     }
 }
 
@@ -631,22 +675,21 @@ impl HewLambdaActor {
 pub struct HewLambdaActorWeak {
     /// Weak reference to the inner state.
     inner: Weak<LambdaActorInner>,
-    /// Weak reference to the shared send half. Upgrading both is
-    /// atomic from the perspective of the lifecycle invariant: if
-    /// `mailbox_in` can be upgraded, the actor is still alive.
-    mailbox_in: Weak<HewSendHalf>,
+    /// Weak reference to the shared external lifecycle. The dispatch thread
+    /// never owns this, so failed upgrade means no external strong handle remains.
+    lifecycle: Weak<LambdaActorLifecycle>,
 }
 
 impl HewLambdaActorWeak {
     /// Try to upgrade to a strong handle. Returns `None` if the
-    /// external strong refcount has reached zero (i.e., the
-    /// `Arc<HewSendHalf>` has been released).
+    /// external strong refcount has reached zero (i.e., the lifecycle has
+    /// been released).
     #[must_use]
     pub fn upgrade(&self) -> Option<HewLambdaActor> {
-        // Both must succeed; if mailbox_in is gone the actor is stopped.
-        let mailbox_in = self.mailbox_in.upgrade()?;
+        // Both must succeed; if lifecycle is gone the actor is stopped.
+        let lifecycle = self.lifecycle.upgrade()?;
         let inner = self.inner.upgrade()?;
-        Some(HewLambdaActor { mailbox_in, inner })
+        Some(HewLambdaActor { inner, lifecycle })
     }
 
     /// Attempt a self-send through the weak handle. Upgrades just
@@ -1078,7 +1121,8 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
     // Released-flag guard: cloning a released handle would bump the Arc
     // strong count on a ManuallyDrop-dropped inner — UB. Consult the flag
     // before touching inner. See hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_clone: handle already released".to_string());
@@ -1130,8 +1174,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     // from native FFI callers. Concurrent release-during-send is still a
     // caller contract violation — this guard does not serialise them.
     // SAFETY: `released` is the first field of #[repr(C)] HewLambdaActorHandle;
-    // addr_of! projects without materialising &mut *actor. The outer wrapper is
-    // never freed (intentional leak — see wrapper-struct design comment).
+    // addr_of! projects without materialising &mut *actor.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_send: handle already released".to_string());
@@ -1161,7 +1204,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     // identical (caller-supplied valid pointer, shared borrow of inner only,
     // Arc-protected internal state is Sync).
     // `(*actor).inner` = ManuallyDrop<HewLambdaActor> (deref → HewLambdaActor);
-    // `.inner` = Arc<LambdaActorInner>; `.mailbox_in` = Arc<HewSendHalf>.
+    // `.inner` = Arc<LambdaActorInner>; `.lifecycle` owns the shared send half.
     // SAFETY: (*actor).inner is ManuallyDrop<HewLambdaActor>; take an
     // explicit shared ref to avoid the implicit-autoref lint.
     let actor_ref = unsafe { &(*actor).inner };
@@ -1169,7 +1212,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     if stopped {
         return SendError::ActorStopped as i32;
     }
-    let res = actor_ref.mailbox_in.send(payload);
+    let res = actor_ref.lifecycle.send(payload);
     res as i32
 }
 
@@ -1225,7 +1268,8 @@ pub unsafe extern "C" fn hew_lambda_actor_ask(
     }
 
     // Released-flag guard.
-    // SAFETY: addr_of! projection; outer wrapper never freed.
+    // SAFETY: addr_of! projection; caller guarantees the wrapper has not been
+    // released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_ask: handle already released".to_string());
@@ -1278,7 +1322,7 @@ pub unsafe extern "C" fn hew_lambda_actor_ask(
         }
         return SendError::ActorStopped as i32;
     }
-    let send_res = actor_ref.mailbox_in.send(envelope);
+    let send_res = actor_ref.lifecycle.send(envelope);
     if send_res != SendError::Ok {
         // Send failed; release both refs.
         // SAFETY: envelope was not consumed (send failed); two refs remain.
@@ -1392,10 +1436,9 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
     // FFI caller is concurrently inside this function on this pointer.
     let h = unsafe { &mut *actor };
     // SAFETY: first release — inner HewLambdaActor is still valid.
-    // ManuallyDrop::drop decrements the Arc strong count (and triggers
-    // LambdaActorInner Drop if it reaches zero, which closes the
-    // HewDuplex and joins the dispatch thread via the dispatch-loop's
-    // observable end-of-state path).
+    // ManuallyDrop::drop drops `inner` first, then the lifecycle. If this is
+    // the last external strong handle, lifecycle drop closes the mailbox and
+    // joins the dispatch thread before this release returns.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     crate::tracing::record_channel_event(actor as u64, crate::tracing::SPAN_LAMBDA_RELEASED);
     // SAFETY: (wrapper-free phase) actor was allocated by `Box::into_raw`
@@ -1427,7 +1470,8 @@ pub unsafe extern "C" fn hew_lambda_actor_downgrade(
     // Released-flag guard: downgrading a released handle would call downgrade
     // on a ManuallyDrop-dropped HewLambdaActor — UB. See
     // hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_downgrade: handle already released".to_string());
@@ -1461,7 +1505,8 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
     }
     // Released-flag guard: see hew_lambda_actor_send for rationale; mirrored
     // here for the weak-handle wrapper.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*weak).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_weak_send: handle already released".to_string());
@@ -1508,7 +1553,8 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_clone(
     // Released-flag guard: cloning a dropped weak handle would call clone
     // on a ManuallyDrop-dropped HewLambdaActorWeak — UB. See
     // hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*weak).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_weak_clone: handle already released".to_string());
@@ -1836,15 +1882,13 @@ mod tests {
         .expect("spawn");
         let w = a.downgrade();
         // `inner` Arc: external handle + dispatch thread = 2 strong refs.
-        // `mailbox_in` Arc: only the external handle = 1 strong ref.
-        // (The dispatch thread does NOT hold a mailbox_in reference —
-        // that's the key invariant ensuring the queue closes when the
-        // external handle drops.)
-        assert_eq!(Arc::strong_count(&a.mailbox_in), 1);
+        // `lifecycle` Arc: only external handles = 1 strong ref. The dispatch
+        // thread does NOT hold it; final external release closes the mailbox.
+        assert_eq!(Arc::strong_count(&a.lifecycle), 1);
         assert_eq!(Arc::strong_count(&a.inner), 2);
         drop(a);
-        // When `a` drops: Arc<HewSendHalf> strong count → 0 → queue closes
-        // → dispatch thread's recv returns Closed → thread exits.
+        // When `a` drops: lifecycle strong count → 0 → queue closes → dispatch
+        // thread's recv returns Closed → release joins the thread.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(w.upgrade().is_none());
     }

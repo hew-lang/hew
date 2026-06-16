@@ -18951,6 +18951,41 @@ impl Builder {
         Some(result_dest)
     }
 
+    fn invalid_spawn_arg_note(
+        actor_name: &str,
+        name: &str,
+        explicit_init: bool,
+        expected_arg_names: &[String],
+        state_field_names: &[String],
+    ) -> String {
+        let parameters = format!(
+            "[{}]",
+            expected_arg_names
+                .iter()
+                .map(|expected| format!("`{expected}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if explicit_init {
+            if state_field_names.iter().any(|field| field == name) {
+                format!(
+                    "`{name}` is a state field on actor `{actor_name}` but not an `init()` \
+                     parameter; init() parameters are: {parameters}"
+                )
+            } else {
+                format!(
+                    "actor `{actor_name}` has no init() parameter named `{name}`; \
+                     parameters are: {parameters}"
+                )
+            }
+        } else {
+            format!(
+                "actor `{actor_name}` has no state field named `{name}`; \
+                 fields are: {parameters}"
+            )
+        }
+    }
+
     fn lower_spawn_actor(
         &mut self,
         actor_name: &str,
@@ -19012,32 +19047,13 @@ impl Builder {
         let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
         for (name, arg) in args {
             if !expected_arg_names.iter().any(|expected| expected == name) {
-                let parameters = format!(
-                    "[{}]",
-                    expected_arg_names
-                        .iter()
-                        .map(|expected| format!("`{expected}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                let note = Self::invalid_spawn_arg_note(
+                    actor_name,
+                    name,
+                    explicit_init,
+                    expected_arg_names,
+                    &layout.state_field_names,
                 );
-                let note = if explicit_init {
-                    if layout.state_field_names.iter().any(|field| field == name) {
-                        format!(
-                            "`{name}` is a state field on actor `{actor_name}` but not an `init()` \
-                             parameter; init() parameters are: {parameters}"
-                        )
-                    } else {
-                        format!(
-                            "actor `{actor_name}` has no init() parameter named `{name}`; \
-                             parameters are: {parameters}"
-                        )
-                    }
-                } else {
-                    format!(
-                        "actor `{actor_name}` has no state field named `{name}`; \
-                         fields are: {parameters}"
-                    )
-                };
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::InvalidActorSpawnArgument {
                         actor: actor_name.to_string(),

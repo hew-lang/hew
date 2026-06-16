@@ -57,10 +57,13 @@ fn duration_methods_resolve_through_extern_symbol_annotations() {
 
 #[test]
 fn instant_methods_resolve_through_extern_symbol_annotations() {
+    // `Instant` is a compiler builtin scalar (i64-backed nanosecond timestamp),
+    // not a record: instances come from `Instant::now()`, and the receiver
+    // methods rewrite to their `hew_instant_*` runtime symbols.
     let source = r"
         fn main() {
-            let start: Instant = Instant { nanos: 1 };
-            let end: Instant = Instant { nanos: 10 };
+            let start: Instant = Instant::now();
+            let end: Instant = Instant::now();
             let _: duration = start.elapsed();
             let _: duration = end.duration_since(start);
         }

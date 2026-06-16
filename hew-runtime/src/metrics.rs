@@ -288,16 +288,24 @@ fn rendered_name_collides_with_existing(reg: &RegistryInner, name: &str) -> bool
 /// collision check fails (the matching self-metric is incremented).
 fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
     if !name_is_valid(name) {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if collides_with_builtin(name) {
-        metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .collision_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if kind == MetricKind::Histogram && buckets.len() > MAX_HISTOGRAM_BUCKETS {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -308,20 +316,30 @@ fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
             if existing.kind == kind {
                 return i64_slot(existing.base_slot);
             }
-            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .collision_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         // A distinct canonical name that renders to the same Prometheus series
         // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
         // duplicate `# TYPE` block and an aliased series. Reject it.
         if rendered_name_collides_with_existing(reg, name) {
-            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .collision_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         if reg.names.len() >= MAX_NAMES {
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
 
@@ -355,7 +373,9 @@ fn register_named(name: &str, kind: MetricKind, buckets: &[i64]) -> i64 {
 /// base handle; concrete series are materialised lazily by [`series_slot`].
 fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
     if !name_is_valid(name) {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     // Labelled histograms are deferred (the bucketed/labelled surface arrives in
@@ -364,16 +384,24 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
     // assume; accepting one here would alias the sum into the next registered
     // metric's slot. Reject it until the labelled surface reserves the slots.
     if kind == MetricKind::Histogram {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if collides_with_builtin(name) {
-        metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .collision_rejected
+            .fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
     if label_keys.len() > MAX_LABEL_KEYS || label_keys.iter().any(|k| !label_key_is_valid(k)) {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -382,20 +410,30 @@ fn register_vec(name: &str, kind: MetricKind, label_keys: &[String]) -> i64 {
             if existing.kind == kind && existing.label_keys == label_keys {
                 return i64_slot(existing.base_slot);
             }
-            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .collision_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         // A distinct canonical name that renders to the same Prometheus series
         // as an existing user metric (`foo.bar` vs `foo_bar`) would emit a
         // duplicate `# TYPE` block and an aliased series. Reject it.
         if rendered_name_collides_with_existing(reg, name) {
-            metrics_state().collision_rejected.fetch_add(1, Ordering::Relaxed);
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .collision_rejected
+                .fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         if reg.names.len() >= MAX_NAMES {
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         let base_slot = reg.alloc_slot();
@@ -423,7 +461,9 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
         return REGISTER_FAILED;
     };
     if label_values.iter().any(|v| v.len() > MAX_LABEL_LEN) {
-        metrics_state().series_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .series_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     }
 
@@ -461,7 +501,9 @@ fn series_slot(base_handle: i64, label_values: &[String]) -> i64 {
             .get(&name)
             .is_some_and(|e| e.series.len() >= MAX_SERIES_PER_METRIC)
         {
-            metrics_state().series_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .series_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
         let slot = reg.alloc_slot();
@@ -1023,13 +1065,17 @@ pub unsafe extern "C" fn hew_metric_vec_register(
         1 => MetricKind::Gauge,
         2 => MetricKind::Histogram,
         _ => {
-            metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+            metrics_state()
+                .names_dropped
+                .fetch_add(1, Ordering::Relaxed);
             return REGISTER_FAILED;
         }
     };
     // SAFETY: forwarded contract on `keys`.
     let Some(label_keys) = (unsafe { cstr_array(keys, n_keys) }) else {
-        metrics_state().names_dropped.fetch_add(1, Ordering::Relaxed);
+        metrics_state()
+            .names_dropped
+            .fetch_add(1, Ordering::Relaxed);
         return REGISTER_FAILED;
     };
     register_labelled(name, kind, &label_keys)
@@ -1477,8 +1523,8 @@ mod tests {
             let start = Arc::clone(&start);
             joins.push(thread::spawn(move || {
                 let shared = shared; // capture the Send wrapper whole, not its raw field
-                // SAFETY: `g` is held until after every join below, so the
-                // shared runtime stays alive for this enter.
+                                     // SAFETY: `g` is held until after every join below, so the
+                                     // shared runtime stays alive for this enter.
                 let _enter = unsafe { crate::runtime::enter(&*shared.0) };
                 start.wait();
                 for _ in 0..per {

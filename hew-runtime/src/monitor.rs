@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
-use std::sync::{Arc, Barrier, Mutex};
-#[cfg(test)]
 use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, Mutex};
 
 use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
@@ -942,6 +942,7 @@ mod tests {
         {
             // SAFETY: rt_a lives for the whole entered scope.
             let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            // SAFETY: watcher_a and target_a are valid test actors for the call.
             let ref_a = unsafe { hew_actor_monitor(&raw mut watcher_a, &raw mut target_a) };
             assert_eq!(ref_a, 1);
         }
@@ -949,6 +950,7 @@ mod tests {
         {
             // SAFETY: rt_b lives for the whole entered scope.
             let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            // SAFETY: watcher_b and target_b are valid test actors for the call.
             let ref_b = unsafe { hew_actor_monitor(&raw mut watcher_b, &raw mut target_b) };
             assert_eq!(
                 ref_b, 1,

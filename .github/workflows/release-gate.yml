@@ -485,8 +485,18 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked
 
+            # Scope out only the eval/WASI E2E tests that build the WASI runner
+            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
+            # rustup-managed and cannot add that target. The wasm backend is
+            # host-independent and already gated on the four rustup platforms;
+            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
+            # deliberately narrow so the gate still covers what FreeBSD can run:
+            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
+            # and the wasi_run_e2e native_* codegen-parity tests (which run
+            # natively).
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
+              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -556,6 +566,16 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked
 
+            # Scope out only the eval/WASI E2E tests that build the WASI runner
+            # from source against wasm32-wasip1 — the FreeBSD pkg rust is not
+            # rustup-managed and cannot add that target. The wasm backend is
+            # host-independent and already gated on the four rustup platforms;
+            # full FreeBSD wasm-cross parity is tracked in #1960. The filter is
+            # deliberately narrow so the gate still covers what FreeBSD can run:
+            # it keeps the eval_wasm_* *rejection* paths (which build no wasm)
+            # and the wasi_run_e2e native_* codegen-parity tests (which run
+            # natively).
             cargo nextest run --workspace \
               --exclude hew-wasm --exclude hew-cabi \
+              -E 'not ((test(eval_wasm) & not test(reject)) | (binary(wasi_run_e2e) & not test(native_)))' \
               --profile ci --no-fail-fast

@@ -171,11 +171,20 @@ impl Checker {
                 return;
             }
         }
-        if let Ty::Named { name, .. } = &resolved {
+        if let Ty::Named { name, args, .. } = &resolved {
             if self
                 .trait_impls_set
                 .contains(&(name.clone(), display_trait.clone()))
             {
+                return;
+            }
+            // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
+            // carries no registered impl of its own, but the enclosing
+            // item's where-clause may declare a `Display` bound that
+            // satisfies the obligation abstractly. The concrete `Display`
+            // impl is selected per monomorphisation by HIR's static
+            // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
+            if args.is_empty() && self.type_param_carries_bound(name, &display_trait) {
                 return;
             }
         }

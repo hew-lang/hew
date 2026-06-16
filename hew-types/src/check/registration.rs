@@ -288,29 +288,6 @@ impl Checker {
             .insert(ImportKey::new(owner, imported_module.to_string()));
     }
 
-    pub(super) fn imported_trait_module_has_recorded_use(&self, key: &ImportKey) -> bool {
-        let prefix = format!("{}.", key.short_name);
-        let exported_trait_names: Vec<String> = self
-            .trait_defs
-            .keys()
-            .filter_map(|trait_key| trait_key.strip_prefix(&prefix))
-            .filter(|trait_name| !trait_name.contains('.'))
-            .map(str::to_string)
-            .collect();
-
-        exported_trait_names.iter().any(|trait_name| {
-            let qualified = format!("{}.{}", key.short_name, trait_name);
-            self.trait_impls_set
-                .iter()
-                .any(|(_, implemented)| implemented == trait_name || implemented == &qualified)
-                || self
-                    .trait_super
-                    .values()
-                    .flatten()
-                    .any(|super_trait| super_trait == trait_name || super_trait == &qualified)
-        })
-    }
-
     fn mark_loaded_trait_owner_import_used(&self, module: Option<&str>, trait_name: &str) {
         let candidate_owners = [
             module.map(str::to_string),
@@ -380,6 +357,22 @@ impl Checker {
             self.mark_loaded_trait_owner_import_used(module, trait_name);
         }
     }
+
+    fn mark_imported_trait_used_for_module_aliases(&self, module_short: &str, trait_name: &str) {
+        self.mark_imported_trait_used(Some(module_short), trait_name);
+
+        let owner_aliases: Vec<String> = self
+            .import_spans
+            .keys()
+            .filter_map(|key| key.owner_module.as_deref())
+            .filter(|owner| owner.rsplit("::").next() == Some(module_short))
+            .map(str::to_string)
+            .collect();
+        for owner in owner_aliases {
+            self.mark_imported_trait_used(Some(&owner), trait_name);
+        }
+    }
+
     fn refresh_handle_bearing_structs(&mut self) {
         // Tracked for testing: callers can assert this stays O(1) after the
         // deferred-refresh fix (see `ensure_handle_bearing_fresh`).
@@ -4372,6 +4365,12 @@ impl Checker {
                 }
             }
             Item::Trait(td) => {
+                if let Some(supers) = &td.super_traits {
+                    let owner = self.current_module.as_deref();
+                    for super_trait in supers {
+                        self.mark_imported_trait_used(owner, &super_trait.name);
+                    }
+                }
                 for trait_item in &td.items {
                     if let TraitItem::Method(method) = trait_item {
                         self.register_trait_method_sig(&td.name, method, span);
@@ -6860,6 +6859,18 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
+        for (item, span) in items {
+            let Item::Import(decl) = item else {
+                continue;
+            };
+            if decl.resolved_items.is_some() {
+                let saved_current_module = self.current_module.clone();
+                self.current_module = Some(module_short.to_string());
+                self.register_import(decl, Some(span));
+                self.current_module = saved_current_module;
+            }
+        }
+
         self.record_trait_import_bindings(module_short, items);
 
         // Temporarily scope local_type_defs so that locally_non_generic in
@@ -6961,7 +6972,10 @@ impl Checker {
                 Item::Trait(tr) => {
                     if let Some(supers) = &tr.super_traits {
                         for super_trait in supers {
-                            self.mark_imported_trait_used(Some(module_short), &super_trait.name);
+                            self.mark_imported_trait_used_for_module_aliases(
+                                module_short,
+                                &super_trait.name,
+                            );
                         }
                     }
                     if !tr.visibility.is_pub() {
@@ -7086,7 +7100,7 @@ impl Checker {
                         }
                     }
                     if let Some(tb) = &id.trait_bound {
-                        self.mark_imported_trait_used(Some(module_short), &tb.name);
+                        self.mark_imported_trait_used_for_module_aliases(module_short, &tb.name);
                         self.record_trait_impl(type_name, &tb.name);
                     }
 

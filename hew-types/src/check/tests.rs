@@ -6474,6 +6474,22 @@ fn no_warn_used_import() {
 }
 
 #[test]
+fn stdlib_json_supertrait_import_does_not_warn_value_trait_unused() {
+    let source =
+        "import std::encoding::json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
+    let result = hew_parser::parse(source);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&result.program);
+    assert!(
+        !output.warnings.iter().any(|w| {
+            w.kind == TypeErrorKind::UnusedImport && w.message.contains("value_trait")
+        }),
+        "json's CanonicalValueMethods supertrait use must consume its value_trait import: {:?}",
+        output.warnings
+    );
+}
+
+#[test]
 fn no_warn_named_import_type_used_bare() {
     // A named import (`::{ T }`) of a type used only as a bare type reference
     // must mark the module used — qualified-by-default routes bare references
@@ -17122,6 +17138,108 @@ mod warning_source_attribution {
             Some("mod_b"),
             "the single UnusedImport must be attributed to 'mod_b'; got: {:?}",
             unused[0].source_module
+        );
+    }
+
+    /// A trait impl recorded elsewhere must not make an unrelated owner-module
+    /// import look used. The eager trait-use path records `ImportKey { owner,
+    /// short_name }`; a global trait table fallback would over-suppress this.
+    #[test]
+    fn recorded_trait_impl_elsewhere_does_not_suppress_unused_import() {
+        let root_id = ModuleId::root();
+        let owner_module_b_id = ModuleId::new(vec!["owner_module_b".to_string()]);
+
+        let fake_trait = TraitDecl {
+            visibility: Visibility::Pub,
+            name: "FakeTrait".to_string(),
+            type_params: None,
+            super_traits: None,
+            items: vec![TraitItem::Method(TraitMethod {
+                name: "fake".to_string(),
+                type_params: None,
+                params: vec![Param {
+                    name: "val".to_string(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Self".to_string(),
+                            type_args: None,
+                        },
+                        0..4,
+                    ),
+                    is_mutable: false,
+                }],
+                return_type: None,
+                where_clause: None,
+                body: None,
+                span: 0..0,
+                doc_comment: None,
+                lang_item: None,
+            })],
+            doc_comment: None,
+            lang_item: None,
+        };
+        let import_b = ImportDecl {
+            path: vec!["fakemod".to_string()],
+            spec: None,
+            module_alias: None,
+            file_path: None,
+            resolved_items: Some(vec![(Item::Trait(fake_trait.clone()), 0..30)]),
+            resolved_item_source_paths: vec![],
+            resolved_source_paths: vec![],
+        };
+
+        let root_module = Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let module_b = Module {
+            id: owner_module_b_id.clone(),
+            items: vec![(Item::Import(import_b), 100..130)],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(root_module).unwrap();
+        mg.add_module(module_b).unwrap();
+        mg.topo_order = vec![owner_module_b_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.trait_defs.insert(
+            "fakemod.FakeTrait".to_string(),
+            Checker::trait_info_from_decl(&fake_trait),
+        );
+        checker
+            .trait_impls_set
+            .insert(("SomeType".to_string(), "FakeTrait".to_string()));
+
+        let output = checker.check_program(&program);
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| {
+                w.kind == TypeErrorKind::UnusedImport
+                    && w.message.contains("fakemod")
+                    && w.source_module.as_deref() == Some("owner_module_b")
+            })
+            .collect();
+
+        assert_eq!(
+            unused.len(),
+            1,
+            "expected owner_module_b's unused fakemod import to warn despite global FakeTrait impl, got {}: {:?}",
+            unused.len(),
+            output.warnings
         );
     }
 

@@ -1743,7 +1743,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -1774,7 +1774,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_succeeds_while_strong_alive() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1806,7 +1806,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_fails_after_strong_drops() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1825,7 +1825,7 @@ mod tests {
 
     #[test]
     fn weak_does_not_keep_actor_alive() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1851,7 +1851,7 @@ mod tests {
 
     #[test]
     fn multiple_strong_handles_keep_actor_alive() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1890,7 +1890,7 @@ mod tests {
 
     #[test]
     fn cabi_new_send_release_tell() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         assert!(!a.is_null());
         let msg = b"abi";
@@ -2006,7 +2006,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
         let state_ptr = Box::into_raw(Box::new(received_clone)).cast::<core::ffi::c_void>();
@@ -2100,7 +2100,7 @@ mod tests {
     fn body_panic_marks_actor_stopped() {
         use std::time::Duration;
 
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2124,7 +2124,7 @@ mod tests {
     /// Non-zero body return marks actor stopped.
     #[test]
     fn nonzero_body_return_marks_actor_stopped() {
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2310,7 +2310,7 @@ mod tests {
     fn state_drop_called_exactly_once() {
         use std::time::Duration;
 
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let counter = Arc::new(AtomicUsize::new(0));
         // Arc::into_raw keeps one reference; counting_state_drop reconstructs
         // and drops the Arc (decrement), which is fine because the test also
@@ -2515,7 +2515,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
-        let _guard = guard();
+        let _guard = crate::runtime_test_guard();
         let actor = HewLambdaActor::new(
             1,
             LambdaShape::Tell,

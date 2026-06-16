@@ -161,11 +161,12 @@ fn empty_registry_emits_no_drop_in_place_fns() {
     );
 }
 
-/// One BitCopy concrete vtable → exactly one drop-in-place
-/// function `__hew_dyn_drop_in_place__{trait}__{concrete}__{id}`
-/// defined with signature `void(ptr)`, calling `hew_dyn_box_free`
-/// with the ABI layout of the concrete type. `Linkage::Private`,
-/// observable in textual IR for test verification.
+/// One BitCopy primitive concrete vtable → exactly one drop-in-place
+/// function `__hew_dyn_drop_in_place__{trait}__{concrete}__{id}` defined
+/// with signature `void(ptr)`. A BitCopy primitive owns no heap, so the
+/// slot-0 body is EMPTY (`ret void`) — it dispatches NO structural drop
+/// and, per the runtime ABI, frees NO storage (the drop SITE owns the
+/// heap-box free). `Linkage::Private`, observable in textual IR.
 #[test]
 fn single_bitcopy_concrete_emits_one_drop_in_place_fn() {
     let impl_fn = impl_method_stub("i64::fmt");
@@ -177,26 +178,32 @@ fn single_bitcopy_concrete_emits_one_drop_in_place_fn() {
         ll.contains(&format!("define private void @{symbol}(ptr")),
         "drop-in-place must be defined as `define private void @{symbol}(ptr ...)`; got:\n{ll}"
     );
-    // The body must reference `hew_dyn_box_free` exactly once for
-    // this single vtable: the registry's lone entry is the only
-    // producer of the free call.
-    let occurrences = ll.matches("@hew_dyn_box_free").count();
-    assert!(
-        occurrences >= 1,
-        "drop-in-place body must call `@hew_dyn_box_free`; got:\n{ll}"
-    );
-    // i64 → size=8, align=8 on every supported target. The
-    // constants surface in the textual IR as literal integers
-    // because LLVM does not fold `const i64 8` into a symbol.
+    // Isolate the slot-0 fn body.
     let body_start = ll
         .find(&format!("define private void @{symbol}"))
         .expect("drop-in-place define line must be present");
     let body = &ll[body_start..];
     let body_end = body.find("\n}").unwrap_or(body.len());
     let body = &body[..body_end];
+    // A BitCopy primitive owns no heap: slot 0 must NOT free storage
+    // (that is the drop SITE's job for HeapBoxed, and a no-op for
+    // FrameOwned). Putting `hew_dyn_box_free` here would over-free a
+    // stack alloca at the FrameOwned drop site.
     assert!(
-        body.contains("i64 8"),
-        "i64 concrete must pass size=8 and align=8 to hew_dyn_box_free; got body:\n{body}"
+        !body.contains("@hew_dyn_box_free"),
+        "BitCopy slot-0 drop_in_place must NOT call `@hew_dyn_box_free` \
+         (storage release is the drop site's responsibility); got body:\n{body}"
+    );
+    // No structural drop to dispatch either — the body is effectively
+    // empty (a bare `ret void`).
+    assert!(
+        !body.contains("call void @__hew_record_drop_inplace_")
+            && !body.contains("call void @__hew_enum_drop_inplace_"),
+        "BitCopy primitive slot-0 must dispatch no structural drop; got body:\n{body}"
+    );
+    assert!(
+        body.contains("ret void"),
+        "slot-0 drop_in_place must return void; got body:\n{body}"
     );
 }
 
@@ -322,21 +329,21 @@ fn user_record_ty(name: &str) -> ResolvedTy {
     }
 }
 
-/// A `dyn Trait` concrete record whose fields are transitively
-/// all `BitCopy` (here `{ count: i64, ratio: f64 }`) MUST get a
-/// drop-in-place fn synthesised with the free-only shape — the
-/// shared `classify_state_field` returns `UserRecord` for every
-/// record regardless of field heap-ness, so the dyn-drop-local
-/// triviality probe must accept this case rather than rejecting
-/// every record outright. This is the central regression test
-/// for the POD-record concrete shape.
+/// A `dyn Trait` concrete record (here `Counter { count: i64, ratio:
+/// f64 }`, transitively all `BitCopy`) MUST get a slot-0 drop-in-place
+/// fn that DISPATCHES the record's structural drop —
+/// `__hew_record_drop_inplace_Counter` — rather than freeing storage
+/// inline. The structural-drop helper is a no-op for an all-BitCopy
+/// record (no owned-heap fields to release), but routing through it
+/// keeps every record concrete on ONE drop authority and lets the
+/// drop SITE own the heap-box free. This is the central regression
+/// test for the record-concrete slot-0 shape.
 #[test]
-fn dyn_drop_in_place_for_bitcopy_record_synthesizes_free_only_thunk() {
+fn dyn_drop_in_place_for_bitcopy_record_dispatches_record_structural_drop() {
     let impl_fn = impl_method_stub("Counter::fmt");
     let concrete = user_record_ty("Counter");
     let vtable = vtable_instance(0, concrete, "Counter::fmt");
-    // Counter { count: i64, ratio: f64 } — both fields BitCopy,
-    // so the record is transitively trivially droppable.
+    // Counter { count: i64, ratio: f64 } — both fields BitCopy.
     let counter_layout = RecordLayout {
         name: "Counter".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::F64],
@@ -349,7 +356,59 @@ fn dyn_drop_in_place_for_bitcopy_record_synthesizes_free_only_thunk() {
         "drop-in-place must be synthesised for an all-BitCopy record concrete; \
          got:\n{ll}"
     );
-    // Body must call `hew_dyn_box_free` once.
+    // Isolate the slot-0 fn body.
+    let body_start = ll
+        .find(&format!("define private void @{symbol}"))
+        .expect("drop-in-place define line must be present");
+    let body_end_offset = ll[body_start..]
+        .find("\n}")
+        .unwrap_or(ll.len() - body_start);
+    let body = &ll[body_start..body_start + body_end_offset];
+    // Slot 0 dispatches the per-type record structural drop, NOT an
+    // inline `hew_dyn_box_free`.
+    assert!(
+        body.contains("call void @__hew_record_drop_inplace_Counter(ptr"),
+        "record-concrete slot-0 must dispatch `@__hew_record_drop_inplace_Counter`; \
+         got body:\n{body}"
+    );
+    assert!(
+        !body.contains("@hew_dyn_box_free"),
+        "record-concrete slot-0 must NOT free storage inline (storage release is \
+         the drop site's responsibility — FrameOwned frees nothing, HeapBoxed frees \
+         after slot 0 returns); got body:\n{body}"
+    );
+}
+
+/// D2 (Mode A) — a `dyn Trait` concrete record carrying an owned-heap
+/// `String` field MUST now emit a working slot-0 drop-in-place that
+/// DISPATCHES the record's structural drop
+/// (`__hew_record_drop_inplace_Named`), which in turn releases the
+/// `String` buffer via `@hew_string_drop`. This is the central fix: the
+/// previous behaviour fail-closed at codegen-front
+/// (`record_concrete_is_trivially_droppable == false`) because the slot-0
+/// fn could only free the box, not the inner heap. Now the structural
+/// drop runs first (slot-0 contract: drop WITHOUT freeing storage), so the
+/// `String` no longer leaks.
+#[test]
+fn dyn_drop_in_place_for_record_with_string_field_dispatches_structural_drop() {
+    let impl_fn = impl_method_stub("Named::fmt");
+    let concrete = user_record_ty("Named");
+    let vtable = vtable_instance(0, concrete, "Named::fmt");
+    // Named { id: i64, label: String } — `label` carries an owned heap
+    // buffer that the structural drop must release.
+    let named_layout = RecordLayout {
+        name: "Named".to_string(),
+        field_tys: vec![ResolvedTy::I64, ResolvedTy::String],
+    };
+    let p = pipeline_with(vec![impl_fn], vec![vtable], vec![named_layout]);
+    // Emission must SUCCEED now (previously fail-closed).
+    let ll = emit_ll(&p, "heap_bearing_record_structural_drop");
+    let symbol = mangle_dyn_drop_in_place_symbol(0, "Display", &user_record_ty("Named"));
+    assert!(
+        ll.contains(&format!("define private void @{symbol}(ptr")),
+        "drop-in-place must be synthesised for a String-bearing record concrete; got:\n{ll}"
+    );
+    // Isolate the slot-0 fn body: it dispatches the record structural drop.
     let body_start = ll
         .find(&format!("define private void @{symbol}"))
         .expect("drop-in-place define line must be present");
@@ -358,67 +417,29 @@ fn dyn_drop_in_place_for_bitcopy_record_synthesizes_free_only_thunk() {
         .unwrap_or(ll.len() - body_start);
     let body = &ll[body_start..body_start + body_end_offset];
     assert!(
-        body.contains("@hew_dyn_box_free"),
-        "POD-record drop-in-place body must call `@hew_dyn_box_free`; got body:\n{body}"
-    );
-    // The call must pass the record's exact size (16 = i64 + f64)
-    // and alignment (8 = max(align_of(i64), align_of(f64))) as
-    // `i64` constants. Both are derived from host `TargetData`
-    // via `abi_size_align`; locking the constants prevents silent
-    // drift if the size/align plumbing ever regresses.
-    let free_call = body
-        .lines()
-        .find(|l| l.contains("@hew_dyn_box_free"))
-        .expect("body must contain the free-call line");
-    assert!(
-        free_call.contains("i64 16"),
-        "free-call must pass size=16 for Counter {{ i64, f64 }}; got line:\n{free_call}\nfull body:\n{body}"
+        body.contains("call void @__hew_record_drop_inplace_Named(ptr"),
+        "String-bearing record slot-0 must dispatch `@__hew_record_drop_inplace_Named`; \
+         got body:\n{body}"
     );
     assert!(
-        free_call.contains("i64 8"),
-        "free-call must pass align=8 for Counter {{ i64, f64 }}; got line:\n{free_call}\nfull body:\n{body}"
+        !body.contains("@hew_dyn_box_free"),
+        "slot-0 must NOT free storage inline; got body:\n{body}"
     );
-    // Belt-and-braces: pin the full call shape so any future
-    // re-ordering of (size, align) arguments trips this test.
+    // The structural-drop helper itself must release the String field —
+    // pin that the synthesised `__hew_record_drop_inplace_Named` body
+    // reaches `@hew_string_drop`, the property whose absence the old
+    // fail-closed guard was protecting against (a leak of the inner buffer).
+    let helper_start = ll
+        .find("define internal void @__hew_record_drop_inplace_Named(ptr")
+        .or_else(|| ll.find("define void @__hew_record_drop_inplace_Named(ptr"))
+        .expect("record drop-inplace helper must be defined for the seeded concrete");
+    let helper_end_offset = ll[helper_start..]
+        .find("\n}")
+        .unwrap_or(ll.len() - helper_start);
+    let helper_body = &ll[helper_start..helper_start + helper_end_offset];
     assert!(
-        free_call.contains("call void @hew_dyn_box_free(ptr")
-            && free_call.contains("i64 16")
-            && free_call.contains("i64 8"),
-        "free-call shape must be `call void @hew_dyn_box_free(ptr <p>, i64 16, i64 8)`; \
-         got line:\n{free_call}"
-    );
-}
-
-/// A `dyn Trait` concrete record carrying a `String` field MUST
-/// fail closed at drop-fn synthesis: the record's classification
-/// is `UserRecord` (same as the POD-record case), but the
-/// triviality probe walks its fields and finds the `String`,
-/// which is owned-heap and not trivially droppable. Emitting a
-/// free-only body for this concrete would leak the inner String
-/// buffer. This is the negative companion to the POD-record
-/// positive test — the dyn-drop-local relaxation must not extend
-/// to heap-bearing records.
-#[test]
-fn dyn_drop_in_place_for_record_with_string_field_fails_closed() {
-    let impl_fn = impl_method_stub("Named::fmt");
-    let concrete = user_record_ty("Named");
-    let vtable = vtable_instance(0, concrete, "Named::fmt");
-    // Named { id: i64, label: String } — `label` carries an
-    // owned heap buffer, so a free-only body would leak it.
-    let named_layout = RecordLayout {
-        name: "Named".to_string(),
-        field_tys: vec![ResolvedTy::I64, ResolvedTy::String],
-    };
-    let p = pipeline_with(vec![impl_fn], vec![vtable], vec![named_layout]);
-    let err = try_emit(&p, "heap_bearing_record_fails_closed")
-        .expect_err("record with String field must fail closed");
-    let msg = format!("{err:?}");
-    assert!(
-        msg.contains("Named"),
-        "fail-closed message must name the offending record; got: {msg}"
-    );
-    assert!(
-        msg.contains("owned-heap field") || msg.contains("heap-bearing"),
-        "fail-closed message must explain the owned-heap field constraint; got: {msg}"
+        helper_body.contains("@hew_string_drop"),
+        "`__hew_record_drop_inplace_Named` must release the String field via \
+         `@hew_string_drop` (no leak of the inner buffer); got helper body:\n{helper_body}"
     );
 }

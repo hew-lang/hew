@@ -1,0 +1,28 @@
+// #1565 / #1929 Stage 3: f-string interpolation `f"{x}"` of a `T: Display`
+// type parameter, plus generic `println` over a `Vec<T>` (combining Stage 2
+// `for-in` over a generic vector with Stage 3 Display dispatch).
+type Point { x: i64; y: i64; }
+
+impl Display for Point {
+    fn fmt(p: Point) -> string { "pt" }
+}
+
+fn show<T: Display>(x: T) {
+    println(f"[{x}]");
+}
+
+fn show_all<T: Display>(xs: Vec<T>) {
+    for x in xs {
+        println(x);
+    }
+}
+
+fn main() {
+    show(99);
+    show("ok");
+    show(Point { x: 1, y: 2 });
+    let v: Vec<i64> = Vec::new();
+    v.push(3);
+    v.push(4);
+    show_all(v);
+}

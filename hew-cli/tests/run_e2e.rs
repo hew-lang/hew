@@ -642,6 +642,89 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// #1929 Stage 3 / #1565: generic `println` / `print` / `to_string` of a value
+/// typed by a `T: Display` type parameter. The builtin print surfaces no longer
+/// re-derive a monomorphic overload from the concrete argument type; instead
+/// they route through the checker-verified `Display` obligation and dispatch to
+/// the concrete `Display::fmt` impl per monomorphisation. Covers a primitive
+/// (`i64` → 42, 7), a string (`hi`, `yo`), and a user `impl Display` (`Color`).
+#[test]
+fn run_generic_display_println_print_to_string() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_println.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_println.expected"),
+    )
+    .expect("read generic_display_println.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display println/print/to_string should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 3 / #1565: f-string interpolation `f"{x}"` of a `T: Display`
+/// type parameter (previously rejected by the checker's `require_display_impl`
+/// gate because it did not recognise a type parameter's `Display` bound), plus
+/// generic `println` over a `Vec<T>` — combining Stage 2 generic `for-in` with
+/// Stage 3 Display dispatch. Covers `i64`, `string`, and a user `impl Display`.
+#[test]
+fn run_generic_display_fstring_and_vec_iteration() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_fstring.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_fstring.expected"),
+    )
+    .expect("read generic_display_fstring.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display f-string + Vec<T> iteration should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 3 / #1565: a generic `T: Display` consumer dispatches to a
+/// `Display` impl defined in a different module. The static-trait-dispatch
+/// resolution keys on the canonical `(Display, <concrete>, fmt)` triple, so the
+/// impl's defining module is irrelevant — proving the cross-module Display
+/// receiver acceptance criterion. Also exercises an `i64` receiver in the same
+/// program so the generic and primitive paths coexist.
+#[test]
+fn run_generic_display_cross_module_receiver() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_xmod.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_xmod.expected"),
+    )
+    .expect("read generic_display_xmod.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display cross-module receiver should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 #[test]
 fn var_self_countdown_loop_writes_receiver_back() {
     require_codegen();

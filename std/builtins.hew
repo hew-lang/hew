@@ -710,10 +710,10 @@ pub fn write_file(path: string, content: string) {}
 // Program control
 // ---------------------------------------------------------------------------
 /// Pause execution for the given number of milliseconds.
-pub fn sleep_ms(ms: i32) {}
+pub fn sleep_ms(ms: i64) {}
 
 /// Pause execution for the given number of seconds.
-pub fn sleep(seconds: i32) {}
+pub fn sleep(seconds: i64) {}
 
 /// Stop an actor gracefully.
 pub fn stop(target: dyn Display) {}

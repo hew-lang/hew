@@ -439,6 +439,9 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, value, indent + 6);
             }
         }
+        HirExprKind::ActorSelf => {
+            writeln!(out, "{pad}  actor-self").expect("write to string");
+        }
         HirExprKind::ActorSend {
             receiver,
             method_id,

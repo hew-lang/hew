@@ -4235,6 +4235,7 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
             collect_unknown_self_fields_in_expr(left, state_fields, seen, unknown);
@@ -8548,6 +8549,15 @@ impl Builder {
             }
             HirExprKind::Spawn { actor_name, args } => {
                 self.lower_spawn_actor(actor_name, args, expr)
+            }
+            HirExprKind::ActorSelf => {
+                // `this` as a value — the current actor's own handle. Synthesize
+                // it through the same `hew_actor_self()` primitive `link`/
+                // `monitor`/`unlink` use, yielding a borrowed `*mut HewActor`
+                // (no drop obligation). A self-send (`this.go()`) lowers its
+                // receiver through here and the resulting Place becomes the
+                // `Terminator::Send` actor target via `lower_actor_send`.
+                Some(self.emit_actor_self_handle())
             }
             HirExprKind::ActorSend {
                 receiver,
@@ -17005,6 +17015,29 @@ impl Builder {
         self.push_runtime_call(symbol, vec![receiver], dest);
         dest
     }
+    /// Synthesize the current actor's own handle via the `hew_actor_self()`
+    /// runtime primitive and return the `Place` holding it.
+    ///
+    /// The result is a *borrowed* `*mut HewActor` typed `LocalPid<Unit>` (no
+    /// ownership transfer), so the destination local carries no drop obligation
+    /// — `alloc_local` records type bookkeeping only and never registers a drop.
+    /// This is the single self-handle emitter shared by `link`/`monitor`/
+    /// `unlink` (which pass it as the implicit `self` first ABI argument) and by
+    /// the `HirExprKind::ActorSelf` value arm (`this` used as a value). Keeping
+    /// one emitter avoids the divergent self-handle synthesis the value-class
+    /// and ABI agreement invariants warn against.
+    fn emit_actor_self_handle(&mut self) -> Place {
+        let self_handle = self.alloc_local(ResolvedTy::Named {
+            name: hew_types::BuiltinType::LocalPid
+                .canonical_name()
+                .to_string(),
+            args: vec![ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::LocalPid),
+            is_opaque: false,
+        });
+        self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
+        self_handle
+    }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
     ///
@@ -17071,18 +17104,7 @@ impl Builder {
         let target = self.lower_value(&hir_args[0])?;
 
         // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
-        // The result is a *borrowed* `*mut HewActor` (no ownership transfer),
-        // so the destination local carries no drop obligation — `alloc_local`
-        // records type bookkeeping only and never registers a drop.
-        let self_handle = self.alloc_local(ResolvedTy::Named {
-            name: hew_types::BuiltinType::LocalPid
-                .canonical_name()
-                .to_string(),
-            args: vec![ResolvedTy::Unit],
-            builtin: Some(hew_types::BuiltinType::LocalPid),
-            is_opaque: false,
-        });
-        self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
+        let self_handle = self.emit_actor_self_handle();
 
         self.push_runtime_call(symbol, vec![self_handle, target], None);
         None
@@ -17135,15 +17157,7 @@ impl Builder {
         let target = self.lower_value(&hir_args[0])?;
 
         // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
-        let self_handle = self.alloc_local(ResolvedTy::Named {
-            name: hew_types::BuiltinType::LocalPid
-                .canonical_name()
-                .to_string(),
-            args: vec![ResolvedTy::Unit],
-            builtin: Some(hew_types::BuiltinType::LocalPid),
-            is_opaque: false,
-        });
-        self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
+        let self_handle = self.emit_actor_self_handle();
 
         self.push_runtime_call("hew_actor_unlink", vec![self_handle, target], None);
         None

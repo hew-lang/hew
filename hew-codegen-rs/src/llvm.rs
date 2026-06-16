@@ -21782,6 +21782,60 @@ fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads
+        // the live actor from the per-dispatch thread-local — the borrowed
+        // handle the current `receive fn` runs on. Emitted for `this` used as a
+        // value (`HirExprKind::ActorSelf`): a self-send (`this.go()`) lowers its
+        // receiver through here, then `Terminator::Send` loads the handle back
+        // from `dest`. The returned `*mut HewActor` is a BORROW (no ownership
+        // transfer), so the `LocalPid` dest slot carries no drop obligation.
+        F::ActorSelf => {
+            if !args.is_empty() {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_self): expected 0 args, got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_actor_self returns the self-handle; producer must supply a dest".into(),
+                )
+            })?;
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            // The `LocalPid` handle slot is a `ptr` alloca — the actor handle is
+            // stored directly (the same representation `load_duplex_handle`
+            // reads back when `Terminator::Send` consumes this Place).
+            match dest_ty {
+                BasicTypeEnum::PointerType(_) => {}
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_actor_self: dest {dest_place:?} resolves to non-pointer type \
+                         {other:?}; expected `ptr` (the LocalPid handle alloca)"
+                    )));
+                }
+            }
+            let fv = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                symbol,
+            )?;
+            let self_ptr = fn_ctx
+                .builder
+                .build_call(fv, &[], "hew_actor_self_call")
+                .llvm_ctx("hew_actor_self call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_actor_self returned void".into())
+                })?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, self_ptr)
+                .llvm_ctx("hew_actor_self store")?;
+            let _ = (i32_ty, ptr_ty);
+        }
         // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
         // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
         // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
@@ -23223,7 +23277,6 @@ fn lower_call_runtime_abi(
         F::ActorAsk
         | F::ActorAskWithChannel
         | F::ActorCooperate
-        | F::ActorSelf
         | F::ActorSendById
         | F::ActorSpawn
         | F::ActorUnlink

@@ -672,6 +672,7 @@ fn walk_expr(
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Break { value: None, .. }
         | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
     }
 }

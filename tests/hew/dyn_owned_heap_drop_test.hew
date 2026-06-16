@@ -1,0 +1,133 @@
+//! Regression tests: dyn-boxing of OWNED-HEAP concrete types must compile,
+//! run, and drop the owned-heap storage at scope exit — no leak, no abort,
+//! no double-free.
+//!
+//! Before the fix, `emit_dyn_trait_drop_in_place_fns` (hew-codegen-rs)
+//! fail-closed at codegen-front (E_CODEGEN_FRONT) for:
+//!   - Mode A: any record with an owned-heap field (String / Vec / …) —
+//!     `record_concrete_is_trivially_droppable == false`.
+//!   - Mode B: EVERY enum concrete — the classifier ran with an empty
+//!     enum-layout slice, so any enum was "not classifiable".
+//! The vtable slot-0 `drop_in_place` fn was a box-free-only no-op carrying
+//! NO per-field drop glue, so even bypassing the guard would leak the
+//! String / Vec buffers.
+//!
+//! After the fix, slot-0 runs the concrete's STRUCTURAL drop —
+//! `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` (the
+//! runtime-erased counterpart to `DropKind::{Record,Enum}InPlace`) — which
+//! releases the owned-heap fields. The `FrameOwned` drop site dispatches
+//! slot-0 with NO heap-box free (the value lives in a frame alloca); the
+//! `HeapBoxed` site dispatches slot-0 THEN `hew_dyn_box_free`. The slot-0
+//! contract is the runtime ABI in `hew-runtime/src/trait_object.rs`
+//! (`HewVtable::drop_in_place` — "run drop code WITHOUT freeing storage").
+//!
+//! Each test builds an owned-heap value, coerces it to an owned `dyn`
+//! local, and lets it drop at scope exit. Reaching the `assert` proves the
+//! drop ran without abort/double-free; the no-leak property is verified
+//! out of band with `leaks --atExit` (record String/Vec/enum-payload
+//! buffers all reach 0 leaked bytes).
+//!
+//! WASM-TODO(#1451): the dyn trait-object ABI (vtable size/align prefix,
+//! `hew_dyn_box_*`) is native-64-bit only today — `emit_dyn_trait_*`
+//! sources size/align as host-pointer-width and the WASM32 width path is
+//! unbuilt (see `emit_dyn_trait_vtable_definitions`). Add an
+//! `add_wasm_file_test()` entry once the wasm32 dyn lowering lands.
+
+import std::string;
+
+import std::testing;
+
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+trait Counted {
+    fn size(val: Self) -> i64;
+}
+
+trait Describe {
+    fn describe(val: Self) -> string;
+}
+
+// Record with an owned-heap `string` field (D2 Mode A).
+type Person {
+    tag: string;
+}
+
+impl Person {
+    fn name(val: Person) -> string {
+        val.tag
+    }
+}
+
+// Record with an owned-heap `Vec` field (D2 Mode A).
+type Bag {
+    items: Vec<i64>;
+}
+
+impl Bag {
+    fn size(val: Bag) -> i64 {
+        0
+    }
+}
+
+// Enum with an owned-heap (`string`) variant payload AND a BitCopy variant
+// (D2 Mode B — every enum concrete was previously unclassifiable).
+enum Status {
+    Active(string);
+    Inactive(i64);
+}
+
+impl Status {
+    fn describe(val: Status) -> string {
+        "status"
+    }
+}
+
+/// Mode A — record with a heap `string` field coerced to `dyn` and dropped
+/// at scope exit. Exercises slot-0 → `__hew_record_drop_inplace_Person` →
+/// string free. The 64-byte `string.repeat` payload is a real heap buffer
+/// (not an interned literal), so a missing drop would leak it.
+#[test]
+fn test_dyn_string_field_record_drops_clean() {
+    let heaped = string.repeat("x", 64);
+    let p = Person { tag: heaped };
+    let _d: dyn Named = p;
+    testing.assert_true(true);
+}
+
+/// Mode A — record with a populated `Vec<i64>` field coerced to `dyn` and
+/// dropped. Exercises slot-0 → `__hew_record_drop_inplace_Bag` → vec free.
+#[test]
+fn test_dyn_vec_field_record_drops_clean() {
+    let items: Vec<i64> = Vec::new();
+    items.push(10);
+    items.push(20);
+    items.push(30);
+    let n = items.len();
+    let b = Bag { items: items };
+    let _d: dyn Counted = b;
+    testing.assert_eq(n, 3);
+}
+
+/// Mode B — enum with an owned `string` payload coerced to `dyn` and
+/// dropped. Exercises slot-0 → `__hew_enum_drop_inplace_Status` →
+/// active-variant string free. Previously every enum concrete fail-closed
+/// at codegen-front regardless of payload.
+#[test]
+fn test_dyn_enum_owned_payload_drops_clean() {
+    let heaped = string.repeat("y", 64);
+    let s = Status::Active(heaped);
+    let _d: dyn Describe = s;
+    testing.assert_true(true);
+}
+
+/// Mode B — enum whose active variant is BitCopy still routes through the
+/// enum drop-inplace path (the tag-dispatch finds no owned payload to free)
+/// and must not abort.
+#[test]
+fn test_dyn_enum_bitcopy_payload_drops_clean() {
+    let s = Status::Inactive(7);
+    let _d: dyn Describe = s;
+    testing.assert_true(true);
+}

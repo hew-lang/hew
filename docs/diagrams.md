@@ -1,56 +1,33 @@
 # Hew Compiler & Runtime Diagrams
 
-Visual documentation of Hew runtime architecture and protocol formats using
-Mermaid diagrams. The runtime diagrams reflect the current codebase; the
-compilation-pipeline diagrams below are retained as historical context and are
-not current architecture.
-
-> **Status: historical — C++/MLIR was retired in v0.5 (commit 842842bd). Current implementation: hew-codegen-rs direct Rust/Inkwell LLVM emission.**
-> Sections 1 and 3 describe the retired v0.4 compilation pipeline. The runtime,
-> capability, and stdlib sections are unaffected.
+Visual documentation of the Hew compilation pipeline, runtime architecture, and
+protocol formats using Mermaid diagrams. Every diagram reflects the current v0.5
+codebase.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
 ---
 
-## 1. Historical compilation pipeline
+## 1. Compilation Pipeline
 
-This sequence documents the retired C++ backend. Current v0.5 builds lower
-through Rust HIR/MIR and emit LLVM directly through `hew-codegen-rs`.
+Hew compiles through an explicit IR ladder. Each layer has a distinct owner, a
+verifier or diagnostic class, and a deterministic text dump. Ownership is proven
+in Checked MIR (a fail-closed gate); the Rust/Inkwell backend lowers proven MIR
+facts directly into LLVM IR and re-derives no semantics. See
+[`docs/internal/v05-ir-ladder.md`](internal/v05-ir-ladder.md) for the per-layer
+contracts.
 
 ```mermaid
-sequenceDiagram
-    participant Source as source.hew
-    participant Lexer as Lexer<br/>(hew-lexer)
-    participant Parser as Parser<br/>(hew-parser)
-    participant TypeChecker as Type Checker<br/>(hew-types)
-    participant Serializer as Serializer<br/>(hew-serialize)
-    participant Hew as hew<br/>(Rust driver)
-    participant Codegen as Embedded codegen<br/>(C++ library)
-    participant LLVM as LLVM Backend
-    participant Linker as Linker (cc)
-
-    Source->>Lexer: source text
-    Note over Lexer: logos crate tokenizer
-    Lexer->>Parser: token stream
-    Note over Parser: recursive-descent +<br/>Pratt precedence
-    Parser->>TypeChecker: AST (Program)
-    Note over TypeChecker: bidirectional HM inference<br/>TypeCheckOutput: types + diagnostics
-    TypeChecker->>Serializer: typed AST + type map
-    Note over Serializer: enrich.rs → msgpack.rs
-    Serializer->>Hew: MessagePack binary
-    Hew->>Codegen: hew_codegen_compile_msgpack(...)
-    Note over Hew,Codegen: ── in-process FFI boundary ──
-    Codegen->>Codegen: msgpack_reader.cpp → AST structs
-    Codegen->>Codegen: MLIRGen.cpp → Hew MLIR dialect
-    Codegen->>Codegen: lowerHewDialect (75+ patterns)
-    Codegen->>Codegen: Lower std → LLVM dialect (11 passes)
-    Codegen->>LLVM: translateModuleToLLVMIR
-    LLVM->>LLVM: O3 optimization pipeline
-    LLVM->>Hew: object file (.o)
-    Hew->>Linker: object file (.o)
-    Linker->>Linker: .o + libhew_runtime.a + -lpthread -lm
-    Note over Linker: native executable
+flowchart TD
+    SRC["source.hew"] --> AST["AST<br/>(hew-parser)<br/><i>syntactic only; no resolution</i>"]
+    AST --> HIR["Resolved HIR<br/>(hew-hir)<br/><i>names, scopes, imports, capabilities</i>"]
+    HIR --> THIR["THIR<br/>(hew-hir, fully typed)<br/><i>monomorphised types; ValueClass per type</i>"]
+    THIR --> RMIR["Raw MIR<br/>(hew-mir, CFG)<br/><i>SSA/places; value-model ops; not yet proven</i>"]
+    RMIR --> CMIR["Checked MIR<br/>(hew-mir)<br/><b>ownership proven; fail-closed gate</b>"]
+    CMIR --> EMIR["Elaborated MIR<br/>(hew-mir)<br/><i>explicit Drop edges; cleanup CFG</i>"]
+    EMIR --> LLVM["LLVM IR<br/>(hew-codegen-rs / Inkwell)<br/><i>direct emission from proven MIR facts</i>"]
+    LLVM --> OBJ["Native / WASM object<br/>(LLVM TargetMachine / wasm-ld)<br/><i>target-specific; no Hew decisions remain</i>"]
+    OBJ --> LINK["link"]
 ```
 
 **Current v0.5 inspection commands:**
@@ -103,63 +80,7 @@ void (*dispatch)(void* state, int msg_type, void* data, size_t data_size);
 
 ---
 
-## 3. Historical MLIR lowering pipeline
-
-This pipeline lived in the retired C++ backend and is kept only to explain old
-design notes and release archaeology.
-
-```mermaid
-flowchart TD
-    A["MessagePack AST<br/>(from Rust frontend in-process)"] --> B["MLIRGen.cpp<br/>→ Hew MLIR Dialect"]
-
-    B --> PRE["<b>Pre-Lowering Optimization</b>"]
-
-    PRE --> C1["Canonicalize"]
-    PRE --> C2["DevirtualizeTraitDispatchPass<br/><i>direct-call when vtable is static</i>"]
-    PRE --> C3["Canonicalize"]
-    PRE --> C4["StackPromoteDynCoercionPass<br/><i>arena.malloc → alloca for confined ptrs</i>"]
-
-    C1 --> C2 --> C3 --> C4
-
-    C4 --> STAGE1["<b>Stage 1: Lower Hew Dialect</b><br/>75+ ConversionPatterns<br/>(applyPartialConversion)"]
-
-    STAGE1 --> S1_DETAIL["Actor: SpawnOp, SendOp, AskOp, StopOp …<br/>Collections: VecNewOp, HashMapInsertOp …<br/>Generators: GenCtxCreateOp, GenYieldOp …<br/>Scope/Task: ScopeCreateOp, TaskSetResultOp …<br/>Select: SelectCreateOp, SelectFirstOp …<br/>Traits: TraitDispatchOp → func.CallOp<br/>Closures: ClosureCreateOp, ClosureGetFnOp …"]
-
-    S1_DETAIL --> STAGE2["<b>Stage 2: Lower to LLVM Dialect</b><br/>(11 core passes)"]
-
-    STAGE2 --> P1["1. Canonicalize + CSE"]
-    P1 --> P2["2. SCFToControlFlow<br/><i>scf.if/for/while → cf.br/cond_br</i>"]
-    P2 --> P3["3. ConvertFuncToLLVM<br/><i>func.func → llvm.func</i>"]
-    P3 --> P4["4. VtableGlobalPass<br/><i>VtableRefOp → llvm.GlobalOp + AddressOfOp</i>"]
-    P4 --> P5["5. InternalLinkagePass<br/><i>hide non-main funcs</i>"]
-    P5 --> P6["6. SetTailCallsPass<br/><i>hew.tail_call → LLVM tail call</i>"]
-    P6 --> P7["7. ArithToLLVM"]
-    P7 --> P8["8. ConvertControlFlowToLLVM"]
-    P8 --> P9["9. FinalizeMemRefToLLVM"]
-    P9 --> P10["10. ReconcileUnrealizedCasts"]
-    P10 --> P11["11. Canonicalize (cleanup)"]
-
-    P11 --> STAGE3["<b>Stage 3: Translate to LLVM IR</b><br/>mlir::translateModuleToLLVMIR"]
-
-    STAGE3 --> OPT["LLVM O3 Pipeline<br/>(skipped with --debug-info)"]
-    OPT --> OBJ["Object File (.o)<br/>TargetMachine::addPassesToEmitFile"]
-```
-
-**Type converter mappings** (Hew → LLVM):
-
-| Hew Type                                            | LLVM Type                                |
-| --------------------------------------------------- | ---------------------------------------- |
-| `ActorRef`, `StringRef`, `Vec`, `HashMap`, `Handle` | `!llvm.ptr`                              |
-| `HewTuple`                                          | `!llvm.struct<...>`                      |
-| `HewArray`                                          | `!llvm.array<N x T>`                     |
-| `TraitObject`                                       | `!llvm.struct<ptr, ptr>` (data + vtable) |
-| `Closure`                                           | `!llvm.struct<ptr, ptr>` (fn + env)      |
-| `OptionEnum`                                        | `!llvm.struct<i32, T>`                   |
-| `ResultEnum`                                        | `!llvm.struct<i32, OK, ERR>`             |
-
----
-
-## 4. Actor Message Flow
+## 3. Actor Message Flow
 
 Shows the internal mechanics of sending a message between actors. Deep-copy semantics ensure actor isolation — no shared memory between actors.
 
@@ -214,7 +135,7 @@ sequenceDiagram
 
 ---
 
-## 5. Runtime Architecture
+## 4. Runtime Architecture
 
 Layered architecture of `libhew_runtime.a` (`hew-runtime/src/`). All layers export C ABI functions via `#[no_mangle] extern "C"`.
 
@@ -289,7 +210,7 @@ block-beta
 
 ---
 
-## 6. Distributed Node State Machine
+## 5. Distributed Node State Machine
 
 Governs the lifecycle of a `HewNode` in distributed mode (`hew-runtime/src/hew_node.rs`). Each node has a `node_id: u16`, a bound address, and a transport vtable.
 
@@ -337,7 +258,7 @@ stateDiagram-v2
 
 ---
 
-## 7. Wire Protocol Frame Format (HBF)
+## 6. Wire Protocol Frame Format (HBF)
 
 The Hew Binary Format is the internal wire encoding for distributed actor messaging. Defined in `hew-runtime/src/wire.rs` and specified in §7.3.1 of the language spec.
 
@@ -397,7 +318,7 @@ flowchart LR
 
 ---
 
-## 8. Supervisor State Machine
+## 7. Supervisor State Machine
 
 Supervisors manage child actor lifecycles with configurable restart strategies. Defined in `hew-runtime/src/supervisor.rs`.
 

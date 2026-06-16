@@ -67,18 +67,15 @@ CDDL integer keys are mirrored as field-doc comments on each struct field.
   cross-node traffic from untrusted peers.
 - **Protocol Buffers (and the legacy HBF TLV substrate).** Schema-first,
   but the v0.5 substrate retired the C++/MLIR codegen path that produced
-  HBF descriptors (see `CHANGELOG.md [Unreleased]` and the
-  [HBF→Cap'n Proto reach audit][hbf-audit]). Doubling down on a Protobuf
-  variant would require re-introducing a schema compiler we do not own.
+  HBF descriptors (see `CHANGELOG.md [Unreleased]`). Doubling down on a
+  Protobuf variant would require re-introducing a schema compiler we do
+  not own.
   CBOR + CDDL gets us schema-first validation without owning a code
   generator.
-- **Cap'n Proto.** Considered during the HBF retirement (see
-  [`hbf-capnproto-migration-reach-audit.md`][hbf-audit]). The zero-copy
+- **Cap'n Proto.** Considered during the HBF retirement. The zero-copy
   win is real, but the toolchain commitment and code-generation surface
   exceeded what v0.5 could absorb. CBOR is the deliberate, smaller-scope
   alternative.
-
-[hbf-audit]: ../internal/hbf-capnproto-migration-reach-audit.md
 
 ### Substrate provenance
 
@@ -178,8 +175,8 @@ OpenAPI generators, `proto-gen`-style toolchains, and any other
 "schema-first generator that produces Hew types from a non-Hew schema"
 surface are **out of scope** for v0.5.
 
-> **WHEN-obsolete:** when a v0.5.1+ consumer-interop lane lands. That
-> lane's plan must reference this section by name and state which of
+> **WHEN-obsolete:** when a v0.5.1+ consumer-interop effort lands. That
+> effort's plan must reference this section by name and state which of
 > {OpenAPI, gRPC/Protobuf service stubs, AsyncAPI, JSON Schema} it
 > commits to.
 >
@@ -199,8 +196,8 @@ surface are **out of scope** for v0.5.
 - The existing stdlib `protobuf` module is **wire-level** (encode and
   decode the bytes), not **schema-level** (consume `.proto` files and
   emit types). The first is small and contained. The second is a
-  toolchain commitment that wants its own lane.
-- Until that lane exists, users with consumer-interop needs can:
+  toolchain commitment that wants its own dedicated effort.
+- Until that effort exists, users with consumer-interop needs can:
   hand-author the Hew types that match the external schema, use the
   stdlib wire-level module to encode/decode them, and document the
   schema-to-Hew mapping in their own project.
@@ -209,7 +206,7 @@ surface are **out of scope** for v0.5.
 
 - Do not land partial OpenAPI / proto-gen tooling under
   `std::encoding::*` or anywhere else in the workspace as a "preview"
-  surface. If it is not the lane's deliverable, it does not ship.
+  surface. If it is not the effort's deliverable, it does not ship.
 - Do not advertise OpenAPI / proto-gen support in user-facing docs,
   examples, or release notes for v0.5.x.
 
@@ -301,12 +298,10 @@ them in `04bfb422`).
 
 ### S2. Cap'n Proto stub crate
 
-**State today.** Not yet present in the workspace. The HBF→Cap'n Proto
-reach audit at [`docs/internal/hbf-capnproto-migration-reach-audit.md`][hbf-audit]
-remains as historical context for the decision space that led to
-choosing CBOR + CDDL.
+**State today.** Not yet present in the workspace. The decision to defer
+Cap'n Proto in favour of CBOR + CDDL is recorded in §1.
 
-> **WHEN-obsolete:** when U2 / R69 Lane B S2 lands a placeholder
+> **WHEN-obsolete:** when a future effort lands a placeholder
 > `hew-codegen-capnproto` (or equivalently named) stub crate that
 > compiles to a build-time error stating "Cap'n Proto codegen is not
 > implemented; use the CBOR envelope substrate for inter-process
@@ -317,7 +312,7 @@ choosing CBOR + CDDL.
 > `// JUSTIFIED: documented non-choice per HEW-WIRE-FORMAT-DOCTRINE §5`
 > marker, a one-line `unimplemented!()` in its public surface, and a
 > CI gate that fails if anything in the workspace builds against it.
-> If a future lane decides to actually implement Cap'n Proto codegen,
+> If a future effort decides to actually implement Cap'n Proto codegen,
 > deleting that gate is the explicit signal that the doctrine is
 > being revised.
 
@@ -343,8 +338,5 @@ only one with an active obsolescence trigger.
 - CDDL schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).
 - Round-trip tests: [`hew-runtime/tests/envelope_round_trip.rs`](../../hew-runtime/tests/envelope_round_trip.rs).
-- HBF→Cap'n Proto historical audit: [`docs/internal/hbf-capnproto-migration-reach-audit.md`](../internal/hbf-capnproto-migration-reach-audit.md)
-  (superseded for forward-looking decisions by this document; retained
-  for historical reach context).
 - Stdlib `Value` contract: [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md), issue #1247.
 - Distributed actor companion doc: [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md).

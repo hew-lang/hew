@@ -16,9 +16,6 @@ Full rationale in
 §1 ("Why CBOR, not JSON / msgpack / Protobuf / HBF") and §5 §S2
 ("Cap'n Proto stub crate").
 
-Historical decision space:
-[`docs/internal/hbf-capnproto-migration-reach-audit.md`](../../../docs/internal/hbf-capnproto-migration-reach-audit.md).
-
 ## What to use instead
 
 - **Inter-process actor messaging:** you do not choose the format. The
@@ -30,7 +27,7 @@ Historical decision space:
 
 ## Obsolescence markers
 
-> **WHEN-obsolete:** when U2 / R69 Lane B S2 (or a successor lane)
+> **WHEN-obsolete:** when a future effort
 > decides to either (a) implement Cap'n Proto codegen in earnest, or
 > (b) formally close the option with a project-level ADR that buries it
 > for good. Either path must update or delete this README.
@@ -44,5 +41,5 @@ Historical decision space:
 > marker and a CI gate that fails if anything in the workspace builds
 > against it unintentionally.
 
-Until that lane lands, this README is the signal: **the module does not
+Until that effort lands, this README is the signal: **the module does not
 exist, the choice was deliberate, and new code must not assume it will.**

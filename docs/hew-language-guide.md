@@ -1,4 +1,4 @@
-# Hew v0.5 Implementer Guide
+# Hew v0.5 Language Guide
 
 A reference for writing correct idiomatic Hew. Every example below was executed against `target/debug/hew` and ran clean.
 

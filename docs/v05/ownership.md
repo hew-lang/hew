@@ -38,7 +38,7 @@ fn describe(s: &string) -> string {
 | Reference cycles via `&T` | ⚠️ Leak risk | Q321 — no cycle collector; avoid cycles |
 
 The parser will reject `&mut T` with a diagnostic. `&var T` is also rejected. These forms
-are reserved for a future lane.
+are reserved for future work.
 
 ## `.clone()` — explicit deep copy (P2+)
 
@@ -100,7 +100,7 @@ cycles via `&T` borrows or actor state will cause the involved values to leak (n
 cycle collector nor weak references exist yet).
 
 **Guideline:** design data structures as DAGs (trees, acyclic graphs). Cycles are a
-documented limitation for v0.5; a future lane will evaluate ORCA-style cycle collection.
+documented limitation for v0.5; future work will evaluate ORCA-style cycle collection.
 
 ## Roadmap
 

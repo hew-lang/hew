@@ -405,7 +405,7 @@ This v0 spec is stage 0 of the distributed roadmap and gates later implementatio
 | 4 | Backpressure and quiescence | Gated by sections 7 and 10. |
 | 5 | Deterministic distributed testing | Gated by section 14. |
 | 6 | Security and capabilities | Gated by section 12. |
-| 7 | Placement and virtual actors | Informed by this spec, but placement semantics remain a later design lane. |
+| 7 | Placement and virtual actors | Informed by this spec, but placement semantics remain a later design effort. |
 | 8 | Production hardening | Depends on stages 1-7 being implemented and validated. |
 
 The concrete follow-on work named by the distributed research record maps to this v0 contract as follows:

@@ -74,10 +74,6 @@ fn run_timeout_kills_grandchild_process_tree() {
         "expected timeout error in stderr, got: {stderr}",
     );
 
-    // Give the OS a brief window to finish reaping processes.
-    // 50 ms is sufficient on contemporary OSes; 300 ms was conservative overhead.
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
     // Poll for the PID file to exist rather than assuming it is present.
     // Under load during the test run, the Hew program's startup and shell
     // invocation may take longer than expected.
@@ -106,14 +102,32 @@ fn run_timeout_kills_grandchild_process_tree() {
         .parse()
         .expect("grandchild PID file should contain a numeric PID");
 
+    // Wait for the grandchild to actually be reaped rather than betting on a
+    // fixed sleep: after the process-group kill, the OS may take a brief,
+    // load-dependent window to deliver SIGKILL and reap the process. Poll the
+    // POSIX liveness probe until it reports the process is gone (`kill(pid, 0)`
+    // returns non-zero/ESRCH), bounded by a generous deadline.
     #[allow(
         clippy::cast_possible_wrap,
         reason = "PIDs fit in i32 on all supported Unix platforms"
     )]
-    // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
-    let alive = unsafe { libc::kill(grandchild_pid as libc::pid_t, 0) } == 0;
+    let grandchild_pid = grandchild_pid as libc::pid_t;
+    let dead = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            // SAFETY: `kill(pid, 0)` is a POSIX liveness probe — no signal is sent.
+            let alive = unsafe { libc::kill(grandchild_pid, 0) } == 0;
+            if !alive {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
     assert!(
-        !alive,
+        dead,
         "grandchild PID {grandchild_pid} should be dead after process-group kill on timeout",
     );
 }

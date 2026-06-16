@@ -26,6 +26,7 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
@@ -45,9 +46,10 @@ unsafe impl Send for ActorPtr {}
 
 /// Runtime-owned actor-liveness state.
 ///
-/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals; now a field of
-/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
-/// any still-pending teardown join handles.
+/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` +
+/// `lambda_actor::ACTIVE_LAMBDA_DISPATCH` globals; now a field of
+/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map, any
+/// still-pending teardown join handles, and the lambda drain counter.
 ///
 /// Native only: the WASM runtime is single-threaded and has no `RuntimeInner`,
 /// so it backs the registry with a module-private static (`LIVE_ACTORS_WASM`)
@@ -62,6 +64,9 @@ pub(crate) struct LiveActors {
     /// they still reference, or the sweep races an in-flight teardown into a
     /// use-after-free / double-free.
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
+    /// Count of currently-running lambda-actor dispatch threads owned by this
+    /// runtime. Used by `hew_lambda_drain_all`.
+    active_lambda_dispatch: AtomicUsize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,7 +76,20 @@ impl LiveActors {
         Self {
             map: PoisonSafe::new(None),
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
+            active_lambda_dispatch: AtomicUsize::new(0),
         }
+    }
+
+    pub(crate) fn lambda_dispatch_fetch_add(&self, value: usize, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.fetch_add(value, ordering)
+    }
+
+    pub(crate) fn lambda_dispatch_fetch_sub(&self, value: usize, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.fetch_sub(value, ordering)
+    }
+
+    pub(crate) fn lambda_dispatch_load(&self, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.load(ordering)
     }
 }
 

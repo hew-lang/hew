@@ -73,7 +73,9 @@
 
 use std::mem::ManuallyDrop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Weak};
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
@@ -244,9 +246,10 @@ pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 
     Box::into_raw(boxed).cast::<u8>()
 }
 
-// ── Process-wide drain registry ────────────────────────────────────────────
+// ── Per-runtime drain registry ─────────────────────────────────────────────
 
-/// Count of currently-running lambda-actor dispatch threads. Bumped at
+/// Count of currently-running lambda-actor dispatch threads. Bumped in the
+/// spawning runtime's `RuntimeInner.live_actors` at
 /// `HewLambdaActor::new` BEFORE spawn; decremented inside the dispatch
 /// thread by the `LambdaDispatchGuard` Drop impl AFTER `dispatch_loop`
 /// returns (covering both natural exit on `Closed` and panic-unwind).
@@ -256,17 +259,23 @@ pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 
 /// process exits. Mirrors the role `hew_shutdown_wait` plays for
 /// scheduler workers, but for lambda actors which run on their own
 /// dedicated OS threads (not the work-stealing scheduler).
-static ACTIVE_LAMBDA_DISPATCH: AtomicUsize = AtomicUsize::new(0);
+fn active_lambda_dispatch() -> &'static crate::lifetime::live_actors::LiveActors {
+    &crate::runtime::rt_current().live_actors
+}
 
-/// RAII guard that decrements [`ACTIVE_LAMBDA_DISPATCH`] on drop. Lives
+/// RAII guard that decrements the spawning runtime's lambda dispatch counter on
+/// drop. Lives
 /// on the dispatch thread's stack so the decrement is unconditional —
 /// `dispatch_loop` returning normally OR a body panic that unwinds the
 /// dispatch thread both run this Drop.
-struct LambdaDispatchGuard;
+struct LambdaDispatchGuard {
+    live_actors: &'static crate::lifetime::live_actors::LiveActors,
+}
 
 impl Drop for LambdaDispatchGuard {
     fn drop(&mut self) {
-        ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+        self.live_actors
+            .lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -302,7 +311,7 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
     let mut backoff = std::time::Duration::from_micros(100);
     let max_backoff = std::time::Duration::from_millis(16);
     loop {
-        if ACTIVE_LAMBDA_DISPATCH.load(Ordering::Acquire) == 0 {
+        if active_lambda_dispatch().lambda_dispatch_load(Ordering::Acquire) == 0 {
             return 0;
         }
         let now = std::time::Instant::now();
@@ -541,7 +550,7 @@ impl HewLambdaActor {
         //     Arc strong count; if this is the last ref,
         //     `LambdaActorInner::drop` runs and invokes `state_drop(state)`)
         //     and THEN `_guard` drops (decrementing the dispatch counter).
-        //   - Therefore: when `ACTIVE_LAMBDA_DISPATCH` reaches 0, all
+        //   - Therefore: when this runtime's lambda dispatch counter reaches 0, all
         //     captured user state has already been freed via state_drop.
         //   - If `dispatch_inner` were captured by the closure (instead of
         //     moved into a body-local AFTER `_guard`), it would drop with
@@ -549,7 +558,8 @@ impl HewLambdaActor {
         //     where `hew_lambda_drain_all` returns counter=0 but
         //     state_drop has not yet run. Security-review fix 2026-06-08:
         //     drain ≠ join, but drain MUST mean state-drop-has-run.
-        ACTIVE_LAMBDA_DISPATCH.fetch_add(1, Ordering::AcqRel);
+        let live_actors = active_lambda_dispatch();
+        live_actors.lambda_dispatch_fetch_add(1, Ordering::AcqRel);
         // Spawn the dispatch thread. It holds a strong Arc reference to
         // keep LambdaActorInner alive while the loop runs. The thread
         // exits when recv returns Closed (i.e., when all external
@@ -560,7 +570,7 @@ impl HewLambdaActor {
             .spawn(move || {
                 // Drop-order discipline (see comment above): `_guard`
                 // declared FIRST so it drops LAST (after `inner`).
-                let _guard = LambdaDispatchGuard;
+                let _guard = LambdaDispatchGuard { live_actors };
                 // Move the captured Arc into a body-local declared AFTER
                 // `_guard`. Body-locals drop in reverse declaration order,
                 // so `inner` drops BEFORE `_guard` — triggering
@@ -570,14 +580,14 @@ impl HewLambdaActor {
                 dispatch_loop(&inner);
                 // (implicit drops at body end:
                 //    1. `inner` → Arc strong-count drop → state_drop
-                //    2. `_guard` → ACTIVE_LAMBDA_DISPATCH.fetch_sub
+                //    2. `_guard` → runtime lambda dispatch counter fetch_sub
                 // — so drain-all observes counter==0 only AFTER
                 // state_drop has run on this dispatch thread.)
             });
         if spawn_result.is_err() {
             // Spawn failed: roll back the counter so a later drain-all
             // doesn't wait for a thread that never started.
-            ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+            live_actors.lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
             return None;
         }
         Some(Self { mailbox_in, inner })
@@ -1565,6 +1575,24 @@ mod tests {
 
     // ── Shared test helpers ────────────────────────────────────────────────
 
+    struct LambdaTestGuard {
+        _enter: crate::runtime::EnterGuard,
+        _rt: Box<crate::runtime::RuntimeInner>,
+    }
+
+    fn guard() -> LambdaTestGuard {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: the guard owns `rt` and drops `_enter` before it, so the
+        // entered runtime outlives the thread-local selection that names it.
+        let enter = unsafe { crate::runtime::enter(&rt) };
+        LambdaTestGuard {
+            _enter: enter,
+            _rt: rt,
+        }
+    }
+
     /// No-op state-drop callback for tests that don't need cleanup.
     unsafe extern "C-unwind" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
 
@@ -1715,6 +1743,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
+        let _guard = guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -1745,6 +1774,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_succeeds_while_strong_alive() {
+        let _guard = guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1776,6 +1806,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_fails_after_strong_drops() {
+        let _guard = guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1794,6 +1825,7 @@ mod tests {
 
     #[test]
     fn weak_does_not_keep_actor_alive() {
+        let _guard = guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1819,6 +1851,7 @@ mod tests {
 
     #[test]
     fn multiple_strong_handles_keep_actor_alive() {
+        let _guard = guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1857,6 +1890,7 @@ mod tests {
 
     #[test]
     fn cabi_new_send_release_tell() {
+        let _guard = guard();
         let a = new_tell_cabi(4);
         assert!(!a.is_null());
         let msg = b"abi";
@@ -1870,6 +1904,7 @@ mod tests {
 
     #[test]
     fn cabi_new_rejects_invalid_shape() {
+        let _guard = guard();
         // SAFETY: args valid except shape discriminant.
         let a = unsafe {
             hew_lambda_actor_new(
@@ -1885,6 +1920,7 @@ mod tests {
 
     #[test]
     fn cabi_new_rejects_zero_capacity() {
+        let _guard = guard();
         // SAFETY: args valid except capacity.
         let a = unsafe {
             hew_lambda_actor_new(
@@ -1970,6 +2006,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
+        let _guard = guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
         let state_ptr = Box::into_raw(Box::new(received_clone)).cast::<core::ffi::c_void>();
@@ -2063,6 +2100,7 @@ mod tests {
     fn body_panic_marks_actor_stopped() {
         use std::time::Duration;
 
+        let _guard = guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2086,6 +2124,7 @@ mod tests {
     /// Non-zero body return marks actor stopped.
     #[test]
     fn nonzero_body_return_marks_actor_stopped() {
+        let _guard = guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2271,6 +2310,7 @@ mod tests {
     fn state_drop_called_exactly_once() {
         use std::time::Duration;
 
+        let _guard = guard();
         let counter = Arc::new(AtomicUsize::new(0));
         // Arc::into_raw keeps one reference; counting_state_drop reconstructs
         // and drops the Arc (decrement), which is fine because the test also
@@ -2301,7 +2341,7 @@ mod tests {
     /// `hew_lambda_drain_all` must return only AFTER all dispatch threads'
     /// captured state has been torn down via `state_drop`. Prior to the
     /// drop-order fix in `HewLambdaActor::new`'s spawn closure, the
-    /// `LambdaDispatchGuard` decremented `ACTIVE_LAMBDA_DISPATCH` BEFORE
+    /// `LambdaDispatchGuard` decremented the drain counter BEFORE
     /// the captured `Arc<LambdaActorInner>` dropped, so drain could
     /// observe `count == 0` while `state_drop` had not yet run.
     ///
@@ -2313,9 +2353,9 @@ mod tests {
         const ITERS: usize = 25;
         const BATCH: usize = 8;
 
-        // `hew_lambda_drain_all` reads the process-wide ACTIVE_LAMBDA_DISPATCH
-        // counter. Any concurrent test spawning lambda actors will inflate
-        // that counter mid-drain and stall this assertion at non-zero.
+        // `hew_lambda_drain_all` reads this runtime's lambda dispatch counter.
+        // The runtime test guard keeps the existing default-runtime behaviour
+        // while the counter itself is now isolated from private runtimes.
         let _guard = crate::runtime_test_guard();
 
         for iter in 0..ITERS {
@@ -2344,7 +2384,7 @@ mod tests {
                 let rc = unsafe { hew_lambda_actor_release(actor) };
                 assert_eq!(rc, SendError::Ok as i32);
             }
-            // Drain: returns 0 when ACTIVE_LAMBDA_DISPATCH reaches 0.
+            // Drain: returns 0 when this runtime's lambda dispatch counter reaches 0.
             let rc = hew_lambda_drain_all(2_000);
             assert_eq!(rc, 0, "iter {iter}: drain must succeed (timeout 0)");
             // Post-drain invariant: state_drop has fired for every actor.
@@ -2353,6 +2393,51 @@ mod tests {
                 fired, BATCH,
                 "iter {iter}: drain returned 0 but state_drop fired {fired}/{BATCH} times \
                  (drop-order race: guard decrements counter before Arc drops)"
+            );
+        }
+    }
+
+    #[test]
+    fn independent_runtimes_drain_only_their_lambda_dispatch_threads() {
+        let rt_a = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        let rt_b = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+
+        let actor_b = {
+            // SAFETY: rt_b lives until the actor is dropped and drained below.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            HewLambdaActor::new(
+                1,
+                LambdaShape::Tell,
+                noop_tell_body,
+                ptr::null_mut(),
+                noop_state_drop,
+            )
+            .expect("spawn runtime B lambda actor")
+        };
+
+        {
+            // SAFETY: rt_a lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            assert_eq!(
+                hew_lambda_drain_all(1),
+                0,
+                "runtime A drain must ignore runtime B's live lambda actor"
+            );
+        }
+
+        drop(actor_b);
+
+        {
+            // SAFETY: rt_b lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            assert_eq!(
+                hew_lambda_drain_all(2_000),
+                0,
+                "runtime B drain observes its own lambda actor exit"
             );
         }
     }
@@ -2430,6 +2515,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
+        let _guard = guard();
         let actor = HewLambdaActor::new(
             1,
             LambdaShape::Tell,

@@ -1,7 +1,7 @@
 // W2.002 Stage 1 — synthetic fixture for UserRecord recursion + visited-set.
 //
-// Per audit `.tmp/orchestration/audits/w2.002-state-clone-actor-
-// classification.md` §1: zero corpus actors nest a user record in state.
+// Per the state-clone actor-classification audit §1: zero corpus actors
+// nest a user record in state.
 // This fixture is the only exercise of the recursion-termination path.
 
 type Entry {

@@ -1,4 +1,4 @@
-//! Descriptor authority matrix — §6.2 from `lane-v05-type-wire-native-values.md`.
+//! Descriptor authority matrix.
 //!
 //! Verifies:
 //! 1. `canonical_string()` produces the expected stable string for every

@@ -73,7 +73,7 @@ pub fn sign(x: i64) -> i64 {
 // Codegen emits LLVM math intrinsics for these. The bodies
 // below are compile-time stubs that satisfy the type-checker.
 // WHY: `#[intrinsic("math.sqrt")]` is the typed-declaration substrate introduced
-// in the stdlib-refactor early-substrate lane. The attribute names the catalog key
+// in the stdlib-refactor early-substrate work. The attribute names the catalog key
 // so HIR can skip body lowering and route to the existing CompilerIntrinsic entry.
 // WHEN OBSOLETE: once the mass-migration slices (4-7) land and the catalog entry is
 // removed, this comment becomes the authoritative declaration and the WHY/WHEN block

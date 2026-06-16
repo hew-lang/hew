@@ -49,8 +49,7 @@
 //! `StateFieldCloneKind::UserRecord { name }` recurses into the record's
 //! field types. The Hew type system does not currently permit
 //! self-referential records (no boxed indirection — confirmed by the
-//! audit at `.tmp/orchestration/audits/w2.002-state-clone-actor-
-//! classification.md` §1), but the classifier carries a `visited:
+//! state-clone actor-classification audit §1), but the classifier carries a `visited:
 //! HashSet<String>` keyed on record name as defence-in-depth: if a future
 //! addition (e.g. `Box<T>` or boxed-recursive enums) introduces a cycle,
 //! the classifier terminates with `ClassificationError::RecordCycle`
@@ -81,14 +80,13 @@ use crate::model::{EnumLayout, RecordLayout};
 /// One actor-state field's classification for the synthesized
 /// `__hew_state_clone_<A>` / `__hew_state_drop_<A>` body.
 ///
-/// The variant set is **closed** per Stage 0's `audits/w2.002-state-clone-
-/// actor-classification.md` finding that the 110-actor corpus exhibits
+/// The variant set is **closed** per Stage 0's state-clone actor-classification
+/// finding that the 110-actor corpus exhibits
 /// only the shapes enumerated here. Any field type the classifier cannot
 /// place into one of these arms returns `ClassificationError::Unsupported`
 /// — Stage 1 is fail-closed (`no-silent-no-op-stubs`).
 ///
-/// Plan refs: `.tmp/orchestration/plans/waves/w2/w2.002-state-clone-
-/// codegen-plan.md` §6 Stage 1, §4.5.
+/// Plan refs: state-clone codegen plan §6 Stage 1, §4.5.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StateFieldCloneKind {
     /// Field whose bits constitute the value: primitives, `bool`, `char`,

@@ -515,8 +515,8 @@ fn missing_record_layout_surfaces_diagnostic_not_silent_none() {
 
 #[test]
 fn coverage_report_against_audit_representatives() {
-    // The audit (`.tmp/orchestration/audits/w2.002-state-clone-actor-
-    // classification.md`) enumerates 110 actors. Re-running every one
+    // The state-clone actor-classification audit enumerates 110 actors.
+    // Re-running every one
     // through the parser in this test would couple it to the entire
     // examples/ tree (and to v0.5 examples that don't all parse
     // cleanly). Instead, we verify the classifier produces the audit-

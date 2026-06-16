@@ -24486,14 +24486,15 @@ fn emit_elab_drops(
 ///
 /// **FrameOwned slot-0 guard.** A
 /// `DropKind::TraitObject { storage: FrameOwned }` ElabDrop MUST
-/// arrive with `drop_fn = None` — the concrete value lives in a
-/// frame alloca whose lifetime is the surrounding scope; routing
-/// through the vtable's slot-0 `__hew_dyn_drop_in_place_*` would
-/// call `hew_dyn_box_free` on a stack address and over-free it.
-/// Slot 0 is reserved for the future `HeapBoxed` storage class.
-/// Any caller that populates `drop_fn` for a FrameOwned trait-
-/// object drop has misrouted; we reject the plan here so the
-/// over-free cannot reach codegen output.
+/// arrive with `drop_fn = None`. A trait-object drop carries no
+/// `drop_fn`: the ritual is the vtable slot-0 `drop_in_place`
+/// dispatch (`lower_dyn_trait_vtable_drop`), which runs the
+/// concrete's structural drop and — for FrameOwned — frees no
+/// storage (the data word is a frame alloca; the slot-0 fn never
+/// calls `hew_dyn_box_free`). A populated `drop_fn` is a
+/// close-symbol path misrouted into a trait-object drop; we reject
+/// the plan here so the wrong drop ritual cannot reach codegen
+/// output (pinned by `hew-mir/tests/dyn_trait_dispatch.rs`).
 /// LESSONS: boundary-fail-closed, lifecycle-symmetry.
 fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
     // #1933 / #1941 — a non-idempotent user `#[resource]` close carries a
@@ -39171,10 +39172,10 @@ fn build_module_for_target<'ctx>(
     // present by the two emission passes immediately above (drop fns
     // and thunks); the size/align values are sourced from the LLVM
     // ABI layout of `inst.concrete_type` against the host target
-    // data, the same authority `emit_dyn_trait_drop_in_place_fns`
-    // uses for the `hew_dyn_box_free(ptr, size, align)` call so the
-    // dealloc layout cannot drift from the vtable's published
-    // layout. The vtable global keeps its `Linkage::Private`
+    // data, the same authority the drop-SITE `hew_dyn_box_free(ptr,
+    // size, align)` call uses (`lower_dyn_trait_vtable_drop`, the
+    // HeapBoxed arm) so the dealloc layout cannot drift from the
+    // vtable's published layout. The vtable global keeps its `Linkage::Private`
     // (internal to the compilation unit, no ABI promise) and the
     // name produced by `hew_mir::mangle_dyn_vtable_symbol` (routed
     // through `hew_mir::sanitize_for_symbol` for a trait/concrete/id
@@ -39676,19 +39677,21 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
 /// drop slot would mis-index every dispatch and have the runtime
 /// drop path read a function pointer where it expects a `usize`.
 ///
-/// **Drop-fn routing.** Slot 0 always carries the unconditional
-/// `__hew_dyn_drop_in_place_*` function — the same fn that calls
-/// `hew_dyn_box_free`. This is correct for `TraitObjectStorage::HeapBoxed`
-/// callers (the eventual return-position / actor-message paths).
-/// `TraitObjectStorage::FrameOwned` callers (the only live storage class
-/// today — every `Instr::CoerceToDynTrait` site currently classifies as
-/// frame-owned) MUST NOT fire slot 0 at scope exit: their concrete value
-/// lives in a frame alloca and `hew_dyn_box_free` would over-free a stack
-/// address. The drop-emission consumer at the use site is responsible for
-/// routing by storage class, not the vtable. The smallest-ABI choice
-/// (single drop fn-pointer slot, no flag) matches the frame-owned data-
-/// word convention and keeps the ABI surface narrow for the future
-/// heap-boxed support work to extend.
+/// **Drop-fn routing.** Slot 0 carries the per-vtable
+/// `__hew_dyn_drop_in_place_*` function, which runs the concrete's
+/// STRUCTURAL drop only — owned-heap field drops via
+/// `__hew_{record,enum}_drop_inplace_*` — and frees NO storage. Storage
+/// release is the drop SITE's job (`lower_dyn_trait_vtable_drop`), routed
+/// by storage class: `TraitObjectStorage::FrameOwned` dispatches slot 0
+/// and frees nothing (the data word is a frame alloca, so a
+/// `hew_dyn_box_free` here would over-free a stack address);
+/// `TraitObjectStorage::HeapBoxed` dispatches slot 0 and THEN calls
+/// `hew_dyn_box_free` with the prefix slot 1/2 `(size, align)`. This split
+/// is the runtime ABI contract (`hew-runtime/src/trait_object.rs:112-123`
+/// — `drop_in_place` "must run drop code WITHOUT freeing the storage;
+/// storage release is the caller's responsibility"; the HeapBoxed
+/// return-position path at `:220-223`). The single drop fn-pointer slot
+/// (no storage-class flag) keeps the ABI surface narrow.
 ///
 /// **Idempotence with the forward declaration.**
 /// `get_or_declare_dyn_vtable_global` produces the opaque struct
@@ -39768,12 +39771,14 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
         })?;
 
         // Compute the concrete type's ABI size/align for the prefix
-        // triple. Sourcing both from the LLVM ABI layout of the same
-        // `ResolvedTy` keeps the vtable prefix on the same authority
-        // as the `hew_dyn_box_alloc`/`free` size+align inside the
-        // per-vtable drop-in-place fn — drift between the two would
-        // surface as either an under-free (live byte leak) or an
-        // over-free (dealloc with the wrong layout).
+        // triple (slots 1/2). Sourcing both from the LLVM ABI layout of
+        // the same `ResolvedTy` keeps the vtable prefix on the same
+        // authority as the `hew_dyn_box_alloc` that produced a `HeapBoxed`
+        // value and the drop-SITE `hew_dyn_box_free` that releases it
+        // (`lower_dyn_trait_vtable_drop`'s HeapBoxed arm — NOT the slot-0
+        // drop-in-place fn, which frees no storage). Drift between the
+        // alloc and the free would surface as either an under-free (live
+        // byte leak) or an over-free (dealloc with the wrong layout).
         let concrete_llvm = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
         let (concrete_size, concrete_align) = abi_size_align(concrete_llvm, Some(&host_td))?;
 
@@ -47360,9 +47365,10 @@ mod tests {
     // -----------------------------------------------------------------
     // FrameOwned trait-object drop guard: emit_one_elab_drop must
     // reject any `DropKind::TraitObject { storage: FrameOwned }`
-    // ElabDrop carrying a non-None `drop_fn`. The shape would otherwise
-    // route the drop through vtable slot 0, which calls
-    // `hew_dyn_box_free` on the stack address — an over-free.
+    // ElabDrop carrying a non-None `drop_fn`. A trait-object drop's
+    // ritual is the vtable slot-0 `drop_in_place` dispatch, never the
+    // close-symbol `drop_fn` path; a populated `drop_fn` is a misrouted
+    // plan and must fail closed.
     // -----------------------------------------------------------------
     #[test]
     fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {

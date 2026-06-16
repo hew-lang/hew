@@ -116,15 +116,22 @@ impl ArenaChunk {
         };
 
         // Global-allocator chunk for Miri; the matching `dealloc` lives in
-        // `Drop`.  A layout error (only reachable for a pathologically large
-        // `size`) maps to `None`, mirroring the `MAP_FAILED`/null contract above.
+        // `Drop`.  A `size == 0` request returns `None` to match the production
+        // `mmap(len=0)`/`VirtualAlloc(0)` contract above — both reject a
+        // zero-length mapping (`MAP_FAILED`/null) — and because
+        // `std::alloc::alloc` is undefined behaviour on a zero-sized layout.  A
+        // layout error (only reachable for a pathologically large `size`)
+        // likewise maps to `None`.
         #[cfg(miri)]
         let base = {
+            if size == 0 {
+                return None;
+            }
             let layout = std::alloc::Layout::from_size_align(size, MIRI_CHUNK_ALIGN).ok()?;
-            // SAFETY: `size` is non-zero for every chunk the arena requests and
-            // `MIRI_CHUNK_ALIGN` is a non-zero power of two, so `layout` has a
-            // non-zero size.  The pointer is freed with this exact layout in
-            // `ArenaChunk::drop`.
+            // SAFETY: the guard above rules out `size == 0` and
+            // `MIRI_CHUNK_ALIGN` is a non-zero power of two, so `layout` has the
+            // non-zero size that `std::alloc::alloc` requires.  The pointer is
+            // freed with this exact layout in `ArenaChunk::drop`.
             let p = unsafe { std::alloc::alloc(layout) };
             if p.is_null() {
                 return None;
@@ -519,6 +526,23 @@ mod tests {
         let ptr2 = arena.alloc(200, 1);
         assert!(!ptr2.is_null());
         assert_ne!(ptr1, ptr2);
+    }
+
+    /// A zero-length chunk request must fail closed on every backend: the
+    /// production `mmap`/`VirtualAlloc` path rejects `len == 0`
+    /// (`MAP_FAILED`/null → `None`), and the `cfg(miri)` `std::alloc` shim must
+    /// match — passing a zero-sized layout to `std::alloc::alloc` is undefined
+    /// behaviour.  Neither backend may fabricate an allocation for size zero.
+    #[test]
+    fn arena_zero_size_chunk_fails_closed() {
+        assert!(
+            ArenaChunk::new(0).is_none(),
+            "a zero-size chunk must not allocate"
+        );
+        assert!(
+            ActorArena::new_with_sizes(0, 4096).is_none(),
+            "an arena with a zero initial chunk must not construct"
+        );
     }
 
     #[test]

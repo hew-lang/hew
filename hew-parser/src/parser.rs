@@ -8197,6 +8197,8 @@ impl<'src> Parser<'src> {
         let body = self.parse_expr()?;
         if self.peek() == Some(&Token::RightBrace) {
             self.eat(&Token::Comma); // trailing comma optional on last arm
+        } else if Self::is_block_expr(&body.0) {
+            self.eat(&Token::Comma);
         } else {
             self.expect(&Token::Comma)?;
         }
@@ -8900,6 +8902,13 @@ mod tests {
         let source = "fn main() { match opt { Some(x) => x, None => 0, } }";
         let result = parse(source);
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn parse_match_block_arms_without_commas() {
+        let source = "fn main() { match opt { Some(x) => { x } None => { 0 } } }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]

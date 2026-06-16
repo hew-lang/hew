@@ -643,7 +643,7 @@ pub fn read_u64(name: &str) -> Option<u64> {
         "reactor.registrations_live" => Some(hooks.reactor_registrations_live),
         "reactor.ready_events_total" => Some(hooks.reactor_ready_events_total),
         "arena.resets_total" => Some(hooks.arena_resets_total),
-        _ => None,
+        _ => crate::metrics::read_u64(name),
     }
 }
 

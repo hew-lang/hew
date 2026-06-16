@@ -1001,15 +1001,31 @@ pub struct HewActor {
     // against the calling runtime's id, so a held actor pointer from a foreign
     // runtime fails closed without dereferencing a foreign handle. In a
     // single-runtime program every actor carries `RuntimeId::DEFAULT` and the
-    // check never fires. A bare `RuntimeId` (a `u64` discriminant) — not an
-    // `Arc`/handle — is stamped here on purpose: single-runtime actors never
-    // outlive their one runtime, and a strong handle field would form a
-    // runtime→workers→actors→runtime ownership cycle (`ownership-over-locks`).
+    // check never fires. A bare `RuntimeId` (a `u64` discriminant) and a
+    // non-owning raw pointer — not an `Arc`/handle — are stamped here on purpose:
+    // single-runtime actors never outlive their one runtime, and a strong handle
+    // field would form a runtime→workers→actors→runtime ownership cycle
+    // (`ownership-over-locks`).
     //
     // Typed through `crate::runtime_id` (not `crate::runtime`) so it resolves
     // on wasm too, where the native-only `runtime` module is configured out
     // but this struct is still compiled.
     pub runtime_id: crate::runtime_id::RuntimeId,
+
+    /// Non-owning pointer to the `RuntimeInner` that owns this actor.
+    ///
+    /// Off-dispatch producers that already hold an actor pointer can enter the
+    /// actor's owning runtime through `runtime::enter_actor_runtime` instead of
+    /// resolving through the default slot. This does not own or retain the
+    /// runtime: `RuntimeInner` owns the live-actor table and cleanup only drops
+    /// the runtime after actors/workers are drained, so the runtime outlives every
+    /// actor that carries this pointer. Null is reserved for legacy/test actors
+    /// and preserves the existing default-runtime fallback.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) runtime: *const crate::runtime::RuntimeInner,
+    /// WASM has no native `RuntimeInner`; keep the layout mirror opaque.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) runtime: *const c_void,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1987,6 +2003,9 @@ fn build_spawned_actor(
     init_state: *mut c_void,
     arena: *mut crate::arena::ActorArena,
 ) -> Box<HewActor> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let rt = crate::runtime::rt_current();
+
     Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: actor_id,
@@ -2029,9 +2048,13 @@ fn build_spawned_actor(
         // runtime is single-runtime by construction and has no `rt_current`,
         // so it stamps `DEFAULT` directly.
         #[cfg(not(target_arch = "wasm32"))]
-        runtime_id: crate::runtime::rt_current().runtime_id(),
+        runtime_id: rt.runtime_id(),
         #[cfg(target_arch = "wasm32")]
         runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+        #[cfg(not(target_arch = "wasm32"))]
+        runtime: rt as *const crate::runtime::RuntimeInner,
+        #[cfg(target_arch = "wasm32")]
+        runtime: ptr::null(),
     })
 }
 
@@ -5689,6 +5712,7 @@ mod tests {
                 suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
                 suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
                 runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+                runtime: ptr::null(),
             }));
             (actor, mailbox)
         }
@@ -5730,6 +5754,7 @@ mod tests {
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+            runtime: ptr::null(),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -8695,6 +8720,7 @@ mod tests {
             suspended_reply_channel: AtomicPtr::new(std::ptr::null_mut()),
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+            runtime: ptr::null(),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

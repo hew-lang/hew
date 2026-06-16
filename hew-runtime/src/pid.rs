@@ -31,15 +31,11 @@
 )]
 
 use std::ffi::c_int;
-use std::sync::atomic::{AtomicU16, Ordering};
 
 /// Bit width of the serial number portion.
 const SERIAL_BITS: u32 = 48;
 /// Mask for the serial portion (lower 48 bits).
 const SERIAL_MASK: u64 = (1u64 << SERIAL_BITS) - 1;
-
-/// The node ID assigned to this process. Default is 0 (local/standalone).
-static LOCAL_NODE_ID: AtomicU16 = AtomicU16::new(0);
 
 /// Compose a PID from a node ID and serial number.
 ///
@@ -72,7 +68,7 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);
-    let local = LOCAL_NODE_ID.load(Ordering::Relaxed);
+    let local = crate::runtime::rt_current().node.local_node_id();
     c_int::from(pid_node == local || pid_node == 0)
 }
 
@@ -82,20 +78,20 @@ pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
 /// Node ID 0 means "local/standalone" (the default).
 #[no_mangle]
 pub extern "C" fn hew_pid_set_local_node(node_id: u16) {
-    LOCAL_NODE_ID.store(node_id, Ordering::Release);
+    crate::runtime::rt_current().node.set_local_node_id(node_id);
 }
 
 /// Get this process's node ID.
 #[no_mangle]
 pub extern "C" fn hew_pid_local_node() -> u16 {
-    LOCAL_NODE_ID.load(Ordering::Acquire)
+    crate::runtime::rt_current().node.local_node_id()
 }
 
 /// Allocate the next actor ID for the local node.
 ///
 /// Combines the local node ID with a monotonically-increasing serial.
 pub(crate) fn next_actor_id(serial: u64) -> u64 {
-    let node = LOCAL_NODE_ID.load(Ordering::Relaxed);
+    let node = crate::runtime::rt_current().node.local_node_id();
     hew_pid_make(node, serial)
 }
 
@@ -104,6 +100,24 @@ pub(crate) fn next_actor_id(serial: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PidTestGuard {
+        _enter: crate::runtime::EnterGuard,
+        _rt: Box<crate::runtime::RuntimeInner>,
+    }
+
+    fn guard() -> PidTestGuard {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: the guard owns `rt` and drops `_enter` before it, so the
+        // entered runtime outlives the thread-local selection that names it.
+        let enter = unsafe { crate::runtime::enter(&rt) };
+        PidTestGuard {
+            _enter: enter,
+            _rt: rt,
+        }
+    }
 
     #[test]
     fn local_pid_is_plain_serial() {
@@ -143,6 +157,7 @@ mod tests {
 
     #[test]
     fn is_local_checks() {
+        let _g = guard();
         // Default node is 0.
         hew_pid_set_local_node(0);
         assert_eq!(hew_pid_is_local(hew_pid_make(0, 1)), 1);
@@ -160,6 +175,7 @@ mod tests {
 
     #[test]
     fn next_actor_id_integration() {
+        let _g = guard();
         hew_pid_set_local_node(0);
         assert_eq!(next_actor_id(42), 42);
 
@@ -169,5 +185,29 @@ mod tests {
         assert_eq!(hew_pid_serial(id), 42);
 
         hew_pid_set_local_node(0);
+    }
+
+    #[test]
+    fn independent_runtimes_keep_separate_local_node_ids() {
+        let workers: Vec<_> = [11_u16, 29_u16]
+            .into_iter()
+            .map(|node| {
+                std::thread::spawn(move || {
+                    let _g = guard();
+                    hew_pid_set_local_node(node);
+                    let actor_id = next_actor_id(42);
+                    (
+                        hew_pid_local_node(),
+                        hew_pid_node(actor_id),
+                        hew_pid_is_local(hew_pid_make(node, 9)),
+                        hew_pid_is_local(hew_pid_make(node + 1, 9)),
+                    )
+                })
+            })
+            .collect();
+
+        let mut seen: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        seen.sort_unstable_by_key(|entry| entry.0);
+        assert_eq!(seen, vec![(11, 11, 1, 0), (29, 29, 1, 0)]);
     }
 }

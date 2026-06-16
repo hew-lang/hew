@@ -80,9 +80,9 @@ pub(crate) struct RuntimeInner {
     /// shutdown and freed by `hew_runtime_cleanup`. Was the
     /// `TOP_LEVEL_SUPERVISORS` global.
     pub(crate) supervisor_roots: PoisonSafe<Vec<SupervisorPtr>>,
-    /// Distributed-node state: the active node, the known-node list, and the
-    /// remote-ask reply table. Was the `CURRENT_NODE` + `KNOWN_NODES` +
-    /// `REPLY_TABLE` globals.
+    /// Distributed-node state: the active node, local node id, known-node list,
+    /// and remote-ask reply table. Was the `CURRENT_NODE` + `pid::LOCAL_NODE_ID`
+    /// + `KNOWN_NODES` + `REPLY_TABLE` globals.
     pub(crate) node: NodeSlot,
     /// User-defined metric registry (`std::metrics`) and its fail-closed
     /// self-metrics. Was the `metrics::REGISTRY` + `NAMES_DROPPED` /

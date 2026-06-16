@@ -26798,6 +26798,54 @@ struct SuspendingCallClosureEmit<'a> {
     cleanup: u32,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "suspend-point lowering is parameterized by the shared coroutine \
+              blocks plus per-kind abandon/resume continuations"
+)]
+fn emit_suspend_point<'ctx, FAbandon, FResume>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    coro: CoroState<'ctx>,
+    parent: FunctionValue<'ctx>,
+    resume_bind_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    label: &'static str,
+    abandon_cleanup_label: &'static str,
+    abandon_branch_context: &'static str,
+    emit_abandon_cleanup: FAbandon,
+    emit_resume_bind: FResume,
+) -> CodegenResult<()>
+where
+    FAbandon: FnOnce() -> CodegenResult<()>,
+    FResume: FnOnce() -> CodegenResult<()>,
+{
+    let abandon_cleanup_bb = fn_ctx.ctx.append_basic_block(parent, abandon_cleanup_label);
+    let cc = crate::coro::CoroContext {
+        ctx: fn_ctx.ctx,
+        llvm_mod: fn_ctx.llvm_mod,
+        builder: &fn_ctx.builder,
+        function: parent,
+        handle: coro.handle,
+        id_token: coro.id_token,
+    };
+    cc.emit_suspend(
+        resume_bind_bb,
+        abandon_cleanup_bb,
+        coro.suspend_return_block,
+        false,
+        label,
+    )?;
+
+    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
+    emit_abandon_cleanup()?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(coro.cleanup_block)
+        .llvm_ctx(abandon_branch_context)?;
+
+    fn_ctx.builder.position_at_end(resume_bind_bb);
+    emit_resume_bind()
+}
+
 /// Emit the caller-side non-blocking `await conn.read()` (NEW-1
 /// `Terminator::SuspendingRead`). The fd-readiness analogue of
 /// [`emit_suspending_ask_terminator`].
@@ -29694,72 +29742,61 @@ fn emit_suspending_stream_send_terminator<'ctx>(
 
     // ── do_suspend: park the producer (non-final). ────────────────────────────
     fn_ctx.builder.position_at_end(do_suspend_bb);
-    let abandon_cleanup_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_stream_send_abandon_cleanup");
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
         bind_bb,
-        abandon_cleanup_bb,
-        coro.suspend_return_block,
-        false,
         "suspending_stream_send",
+        "suspending_stream_send_abandon_cleanup",
+        "suspending stream-send abandon -> shared cleanup br",
+        || {
+            // ── abandon_cleanup: cancel + detach (drop the pending item + release
+            // the core ref) + free, then join shared cleanup. ───────────────────
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_cancel,
+                    &[slot.into()],
+                    "suspending_stream_send_abandon_cancel",
+                )
+                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    detach_await,
+                    &[sink_ptr.into(), slot.into()],
+                    "suspending_stream_send_abandon_detach",
+                )
+                .llvm_ctx("hew_sink_detach_await (abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_stream_send_abandon_free",
+                )
+                .llvm_ctx("hew_read_slot_free (abandon) call")?;
+            Ok(())
+        },
+        || {
+            // ── bind: ready-now OR resumed. `send` is unit — just release the
+            // creator ref and branch to the MIR resume block. ───────────────────
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_stream_send_bind_free",
+                )
+                .llvm_ctx("hew_read_slot_free (bind) call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending stream-send bind -> resume br")?;
+            Ok(())
+        },
     )?;
-
-    // ── abandon_cleanup: cancel + detach (drop the pending item + release the
-    // core ref) + free, then join shared cleanup. ─────────────────────────────
-    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
-    fn_ctx
-        .builder
-        .build_call(
-            slot_cancel,
-            &[slot.into()],
-            "suspending_stream_send_abandon_cancel",
-        )
-        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_call(
-            detach_await,
-            &[sink_ptr.into(), slot.into()],
-            "suspending_stream_send_abandon_detach",
-        )
-        .llvm_ctx("hew_sink_detach_await (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_call(
-            slot_free,
-            &[slot.into()],
-            "suspending_stream_send_abandon_free",
-        )
-        .llvm_ctx("hew_read_slot_free (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx("suspending stream-send abandon -> shared cleanup br")?;
-
-    // ── bind: ready-now OR resumed. `send` is unit — just release the creator
-    // ref and branch to the MIR resume block. ────────────────────────────────
-    fn_ctx.builder.position_at_end(bind_bb);
-    fn_ctx
-        .builder
-        .build_call(
-            slot_free,
-            &[slot.into()],
-            "suspending_stream_send_bind_free",
-        )
-        .llvm_ctx("hew_read_slot_free (bind) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending stream-send bind -> resume br")?;
 
     Ok(())
 }
@@ -30940,9 +30977,6 @@ fn emit_suspending_call_closure_terminator<'ctx>(
     let resume_child_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_closure_resume_child");
-    let abandon_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_closure_abandon");
     let finish_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_closure_finish");
@@ -30984,82 +31018,74 @@ fn emit_suspending_call_closure_terminator<'ctx>(
     // ── do_suspend: park THIS coroutine (non-final). default -> executor; case
     // 0 -> resume_child; case 1 -> abandon. ───────────────────────────────────
     fn_ctx.builder.position_at_end(do_suspend_bb);
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
         resume_child_bb,
-        abandon_bb,
-        coro.suspend_return_block,
-        false,
         "suspending_closure",
+        "suspending_closure_abandon",
+        "suspending closure abandon -> shared cleanup br",
+        || {
+            // ── abandon: the parked continuation was destroyed without resuming.
+            // Destroy the child handle + cancel/free the driver channel, then
+            // join the shared coro cleanup (frame-free + coro.end). ─────────────
+            fn_ctx
+                .builder
+                .build_call(
+                    cont_destroy_fn,
+                    &[child.into()],
+                    "suspending_closure_abandon_destroy",
+                )
+                .llvm_ctx("hew_cont_destroy (abandon) call")?;
+            let ch_cancel = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_reply_channel_cancel",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(ch_cancel, &[ch.into()], "suspending_closure_abandon_cancel")
+                .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
+            // The destroyed child never deposits, so its retained sender ref is
+            // never released by `hew_reply`; release BOTH the sender ref and the
+            // creator ref here so the channel is freed exactly once (no leak).
+            fn_ctx
+                .builder
+                .build_call(
+                    ch_free,
+                    &[ch.into()],
+                    "suspending_closure_abandon_free_sender",
+                )
+                .llvm_ctx("hew_reply_channel_free (abandon sender) call")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    ch_free,
+                    &[ch.into()],
+                    "suspending_closure_abandon_free_creator",
+                )
+                .llvm_ctx("hew_reply_channel_free (abandon creator) call")?;
+            Ok(())
+        },
+        || {
+            // ── resume_child: the reactor woke the calling actor; re-resume the
+            // child (under the swapped-in channel) and re-poll. Multi-suspend
+            // closure bodies re-park here on the next yield. ───────────────────
+            swap_in("suspending_closure_resume_swap_in")?;
+            fn_ctx
+                .builder
+                .build_call(cont_resume_fn, &[child.into()], "suspending_closure_resume")
+                .llvm_ctx("hew_cont_resume call")?;
+            swap_out("suspending_closure_resume_swap_out")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(check_done_bb)
+                .llvm_ctx("suspending closure resume -> check_done br")?;
+            Ok(())
+        },
     )?;
-
-    // ── resume_child: the reactor woke the calling actor; re-resume the child
-    // (under the swapped-in channel) and re-poll. Multi-suspend closure bodies
-    // re-park here on the next yield. ─────────────────────────────────────────
-    fn_ctx.builder.position_at_end(resume_child_bb);
-    swap_in("suspending_closure_resume_swap_in")?;
-    fn_ctx
-        .builder
-        .build_call(cont_resume_fn, &[child.into()], "suspending_closure_resume")
-        .llvm_ctx("hew_cont_resume call")?;
-    swap_out("suspending_closure_resume_swap_out")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(check_done_bb)
-        .llvm_ctx("suspending closure resume -> check_done br")?;
-
-    // ── abandon: the parked continuation was destroyed without resuming. Destroy
-    // the child handle + cancel/free the driver channel, then join the shared
-    // coro cleanup (frame-free + coro.end). ───────────────────────────────────
-    fn_ctx.builder.position_at_end(abandon_bb);
-    fn_ctx
-        .builder
-        .build_call(
-            cont_destroy_fn,
-            &[child.into()],
-            "suspending_closure_abandon_destroy",
-        )
-        .llvm_ctx("hew_cont_destroy (abandon) call")?;
-    let ch_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_cancel",
-    )?;
-    fn_ctx
-        .builder
-        .build_call(ch_cancel, &[ch.into()], "suspending_closure_abandon_cancel")
-        .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
-    // The destroyed child never deposits, so its retained sender ref is never
-    // released by `hew_reply`; release BOTH the sender ref and the creator ref
-    // here so the channel is freed exactly once (no leak).
-    fn_ctx
-        .builder
-        .build_call(
-            ch_free,
-            &[ch.into()],
-            "suspending_closure_abandon_free_sender",
-        )
-        .llvm_ctx("hew_reply_channel_free (abandon sender) call")?;
-    fn_ctx
-        .builder
-        .build_call(
-            ch_free,
-            &[ch.into()],
-            "suspending_closure_abandon_free_creator",
-        )
-        .llvm_ctx("hew_reply_channel_free (abandon creator) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx("suspending closure abandon -> shared cleanup br")?;
 
     // ── finish: the child completed and (for a non-unit closure) deposited its
     // return value onto `ch`. Bind it, free the reply payload + channel, destroy
@@ -31444,123 +31470,115 @@ fn emit_suspending_remote_actor_ask_terminator<'ctx>(
     // from the routing table) before joining the shared cleanup. A racing late
     // reply then finds nothing; the late wake itself is independently fail-safe
     // (enqueue_resume drops a wake to a freed caller).
-    let abandon_cleanup_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_abandon_cleanup");
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
         reply_bind_bb,
-        abandon_cleanup_bb,
-        coro.suspend_return_block,
-        false,
         "suspending_remote_ask",
+        "suspending_remote_ask_abandon_cleanup",
+        "suspending remote ask abandon -> shared cleanup br",
+        || {
+            // ── abandon_cleanup: cancel the pending reply, then join the shared
+            // coro cleanup (frame-free + coro.end). ─────────────────────────────
+            let ask_cancel_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_node_api_ask_cancel",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(
+                    ask_cancel_fn,
+                    &[pending_handle.into()],
+                    "suspending_remote_ask_cancel",
+                )
+                .llvm_ctx("hew_node_api_ask_cancel call")?;
+            Ok(())
+        },
+        || {
+            // ── reply_bind: the wire reply (or peer-drop / timeout failure)
+            // resumed us. Drain the deposited outcome; null is the typed-failure
+            // sentinel. ─────────────────────────────────────────────────────────
+            let ask_finish_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_node_api_ask_finish",
+            )?;
+            let reply_ptr = fn_ctx
+                .builder
+                .build_call(
+                    ask_finish_fn,
+                    &[pending_handle.into(), msg_type.into(), reply_size.into()],
+                    "hew_node_api_ask_finish_call",
+                )
+                .llvm_ctx("hew_node_api_ask_finish call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_node_api_ask_finish returned void".into())
+                })?
+                .into_pointer_value();
+
+            let ok_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_remote_ask_ok");
+            let err_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, "suspending_remote_ask_err");
+            let is_null = fn_ctx
+                .builder
+                .build_is_null(reply_ptr, "suspending_remote_ask_is_null")
+                .llvm_ctx("suspending remote ask null compare")?;
+            fn_ctx
+                .builder
+                .build_conditional_branch(is_null, err_bb, ok_bb)
+                .llvm_ctx("suspending remote ask result branch")?;
+
+            fn_ctx.builder.position_at_end(ok_bb);
+            if matches!(term.reply_ty, ResolvedTy::Unit) {
+                emit_result_ok(fn_ctx, term.result_dest, None)?;
+            } else {
+                let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
+                let reply_val = fn_ctx
+                    .builder
+                    .build_load(
+                        reply_dest_ty,
+                        reply_ptr,
+                        "suspending_remote_ask_reply_value",
+                    )
+                    .llvm_ctx("suspending remote ask reply load")?;
+                fn_ctx
+                    .builder
+                    .build_store(reply_dest_ptr, reply_val)
+                    .llvm_ctx("suspending remote ask reply store")?;
+                emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
+                let free = get_or_declare_free(fn_ctx);
+                fn_ctx
+                    .builder
+                    .build_call(
+                        free,
+                        &[reply_ptr.into()],
+                        "suspending_remote_ask_reply_free",
+                    )
+                    .llvm_ctx("free suspending remote ask reply")?;
+            }
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending remote ask ok br")?;
+
+            fn_ctx.builder.position_at_end(err_bb);
+            emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending remote ask err br")?;
+            Ok(())
+        },
     )?;
-
-    // ── abandon_cleanup: cancel the pending reply, then join the shared coro
-    // cleanup (frame-free + coro.end). ─────────────────────────────────────────
-    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
-    let ask_cancel_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask_cancel",
-    )?;
-    fn_ctx
-        .builder
-        .build_call(
-            ask_cancel_fn,
-            &[pending_handle.into()],
-            "suspending_remote_ask_cancel",
-        )
-        .llvm_ctx("hew_node_api_ask_cancel call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx("suspending remote ask abandon -> shared cleanup br")?;
-
-    // ── reply_bind: the wire reply (or peer-drop / timeout failure) resumed us.
-    // Drain the deposited outcome; null is the typed-failure sentinel. ─────────
-    fn_ctx.builder.position_at_end(reply_bind_bb);
-    let ask_finish_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask_finish",
-    )?;
-    let reply_ptr = fn_ctx
-        .builder
-        .build_call(
-            ask_finish_fn,
-            &[pending_handle.into(), msg_type.into(), reply_size.into()],
-            "hew_node_api_ask_finish_call",
-        )
-        .llvm_ctx("hew_node_api_ask_finish call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_ask_finish returned void".into()))?
-        .into_pointer_value();
-
-    let ok_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_ok");
-    let err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_err");
-    let is_null = fn_ctx
-        .builder
-        .build_is_null(reply_ptr, "suspending_remote_ask_is_null")
-        .llvm_ctx("suspending remote ask null compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_null, err_bb, ok_bb)
-        .llvm_ctx("suspending remote ask result branch")?;
-
-    fn_ctx.builder.position_at_end(ok_bb);
-    if matches!(term.reply_ty, ResolvedTy::Unit) {
-        emit_result_ok(fn_ctx, term.result_dest, None)?;
-    } else {
-        let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
-        let reply_val = fn_ctx
-            .builder
-            .build_load(
-                reply_dest_ty,
-                reply_ptr,
-                "suspending_remote_ask_reply_value",
-            )
-            .llvm_ctx("suspending remote ask reply load")?;
-        fn_ctx
-            .builder
-            .build_store(reply_dest_ptr, reply_val)
-            .llvm_ctx("suspending remote ask reply store")?;
-        emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
-        let free = get_or_declare_free(fn_ctx);
-        fn_ctx
-            .builder
-            .build_call(
-                free,
-                &[reply_ptr.into()],
-                "suspending_remote_ask_reply_free",
-            )
-            .llvm_ctx("free suspending remote ask reply")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending remote ask ok br")?;
-
-    fn_ctx.builder.position_at_end(err_bb);
-    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending remote ask err br")?;
 
     Ok(())
 }

@@ -1,0 +1,33 @@
+// Accept fixture — commit-or-rollback satisfies the linear constraint.
+//
+// A `#[linear]` token must be consumed on every exit path, including
+// error paths.  Here the success arm simulates a commit (consumes `t`)
+// and the error arm simulates a rollback (also consumes `t`).  Because
+// both paths consume the token, the state at the join is Consumed and
+// the tail-return is clean.
+//
+// Without `?`-propagation (deferred), error handling is modelled via an
+// explicit if-else branch; the invariant is the same: every reachable
+// exit must consume the binding.
+//
+// Move-checker lattice: Consumed ⊓ Consumed = Consumed → accept.
+#[linear]
+type Txn {
+    id: i64;
+    fn commit(consuming self) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let err = 0;
+    let t = Txn { id: 0 };
+    let _r = if err == 0 {
+        let _commit = t;
+        1
+    } else {
+        let _rollback = t;
+        0
+    };
+    42
+}

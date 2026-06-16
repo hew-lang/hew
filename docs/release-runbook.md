@@ -5,7 +5,7 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 
 ## Prerequisites
 
-- [ ] All release-lane PRs merged to `main`
+- [ ] All release PRs merged to `main`
 - [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
 - [ ] The release branch `gate-sanitizers` job is green: ASan passed on the release commit, and TSan/Miri are either green in their recurring lanes or covered by commit-pinned waivers in `release-sanitizer-waiver.toml` (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
@@ -288,9 +288,9 @@ The release branch gate is the release-time authority for sanitizer evidence:
   closed when the ASan result is absent, red, skipped, or ambiguous.
 - **TSan is waiver-carried for releases while the upstream nightly
   `build-std`/TSan link failure remains unresolved.** The nightly sanitizer
-  lane still provides signal, but a release commit needs an explicit
-  `axis = "tsan"` waiver row in `release-sanitizer-waiver.toml` unless a
-  future lane promotes TSan to a recurring green release input.
+  job still provides signal, but a release commit needs an explicit
+  `axis = "tsan"` waiver row in `release-sanitizer-waiver.toml` unless
+  future work promotes TSan to a recurring green release input.
 - **Miri is not yet a recurring gate.** It is reserved in the same waiver
   contract because Miri has caught real Stacked-Borrows issues, but standing up
   the recurring subset and skip policy is tracked separately.

@@ -49,7 +49,7 @@ but is gated to future-edition status).
 
 A first-class token vocabulary lets a parent abort *one* child without
 unwinding the whole scope. Useful for long-running computations the
-caller can preempt mid-flight. Defer until a real lane hits the wall.
+caller can preempt mid-flight. Defer until a real need arises.
 
 ### 1.3 Actor await and read-after-send barrier (former §4.10)
 

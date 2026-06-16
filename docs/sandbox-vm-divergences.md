@@ -89,7 +89,7 @@ The current sandbox profile is explicit allowlist first. Native v0.5 surfaces th
 
 Some constructs pass the profile admission gate (they compile to bytecode with no diagnostic) but the emitter or interpreter cannot yet run them correctly: they trap at run time, or the emitter fails closed mid-lowering. These are **not** parity-proven and must not be treated as runnable. They are the most dangerous class of gap — an admitted construct with no parity case can silently diverge from native (the float-as-i64 bug was exactly this).
 
-The sandbox parity ratchet catalogues every one of these and verifies, on each run, that it genuinely does not run at parity (`tests/parity_ratchet.rs`, `not_yet_runnable_constructs_do_not_run_at_parity`). The moment a graduation lane makes one of these runnable, that test fails until the lane adds a required parity case — so a construct cannot become runnable without joining the ratchet. A construct is "runnable in the sandbox" if and only if it is in `REQUIRED_PARITY_TEST_NAMES` with a green stdout+exit parity case under `HEW_SEED=42`.
+The sandbox parity ratchet catalogues every one of these and verifies, on each run, that it genuinely does not run at parity (`tests/parity_ratchet.rs`, `not_yet_runnable_constructs_do_not_run_at_parity`). The moment graduation work makes one of these runnable, that test fails until that work adds a required parity case — so a construct cannot become runnable without joining the ratchet. A construct is "runnable in the sandbox" if and only if it is in `REQUIRED_PARITY_TEST_NAMES` with a green stdout+exit parity case under `HEW_SEED=42`.
 
 | Construct | Observed sandbox failure today | Root cause |
 | --- | --- | --- |

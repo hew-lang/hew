@@ -5,9 +5,8 @@ The canonical type descriptor for Hew v0.5 is `TypeDescriptor = ResolvedTy`
 
 ## Mapping table (TypeDescriptor → PrimitiveWireKind)
 
-See `lane-v05-type-wire-native-values.md` §3.1 for the full table.
-Short form: every builtin scalar/string/bytes/duration/char/unit maps to a
-native `PrimitiveWireKind`; named user types and trait objects map to
+Every builtin scalar/string/bytes/duration/char/unit maps to a native
+`PrimitiveWireKind`; named user types and trait objects map to
 `Nested(name)`; functions, closures, pointers, never, tuples, arrays, and slices
 are wire-rejected or handled as composites.
 

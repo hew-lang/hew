@@ -144,7 +144,7 @@ Specifically:
 This direction is preferred over `&mut self` for two reasons. First, it does
 not require introducing reference types into the surface language as a
 prerequisite — Hew today has no `&mut` syntax in user code, and adding one is a
-larger lane than the handle-safety work. Second, it makes the linearity proof
+larger effort than the handle-safety work. Second, it makes the linearity proof
 local: the move-checker can reason about each consuming call as a discrete
 ownership transfer without tracking borrow lifetimes across complex control
 flow.
@@ -203,7 +203,7 @@ The checker is the authority. Codegen consumes pre-validated facts.
   checker-side metadata: which type definitions are tier-1 affine handles.
 - Phase 2 (#1251) publishes `handle_bearing_structs` and rejects accessor
   methods that leak handle fields (matching LESSONS `field-alias-fail-closed`).
-- Lane-1399's move-checker publishes the per-call/per-binding ownership
+- The #1399 move-checker publishes the per-call/per-binding ownership
   transfer facts (Owned / Borrowed / FieldAlias / ClosureCapture /
   YieldedAcrossSuspend / Temporary). These are the categories LESSONS row
   `exhaustive-traversal-and-lowering` requires; the spec mandates their
@@ -334,7 +334,7 @@ mechanism:
 | Async cancel / future drop | Cancel runs the scope-exit drop sequence | Cancel runs the scope-exit drop sequence | Cancel-during-handler releases the in-flight handle; the long-lived server is unaffected | n/a |
 | Actor shutdown / mailbox drain | n/a (per-call resources do not outlive a single `receive fn` body) | Per-handler scope drops fire as each in-flight message is finished or aborted; session-reset hook releases anything left | Session-reset hook releases the server | Session-reset hook releases all subsystems |
 | Runtime cleanup / session reset | n/a | Session-reset hook (I) catches anything actor shutdown missed | Session-reset hook (I) | Session-reset hook (I) — the canonical teardown |
-| WASM parity | Same drop emission in WASM codegen lane | Same actor cleanup in `scheduler_wasm.rs` | Same session-reset entries from `hew_sched_shutdown` in WASM | LESSONS `native-wasm-parity` — symmetric session_reset from both `hew_sched_shutdown` paths, or named `WASM-TODO` (§10) |
+| WASM parity | Same drop emission in the WASM codegen path | Same actor cleanup in `scheduler_wasm.rs` | Same session-reset entries from `hew_sched_shutdown` in WASM | LESSONS `native-wasm-parity` — symmetric session_reset from both `hew_sched_shutdown` paths, or named `WASM-TODO` (§10) |
 
 No row in the table is "the user types `close()` here." That is the prime
 invariant restated as a property of the table.
@@ -347,7 +347,7 @@ Per LESSONS `native-wasm-parity`: any handle-lifecycle behaviour that lands in
 `hew-runtime/src/scheduler.rs` must land symmetrically in
 `hew-runtime/src/scheduler_wasm.rs` or carry a named `WASM-TODO`.
 
-For this lane specifically:
+For this work specifically:
 
 - The **codegen drop emission table** (H) is target-independent — it is derived
   before native/WASM target emission in the Rust HIR/MIR/codegen-rs path. WASM
@@ -360,7 +360,7 @@ For this lane specifically:
   both `scheduler.rs` and `scheduler_wasm.rs`. PR #1271 fixed the analogous
   gap for `hew_trace_reset` and `clear_dispatch_registry`; this spec inherits
   that discipline.
-- **Explicit WASM-TODO carve-outs allowed in this lane:** none at spec time.
+- **Explicit WASM-TODO carve-outs allowed in this work:** none at spec time.
   If the calibration milestone discovers a WASM-only gap (e.g. async cancel
   paths not yet implemented under `wasm32-wasip1`), the `WASM-TODO` is named
   in the calibration notes and tracked in a follow-on issue, *not* hidden by

@@ -97,7 +97,7 @@ We are **scope-driven, not date-driven**. The 4–6 week figure is for
 planning, not a deadline. Ship when:
 
 - The CHANGELOG narrative is coherent.
-- All release-lane PRs are merged.
+- All release PRs are merged.
 - The release-gate CI is green.
 - The release runbook (`docs/release-runbook.md`) checklist passes.
 

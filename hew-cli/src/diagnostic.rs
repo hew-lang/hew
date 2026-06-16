@@ -124,6 +124,7 @@ pub(crate) fn mir_diagnostic_prefix(kind: &hew_mir::MirDiagnosticKind) -> &'stat
         hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { .. } => {
             "E_REMOTE_PAYLOAD_UNSUPPORTED"
         }
+        hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "E_INVALID_SPAWN_ARGUMENT",
         hew_mir::MirDiagnosticKind::UnknownType { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedUserRecordValueClass { .. }
         | hew_mir::MirDiagnosticKind::UnsupportedNode { .. }
@@ -461,6 +462,7 @@ fn mir_kind_name(kind: &hew_mir::MirDiagnosticKind) -> &'static str {
         hew_mir::MirDiagnosticKind::ContextBoundaryViolation { .. } => "ContextBoundaryViolation",
         hew_mir::MirDiagnosticKind::ContextBindingEscapes { .. } => "ContextBindingEscapes",
         hew_mir::MirDiagnosticKind::UnknownActorStateField { .. } => "UnknownActorStateField",
+        hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { .. } => "InvalidActorSpawnArgument",
         hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision { .. } => {
             "ActorHandlerSymbolCollision"
         }
@@ -529,6 +531,7 @@ fn mir_primary_site(kind: &hew_mir::MirDiagnosticKind) -> Option<hew_hir::SiteId
         hew_mir::MirDiagnosticKind::MustConsume { exit_site, .. } => Some(*exit_site),
         hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
         | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }
@@ -616,6 +619,11 @@ fn mir_diagnostic_message(diagnostic: &hew_mir::MirDiagnostic) -> String {
         ),
         hew_mir::MirDiagnosticKind::UnknownActorStateField { actor, field } => {
             format!("actor `{actor}` has no state field `{field}`")
+        }
+        hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument {
+            actor, argument, ..
+        } => {
+            format!("invalid spawn argument `{argument}` for actor `{actor}`")
         }
         hew_mir::MirDiagnosticKind::ActorHandlerSymbolCollision {
             symbol,
@@ -739,6 +747,7 @@ fn mir_context_notes(diagnostic: &hew_mir::MirDiagnostic) -> Vec<String> {
         }
         hew_mir::MirDiagnosticKind::SelectArmNotImplemented { site, .. }
         | hew_mir::MirDiagnosticKind::NotYetImplemented { site, .. }
+        | hew_mir::MirDiagnosticKind::InvalidActorSpawnArgument { site, .. }
         | hew_mir::MirDiagnosticKind::UnresolvedPlace { site, .. }
         | hew_mir::MirDiagnosticKind::CannotMaterializeClosureCapture { site, .. }
         | hew_mir::MirDiagnosticKind::RemotePayloadUnsupported { site, .. }

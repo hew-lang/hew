@@ -5120,6 +5120,14 @@ pub enum MirDiagnosticKind {
     /// A hand-built or malformed HIR actor body referenced `self.<field>` for a
     /// field that is not declared in the actor's state layout.
     UnknownActorStateField { actor: String, field: String },
+    /// A named argument at an actor spawn site does not match the accepted
+    /// initialization surface: `init()` parameters when an explicit init block
+    /// exists, otherwise state fields.
+    InvalidActorSpawnArgument {
+        actor: String,
+        argument: String,
+        site: SiteId,
+    },
     /// Two actor receive handlers, or a handler and an existing function symbol,
     /// resolved to the same emitted MIR symbol.
     ActorHandlerSymbolCollision {

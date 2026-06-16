@@ -1,8 +1,28 @@
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{Instr, Terminator};
+use hew_mir::{Instr, MirDiagnosticKind, Terminator};
 use hew_types::{compute_default_msg_id, module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> hew_mir::IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(tc_output.errors.is_empty(), "{:?}", tc_output.errors);
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    hew_mir::lower_hir_module(&hir.module)
+}
+
+fn lower_for_mir_diagnostics(source: &str) -> hew_mir::IrPipeline {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -110,6 +130,67 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
         .iter()
         .flat_map(|block| &block.instructions)
         .any(|instr| matches!(instr, Instr::ActorStateFieldLoad { .. })));
+}
+
+#[test]
+fn spawn_init_actor_rejects_state_field_argument_as_user_error() {
+    let pipeline = lower_for_mir_diagnostics(
+        r"
+        actor Counter {
+            var count: i64;
+
+            init(initial: i64) {
+                count = initial;
+            }
+
+            receive fn total() -> i64 {
+                count
+            }
+        }
+
+        fn main() {
+            let _counter = spawn Counter(count: 5);
+        }
+        ",
+    );
+
+    let diagnostic = pipeline
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::InvalidActorSpawnArgument {
+                    actor,
+                    argument,
+                    ..
+                } if actor == "Counter" && argument == "count"
+            )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected InvalidActorSpawnArgument for Counter.count; diagnostics: {:#?}",
+                pipeline.diagnostics
+            )
+        });
+    assert!(diagnostic
+        .note
+        .contains("`count` is a state field on actor `Counter` but not an `init()` parameter"));
+    assert!(
+        diagnostic
+            .note
+            .contains("init() parameters are: [`initial`]"),
+        "unexpected note: {}",
+        diagnostic.note
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { .. }
+        )),
+        "invalid init argument must not surface as NotYetImplemented: {:#?}",
+        pipeline.diagnostics
+    );
 }
 
 #[test]

@@ -880,15 +880,23 @@ impl<'src> Parser<'src> {
         };
         match tok {
             Token::Greater => {
+                // Update last_token_end before advancing so peek_span() at EOF
+                // returns the position immediately after the `>` we just consumed.
+                // This is the same invariant that advance() maintains; but
+                // eat_closing_angle bypasses advance() to avoid re-cloning.
+                self.last_token_end = span.end;
                 self.pos += 1;
                 true
             }
             Token::GreaterGreater => {
-                // `>>` → consume first `>`, leave `>` for the outer context
+                // `>>` → consume first `>`, leave `>` for the outer context.
+                // mid is the byte just past the first `>`.
                 self.angle_mutations
                     .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
+                // last use of `span`; NLL ends the borrow here.
+                self.last_token_end = mid;
                 self.tokens[self.pos] = (Token::Greater, remaining_span);
                 true
             }
@@ -898,6 +906,7 @@ impl<'src> Parser<'src> {
                     .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
+                self.last_token_end = mid;
                 self.tokens[self.pos] = (Token::Equal, remaining_span);
                 true
             }
@@ -907,6 +916,7 @@ impl<'src> Parser<'src> {
                     .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
+                self.last_token_end = mid;
                 self.tokens[self.pos] = (Token::GreaterEqual, remaining_span);
                 true
             }

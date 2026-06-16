@@ -306,3 +306,128 @@ fn fstring_backslash_brace_is_valid() {
         result.errors
     );
 }
+
+// ── regression: sub-parser error spans are absolute (#1931 headline) ─────────
+
+/// A malformed interpolation expression (`f"{&x}"`) must produce a
+/// sub-parser diagnostic whose span is **absolute** — pointing at the `&` in
+/// the original source, not at offset 0 of the extracted expression text.
+///
+/// Source:
+/// ```text
+/// fn main() { let s = f"{&x}"; }
+/// 0         1         2
+/// 012345678901234567890123456789
+/// ```
+///
+/// Layout:
+/// - f-string token starts at byte 20 (`f"`), so `inner_offset` = 22.
+/// - `{` opens at inner byte 0 (absolute 22); `expr_start_byte` = 1.
+/// - `&` is at inner byte 1 → absolute byte **23**.
+/// - `x` is at inner byte 2 → absolute byte **24**.
+/// - `base` = `inner_offset` + `expr_start_byte` = 22 + 1 = **23**.
+///
+/// The sub-parser is built with `Parser::new_with_offset("&x", 23)`, so the
+/// `&` token carries span `23..24` (not the local `0..1`). The
+/// `` `&` is not a prefix operator `` diagnostic is emitted at `peek_span()`
+/// before the `&` is consumed, so its span is `23..24` — absolute.
+#[test]
+fn fstring_subparser_error_span_is_absolute() {
+    let src = r#"fn main() { let s = f"{&x}"; }"#;
+
+    // Verify assumed layout.
+    assert_eq!(&src[20..22], "f\"", "layout: f-string starts at 20");
+    assert_eq!(&src[22..23], "{", "layout: opening brace at 22");
+    assert_eq!(&src[23..24], "&", "layout: & at 23");
+    assert_eq!(&src[24..25], "x", "layout: x at 24");
+
+    let result = parse(src);
+
+    // The parse emits at least one error (the `&` prefix diagnostic).
+    assert!(
+        !result.errors.is_empty(),
+        "expected a diagnostic for `&x` interpolation, got none"
+    );
+
+    // Find the diagnostic about `&` not being a prefix operator.
+    let amp_diag = result
+        .errors
+        .iter()
+        .find(|e| e.message.contains('&'))
+        .expect("expected a diagnostic mentioning `&`");
+
+    // The span must be absolute: `&` is at byte 23 in the original source.
+    assert_eq!(
+        amp_diag.span.start, 23,
+        "sub-parser error span.start should be 23 (absolute `&` position), \
+         was {} — rebasing failed",
+        amp_diag.span.start
+    );
+    assert_eq!(
+        amp_diag.span.end, 24,
+        "sub-parser error span.end should be 24, was {}",
+        amp_diag.span.end
+    );
+}
+
+// ── regression: eat_closing_angle updates last_token_end ─────────────────────
+
+/// After `eat_closing_angle()` consumes a `>` in a turbofish
+/// (`Foo::<T>`) inside an f-string interpolation, the EOF-based
+/// `peek_span()` must return the position **after** the `>`, not before it.
+///
+/// Source:
+/// ```text
+/// fn main() { let s = f"{Foo::<T>}"; }
+/// 0         1         2         3
+/// 012345678901234567890123456789012345
+/// ```
+///
+/// Layout:
+/// - f-string token starts at byte 20; `inner_offset` = 22.
+/// - `{` at inner byte 0 (absolute 22); `F` at inner byte 1; `expr_start_byte` = 1.
+/// - `base` = 22 + 1 = 23.
+/// - Sub-parser for `"Foo::<T>"` with offset 23:
+///   - Foo: local 0..3 → absolute 23..26
+///   - :: local 3..5 → absolute 26..28
+///   - < local 5..6 → absolute 28..29
+///   - T: local 6..7 → absolute 29..30
+///   - > local 7..8 → absolute **30..31**
+/// - `eat_closing_angle()` consumes `>` at span 30..31; with the fix it
+///   sets `last_token_end = 31`.  After that there are no tokens, so
+///   `peek_span()` returns `31..31`.
+/// - `self.error("turbofish … must be followed by …")` is called with
+///   that span → diagnostic at byte **31** (not 30).
+#[test]
+fn fstring_eat_closing_angle_updates_last_token_end() {
+    let src = r#"fn main() { let s = f"{Foo::<T>}"; }"#;
+
+    // Verify assumed layout.
+    assert_eq!(&src[20..22], "f\"", "layout: f-string at 20");
+    assert_eq!(&src[29..30], "T", "layout: T at 29");
+    assert_eq!(&src[30..31], ">", "layout: > at 30");
+    assert_eq!(&src[31..32], "}", "layout: closing interp-brace at 31");
+
+    let result = parse(src);
+
+    // The parse must emit a turbofish diagnostic.
+    let turbofish_diag = result
+        .errors
+        .iter()
+        .find(|e| e.message.contains("turbofish"))
+        .expect("expected a turbofish diagnostic after `Foo::<T>` without `(...)`");
+
+    // peek_span() at EOF after eat_closing_angle consumed `>` (span 30..31)
+    // must return 31..31, so the error is anchored just past the `>`.
+    assert_eq!(
+        turbofish_diag.span.start, 31,
+        "turbofish error span.start should be 31 (byte after `>`), \
+         was {} — eat_closing_angle did not update last_token_end",
+        turbofish_diag.span.start
+    );
+    assert_eq!(
+        turbofish_diag.span.end, 31,
+        "turbofish error span.end should be 31 (zero-width at EOF), was {}",
+        turbofish_diag.span.end
+    );
+}

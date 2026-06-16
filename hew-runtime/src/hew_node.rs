@@ -3681,7 +3681,13 @@ mod tests {
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
-                1_000,
+                // 10s, not 1s: this checks the echo VALUE (== 42), not latency.
+                // The reply round-trips across an OS process boundary over
+                // loopback TCP, which the in-process simtime seam can't fake; on
+                // a fully loaded CI runner the server's reply can lag well past
+                // 1s, staling a correct echo into a null. A genuine no-reply
+                // still fails (null) within the bound. Root de-flake: #1963.
+                10_000,
                 std::mem::size_of::<u32>(),
             )
         };

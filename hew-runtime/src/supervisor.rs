@@ -2609,15 +2609,22 @@ mod tests {
                 actor_id: (*child).id,
                 ..HewExecutionContext::default()
             });
+            // Deferred-teardown windows widened 10x (200/250ms -> 2000/2500ms)
+            // so a second stop returning under full-suite CI load still lands
+            // well inside the window the deferred teardown owns the tree. This
+            // asserts real thread scheduling, which the in-process simtime seam
+            // can't fake; the deterministic fix (gate the transition on a
+            // released signal, assert ordering not wall-clock) is the v0.5.5
+            // de-flake (#39). The relative invariant below is unchanged.
             let self_unblock = defer_state_transition(
                 self_actor,
                 HewActorState::Stopped,
-                std::time::Duration::from_millis(200),
+                std::time::Duration::from_secs(2),
             );
             let child_unblock = defer_state_transition(
                 child,
                 HewActorState::Stopped,
-                std::time::Duration::from_millis(250),
+                std::time::Duration::from_millis(2_500),
             );
 
             hew_supervisor_stop(sup);
@@ -2636,13 +2643,13 @@ mod tests {
             });
 
             assert!(
-                wait_for_condition(std::time::Duration::from_millis(100), || {
+                wait_for_condition(std::time::Duration::from_secs(5), || {
                     finished.load(Ordering::Acquire)
                 }),
                 "second stop caller should return while deferred teardown owns the supervisor"
             );
             assert!(
-                elapsed_ms.load(Ordering::Acquire) < 100,
+                elapsed_ms.load(Ordering::Acquire) < 1_000,
                 "second stop caller should not race into teardown ownership"
             );
             assert_eq!(

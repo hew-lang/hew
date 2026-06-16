@@ -67,18 +67,15 @@ CDDL integer keys are mirrored as field-doc comments on each struct field.
   cross-node traffic from untrusted peers.
 - **Protocol Buffers (and the legacy HBF TLV substrate).** Schema-first,
   but the v0.5 substrate retired the C++/MLIR codegen path that produced
-  HBF descriptors (see `CHANGELOG.md [Unreleased]` and the
-  [HBF→Cap'n Proto reach audit][hbf-audit]). Doubling down on a Protobuf
-  variant would require re-introducing a schema compiler we do not own.
+  HBF descriptors (see `CHANGELOG.md [Unreleased]`). Doubling down on a
+  Protobuf variant would require re-introducing a schema compiler we do
+  not own.
   CBOR + CDDL gets us schema-first validation without owning a code
   generator.
-- **Cap'n Proto.** Considered during the HBF retirement (see
-  [`hbf-capnproto-migration-reach-audit.md`][hbf-audit]). The zero-copy
+- **Cap'n Proto.** Considered during the HBF retirement. The zero-copy
   win is real, but the toolchain commitment and code-generation surface
   exceeded what v0.5 could absorb. CBOR is the deliberate, smaller-scope
   alternative.
-
-[hbf-audit]: ../internal/hbf-capnproto-migration-reach-audit.md
 
 ### Substrate provenance
 
@@ -301,10 +298,8 @@ them in `04bfb422`).
 
 ### S2. Cap'n Proto stub crate
 
-**State today.** Not yet present in the workspace. The HBF→Cap'n Proto
-reach audit at [`docs/internal/hbf-capnproto-migration-reach-audit.md`][hbf-audit]
-remains as historical context for the decision space that led to
-choosing CBOR + CDDL.
+**State today.** Not yet present in the workspace. The decision to defer
+Cap'n Proto in favour of CBOR + CDDL is recorded in §1.
 
 > **WHEN-obsolete:** when U2 / R69 Lane B S2 lands a placeholder
 > `hew-codegen-capnproto` (or equivalently named) stub crate that
@@ -343,8 +338,5 @@ only one with an active obsolescence trigger.
 - CDDL schema: [`hew-runtime/schemas/envelope.cddl`](../../hew-runtime/schemas/envelope.cddl).
 - Runtime envelope types: [`hew-runtime/src/envelope.rs`](../../hew-runtime/src/envelope.rs).
 - Round-trip tests: [`hew-runtime/tests/envelope_round_trip.rs`](../../hew-runtime/tests/envelope_round_trip.rs).
-- HBF→Cap'n Proto historical audit: [`docs/internal/hbf-capnproto-migration-reach-audit.md`](../internal/hbf-capnproto-migration-reach-audit.md)
-  (superseded for forward-looking decisions by this document; retained
-  for historical reach context).
 - Stdlib `Value` contract: [`std/encoding/wire/README.md`](../../std/encoding/wire/README.md), issue #1247.
 - Distributed actor companion doc: [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md).

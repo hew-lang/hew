@@ -16,9 +16,6 @@ Full rationale in
 §1 ("Why CBOR, not JSON / msgpack / Protobuf / HBF") and §5 §S2
 ("Cap'n Proto stub crate").
 
-Historical decision space:
-[`docs/internal/hbf-capnproto-migration-reach-audit.md`](../../../docs/internal/hbf-capnproto-migration-reach-audit.md).
-
 ## What to use instead
 
 - **Inter-process actor messaging:** you do not choose the format. The

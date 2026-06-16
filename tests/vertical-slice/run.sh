@@ -219,6 +219,17 @@ run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
 run_accept_expect_status "sleep_ms" 0
 
+# Static trait dispatch through supertrait bounds:
+# - reject missing concrete dispatch target at checker time, before MIR;
+# - accept inline supermethod provision on the direct impl;
+# - accept inline supermethod provision on an intermediate supertrait impl.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/static_trait_dispatch_missing_super_impl.hew" \
+  "not its declared supertrait" \
+  "static_trait_dispatch_missing_super_impl"
+run_accept_expect_stdout "static_trait_dispatch_inline_supertrait"
+run_accept_expect_stdout "static_trait_dispatch_intermediate_inline_supertrait"
+
 run_accept_expect_status "assert_eq_fail" 134
 grep -q 'assertion failed: assert_eq(4, 5)' "${stderr_output}"
 

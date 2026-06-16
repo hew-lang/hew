@@ -273,6 +273,10 @@ pub struct HirImplBlock {
     /// resolution can look up `(declaring_trait, self_type_name, method_name)
     /// → method_symbol` without reverse-parsing the flattened symbol.
     pub method_names: Vec<String>,
+    /// Declaring trait for each method in `method_names`, parallel to
+    /// `method_symbols`. For an inline supertrait method in `impl Sub for T`,
+    /// this records the supertrait that declared the method, not `Sub`.
+    pub method_declaring_traits: Vec<String>,
     pub span: hew_parser::ast::Span,
 }
 

@@ -52,18 +52,21 @@ pub fn build_trait_impl_method_index(
     let mut index: HashMap<TraitImplKey, TraitImplMethodEntry> = HashMap::new();
     for item in items {
         let HirItem::Impl(block) = item else { continue };
-        let Some(trait_name) = block.trait_name.clone() else {
+        if block.trait_name.is_none() {
             continue;
-        };
+        }
         // `method_names` and `method_symbols` are produced together in
         // `lower_impl_block` and MUST be parallel. Defensive zip: any
         // length mismatch indicates upstream HIR construction drift and
         // produces no entries for the extra slots.
-        for (method_name, method_symbol) in
-            block.method_names.iter().zip(block.method_symbols.iter())
+        for ((method_name, method_symbol), declaring_trait) in block
+            .method_names
+            .iter()
+            .zip(block.method_symbols.iter())
+            .zip(block.method_declaring_traits.iter())
         {
             let key = (
-                trait_name.clone(),
+                declaring_trait.clone(),
                 block.self_type_name.clone(),
                 method_name.clone(),
             );

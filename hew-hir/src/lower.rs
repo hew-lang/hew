@@ -763,6 +763,73 @@ fn collect_trait_default_methods(items: &[(Item, Span)]) -> HashMap<String, Vec<
     out
 }
 
+fn collect_trait_declaring_surfaces(
+    program: &Program,
+) -> (
+    HashMap<String, Vec<String>>,
+    HashMap<String, HashSet<String>>,
+) {
+    fn visit_items(
+        items: &[(Item, Span)],
+        module_short: Option<&str>,
+        supers: &mut HashMap<String, Vec<String>>,
+        methods: &mut HashMap<String, HashSet<String>>,
+    ) {
+        for (item, _) in items {
+            let Item::Trait(trait_decl) = item else {
+                continue;
+            };
+            let key = module_short.map_or_else(
+                || trait_decl.name.clone(),
+                |module| format!("{module}.{}", trait_decl.name),
+            );
+            methods.insert(
+                key.clone(),
+                trait_decl
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        TraitItem::Method(method) => Some(method.name.clone()),
+                        TraitItem::AssociatedType { .. } => None,
+                    })
+                    .collect(),
+            );
+            let super_names: Vec<String> = trait_decl
+                .super_traits
+                .as_ref()
+                .map(|bounds| {
+                    bounds
+                        .iter()
+                        .map(|bound| {
+                            module_short.map_or_else(
+                                || bound.name.clone(),
+                                |module| format!("{module}.{}", bound.name),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            supers.insert(key, super_names);
+        }
+    }
+
+    let mut supers = HashMap::new();
+    let mut methods = HashMap::new();
+    visit_items(&program.items, None, &mut supers, &mut methods);
+    if let Some(ref mg) = program.module_graph {
+        for mod_id in &mg.topo_order {
+            if *mod_id == mg.root {
+                continue;
+            }
+            if let Some(module) = mg.modules.get(mod_id) {
+                let module_short = mod_id.path.last().map(String::as_str);
+                visit_items(&module.items, module_short, &mut supers, &mut methods);
+            }
+        }
+    }
+    (supers, methods)
+}
+
 /// Harvest opaque-type identity from the whole program (root items + every
 /// imported module) for the `ResolvedTy::Named.is_opaque` discriminator
 /// stamped by [`LowerCtx::lower_type`]:
@@ -1240,6 +1307,9 @@ pub fn lower_program_with_mono_cap(
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
     ctx.trait_default_methods = collect_trait_default_methods(&program.items);
+    let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
+    ctx.trait_super = trait_super;
+    ctx.trait_declared_methods = trait_declared_methods;
 
     // Pre-pre-pass: harvest `#[opaque]` type-decl short names (and the
     // complement of non-opaque user type short names) from the whole program
@@ -4469,6 +4539,8 @@ struct LowerCtx {
     /// so that `lower_impl_block` can lower default methods that are not
     /// overridden in the concrete impl.
     trait_default_methods: HashMap<String, Vec<TraitMethod>>,
+    trait_super: HashMap<String, Vec<String>>,
+    trait_declared_methods: HashMap<String, HashSet<String>>,
     /// Short names of every `#[opaque]` type declaration in the program
     /// (root + imported modules), e.g. `"Value"` for `json.Value`.
     ///
@@ -4619,6 +4691,8 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
             trait_default_methods: HashMap::new(),
+            trait_super: HashMap::new(),
+            trait_declared_methods: HashMap::new(),
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
             current_module_idx: 0,
@@ -7364,6 +7438,43 @@ impl LowerCtx {
         self.lower_fn_with_name(func, &func.name, span)
     }
 
+    fn resolve_method_declaring_trait(
+        &self,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<String> {
+        if self
+            .trait_declared_methods
+            .get(trait_name)
+            .is_some_and(|methods| methods.contains(method_name))
+        {
+            return Some(trait_name.to_string());
+        }
+
+        let mut stack = self
+            .trait_super
+            .get(trait_name)
+            .cloned()
+            .unwrap_or_default();
+        let mut visited = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if self
+                .trait_declared_methods
+                .get(&current)
+                .is_some_and(|methods| methods.contains(method_name))
+            {
+                return Some(current);
+            }
+            if let Some(supers) = self.trait_super.get(&current) {
+                stack.extend(supers.iter().cloned());
+            }
+        }
+        None
+    }
+
     /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
     /// block. Methods are flattened into per-impl `HirItem::Function` entries
     /// (named `<SelfType>::<method>`) so the existing MIR / codegen function
@@ -7504,6 +7615,7 @@ impl LowerCtx {
         // and must not leak into the emitted HirItem list.
         let mut method_symbols: Vec<String> = Vec::with_capacity(decl.methods.len());
         let mut method_names: Vec<String> = Vec::with_capacity(decl.methods.len());
+        let mut method_declaring_traits: Vec<String> = Vec::with_capacity(decl.methods.len());
         // W3.042 S2-S1: stash the resolved impl-target type so that `Self`
         // appearing in any method's parameter/return annotation (notably the
         // parser-injected `self: Self` for bare `self` / `var self` receivers)
@@ -7542,6 +7654,16 @@ impl LowerCtx {
             )));
             method_symbols.push(symbol);
             method_names.push(method.name.clone());
+            let declaring_trait = decl
+                .trait_bound
+                .as_ref()
+                .and_then(|tb| self.resolve_method_declaring_trait(&tb.name, &method.name))
+                .unwrap_or_else(|| {
+                    decl.trait_bound
+                        .as_ref()
+                        .map_or(String::new(), |tb| tb.name.clone())
+                });
+            method_declaring_traits.push(declaring_trait);
         }
 
         // Lower trait default methods that are NOT overridden in this impl.
@@ -7567,6 +7689,7 @@ impl LowerCtx {
                     )));
                     method_symbols.push(symbol);
                     method_names.push(fn_decl.name.clone());
+                    method_declaring_traits.push(tb.name.clone());
                 }
             }
         }
@@ -7594,6 +7717,7 @@ impl LowerCtx {
             type_aliases,
             method_symbols,
             method_names,
+            method_declaring_traits,
             span,
         }));
     }

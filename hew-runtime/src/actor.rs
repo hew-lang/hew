@@ -5376,10 +5376,10 @@ mod tests {
     /// Release flag for `drain_trap_on_stop_dispatch`: the dispatch holds
     /// in `Running` state until the test sets this, guaranteeing that
     /// `drain_actors` calls `hew_actor_stop` while the actor is still
-    /// `Running` (not yet `Idle`). Without this gate the 50-ms dispatch
-    /// window can expire before drain calls stop, causing the actor to
-    /// transition `Running → Idle → Stopped` instead of `Running → Crashed`,
-    /// and drain returns `Drained` instead of `Incomplete { crashed }`.
+    /// `Running` (not yet `Idle`). Without this gate the dispatch could
+    /// finish before drain calls stop, causing the actor to transition
+    /// `Running → Idle → Stopped` instead of `Running → Crashed`, and drain
+    /// returns `Drained` instead of `Incomplete { crashed }`.
     static DRAIN_TRAP_ON_STOP_RELEASE: AtomicBool = AtomicBool::new(false);
 
     /// `Suspended` is non-quiescent: a suspended actor owns a live continuation
@@ -7700,9 +7700,16 @@ mod tests {
                 std::time::Duration::from_millis(200),
             );
 
-            let start = std::time::Instant::now();
             let rc = hew_actor_free(actor);
-            let elapsed = start.elapsed();
+            // Logical proof that the current-thread free DEFERRED instead of
+            // tearing the actor down synchronously: the actor must still be live
+            // the instant free returns. The real teardown runs on a background
+            // thread that waits for the actor to reach a terminal state (driven
+            // by `unblock` ~200 ms from now), so a deferred free leaves the actor
+            // live here while a synchronous free would already have freed it.
+            // This replaces a wall-clock `elapsed < 100ms` bound that coverage
+            // instrumentation and load could inflate past the threshold.
+            let live_immediately_after = is_actor_live(actor);
 
             unblock.join().unwrap();
 
@@ -7720,8 +7727,8 @@ mod tests {
                 "current-thread frees should defer instead of timing out"
             );
             assert!(
-                elapsed < std::time::Duration::from_millis(100),
-                "current-thread free should return immediately instead of waiting for dispatch teardown, took {elapsed:?}"
+                live_immediately_after,
+                "current-thread free should defer: the actor must still be live the instant free returns, with teardown deferred to a background thread"
             );
             assert!(
                 freed,
@@ -7947,18 +7954,32 @@ mod tests {
             "trap-on-stop actor should begin running before drain starts"
         );
 
-        // Spawn a thread that releases the dispatch spin after a delay long
-        // enough for drain_actors to call hew_actor_stop. drain_actors calls
-        // hew_actor_stop synchronously before entering its poll loop, so any
-        // release that fires after drain starts is guaranteed to arrive after
-        // the stop message is queued. A 50 ms delay is ≫ the few microseconds
-        // needed for the synchronous stop call.
+        // Release the dispatch spin only once drain_actors has actually called
+        // hew_actor_stop AND the shutdown system message is enqueued, observed
+        // via the mailbox system-queue length becoming non-zero. `sys_count` is
+        // incremented *after* the stop node is published to the queue (see
+        // enqueue_sys_node), so a non-zero length means the next mailbox poll
+        // will deliver the stop and the actor takes Running→Crashed (the trap
+        // fires on stop) rather than Running→Idle→Stopped. Waiting on this real
+        // condition removes the timing bet: under load a fixed sleep could
+        // elapse before drain reached stop, releasing the dispatch while the
+        // actor was still Idle-bound and yielding Drained.
         //
-        // Without this gate the 50-ms dispatch could finish before drain called
-        // stop, letting the actor reach Running→Idle→Stopped instead of
-        // Running→Crashed and causing drain to return Drained.
-        let release_handle = std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        // SAFETY: the actor and its mailbox outlive the joined release thread.
+        let mailbox_addr = unsafe { (*actor).mailbox } as usize;
+        let release_handle = std::thread::spawn(move || {
+            let mb = mailbox_addr as *const HewMailbox;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                // SAFETY: `mb` is the live actor's mailbox; it stays valid until
+                // the test joins this thread and frees the actor below.
+                let stop_queued = !mb.is_null() && unsafe { mailbox::hew_mailbox_sys_len(mb) > 0 };
+                if stop_queued || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::hint::spin_loop();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             DRAIN_TRAP_ON_STOP_RELEASE.store(true, Ordering::Release);
         });
 

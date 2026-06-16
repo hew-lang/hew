@@ -59,6 +59,16 @@ const MEM_RELEASE: u32 = 0x8000;
 #[cfg(windows)]
 const PAGE_READWRITE: u32 = 0x04;
 
+// ── Miri allocator shim ─────────────────────────────────────────────────────
+//
+// Miri interprets MIR and cannot execute the raw `mmap`/`VirtualAlloc` syscalls,
+// so under `cfg(miri)` chunks come from the global allocator instead.  Chunks
+// are allocated page-aligned to preserve the same ≤4096-byte base-pointer
+// alignment guarantee the OS mappings provide, so arena provenance and aliasing
+// behaviour is identical to the production path the interpreter is validating.
+#[cfg(miri)]
+const MIRI_CHUNK_ALIGN: usize = 4096;
+
 /// Memory chunk allocated via mmap (Unix) or `VirtualAlloc` (Windows).
 #[derive(Debug)]
 struct ArenaChunk {
@@ -69,7 +79,7 @@ struct ArenaChunk {
 impl ArenaChunk {
     /// Create a new chunk with the specified size.
     fn new(size: usize) -> Option<Self> {
-        #[cfg(unix)]
+        #[cfg(all(unix, not(miri)))]
         let base = {
             // SAFETY: mmap with valid flags and no file descriptor
             let p = unsafe {
@@ -88,7 +98,7 @@ impl ArenaChunk {
             p.cast::<u8>()
         };
 
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         let base = {
             // SAFETY: VirtualAlloc with MEM_COMMIT | MEM_RESERVE for rw pages.
             let p = unsafe {
@@ -103,6 +113,23 @@ impl ArenaChunk {
                 return None;
             }
             p.cast::<u8>()
+        };
+
+        // Global-allocator chunk for Miri; the matching `dealloc` lives in
+        // `Drop`.  A layout error (only reachable for a pathologically large
+        // `size`) maps to `None`, mirroring the `MAP_FAILED`/null contract above.
+        #[cfg(miri)]
+        let base = {
+            let layout = std::alloc::Layout::from_size_align(size, MIRI_CHUNK_ALIGN).ok()?;
+            // SAFETY: `size` is non-zero for every chunk the arena requests and
+            // `MIRI_CHUNK_ALIGN` is a non-zero power of two, so `layout` has a
+            // non-zero size.  The pointer is freed with this exact layout in
+            // `ArenaChunk::drop`.
+            let p = unsafe { std::alloc::alloc(layout) };
+            if p.is_null() {
+                return None;
+            }
+            p
         };
 
         Some(ArenaChunk { base, size })
@@ -261,18 +288,29 @@ impl ActorArena {
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
-        #[cfg(unix)]
+        #[cfg(all(unix, not(miri)))]
         {
             // SAFETY: base and size are valid from successful mmap
             unsafe {
                 libc::munmap(self.base.cast::<c_void>(), self.size);
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(windows, not(miri)))]
         {
             // SAFETY: base was allocated by VirtualAlloc with MEM_COMMIT | MEM_RESERVE.
             unsafe {
                 VirtualFree(self.base.cast(), 0, MEM_RELEASE);
+            }
+        }
+        #[cfg(miri)]
+        {
+            // SAFETY: `base` came from `std::alloc::alloc` in `ArenaChunk::new`
+            // with this exact layout; `size` is fixed for the chunk's lifetime,
+            // so reconstructing the layout reproduces the allocation's layout.
+            let layout = std::alloc::Layout::from_size_align(self.size, MIRI_CHUNK_ALIGN)
+                .expect("layout validated in ArenaChunk::new");
+            unsafe {
+                std::alloc::dealloc(self.base, layout);
             }
         }
     }

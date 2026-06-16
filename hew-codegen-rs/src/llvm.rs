@@ -5093,6 +5093,153 @@ fn lower_coerce_to_dyn_trait(
     Ok(())
 }
 
+/// Lower a `dyn Trait` fat-pointer scope-exit drop by dispatching the
+/// concrete value's drop ritual through the vtable's slot-0
+/// `drop_in_place` function pointer, then — for `HeapBoxed` storage —
+/// releasing the heap buffer via `hew_dyn_box_free`.
+///
+/// This is the runtime-erased counterpart to the static drop kinds
+/// (`RecordInPlace` / `EnumInPlace`): at the drop site the concrete `Self`
+/// type is gone (the fat pointer carries only `{ data, vtable }`), so the
+/// per-concrete drop is recovered from the vtable rather than from
+/// `ElabDrop::ty`. Slot 0 holds the `void(ptr)` `drop_in_place` thunk
+/// synthesised by `emit_dyn_trait_drop_in_place_fns`; the runtime ABI
+/// (`hew-runtime/src/trait_object.rs::HewVtable`) pins it to "run the
+/// value's drop code WITHOUT freeing storage", with storage release left
+/// to the caller — exactly the split this function emits.
+///
+/// `release_box`:
+/// - `false` (`FrameOwned`) — the concrete value lives in a caller-frame
+///   alloca; dispatch slot 0 only and let the stack reclaim the slot. No
+///   `hew_dyn_box_free` (freeing a stack address would corrupt the heap).
+/// - `true` (`HeapBoxed`) — the concrete value lives in a
+///   `hew_dyn_box_alloc` buffer; after slot 0 returns, free the buffer
+///   with `hew_dyn_box_free(data, size, align)` where `size`/`align` come
+///   from vtable prefix slots 1/2 (the exact layout `hew_dyn_box_alloc`
+///   was called with, so dealloc cannot drift from alloc).
+///
+/// Fails closed when the receiver slot is not a `%hew.dyn.fat_ptr` (the
+/// MIR producer must allocate every owned `dyn Trait` local as
+/// `ResolvedTy::TraitObject`).
+fn lower_dyn_trait_vtable_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+    release_box: bool,
+) -> CodegenResult<()> {
+    // Load the fat pointer aggregate and extract the data + vtable words.
+    let (fat_ptr, fat_slot_ty) = place_pointer(fn_ctx, place)?;
+    let fat_ty = dyn_trait_fat_ptr_ty(fn_ctx.ctx);
+    match fat_slot_ty {
+        BasicTypeEnum::StructType(st) if st == fat_ty => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "dyn Trait drop @ {place:?}: receiver slot type {other:?} is not \
+                 `%hew.dyn.fat_ptr`; the MIR producer must allocate every owned \
+                 `dyn Trait` local as `ResolvedTy::TraitObject` so \
+                 `primitive_to_llvm` produces a fat-pointer alloca",
+            )));
+        }
+    }
+    let fat_val = fn_ctx
+        .builder
+        .build_load(fat_ty, fat_ptr, "dyn_drop_fat_load")
+        .llvm_ctx("dyn drop fat-ptr load")?
+        .into_struct_value();
+    let data_ptr = fn_ctx
+        .builder
+        .build_extract_value(fat_val, 0, "dyn_drop_data_ptr")
+        .llvm_ctx("dyn drop data extract")?
+        .into_pointer_value();
+    let vtable_ptr = fn_ctx
+        .builder
+        .build_extract_value(fat_val, 1, "dyn_drop_vtable_ptr")
+        .llvm_ctx("dyn drop vtable extract")?
+        .into_pointer_value();
+
+    // The vtable prefix is `{ ptr (drop_in_place), <usize> (size_of),
+    // <usize> (align_of) }`. The synthetic prefix-view struct mirrors it
+    // bit-for-bit; the view's layout authority must equal
+    // `emit_dyn_trait_vtable_definitions`'s — both source `usize_ty` from
+    // `host_target_data()` so the prefix byte offsets are identical. (Same
+    // idiom as `lower_call_trait_method`'s method-slot GEP.)
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let host_td = host_target_data();
+    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(&host_td, None);
+    let view_ty = fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+
+    // Slot 0: load the `drop_in_place` fn pointer and dispatch it on the
+    // data word. The synthesised thunk runs the concrete's structural drop
+    // (record/enum drop-in-place) without freeing storage.
+    let slot0_addr = fn_ctx
+        .builder
+        .build_struct_gep(view_ty, vtable_ptr, 0, "dyn_drop_slot0_addr")
+        .llvm_ctx("dyn drop slot-0 GEP")?;
+    let drop_fn_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, slot0_addr, "dyn_drop_in_place_fn")
+        .llvm_ctx("dyn drop slot-0 load")?
+        .into_pointer_value();
+    let drop_fn_ty = fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    fn_ctx
+        .builder
+        .build_indirect_call(
+            drop_fn_ty,
+            drop_fn_ptr,
+            &[data_ptr.into()],
+            "dyn_drop_in_place_call",
+        )
+        .llvm_ctx("dyn drop_in_place indirect call")?;
+
+    if release_box {
+        // HeapBoxed: free the `hew_dyn_box_alloc` buffer after the
+        // structural drop ran. size/align come from vtable prefix slots
+        // 1/2 — the layout the box was allocated with.
+        let size_addr = fn_ctx
+            .builder
+            .build_struct_gep(view_ty, vtable_ptr, 1, "dyn_drop_size_addr")
+            .llvm_ctx("dyn drop size GEP")?;
+        let size_val = fn_ctx
+            .builder
+            .build_load(usize_ty, size_addr, "dyn_drop_size")
+            .llvm_ctx("dyn drop size load")?
+            .into_int_value();
+        let align_addr = fn_ctx
+            .builder
+            .build_struct_gep(view_ty, vtable_ptr, 2, "dyn_drop_align_addr")
+            .llvm_ctx("dyn drop align GEP")?;
+        let align_val = fn_ctx
+            .builder
+            .build_load(usize_ty, align_addr, "dyn_drop_align")
+            .llvm_ctx("dyn drop align load")?
+            .into_int_value();
+        // `hew_dyn_box_free(ptr, size, align)` — the runtime declaration
+        // (`hew-runtime/src/trait_object.rs`) uses C `usize` for size/align,
+        // ptr-sized by definition; `ptr_sized_int_type` matches it on the
+        // native backend (the only target the dyn ABI lands on today).
+        let box_free_fn = fn_ctx
+            .llvm_mod
+            .get_function("hew_dyn_box_free")
+            .unwrap_or_else(|| {
+                let ty = fn_ctx
+                    .ctx
+                    .void_type()
+                    .fn_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+                fn_ctx
+                    .llvm_mod
+                    .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
+            });
+        let args: [BasicMetadataValueEnum; 3] =
+            [data_ptr.into(), size_val.into(), align_val.into()];
+        fn_ctx
+            .builder
+            .build_call(box_free_fn, &args, "dyn_box_free_call")
+            .llvm_ctx("dyn drop hew_dyn_box_free call")?;
+    }
+    Ok(())
+}
+
 /// Lower `Instr::CallTraitMethod` to a vtable-indirect call.
 ///
 /// Wires the dyn-trait method dispatch arm. The receiver `Place` holds
@@ -9541,6 +9688,64 @@ fn collect_record_inplace_drop_seeds(
         }
     }
     seeds
+}
+
+/// D2 / W3.031 — collect the record/enum layout keys of every type that
+/// appears as a `dyn Trait` CONCRETE so its
+/// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
+/// `emit_dyn_trait_drop_in_place_fns` emits the vtable slot-0
+/// `drop_in_place` thunk that CALLS it.
+///
+/// The slot-0 thunk runs the concrete value's structural drop by
+/// dispatching to the per-type record/enum drop-in-place helper (the
+/// runtime-erased counterpart to `DropKind::{Record,Enum}InPlace`). That
+/// helper's BODY is emitted only by `emit_state_clone_drop_synthesis` for
+/// reachable-or-seeded types. A concrete used ONLY behind `dyn` (e.g. a
+/// `Widget` coerced to `dyn Show` and never stored in an actor/record
+/// field) is not otherwise reached, so without this seed the slot-0 thunk
+/// would call a declared-but-undefined helper and LLVM verify would reject
+/// the module ("Global is external, but doesn't have external or weak
+/// linkage").
+///
+/// Classifies enum-aware (so an enum concrete seeds the enum channel
+/// instead of failing closed) and returns the SAME registry key
+/// `classify_user_record`/`classify_enum` resolve — the exact key
+/// `get_or_declare_{record,enum}_drop_inplace` mangle into the helper
+/// symbol — so seed and use can never drift. Returns
+/// `(record_seeds, enum_seeds)`. `BitCopy` concretes need no seed (slot-0
+/// emits an empty body); any other classification is a bare owned-heap
+/// concrete diagnosed at the slot-0 emission site (the fail-closed
+/// authority), so this pass stays silent there to avoid masking it.
+fn collect_dyn_concrete_drop_seeds(
+    registry: &[hew_mir::DynVtableInstance],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds: Vec<String> = Vec::new();
+    let mut enum_seeds: Vec<String> = Vec::new();
+    let mut seen_rec: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for inst in registry {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let Ok(kind) = hew_mir::classify_state_field_with_enum_layouts(
+            &inst.concrete_type,
+            record_layouts,
+            enum_layouts,
+            &mut visited,
+        ) else {
+            continue;
+        };
+        match kind {
+            StateFieldCloneKind::UserRecord { name } if seen_rec.insert(name.clone()) => {
+                record_seeds.push(name);
+            }
+            StateFieldCloneKind::Enum { name } if seen_enum.insert(name.clone()) => {
+                enum_seeds.push(name);
+            }
+            _ => {}
+        }
+    }
+    (record_seeds, enum_seeds)
 }
 
 /// Collect the record- and enum-layout keys of every actor-handler message and
@@ -24728,9 +24933,11 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             Ok(())
         }
         // `dyn Trait` FrameOwned: the concrete value lives in a frame
-        // alloca owned by the surrounding scope; firing the vtable's
-        // `__hew_dyn_drop_in_place_*` fn (slot 0) would call
-        // `hew_dyn_box_free` on the stack address and over-free it.
+        // alloca owned by the surrounding scope. Run the concrete's
+        // structural drop via the vtable's slot-0 `drop_in_place` thunk
+        // (which drops owned-heap fields WITHOUT freeing storage), then
+        // let the stack reclaim the alloca — NO `hew_dyn_box_free` (the
+        // data word is a stack address; freeing it would corrupt the heap).
         hew_mir::DropKind::TraitObject {
             storage: hew_mir::TraitObjectStorage::FrameOwned,
         } => {
@@ -24738,21 +24945,19 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                 return Err(CodegenError::FailClosed(format!(
                     "dyn Trait drop @ {place:?}: \
                      `DropKind::TraitObject {{ storage: FrameOwned }}` MUST NOT \
-                     route through vtable slot 0. The concrete value lives in \
-                     a frame alloca owned by the surrounding scope; firing the \
-                     vtable's `__hew_dyn_drop_in_place_*` fn (slot 0) would call \
-                     `hew_dyn_box_free` on the stack address and over-free it. \
-                     Slot 0 is reserved for the future `HeapBoxed` storage class. \
-                     `drop_fn` was unexpectedly populated as {drop_fn:?} — caller \
-                     must leave it `None` for FrameOwned trait-object drops.",
+                     carry an `ElabDrop::drop_fn` (= {drop_fn:?}). The drop ritual \
+                     is the vtable slot 0 dispatch (`drop_in_place`), recovered \
+                     from the fat pointer at runtime — never the close-symbol \
+                     path. The MIR elaborator (`build_lifo_drops`) must leave \
+                     `drop_fn` `None` for trait-object drops (pinned by \
+                     `hew-mir/tests/dyn_trait_dispatch.rs`).",
                     place = drop.place,
                     drop_fn = drop.drop_fn,
                 )));
             }
-            // FrameOwned + drop_fn=None: correct shape today. The frame
-            // alloca's lifetime ends with the surrounding scope; no drop
-            // ritual fires.
-            Ok(())
+            // FrameOwned + drop_fn=None: dispatch slot 0 (structural drop
+            // only), no box free.
+            lower_dyn_trait_vtable_drop(fn_ctx, drop.place, false)
         }
         // Escaping-closure pair: free the heap env box through the thunk
         // its header slot carries. The env pointer is heap-or-null by
@@ -24850,20 +25055,42 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             Ok(())
         }
         // The pre-W5.011 kinds (`@resource` close, Duplex close protocols,
-        // lambda-actor release, dyn-trait HeapBoxed) all dispatch through
-        // the `ElabDrop::drop_fn` close-symbol path — `Some` calls the
-        // type's close ritual via `lower_drop`; `None` is a genuine
-        // trivial drop (a value class with no side-effecting close).
+        // lambda-actor release) all dispatch through the `ElabDrop::drop_fn`
+        // close-symbol path — `Some` calls the type's close ritual via
+        // `lower_drop`; `None` is a genuine trivial drop (a value class with
+        // no side-effecting close).
         hew_mir::DropKind::Resource
         | hew_mir::DropKind::DuplexClose
         | hew_mir::DropKind::DuplexHalfClose(_)
-        | hew_mir::DropKind::LambdaActorRelease
-        | hew_mir::DropKind::TraitObject {
-            storage: hew_mir::TraitObjectStorage::HeapBoxed,
-        } => match drop.drop_fn {
+        | hew_mir::DropKind::LambdaActorRelease => match drop.drop_fn {
             Some(ref drop_fn) => lower_drop(fn_ctx, drop.place, drop_fn),
             None => Ok(()),
         },
+        // `dyn Trait` HeapBoxed: the concrete value lives in a
+        // `hew_dyn_box_alloc` heap buffer (a `dyn`-returning call result).
+        // Run the concrete's structural drop via the vtable slot-0
+        // `drop_in_place` thunk, THEN free the heap buffer with
+        // `hew_dyn_box_free(data, size, align)` — the runtime ABI splits the
+        // ritual exactly this way (`hew-runtime/src/trait_object.rs`).
+        hew_mir::DropKind::TraitObject {
+            storage: hew_mir::TraitObjectStorage::HeapBoxed,
+        } => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "dyn Trait drop @ {place:?}: \
+                     `DropKind::TraitObject {{ storage: HeapBoxed }}` MUST NOT \
+                     carry an `ElabDrop::drop_fn` (= {drop_fn:?}). The drop ritual \
+                     is the vtable slot 0 dispatch (`drop_in_place`) followed by \
+                     `hew_dyn_box_free`, never the close-symbol path. The MIR \
+                     elaborator (`build_lifo_drops`) must leave `drop_fn` `None` \
+                     for trait-object drops (pinned by \
+                     `hew-mir/tests/dyn_trait_dispatch.rs`).",
+                    place = drop.place,
+                    drop_fn = drop.drop_fn,
+                )));
+            }
+            lower_dyn_trait_vtable_drop(fn_ctx, drop.place, true)
+        }
     }
 }
 
@@ -38717,6 +38944,31 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(xnode_rec_seed);
         }
     }
+    // D2 — seed every record/enum that appears as a `dyn Trait` CONCRETE so
+    // `emit_state_clone_drop_synthesis` (immediately below) emits its
+    // `__hew_{record,enum}_drop_inplace_<key>` body BEFORE
+    // `emit_dyn_trait_drop_in_place_fns` (further down) emits the vtable
+    // slot-0 `drop_in_place` thunk that dispatches to it. A concrete used
+    // only behind `dyn` (never in an actor/record state field) is reachable
+    // through no other seed, so without this its structural-drop helper
+    // would be declared-but-undefined and LLVM verify would reject the
+    // module. Enum-aware classification routes enum concretes to the enum
+    // channel (D2 Mode B); record concretes to the record channel (Mode A).
+    let (dyn_concrete_record_seeds, dyn_concrete_enum_seeds) = collect_dyn_concrete_drop_seeds(
+        &pipeline.dyn_vtable_registry,
+        &pipeline.record_layouts,
+        &synthesis_enum_layouts,
+    );
+    for seed in dyn_concrete_enum_seeds {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
+        }
+    }
+    for seed in dyn_concrete_record_seeds {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
+        }
+    }
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
@@ -38873,30 +39125,38 @@ fn build_module_for_target<'ctx>(
         &fn_symbols,
         &record_layouts,
     )?;
-    // Synthesise one `void (*)(ptr)` drop-in-place function per
-    // `vtable_id` in `pipeline.dyn_vtable_registry`. The function
-    // runs the concrete value's drop ritual (today restricted to
-    // trivially-droppable concretes: `BitCopy` primitives and
-    // `UserRecord`s whose fields are transitively all `BitCopy` —
-    // heap-bearing concretes fail closed pending a registry-side
-    // structural-drop key) and then releases the heap-box storage
-    // via `hew_dyn_box_free(ptr, size, align)` where `size`/`align`
-    // come from the LLVM ABI layout of the concrete type. The
-    // function is emitted with `Private` LLVM linkage and named via
+    // Synthesise one `void (*)(ptr)` slot-0 `drop_in_place` function per
+    // `vtable_id` in `pipeline.dyn_vtable_registry`. The function runs the
+    // concrete value's STRUCTURAL drop only — it dispatches to the
+    // per-type `__hew_{record,enum}_drop_inplace_<key>` helper (the
+    // runtime-erased counterpart to `DropKind::{Record,Enum}InPlace`),
+    // dropping owned-heap fields WITHOUT freeing storage. Storage release
+    // is the drop SITE's job: `hew_dyn_box_free` for `HeapBoxed`, nothing
+    // for `FrameOwned` (see `lower_dyn_trait_vtable_drop`). This split is
+    // the runtime ABI contract (`hew-runtime/src/trait_object.rs::HewVtable`
+    // — "run the value's drop code WITHOUT freeing storage").
+    //
+    // The dispatched-to helper bodies are emitted by
+    // `emit_state_clone_drop_synthesis` above; the dyn-concrete seed pass
+    // (`collect_dyn_concrete_drop_seeds`) guarantees a body exists for every
+    // record/enum concrete reachable only through `dyn`. `BitCopy`
+    // concretes (primitives, all-bitcopy records via the synthesised
+    // no-op record helper) emit an empty body. The function is emitted with
+    // `Private` LLVM linkage and named via
     // `hew_mir::mangle_dyn_drop_in_place_symbol`
-    // (`__hew_dyn_drop_in_place__{trait}__{concrete}__{vtable_id}`,
-    // routed through `hew_mir::sanitize_for_symbol`); the
-    // trait/concrete/id mangling keeps `nm`-style observation
-    // legible for tests while the `Private` linkage gives no ABI
-    // promise and no cross-compilation-unit collision risk. The
-    // in-module caller is the vtable static initialiser emitted by
-    // `emit_dyn_trait_vtable_definitions` immediately below.
+    // (`__hew_dyn_drop_in_place__{trait}__{concrete}__{vtable_id}`, routed
+    // through `hew_mir::sanitize_for_symbol`); the trait/concrete/id
+    // mangling keeps `nm`-style observation legible for tests while the
+    // `Private` linkage gives no ABI promise. The in-module caller is the
+    // vtable static initialiser emitted by
+    // `emit_dyn_trait_vtable_definitions` immediately below, and — at
+    // runtime — the slot-0 dispatch in `lower_dyn_trait_vtable_drop`.
     emit_dyn_trait_drop_in_place_fns(
         ctx,
         &llvm_mod,
         &pipeline.dyn_vtable_registry,
-        &record_layouts,
         &pipeline.record_layouts,
+        &synthesis_enum_layouts,
     )?;
     // Finalise the `%hew.dyn.vtable.N` opaque struct and the
     // `@__hew_vtable__{trait}__{concrete}__{vtable_id} = private constant`
@@ -39200,186 +39460,72 @@ fn emit_dyn_trait_thunks<'ctx>(
     Ok(())
 }
 
-/// Probe whether `record_name` is trivially droppable — i.e. its
-/// fields (transitively) are all `BitCopy`. Used by the dyn drop-in-
-/// place synthesis pass to decide whether a `UserRecord`-classified
-/// concrete is safe to release with a free-only body.
+/// Synthesise one `void (*)(ptr)` slot-0 `drop_in_place` function per
+/// `vtable_id` in `registry`. The `ptr` argument is the fat pointer's
+/// DATA word (the concrete value's storage). The function runs the
+/// concrete value's STRUCTURAL drop ONLY — it does NOT free storage:
 ///
-/// The shared `classify_state_field` predicate returns
-/// `StateFieldCloneKind::UserRecord` for every record concrete
-/// regardless of field shape (see `classify_user_record` in
-/// `hew-mir/src/state_clone.rs:457`), which is the correct contract
-/// for actor-state clone/drop synthesis. The dyn drop path needs a
-/// strictly finer answer because emitting a free-only body for a
-/// record whose fields include `String` / `Vec` / heap-bearing
-/// nested records would leak that inner storage; this probe is
-/// dyn-drop-local so the shared classifier's contract is preserved.
+/// - `BitCopy` concrete (primitive, or an all-`BitCopy` record reached
+///   through the synthesised no-op record helper) — empty body; nothing
+///   owns heap, nothing to drop.
+/// - `UserRecord { name }` — call `__hew_record_drop_inplace_<name>(ptr)`,
+///   the per-type structural drop that releases the record's owned-heap
+///   fields (String / Vec / nested heap-bearing records / …). The body is
+///   synthesised by `emit_state_clone_drop_synthesis`; the dyn-concrete
+///   seed pass (`collect_dyn_concrete_drop_seeds`) guarantees it exists.
+/// - `Enum { name }` — call `__hew_enum_drop_inplace_<name>(ptr)`, the
+///   tag-dispatching structural drop for the active variant's payload.
 ///
-/// Walks the record's `field_tys` and classifies each field. A
-/// field is trivial when its top-level classification is `BitCopy`
-/// or `UserRecord` whose own fields are trivial (recursive). Any
-/// `String` / `Bytes` / `Vec` / `HashMap` / `HashSet` / `IoHandle`
-/// field, or a nested record carrying any of those, makes the
-/// outer record non-trivial.
+/// Storage release is deliberately NOT this function's job: the runtime
+/// ABI (`hew-runtime/src/trait_object.rs::HewVtable::drop_in_place`) pins
+/// slot 0 to "run the value's drop code WITHOUT freeing storage", leaving
+/// the heap-box free to the caller. The drop SITE
+/// (`lower_dyn_trait_vtable_drop`) calls `hew_dyn_box_free` after this fn
+/// returns for `HeapBoxed` storage, and nothing for `FrameOwned` (a stack
+/// alloca). Putting the free here would either over-free a `FrameOwned`
+/// stack address or hard-wire a `HeapBoxed` assumption into a slot the ABI
+/// says is storage-agnostic.
 ///
-/// Fails closed when:
-/// - `record_name` is absent from `pipeline_records` (lowering-
-///   invariant violation — the checker authority guarantees layout
-///   presence for any record reachable from a registered dyn
-///   vtable),
-/// - a field's `ResolvedTy` cannot be classified by
-///   `classify_state_field` (boundary state leaked past the
-///   checker; the classifier itself emits the diagnostic).
+/// The function is emitted at `Linkage::Private`: internal to the
+/// compilation unit, no ABI promise. The trait/concrete/id-mangled symbol
+/// name produced by [`hew_mir::mangle_dyn_drop_in_place_symbol`] keeps
+/// `nm`-style observation legible for tests without exposing the symbol to
+/// the linker. The vtable static initialiser (emitted in this module)
+/// installs it in slot 0; the runtime caller is the slot-0 dispatch in
+/// `lower_dyn_trait_vtable_drop`.
 ///
-/// `visited` carries the active record-walk stack so a defensive
-/// guard catches a structurally-recursive record before infinite
-/// recursion — the checker rejects record cycles upstream, so this
-/// is belt-and-braces.
-fn record_concrete_is_trivially_droppable(
-    record_name: &str,
-    pipeline_records: &[RecordLayout],
-    visited: &mut std::collections::HashSet<String>,
-) -> CodegenResult<bool> {
-    if !visited.insert(record_name.to_string()) {
-        // Structural cycle — the checker should have rejected it
-        // upstream. Treat as non-trivial defensively so codegen
-        // does not over-free on an unsound input.
-        return Ok(false);
-    }
-    let layout = pipeline_records
-        .iter()
-        .find(|r| r.name == record_name)
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "dyn drop_in_place triviality probe: record `{record_name}` \
-                 is missing from `pipeline.record_layouts`; the checker \
-                 authority must register every record reachable from a dyn \
-                 vtable's concrete type before codegen runs"
-            ))
-        })?;
-    for field_ty in &layout.field_tys {
-        // Each field is classified independently with its own
-        // fresh `visited` — the shared classifier's internal
-        // cycle guard answers within one walk, and the outer
-        // `visited` tracks our cross-field record walk.
-        let mut inner_visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let field_kind =
-            hew_mir::classify_state_field(field_ty, pipeline_records, &mut inner_visited).map_err(
-                |e| {
-                    CodegenError::FailClosed(format!(
-                        "dyn drop_in_place triviality probe: field of record \
-                         `{record_name}` (type `{field_ty:?}`) is not \
-                         classifiable: {e}"
-                    ))
-                },
-            )?;
-        let field_trivial = match &field_kind {
-            StateFieldCloneKind::BitCopy { .. } => true,
-            StateFieldCloneKind::UserRecord { name: inner } => {
-                record_concrete_is_trivially_droppable(inner, pipeline_records, visited)?
-            }
-            // String / Bytes / Vec / HashMap / HashSet / IoHandle
-            // — owned-heap or runtime-managed; not trivial.
-            _ => false,
-        };
-        if !field_trivial {
-            visited.remove(record_name);
-            return Ok(false);
-        }
-    }
-    visited.remove(record_name);
-    Ok(true)
-}
-
-/// Synthesise one `void (*)(ptr)` drop-in-place function per
-/// `vtable_id` in `registry`. Each function releases a heap-boxed
-/// `dyn Trait` value whose data word is the `ptr` argument:
-///
-/// 1. Run the concrete value's drop glue at `%erased_self`. This
-///    stage admits two trivial concrete shapes: (a)
-///    `StateFieldCloneKind::BitCopy` primitives (i64, bool, …) —
-///    no inner state, free-only body is sufficient; and (b)
-///    `StateFieldCloneKind::UserRecord` whose fields are
-///    transitively all `BitCopy` (probed by
-///    `record_concrete_is_trivially_droppable` — the shared
-///    `classify_state_field` returns `UserRecord` for every record
-///    concrete regardless of field shape, so a dyn-drop-local walk
-///    of the record's fields is required to answer the finer
-///    "trivially droppable" question without perturbing the actor-
-///    state clone/drop classifier's contract).
-///    Any other classification — `String` / `Bytes` / `Vec` /
-///    `HashMap` / `HashSet` / `IoHandle`, or a `UserRecord` with at
-///    least one such field — fails closed because
-///    `DynVtableInstance` does not yet carry a per-type structural-
-///    drop key; emitting a `hew_dyn_box_free` without first
-///    dropping the owned-heap fields would leak that inner storage.
-///    A future substrate stage MUST extend the registry with the
-///    concrete's structural-drop entry point before heap-bearing
-///    concretes can ride the dyn drop path (LESSONS:
-///    `boundary-fail-closed`).
-///
-/// 2. Call `hew_dyn_box_free(%erased_self, size, align)` where
-///    `size`/`align` come from the LLVM ABI layout of the concrete
-///    type (`abi_size_align` against the host data layout — the
-///    same convention `struct_abi_size` already uses module-wide).
-///    This matches the runtime ABI in
-///    `hew-runtime/src/trait_object.rs`: the dealloc layout MUST
-///    equal the alloc layout `hew_dyn_box_alloc` was called with.
-///
-/// The function is emitted at `Linkage::Private`: internal to
-/// the compilation unit, no ABI promise. The trait/concrete/id-
-/// mangled symbol name produced by
-/// [`hew_mir::mangle_dyn_drop_in_place_symbol`] keeps `nm`-style
-/// observation legible for tests without exposing the symbol to the
-/// linker. The vtable static initialiser (emitted in this module)
-/// is the in-module caller; no cross-CU consumer references this
-/// symbol.
-///
-/// One function per `vtable_id` (not per method): the vtable's
-/// concrete type determines the drop ritual, not the trait or any
-/// individual method. Test coverage:
+/// One function per `vtable_id` (not per method): the vtable's concrete
+/// type determines the drop ritual, not the trait or any individual
+/// method. Test coverage:
 /// `hew-codegen-rs/tests/dyn_trait_drop_in_place_emission.rs`.
 ///
 /// Fails closed when:
-/// - `inst.concrete_type` cannot be classified (boundary state
-///   like `Ty::Var` / `Ty::Error` leaked past the checker, or the
-///   `RecordLayout` for a Named arm is missing — the classifier
-///   itself emits the diagnostic),
-/// - the classification is heap-bearing (`String` / `Bytes` /
-///   `Vec` / `HashMap` / `HashSet` / `IoHandle`, or a `UserRecord`
-///   with at least one such field transitively — structural drop
-///   required but no drop-fn key plumbed; see above),
-/// - the concrete's LLVM ABI layout is degenerate
-///   (`abi_size_align` rejects size==0 / align==0 — a coerced
-///   `Unit` / `Never` concrete would land here, but the producer
-///   side of W3.031 also rejects ZST coercion).
+/// - `inst.concrete_type` cannot be classified (boundary state like
+///   `Ty::Var` / `Ty::Error` leaked past the checker, or a `RecordLayout`
+///   / `EnumLayout` for a Named arm is missing — the classifier itself
+///   emits the diagnostic),
+/// - the classification is a BARE owned-heap concrete (`String` / `Bytes`
+///   / `Vec` / `HashMap` / `HashSet` / `IoHandle` / closure-pair coerced
+///   DIRECTLY to `dyn`, not wrapped in a record/enum) — the slot-0 path
+///   dispatches structural drop only through the per-type record/enum
+///   helpers, so a bare heap concrete needs its own runtime release wired
+///   here; refusing rather than emitting a body that would leak it,
+/// - the resolved record/enum structural-drop helper has no body after
+///   synthesis (the dyn-concrete seed pass failed to register it — a
+///   substrate-ordering bug, caught before emitting a call to an undefined
+///   symbol).
 fn emit_dyn_trait_drop_in_place_fns<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     registry: &[hew_mir::DynVtableInstance],
-    record_layouts: &RecordLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     if registry.is_empty() {
         return Ok(());
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
-    // `hew_dyn_box_free(ptr, size, align)` — the runtime
-    // declaration in `hew-runtime/src/trait_object.rs` uses C
-    // `usize` for size/align, which lowers to `i64` on the native
-    // (64-bit) backend. The WASM32 target would surface here once
-    // a target-aware lowering path exists; the runtime symbol
-    // allowlist in `hew-mir/src/runtime_symbols.rs` is the canonical
-    // place to teach codegen about a target-different width.
-    let usize_ty = ctx.i64_type();
-    let box_free_fn = llvm_mod
-        .get_function("hew_dyn_box_free")
-        .unwrap_or_else(|| {
-            let ty = void_ty.fn_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
-            llvm_mod.add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-        });
-    let host_td = host_target_data();
 
     for inst in registry {
         let symbol = hew_mir::mangle_dyn_drop_in_place_symbol(
@@ -39388,88 +39534,79 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
             &inst.concrete_type,
         );
 
-        // Classify the concrete type. `classify_state_field` is
-        // the canonical predicate for "is this type trivially
-        // memcpy/drop-able?" — it already understands records,
-        // Vec/HashMap/HashSet, IoHandle wrappers, and the closed
-        // set of primitives. Reusing it keeps the dyn drop and
-        // the actor-state clone/drop classifier on the same
-        // authority.
+        // Classify the concrete type ENUM-AWARE. `classify_state_field`
+        // alone (no enum layouts) fails closed for every enum concrete
+        // (D2 Mode B); threading `enum_layouts` lets an enum concrete
+        // resolve to `Enum { name }` and ride the structural drop path.
+        // The returned `name` is the registry key
+        // `get_or_declare_{record,enum}_drop_inplace` mangle into the
+        // helper symbol, so classification + dispatch can never drift.
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let kind =
-            hew_mir::classify_state_field(&inst.concrete_type, pipeline_records, &mut visited)
-                .map_err(|e| {
-                    CodegenError::FailClosed(format!(
-                        "dyn drop_in_place for vtable `{}`: concrete type `{:?}` is \
+        let kind = hew_mir::classify_state_field_with_enum_layouts(
+            &inst.concrete_type,
+            pipeline_records,
+            enum_layouts,
+            &mut visited,
+        )
+        .map_err(|e| {
+            CodegenError::FailClosed(format!(
+                "dyn drop_in_place for vtable `{}`: concrete type `{:?}` is \
                  not classifiable: {e}",
-                        inst.symbol, inst.concrete_type
-                    ))
-                })?;
-        match &kind {
-            StateFieldCloneKind::BitCopy { .. } => {
-                // Trivially droppable: the concrete value carries
-                // no owned-heap state; releasing the heap box
-                // alone is sufficient.
-            }
+                inst.symbol, inst.concrete_type
+            ))
+        })?;
+
+        // Resolve the per-type structural-drop helper (if any) and verify
+        // its body exists BEFORE creating the slot-0 fn, so a missing body
+        // fails closed here rather than emitting a call to an undefined
+        // symbol. `None` = `BitCopy` concrete (empty slot-0 body).
+        let structural_helper: Option<FunctionValue<'ctx>> = match &kind {
+            StateFieldCloneKind::BitCopy { .. } => None,
             StateFieldCloneKind::UserRecord { name } => {
-                // `classify_state_field` returns `UserRecord` for
-                // every record concrete regardless of field shape
-                // (see `classify_user_record` in
-                // `hew-mir/src/state_clone.rs`). For the dyn drop
-                // path we additionally need to know whether the
-                // record's fields are themselves trivially
-                // droppable — a record whose fields are all
-                // BitCopy (transitively) carries no owned-heap
-                // state and is safe to release with a free-only
-                // body, while a record with a String / Vec /
-                // owned-heap field needs a structural drop the
-                // registry does not yet plumb. The dyn-drop-local
-                // probe below walks the layout to answer that
-                // question without disturbing the shared
-                // classifier's `UserRecord` contract (which actor-
-                // state clone/drop synthesis depends on).
-                let mut record_visited: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-                let trivial = record_concrete_is_trivially_droppable(
-                    name,
-                    pipeline_records,
-                    &mut record_visited,
-                )?;
-                if !trivial {
+                let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
+                if helper.count_basic_blocks() == 0 {
                     return Err(CodegenError::FailClosed(format!(
-                        "dyn drop_in_place for vtable `{}` (concrete record `{name}`): \
-                         the record carries at least one owned-heap field \
-                         (String / Bytes / Vec / HashMap / HashSet / IoHandle / \
-                         heap-bearing nested record), so a free-only body would \
-                         leak that inner storage. `DynVtableInstance` does not yet \
-                         plumb a per-type structural-drop fn key; a future substrate \
-                         stage MUST extend the registry before heap-bearing record \
-                         concretes can ride the dyn drop path",
+                        "dyn drop_in_place for vtable `{}` (concrete record \
+                         `{name}`): resolved `__hew_record_drop_inplace_{name}` \
+                         but it has no body after synthesis. The dyn-concrete \
+                         drop seed (`collect_dyn_concrete_drop_seeds`) must \
+                         register `{name}` before `emit_state_clone_drop_synthesis` \
+                         runs (LESSONS: boundary-fail-closed).",
                         inst.symbol
                     )));
                 }
+                Some(helper)
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let helper = get_or_declare_enum_drop_inplace(ctx, llvm_mod, name);
+                if helper.count_basic_blocks() == 0 {
+                    return Err(CodegenError::FailClosed(format!(
+                        "dyn drop_in_place for vtable `{}` (concrete enum \
+                         `{name}`): resolved `__hew_enum_drop_inplace_{name}` \
+                         but it has no body after synthesis. The dyn-concrete \
+                         drop seed (`collect_dyn_concrete_drop_seeds`) must \
+                         register `{name}` before `emit_state_clone_drop_synthesis` \
+                         runs (LESSONS: boundary-fail-closed).",
+                        inst.symbol
+                    )));
+                }
+                Some(helper)
             }
             other => {
                 return Err(CodegenError::FailClosed(format!(
                     "dyn drop_in_place for vtable `{}` (concrete `{:?}`): \
-                     concrete requires a structural drop (classification = \
-                     {other:?}), but `DynVtableInstance` does not yet plumb \
-                     a per-type drop fn key. A future substrate stage MUST \
-                     extend the registry before non-BitCopy concretes can \
-                     ride the dyn drop path — emitting a free-only body \
-                     here would leak the inner heap storage",
+                     classification {other:?} is a bare owned-heap concrete \
+                     (String / Bytes / Vec / HashMap / HashSet / IoHandle / \
+                     closure-pair coerced directly to `dyn`). The vtable slot-0 \
+                     drop path dispatches structural drop only through the \
+                     per-type record/enum drop-in-place helpers; a bare heap \
+                     concrete needs its own runtime release wired here — \
+                     refusing to emit a body that would leak it (LESSONS: \
+                     boundary-fail-closed).",
                     inst.symbol, inst.concrete_type
                 )));
             }
-        }
-
-        // Compute `(size, align)` for `hew_dyn_box_free`. The
-        // dealloc layout MUST equal the alloc layout
-        // `hew_dyn_box_alloc` saw; sourcing both from the LLVM
-        // ABI layout of the same `ResolvedTy` keeps the two
-        // sides on a single authority.
-        let concrete_llvm = resolve_ty(ctx, &inst.concrete_type, record_layouts)?;
-        let (size, align) = abi_size_align(concrete_llvm, Some(&host_td))?;
+        };
 
         let fn_ty = void_ty.fn_type(&[ptr_ty.into()], false);
         // `Private` linkage — internal-to-module, no ABI promise.
@@ -39485,16 +39622,18 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
                  the erased-self parameter"
             ))
         })?;
-        let size_val = usize_ty.const_int(size, false);
-        let align_val = usize_ty.const_int(u64::from(align), false);
-        let args: [BasicMetadataValueEnum; 3] = [
-            metadata_value_from_basic(erased),
-            size_val.into(),
-            align_val.into(),
-        ];
-        builder
-            .build_call(box_free_fn, &args, "dyn_box_free_call")
-            .llvm_ctx_with(|| format!("dyn drop_in_place `{symbol}`: hew_dyn_box_free call"))?;
+        let erased_ptr = erased.into_pointer_value();
+
+        // Slot-0 body = structural drop ONLY (no `hew_dyn_box_free`). The
+        // per-type helper (`fn(*mut)`) null-checks internally, so calling
+        // it on the data word is safe for any non-dangling pointer.
+        if let Some(helper) = structural_helper {
+            builder
+                .build_call(helper, &[erased_ptr.into()], "dyn_structural_drop")
+                .llvm_ctx_with(|| {
+                    format!("dyn drop_in_place `{symbol}`: structural drop-inplace call")
+                })?;
+        }
         builder
             .build_return(None)
             .llvm_ctx_with(|| format!("dyn drop_in_place `{symbol}`: void return"))?;

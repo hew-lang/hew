@@ -7513,11 +7513,14 @@ mod tests {
         use crate::cluster::hew_cluster_member_state;
         const NODE_A: u16 = 342;
         const NODE_B: u16 = 343;
-        // Real-sleep budget per simulated period: long enough for a loopback
-        // TCP round-trip (and the connection-reader to update last_seen_ms)
-        // even under TSan's ~10× slowdown.  25 ms is generous for a loopback
-        // socket; actual round-trips are <1 ms on unloaded hardware.
-        const SWIM_ALIVE_REAL_SLEEP_MS: u64 = 25;
+        // After advancing each simulated period we wait for the real loopback
+        // PING-ACK round-trip to refresh last_seen_ms before advancing the next
+        // period (see the observation loop): a short poll cadence and a generous
+        // deadline that only trips if the round-trip never lands. This replaces a
+        // fixed sleep bet against loopback/VM latency, so a loaded CI host can no
+        // longer stale last_seen into a false DEAD.
+        const SWIM_ALIVE_POLL_MS: u64 = 2;
+        const SWIM_ALIVE_DEADLINE_MS: u64 = 5_000;
         // Number of simulated protocol periods to observe.  3 periods span
         // suspect_timeout (120 ms sim) so this exercises the "don't kill a live
         // peer" invariant across the full timeout window.
@@ -7546,42 +7549,61 @@ mod tests {
         // SAFETY: both nodes are valid here.
         unsafe { wait_for_handshake(node_a.as_ptr(), node_b.as_ptr()) };
 
-        // Step sim time forward one protocol period at a time.  After each
-        // advance the driver fires a tick (its next_period_ms has been crossed);
-        // the real sleep gives the connection-reader thread time to process the
-        // resulting PING-ACK and update last_seen_ms = hew_now_ms() before the
-        // next period fires.  As long as each tick sees elapsed = one period (<
-        // suspect_timeout), neither node is declared DEAD.
+        // Step sim time forward one protocol period at a time. After each
+        // advance the driver fires a tick (its next_period_ms has been crossed)
+        // and sends a PING; the peer's ACK lets the connection-reader refresh
+        // last_seen_ms = hew_now_ms(). We then wait for that round-trip to land
+        // before advancing the next period, so each tick sees elapsed = one
+        // period (< suspect_timeout) and neither node is declared DEAD.
         #[expect(
             clippy::cast_possible_wrap,
             reason = "SWIM_TEST_PERIOD_MS is 40; always fits in i64"
         )]
         for _ in 0..OBSERVATION_PERIODS {
             crate::deterministic::hew_simtime_advance_ms(SWIM_TEST_PERIOD_MS as i64);
-            // Give TCP threads time to complete the ping-ack round-trip and
-            // update last_seen_ms.  This is the only real sleep in the
-            // measurement window; it is proportional to loopback latency, not
-            // to SWIM protocol periods, so it is load-immune.
-            thread::sleep(Duration::from_millis(SWIM_ALIVE_REAL_SLEEP_MS));
-
-            // SAFETY: A's cluster is live (node still running).
-            let a_view_of_b =
-                unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
-            // SAFETY: B's cluster is live (node still running).
-            let b_view_of_a =
-                unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
-            assert_ne!(
-                a_view_of_b,
-                crate::cluster::MEMBER_DEAD,
-                "A must not declare a still-alive B as DEAD after period \
-                 (state={a_view_of_b})"
-            );
-            assert_ne!(
-                b_view_of_a,
-                crate::cluster::MEMBER_DEAD,
-                "B must not declare a still-alive A as DEAD after period \
-                 (state={b_view_of_a})"
-            );
+            // Wait for this period's PING-ACK round-trip to land and refresh
+            // last_seen_ms before advancing the next sim period. Sim time is
+            // frozen during this real wait, so no new staleness accrues; a
+            // landing ACK revives a transient SUSPECT straight back to ALIVE
+            // (cluster::update_last_seen), and the SUSPECT -> DEAD step cannot
+            // fire without another sim advance. We proceed as soon as both views
+            // are ALIVE — waiting for the actual round-trip instead of betting a
+            // fixed sleep against loopback/VM latency, so a loaded CI host can't
+            // stale last_seen into a false DEAD. The "never DEAD" invariant is
+            // still enforced strictly on every poll.
+            let alive_deadline =
+                std::time::Instant::now() + Duration::from_millis(SWIM_ALIVE_DEADLINE_MS);
+            loop {
+                // SAFETY: A's cluster is live (node still running).
+                let a_view_of_b =
+                    unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
+                // SAFETY: B's cluster is live (node still running).
+                let b_view_of_a =
+                    unsafe { hew_cluster_member_state((*node_b.as_ptr()).cluster, NODE_A) };
+                assert_ne!(
+                    a_view_of_b,
+                    crate::cluster::MEMBER_DEAD,
+                    "A must not declare a still-alive B as DEAD after period \
+                     (state={a_view_of_b})"
+                );
+                assert_ne!(
+                    b_view_of_a,
+                    crate::cluster::MEMBER_DEAD,
+                    "B must not declare a still-alive A as DEAD after period \
+                     (state={b_view_of_a})"
+                );
+                if a_view_of_b == crate::cluster::MEMBER_ALIVE
+                    && b_view_of_a == crate::cluster::MEMBER_ALIVE
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < alive_deadline,
+                    "PING-ACK round-trip did not refresh last_seen within the \
+                     deadline (a_view_of_b={a_view_of_b}, b_view_of_a={b_view_of_a})"
+                );
+                thread::sleep(Duration::from_millis(SWIM_ALIVE_POLL_MS));
+            }
         }
 
         // SAFETY: nodes were allocated in this test and remain valid.

@@ -1,0 +1,27 @@
+// Accept fixture — `#[linear]` binding consumed on every path.
+//
+// `t` is moved into the then-arm and into the else-arm.  Both arms
+// consume `t`, so after the if-expression the state is Consumed on
+// every reachable path.  The implicit tail-return sees no Live linear
+// binding: no MustConsume diagnostic is emitted.
+//
+// Move-checker lattice: Consumed ⊓ Consumed = Consumed → accept.
+#[linear]
+type Txn {
+    id: i64;
+    fn commit(consuming self) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let t = Txn { id: 0 };
+    let _r = if 1 == 1 {
+        let _a = t;
+        7
+    } else {
+        let _b = t;
+        8
+    };
+    42
+}

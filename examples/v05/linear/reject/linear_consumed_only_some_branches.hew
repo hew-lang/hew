@@ -1,0 +1,26 @@
+// Reject fixture for `MirCheck::MustConsume` — partial-branch canary.
+//
+// `t` is consumed in the then-arm (`let _a = t`) but the else-arm
+// leaves it Live.  At the join point the state is MaybeConsumed; when
+// that join immediately dominates the implicit tail-return the
+// MustConsume check fires.
+//
+// Move-checker lattice: Consumed ⊓ Live = MaybeConsumed → Return → MustConsume.
+#[linear]
+type Txn {
+    id: i64;
+    fn commit(consuming self) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let t = Txn { id: 0 };
+    let _r = if 1 == 1 {
+        let _a = t;
+        7
+    } else {
+        8
+    };
+    42
+}

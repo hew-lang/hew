@@ -1,0 +1,20 @@
+// Reject fixture for `MirCheck::MustConsume` — unconsumed fall-through.
+//
+// `t` is a `#[linear]` binding.  The function returns without consuming
+// it on any path: the live binding reaches the implicit tail-return site.
+// `hew compile` must exit non-zero and emit a MustConsume diagnostic
+// for `t` at the tail expression.
+//
+// Move-checker lattice state at the tail: Live → Return → MustConsume.
+#[linear]
+type Txn {
+    id: i64;
+    fn commit(consuming self) -> i64 {
+        0
+    }
+}
+
+fn main() -> i64 {
+    let t = Txn { id: 0 };
+    42
+}

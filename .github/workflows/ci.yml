@@ -312,6 +312,16 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: make test-pkg-import
 
+      - name: Run fuzz-to-run completeness oracle (ratcheted)
+        if: env.RUN_CODE_PATH == 'true'
+        # Compiles and runs every checker-valid program in the regressions
+        # corpus and the vertical-slice accept fixtures.  Known failures are
+        # tracked in tests/fuzz-oracle/expected-failures.txt (ratchet contract:
+        # unexpected pass OR unexpected fail → exit 1).  Raw cargo-fuzz corpus
+        # is excluded from CI (nondeterministic); run locally with
+        # `make fuzz-oracle FUZZ_ORACLE_FULL=1`.
+        run: make fuzz-oracle
+
       - name: Run Hew language test suite (ratcheted)
         if: env.RUN_CODE_PATH == 'true'
         # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.

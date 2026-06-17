@@ -1,0 +1,31 @@
+# tests/fuzz-oracle/expected-failures.txt
+#
+# Regression corpus entries that are KNOWN to fail.
+# The oracle enforces (in regressions mode):
+#   - Every filename listed here MUST fail (unexpected pass = gate failure →
+#     forces updating this file to promote the gap to a positive guard).
+#   - Every regression file NOT listed here MUST pass (unexpected failure =
+#     gate failure).
+#
+# Format: <filename>  # <root-cause>; issue: #NNNN
+# Filenames are bare (no path prefix); they match files in regressions/.
+#
+# When a fix lands for an entry here, REMOVE the entry and add a positive
+# vertical-slice fixture (or update an existing one) so the behaviour is
+# continuously guarded.  Do NOT remove entries to make the gate green if the
+# regression still fails — fix the underlying compiler instead.
+#
+# Total: 4 known-failing entries (3 intentional-abort fixtures + 1 compiler gap).
+#
+# Intentional aborts: fixtures in tests/vertical-slice/accept/ that are designed
+# to abort at runtime as their correctness proof (e.g. assert_eq_fail proves
+# assertion failure propagates as SIGABRT).  Listed here so the oracle gate does
+# not treat them as unexpected failures.  The ratchet fires in BOTH directions:
+# if any of these starts passing (no longer aborts), that is a regression.
+
+assert_eq_fail.hew       # intentional abort: assert_eq(2+2, 5) → SIGABRT; tests assertion failure propagation
+join_branch_trap.hew     # intentional abort: join branch trap propagates as SIGABRT (HEW-SPEC-2026 §4.11.2)
+string_slice_oob_panics.hew  # intentional abort: out-of-bounds string slice calls libc::abort()
+
+# Compiler/runtime gaps (checker-valid programs that fail after hew check):
+vec_record_slice.hew  # Vec<record> range-slice panics: hew_vec_slice_range_ptr missing owned element layout descriptor; issue: #TODO-vec-managed-projection

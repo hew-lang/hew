@@ -1,0 +1,27 @@
+type Point {
+    x: i64,
+    y: i64,
+}
+
+type Holder<T> {
+    value: T,
+}
+
+fn main() {
+    let values: Vec<Holder<Point>> = Vec::new();
+    values.push(Holder { value: Point { x: 5, y: 6 } });
+    values.push(Holder { value: Point { x: 7, y: 8 } });
+    values.push(Holder { value: Point { x: 9, y: 10 } });
+
+    let first = values.get(0);
+    let second = values[1];
+    values.set(1, Holder { value: Point { x: 11, y: 12 } });
+    let popped = values.pop();
+
+    var sum: i64 = 0;
+    for item in values {
+        sum = sum + item.value.x + item.value.y;
+    }
+
+    println(f"holder-total={first.value.x + first.value.y + second.value.x + second.value.y + popped.value.x + popped.value.y + sum}");
+}

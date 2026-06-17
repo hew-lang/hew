@@ -437,7 +437,7 @@ impl Checker {
                 == Some("layout")
                 && matches!(elem_ty, Ty::Named { .. })
             {
-                let is_copy = self.registry.implements_marker(&elem_ty, MarkerTrait::Copy);
+                let is_copy = self.vec_element_has_copy_layout(&elem_ty);
                 // W5.016: admit a non-Copy record/enum element with a
                 // synthesizable owned thunk path (constructed through the owned
                 // ABI). Stays fail-closed for elements with no thunk path.
@@ -750,9 +750,7 @@ impl Checker {
                     == Some("layout")
                     && matches!(resolved_elem, Ty::Named { .. })
                 {
-                    let is_copy = self
-                        .registry
-                        .implements_marker(&resolved_elem, MarkerTrait::Copy);
+                    let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
                     // W5.016: a non-Copy record/enum element with a synthesizable
                     // owned clone/drop thunk path constructs through
                     // `hew_vec_new_with_elem_layout` (the owned ABI), so do not

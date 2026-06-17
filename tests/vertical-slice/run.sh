@@ -57,6 +57,7 @@ run_fixture_path_expect_status() {
 run_accept_expect_status() {
   local fixture="$1"
   local expected_status="$2"
+  echo "RUN ${fixture}"
   compile_accept "${fixture}"
   local bin="${ROOT}/.tmp/compile-out/${fixture}"
   local status=0
@@ -77,6 +78,7 @@ run_accept_expect_status() {
     cat "${stderr_output}" >&2
     exit 1
   fi
+  echo "PASS ${fixture}"
 }
 
 run_accept_expect_stdout() {
@@ -1407,6 +1409,10 @@ run_accept_expect_status "generic_user_record_bitcopy" 42
 # asserts both true and false outcomes; exit 0 proves the thunk-driven
 # equality kernel reports the correct membership.
 run_accept_expect_status "vec_aggregate_contains" 0
+run_accept_expect_stdout "vec_generic_wrap_record_layout"
+run_accept_expect_stdout "vec_generic_pair_record_layout"
+run_accept_expect_stdout "vec_generic_holder_point_layout"
+run_accept_expect_stdout "vec_generic_nested_wrap_layout"
 
 # ---------------------------------------------------------------------------
 # W3.043 — integer literal inference + record field mutability

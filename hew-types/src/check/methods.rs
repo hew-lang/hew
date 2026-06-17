@@ -3742,7 +3742,7 @@ impl Checker {
         if sym.ends_with("_layout") {
             let supported_bitcopy_method =
                 matches!(method, "push" | "get" | "set" | "pop" | "remove" | "clone");
-            let is_copy = self.registry.implements_marker(elem_ty, MarkerTrait::Copy);
+            let is_copy = self.vec_element_has_copy_layout(elem_ty);
             if supported_bitcopy_method && is_copy {
                 return Some(sym);
             }
@@ -4227,9 +4227,7 @@ impl Checker {
                     // carry").
                     let eligibility =
                         crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
-                    let is_copy = self
-                        .registry
-                        .implements_marker(&resolved_elem, MarkerTrait::Copy);
+                    let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                         && is_copy
                     {

@@ -2177,17 +2177,31 @@ pub enum Terminator {
     /// Declared here so the borrow-liveness check has a place to look.
     Yield { value: Place, next: u32 },
     /// Generator construction at a `gen fn` / `gen { }` call site. Codegen
-    /// emits `hew_gen_ctx_create(<&body_fn>, null, 0)` and stores the returned
-    /// `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed place),
-    /// then branches to `next`. `body_fn` is the deterministic
+    /// emits `hew_gen_ctx_create(<&body_fn>, env_ptr, env_size)` and stores the
+    /// returned `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed
+    /// place), then branches to `next`. `body_fn` is the deterministic
     /// `__hew_gen_body_<owner>_<id>` name minted by `lower_gen_block`; codegen
     /// resolves its address via `get_function`. Carried explicitly (rather than
     /// through `Terminator::Call`) because the body-fn pointer is not a `Place`
     /// and the construction is self-describing without a call-site side table.
+    ///
+    /// `env` is the stack `Place` holding the `RecordInit`'d capture-env
+    /// record, or `None` for a capture-free generator (`env_ptr`/`env_size`
+    /// are then null/0). The generator body's free variables — a `gen fn`'s
+    /// formal parameters and a `gen { }`'s captured outer locals — live in
+    /// this record, in `HirGenCapture` order. The runtime deep-copies
+    /// `env_size` bytes of the record into the generator thread
+    /// (`hew_gen_ctx_create`), so the body reads them back through `Local(0)`
+    /// (the body-arg copy) via `ClosureEnvFieldLoad`. Only no-drop capture
+    /// field classes (`BitCopy` scalars, pids) are materialised today; owned
+    /// fields (string/aggregate) fail closed at the construction site because
+    /// the thread runtime's flat byte-copy would alias their heap and risk a
+    /// double-free / UAF without a per-field clone + env-drop protocol.
     MakeGenerator {
         dest: Place,
         body_fn: String,
         next: u32,
+        env: Option<Place>,
     },
     /// Lambda-actor construction at an `actor |params| { body }` spawn
     /// site. Codegen emits `hew_lambda_actor_new(mailbox_capacity, shape,

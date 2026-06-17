@@ -773,6 +773,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             body,
             yield_ty,
             return_ty,
+            captures,
         } => {
             writeln!(
                 out,
@@ -781,6 +782,16 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 return_ty.user_facing()
             )
             .expect("write to string");
+            for capture in captures {
+                writeln!(
+                    out,
+                    "{pad}    capture {} (binding {:?}) : {}",
+                    capture.name,
+                    capture.binding,
+                    capture.ty.user_facing()
+                )
+                .expect("write to string");
+            }
             dump_block(out, body, indent + 4);
         }
         HirExprKind::Yield { value, yield_ty } => {

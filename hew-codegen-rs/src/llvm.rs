@@ -33587,19 +33587,26 @@ fn lower_terminator<'ctx>(
             dest,
             body_fn,
             next,
+            env,
         } => {
             // Generator construction (thread-based runtime,
             // `hew-runtime/src/generator.rs:132`). The MIR producer
             // (`lower_gen_block`) emitted this terminator with the deterministic
             // `__hew_gen_body_*` body-fn name; codegen resolves that function's
-            // address and calls `hew_gen_ctx_create(<&body_fn>, null, 0)`,
+            // address and calls `hew_gen_ctx_create(<&body_fn>, arg, size)`,
             // storing the returned `*mut HewGenCtx` handle into `dest`.
             //
-            // The body arg is null / zero-size: capture-free generators carry no
-            // closure environment today (HIR rejects nested gen blocks, and the
-            // gen-body's `Local(0)` body-arg slot is unused). When generator
-            // captures land, this passes the address + size of the boxed
-            // environment instead.
+            // Body arg: a capture-free generator passes `(null, 0)`. When the
+            // body captures BitCopy free variables (`gen fn` params / `gen { }`
+            // captured outer locals), `env` is `Some` — the stack env record
+            // `lower_gen_block` built in this frame. Pass its address + byte
+            // size. `hew_gen_ctx_create` deep-copies `arg_size` bytes
+            // SYNCHRONOUSLY on the caller thread (before `thread::spawn`) and
+            // frees that copy when the body thread ends, so a stack pointer is
+            // safe and NO malloc/memcpy is needed here — unlike the lambda-actor
+            // path, which owns the whole heap-env protocol. Captures are
+            // BitCopy-only (the producer fail-closes owned captures), so there
+            // are no per-field clones or env-field drops.
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \
@@ -33609,8 +33616,28 @@ fn lower_terminator<'ctx>(
             })?;
             let body_fn_ptr = body_function.as_global_value().as_pointer_value();
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let null_arg = ptr_ty.const_null();
-            let zero_size = fn_ctx.ctx.i64_type().const_zero();
+            let (arg_ptr, arg_size): (BasicMetadataValueEnum, BasicMetadataValueEnum) = match env {
+                None => (
+                    ptr_ty.const_null().into(),
+                    fn_ctx.ctx.i64_type().const_zero().into(),
+                ),
+                Some(env_place) => {
+                    let (env_slot, env_slot_ty) = place_pointer(fn_ctx, *env_place)?;
+                    let BasicTypeEnum::StructType(env_struct) = env_slot_ty else {
+                        return Err(CodegenError::FailClosed(format!(
+                            "MakeGenerator env place {env_place:?} is not struct-typed \
+                                 (got {env_slot_ty:?}); the capture env must be the \
+                                 RecordInit'd env record"
+                        )));
+                    };
+                    let env_size = env_struct.size_of().ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "MakeGenerator env struct has no static size".into(),
+                        )
+                    })?;
+                    (env_slot.into(), env_size.into())
+                }
+            };
             let create_fn = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -33621,7 +33648,7 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_call(
                     create_fn,
-                    &[body_fn_ptr.into(), null_arg.into(), zero_size.into()],
+                    &[body_fn_ptr.into(), arg_ptr, arg_size],
                     "hew_gen_ctx_create_call",
                 )
                 .llvm_ctx("hew_gen_ctx_create call")?
@@ -44322,6 +44349,7 @@ mod tests {
                         dest: Place::Local(0),
                         body_fn: "__hew_gen_body_make_test_0".to_string(),
                         next: 1,
+                        env: None,
                     },
                 },
                 BasicBlock {

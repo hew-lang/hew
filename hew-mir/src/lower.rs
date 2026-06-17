@@ -9769,7 +9769,8 @@ impl Builder {
                 body,
                 yield_ty,
                 return_ty,
-            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty)),
+                captures,
+            } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty, captures)),
             HirExprKind::Yield { value, yield_ty: _ } => {
                 self.lower_yield_expr(expr, value.as_deref())
             }
@@ -20646,8 +20647,8 @@ impl Builder {
         Some(dest)
     }
 
-    /// Lower `HirExprKind::GenBlock { body, yield_ty, return_ty }` to a MIR
-    /// generator shell.
+    /// Lower `HirExprKind::GenBlock { body, yield_ty, return_ty, captures }`
+    /// to a MIR generator shell.
     ///
     /// The enclosing function receives a `Place::Local` typed as
     /// `Generator<Y, R>` — this is a placeholder for S3b, which synthesises
@@ -20685,6 +20686,7 @@ impl Builder {
         body: &HirBlock,
         _yield_ty: &ResolvedTy,
         return_ty: &ResolvedTy,
+        captures: &[hew_hir::HirGenCapture],
     ) -> Place {
         // Mint a unique generator-body function name via the shared closure
         // id counter so multiple gen blocks in one function do not collide.
@@ -20701,6 +20703,110 @@ impl Builder {
         // real state-record type; for S3a it is purely a checker-authority
         // token so the binding in the enclosing scope has the right type.
         let gen_place = self.alloc_local(expr.ty.clone());
+
+        // ── Capture-env synthesis (mirrors `lower_spawn_lambda_actor`) ──
+        //
+        // A generator body runs in its own runtime thread; its only window onto
+        // the enclosing frame is the env the runtime deep-copies into that
+        // thread (`hew_gen_ctx_create`'s `body_arg`). Each free variable — a
+        // `gen fn`'s formal parameters, a `gen { }` block's captured outer
+        // locals (HIR computed this set, in `captures`) — becomes one field of
+        // a synthetic env record built HERE in the enclosing frame, in capture
+        // order. The body reads them back through `Local(0)` (the body-arg
+        // copy) via `ClosureEnvFieldLoad` (registered below).
+        //
+        // SCOPE / FAIL-CLOSED: only no-drop `BitCopy` field classes (scalars)
+        // are materialised. `hew_gen_ctx_create` copies `env_size` bytes flat
+        // and frees that copy when the body thread ends (`generator.rs`); an
+        // owned field (string/Vec/record) would be a shallow handle alias of
+        // the caller's heap, so freeing both the env copy AND the caller's
+        // binding would double-free / UAF. Until a per-field clone-into-env +
+        // env-field-drop-on-destroy protocol lands (mirroring the lambda
+        // `state_drop_fn`), owned captures fail closed at this construction
+        // site. This is strictly MORE permissive than before: every
+        // parameterised / capturing generator fails closed today.
+        let mut env_place: Option<Place> = None;
+        let mut env_ty: Option<ResolvedTy> = None;
+        let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
+        if !captures.is_empty() {
+            let mut field_tys: Vec<ResolvedTy> = Vec::with_capacity(captures.len());
+            let mut init_fields: Vec<(FieldOffset, Place)> = Vec::new();
+            let mut all_materialisable = true;
+            for (idx, capture) in captures.iter().enumerate() {
+                let offset =
+                    FieldOffset(u32::try_from(idx).expect("gen capture count exceeds u32::MAX"));
+                // The captured binding's MIR slot in the ENCLOSING frame is the
+                // authority for both the value source and the field type.
+                let slot = self.binding_locals.get(&capture.binding).copied();
+                let capture_ty = slot
+                    .and_then(base_local)
+                    .and_then(|local| self.locals.get(local as usize))
+                    .cloned();
+                match (slot, capture_ty) {
+                    (Some(src), Some(ty))
+                        if ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy =>
+                    {
+                        init_fields.push((offset, src));
+                        field_tys.push(ty);
+                    }
+                    (Some(_), Some(ty)) => {
+                        // Owned / non-BitCopy capture: fail closed (see SCOPE).
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "generator capture of non-BitCopy `{}`",
+                                    capture.name
+                                ),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "generator capture `{}` has type `{}`, which the \
+                                 thread-runtime env channel cannot carry yet: only \
+                                 BitCopy scalars are deep-copied safely across the body \
+                                 thread. An owned aggregate would alias its heap and \
+                                 risk a double-free at generator teardown — fail closed \
+                                 instead. DROP-TODO: clone-into-env + \
+                                 env-field-drop-on-destroy (mirror the lambda \
+                                 `state_drop_fn`).",
+                                capture.name,
+                                ty.user_facing()
+                            ),
+                        });
+                        all_materialisable = false;
+                    }
+                    _ => {
+                        // No backend slot for the capture in the enclosing
+                        // frame: the body-side read fail-closes at
+                        // `UnresolvedPlace` with the canonical note. Do not
+                        // fabricate an env field.
+                        all_materialisable = false;
+                    }
+                }
+            }
+            if all_materialisable {
+                let env_name = format!("__hew_gen_env_{owner}_{gen_id}");
+                let env_resolved_ty = ResolvedTy::Named {
+                    name: env_name.clone(),
+                    args: vec![],
+                    builtin: None,
+                    is_opaque: false,
+                };
+                env_capture_field_tys.clone_from(&field_tys);
+                self.closure_record_layouts
+                    .push(crate::model::RecordLayout {
+                        name: env_name,
+                        field_tys,
+                    });
+                let dest = self.alloc_local(env_resolved_ty.clone());
+                self.instructions.push(Instr::RecordInit {
+                    ty: env_resolved_ty.clone(),
+                    fields: init_fields,
+                    dest,
+                });
+                env_place = Some(dest);
+                env_ty = Some(env_resolved_ty);
+            }
+        }
 
         // Build a child Builder that lowers the gen-block body.
         // `in_gen_body: true` enables `HirExprKind::Yield` → `Terminator::Yield`
@@ -20738,6 +20844,32 @@ impl Builder {
         };
         body_builder.locals.push(gen_ctx_ptr_ty.clone());
         body_builder.locals.push(gen_ctx_ptr_ty.clone());
+
+        // Register each materialised capture as a body-side env-field source:
+        // the body's `BindingRef`s to a captured binding (a `gen fn` param or a
+        // `gen { }` captured outer local) lower to `ClosureEnvFieldLoad` through
+        // `Local(0)` — the body-arg pointer, which IS the deep-copied env
+        // pointer when captures are present. Mirrors the lambda-actor-body env
+        // discipline (`lower_spawn_lambda_actor`): loads are read-only views
+        // into the env; the env copy is owned and freed by the runtime when the
+        // body thread ends. Only present when every capture materialised into a
+        // BitCopy env field above; otherwise the env was not built and the body
+        // reads fail closed at `UnresolvedPlace`.
+        if let Some(env_resolved_ty) = &env_ty {
+            for (idx, capture) in captures.iter().enumerate() {
+                body_builder.capture_env_sources.insert(
+                    capture.binding,
+                    CaptureEnvSource {
+                        env: Place::Local(0),
+                        env_ty: env_resolved_ty.clone(),
+                        field_offset: FieldOffset(
+                            u32::try_from(idx).expect("gen capture count exceeds u32::MAX"),
+                        ),
+                        ty: env_capture_field_tys[idx].clone(),
+                    },
+                );
+            }
+        }
 
         // Lower all statements in the gen-block body. Yields inside the body
         // call `lower_yield_expr` which emits `Terminator::Yield` and advances
@@ -20914,15 +21046,20 @@ impl Builder {
         self.generated_functions.push(body_lowered);
 
         // Materialize the generator value at the construction site: emit
-        // `Terminator::MakeGenerator` so codegen calls
-        // `hew_gen_ctx_create(<&body_fn>, null, 0)` and stores the returned
-        // `*mut HewGenCtx` handle into `gen_place`. The gen-block expression
-        // then evaluates to that handle place in the enclosing function.
+        // `Terminator::MakeGenerator`. When the body captures BitCopy free
+        // variables, `env` is the freshly-built env record place in this
+        // (enclosing) frame: codegen passes a pointer to it plus its byte size
+        // to `hew_gen_ctx_create(<&body_fn>, &env, sizeof(env))`, which
+        // deep-copies the env into the body thread. When there are no captures
+        // `env` is `None` and codegen passes `(null, 0)` as before. The
+        // returned `*mut HewGenCtx` handle is stored into `gen_place`; the
+        // gen-block expression evaluates to that handle place.
         let next = self.alloc_block();
         self.finish_current_block(Terminator::MakeGenerator {
             dest: gen_place,
             body_fn: body_name.clone(),
             next,
+            env: env_place,
         });
         self.start_block(next);
         gen_place
@@ -29296,6 +29433,7 @@ fn enumerate_exits(
                 dest: _,
                 body_fn: _,
                 next,
+                env: _,
             } => (
                 ExitPath::Call {
                     block: block_id,

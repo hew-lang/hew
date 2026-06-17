@@ -1,0 +1,89 @@
+//! Generators that read free variables: a `gen fn`'s formal parameters and
+//! a `gen { }` block's captured outer locals.
+//!
+//! Regression coverage for the never-completed MIR lowering where a generator
+//! body could not read ANY free variable. `gen fn f(n)` could not read its
+//! own parameter `n`, and a `gen { ... }` block could not read a captured
+//! outer local — both lowered the read to an unresolved place and failed
+//! closed at MIR check. Capture-FREE generators always worked. These fixtures
+//! pin the parameter and capture paths so they cannot silently regress.
+//!
+//! Captures travel through the generator's runtime env channel
+//! (`hew_gen_ctx_create`), which deep-copies the env into the body thread —
+//! safe for BitCopy scalars, which is all these fixtures exercise.
+
+import std::testing;
+
+// A parameterized generator: the body reads the formal parameter `n` in both
+// the loop bound and the yielded value. `n` is a free variable of the body,
+// so it travels through the env channel into the generator thread.
+gen fn count_up_to(n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+#[test]
+fn test_gen_fn_param_is_readable() {
+    var total = 0;
+    var seen = 0;
+    for x in count_up_to(4) {
+        total = total + x;
+        seen = seen + 1;
+    }
+    // Yields 0,1,2,3 → sum 6, count 4.
+    testing.assert_eq(total, 6);
+    testing.assert_eq(seen, 4);
+}
+
+// A multi-yield parameter read: `n` is live ACROSS a yield boundary, so the
+// env pointer (the body's reserved Local(0)) must survive the cross-yield
+// state lift, not just the single-yield case.
+gen fn echo_twice(n: i64) -> i64 {
+    yield n;
+    yield n;
+}
+
+#[test]
+fn test_gen_fn_param_survives_cross_yield() {
+    var total = 0;
+    for x in echo_twice(21) {
+        total = total + x;
+    }
+    testing.assert_eq(total, 42);
+}
+
+#[test]
+fn test_gen_block_captures_outer_locals() {
+    let k = 7;
+    let limit = 3;
+    var total = 0;
+    // The gen{} block captures both `limit` (loop bound) and `k` (added into
+    // each yielded value) from the enclosing frame.
+    for v in gen {
+        var i = 0;
+        while i < limit {
+            yield i + k;
+            i = i + 1;
+        }
+    } {
+        total = total + v;
+    }
+    // Yields 7,8,9 → sum 24.
+    testing.assert_eq(total, 24);
+}
+
+#[test]
+fn test_capture_free_generator_still_works() {
+    var total = 0;
+    for n in gen {
+        yield 1;
+        yield 2;
+        yield 3;
+    } {
+        total = total + n;
+    }
+    testing.assert_eq(total, 6);
+}

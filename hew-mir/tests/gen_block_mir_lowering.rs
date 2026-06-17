@@ -415,3 +415,79 @@ fn gen_block_capturing_scalar_is_admitted() {
     // The gen body must still be produced (capture admitted, env materialised).
     let _body = find_gen_body(&pipeline, "main");
 }
+
+/// A `gen fn` whose parameter is a bare named-function reference (`fn(i64)->i64`,
+/// `ResolvedTy::Function`) must be admitted into the generator env.
+///
+/// A `Function` type's runtime representation is a two-word `{code_ptr, env_ptr}`
+/// fat pointer where `env_ptr` is null by construction (no captures). Both words
+/// are non-owning addresses; flat-copying them across the generator thread boundary
+/// is safe (no heap ownership to alias). Before this fix the gate returned `false`
+/// for `PersistentShare` values, emitting `NotYetImplemented` for the fn param and
+/// cascading `InitialisedBeforeUse`/`UnresolvedPlace` onto every sibling scalar
+/// param via the `all_materialisable = false` all-or-nothing gate.
+#[test]
+fn gen_block_capturing_fn_typed_param_is_admitted() {
+    let pipeline = lower_checked(
+        r"
+        gen fn mapped(f: fn(i64) -> i64) -> i64 { yield f(1); }
+        fn dbl(x: i64) -> i64 { x * 2 }
+        fn main() { for v in mapped(dbl) { println(v); } }
+        ",
+    );
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("into a generator")
+        )
+    });
+    assert!(
+        !rejected,
+        "a capture-free fn-typed (null-env) generator capture must be admitted; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+    // The gen body must be produced — env materialised, body lowered.
+    let _body = find_gen_body(&pipeline, "mapped");
+}
+
+/// A generator that captures a closure-with-env must STILL fail closed after the
+/// fn-typed-param admission gate is widened.
+///
+/// A closure literal that captures outer bindings carries a heap-boxed env pointer.
+/// Flat-copying the two-word `{code_ptr, env_ptr}` across the generator thread
+/// boundary shallow-aliases the caller's heap env → double-free / UAF at generator
+/// teardown. This test is the boundary guard that proves the lane did NOT over-widen
+/// the gate to all `PersistentShare` values.
+///
+/// Note: the closure literal `|x: i64| -> i64 { x + base }` is expected to type as
+/// `ResolvedTy::Closure { captures: [i64], .. }` with a non-empty capture list at
+/// the MIR env-build site. If a future optimisation elides the env (empty captures
+/// in a trivially-inlineable closure) adjust the fixture to use a runtime-unknown
+/// captured binding.
+#[test]
+fn gen_block_capturing_closure_with_env_fails_closed() {
+    let pipeline = lower_checked(
+        r"
+        fn main() {
+            let base = 10;
+            let f = |x: i64| -> i64 { x + base };
+            let g = gen { yield f(1); };
+        }
+        ",
+    );
+    let rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("into a generator")
+        )
+    });
+    assert!(
+        rejected,
+        "a closure carrying a heap env must STILL fail closed (its env would be \
+         shallow-aliased); got: {:#?}",
+        pipeline.diagnostics
+    );
+}

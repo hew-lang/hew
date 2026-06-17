@@ -3,6 +3,7 @@ name = "hew-lib"
 version.workspace = true
 edition = "2024"
 description = "Combined Hew runtime + standard library — single staticlib for linking"
+license.workspace = true
 publish = false
 
 [lib]

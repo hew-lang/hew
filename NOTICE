@@ -2,4 +2,54 @@ Hew Programming Language
 Copyright 2026 Stephen Olesen
 
 Licensed under the Apache License, Version 2.0, or the MIT License,
-at your option. See LICENSE-APACHE and LICENSE-MIT for details.
+at your option. See LICENSE-MIT and LICENSE-APACHE in this archive for details.
+
+================================================================================
+Third-Party Attributions
+================================================================================
+
+Full license texts for all third-party packages are in THIRD-PARTY-LICENSES.
+The entries below call out components with complex licensing lineage or
+specific NOTICE obligations.
+
+--------------------------------------------------------------------------------
+ring (Apache-2.0 AND ISC)
+--------------------------------------------------------------------------------
+ring is used for cryptographic operations in the Hew runtime and tools.
+It is dual-licensed: new code is under the ISC License; BoringSSL-derived
+code is under the Apache License, Version 2.0.
+
+  Copyright 2015-2021 Brian Smith and the ring contributors.
+
+  ring's LICENSE file, LICENSE-BoringSSL file, and LICENSE-other-bits file
+  govern their respective portions of the ring source. No legacy advertising
+  clause (SSLeay) applies — BoringSSL was relicensed to Apache-2.0 by Google.
+
+--------------------------------------------------------------------------------
+aws-lc-rs / aws-lc-sys (Apache-2.0 OR ISC, with BoringSSL/OpenSSL heritage)
+--------------------------------------------------------------------------------
+aws-lc-rs and aws-lc-sys are used for cryptographic operations in hew-observe
+and libhew.a. AWS-LC is a fork of BoringSSL; new code is Apache-2.0 OR ISC.
+BoringSSL-derived code is Apache-2.0. OpenSSL-derived files carry the
+Eric Young (SSLeay) copyright and are covered under Apache-2.0 per the
+aws-lc-sys LICENSE file. No advertising clause applies.
+
+  Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+  Copyright 1995-1998 Eric Young (eay@cryptsoft.com). All rights reserved.
+    (Covered by Apache-2.0 per the aws-lc-sys license file.)
+
+--------------------------------------------------------------------------------
+webpki-roots / webpki-root-certs (CDLA-Permissive-2.0)
+--------------------------------------------------------------------------------
+These crates provide the root CA certificate bundle used by the Hew standard
+library's TLS support. The CDLA-Permissive-2.0 license applies to the
+certificate data; it requires preserving the license text with distributions.
+The full CDLA-Permissive-2.0 text is in THIRD-PARTY-LICENSES.
+
+--------------------------------------------------------------------------------
+option-ext (MPL-2.0)
+--------------------------------------------------------------------------------
+option-ext is a transitive dependency pulled via dirs-sys → dirs (hew-cli).
+The Mozilla Public License, Version 2.0 applies to option-ext's own source
+files. MPL-2.0 does not propagate to Hew's source; Hew's MIT OR Apache-2.0
+terms are unaffected. The MPL-2.0 text is in THIRD-PARTY-LICENSES.

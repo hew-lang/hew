@@ -12361,10 +12361,7 @@ fn lower_instruction(
             // runtime; not otherwise consumed — the payload type is statically
             // known from `yield_ty`).
             let i64_ty = fn_ctx.ctx.i64_type();
-            let out_size = fn_ctx
-                .builder
-                .build_alloca(i64_ty, "gen_next_out_size")
-                .llvm_ctx("gen next out_size alloca")?;
+            let out_size = build_entry_alloca(fn_ctx, i64_ty.into(), "gen_next_out_size")?;
             let next_fn = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,

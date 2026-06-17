@@ -1,0 +1,18 @@
+gen fn count_up_to(n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() -> i64 {
+    var seen: i64 = 0;
+    for _x in count_up_to(750000) {
+        seen = seen + 1;
+    }
+    if seen == 750000 {
+        return 0;
+    }
+    return 1;
+}

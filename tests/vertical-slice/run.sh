@@ -312,6 +312,7 @@ run_accept_expect_status "array_literal_int_sum" 6
 run_accept_expect_stdout "array_literal_float_sum"
 run_accept_expect_stdout "array_literal_string_for_each"
 run_accept_expect_status "iter_manual_next_42" 42
+run_accept_expect_status "gen_next_stack_bounded" 0
 run_accept_expect_status "for_range_regression" 21
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope

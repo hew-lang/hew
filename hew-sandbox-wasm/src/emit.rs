@@ -2485,6 +2485,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
+            // WASM-TODO: record `.clone()` lowers to a real deep-copy thunk on
+            // the native path (`__hew_record_clone_inplace_<R>`), but the
+            // sandbox emitter has no record-clone opcode yet. It falls through
+            // here to `emit_unsupported` (fail-closed marker), so a playground
+            // program cloning a record traps rather than silently aliasing.
+            // Wire a `record.clone` opcode when the sandbox grows
+            // descriptor-driven copy semantics.
             _ => {
                 self.emit_unsupported(Some(span.clone()));
                 Ok(self.emit_const_unit(Some(span)))

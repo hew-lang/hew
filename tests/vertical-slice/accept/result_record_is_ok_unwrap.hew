@@ -1,0 +1,13 @@
+type Point { x: i64; y: i64; }
+
+fn main() {
+    let ok: Result<Point, string> = Ok(Point { x: 10, y: 20 });
+    if ok.is_ok() {
+        let p = ok.unwrap();
+        println(p.x + p.y);
+    }
+    let err: Result<Point, string> = Err("e");
+    if err.is_err() {
+        println("err");
+    }
+}

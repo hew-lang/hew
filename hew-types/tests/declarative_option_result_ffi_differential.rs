@@ -1,122 +1,68 @@
-//! W3.002 Stage 3 — Option/Result declarative FFI cutover.
-//!
-//! Pins builtin `Option<T>` / `Result<T, E>` receiver methods to the
-//! `#[extern_symbol]` annotations declared in `std/option.hew` and
-//! `std/result.hew`, including `{T}` template expansion for non-Vec receivers.
+//! Option/Result receiver methods lower through a closed generic-enum marker.
 
 mod common;
 
-use hew_types::check::MethodCallRewrite;
-use hew_types::error::TypeErrorKind;
+use hew_types::check::{MethodCallRewrite, OptionResultMethod};
 
 use common::typecheck;
 
-fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
+fn has_marker(output: &hew_types::TypeCheckOutput, method: OptionResultMethod) -> bool {
     output.method_call_rewrites.values().any(
-        |rewrite| matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == symbol),
+        |rewrite| matches!(rewrite, MethodCallRewrite::BuiltinOptionResult { method: got } if *got == method),
     )
 }
 
 #[test]
-fn option_result_methods_resolve_through_std_extern_symbols() {
-    let source = r"
-        fn exercise_option(opt_i32: Option<i32>, opt_i64: Option<i64>, opt_f64: Option<f64>) {
-            let _: bool = opt_i32.is_some();
-            let _: bool = opt_i64.is_none();
-            let _: i32 = opt_i32.unwrap();
-            let _: i64 = opt_i64.unwrap_or(7);
-            let _: f64 = opt_f64.unwrap_or(1.0);
+fn option_result_methods_record_structured_generic_markers() {
+    let source = r#"
+        type Point { x: i64; y: i64; }
+
+        fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, opt_point: Option<Point>) {
+            let _: bool = opt_point.is_some();
+            let _: bool = opt_str.is_none();
+            let _: i64 = opt_i64.unwrap();
+            let _: string = opt_str.unwrap_or("fallback");
+            let _: Point = opt_point.unwrap();
         }
 
-        fn exercise_result(r_i32: Result<i32, string>, r_i64: Result<i64, string>, r_f64: Result<f64, string>) {
-            let _: bool = r_i32.is_ok();
+        fn exercise_result(r_i64: Result<i64, string>, r_f64: Result<f64, string>, r_point: Result<Point, string>) {
+            let _: bool = r_point.is_ok();
             let _: bool = r_i64.is_err();
-            let _: i32 = r_i32.unwrap();
-            let _: i64 = r_i64.unwrap_or(7);
-            let _: f64 = r_f64.unwrap();
+            let _: i64 = r_i64.unwrap();
+            let _: f64 = r_f64.unwrap_or(0.0);
+            let _: Point = r_point.unwrap();
         }
-    ";
+    "#;
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "Option/Result receiver extern-symbol methods should typecheck; got: {:#?}",
+        "generic Option/Result receiver methods should typecheck; got: {:#?}",
         output.errors
     );
-    for symbol in [
-        "hew_option_is_some",
-        "hew_option_is_none",
-        "hew_option_unwrap_i32",
-        "hew_option_unwrap_or_i64",
-        "hew_option_unwrap_or_f64",
-        "hew_result_is_ok",
-        "hew_result_is_err",
-        "hew_result_unwrap_i32",
-        "hew_result_unwrap_or_i64",
-        "hew_result_unwrap_f64",
+    for method in [
+        OptionResultMethod::OptionIsSome,
+        OptionResultMethod::OptionIsNone,
+        OptionResultMethod::OptionUnwrap,
+        OptionResultMethod::OptionUnwrapOr,
+        OptionResultMethod::ResultIsOk,
+        OptionResultMethod::ResultIsErr,
+        OptionResultMethod::ResultUnwrap,
+        OptionResultMethod::ResultUnwrapOr,
     ] {
         assert!(
-            has_rewrite(&output, symbol),
-            "expected {symbol} in method_call_rewrites; got: {:#?}",
+            has_marker(&output, method),
+            "expected {method:?} in method_call_rewrites; got: {:#?}",
             output.method_call_rewrites
         );
     }
-}
-
-#[test]
-fn option_result_unsupported_runtime_symbols_fail_closed() {
-    let source = r"
-        fn option_string(opt: Option<string>) {
-            let _: string = opt.unwrap();
-        }
-
-        fn result_f64_or(r: Result<f64, string>) {
-            let _: f64 = r.unwrap_or(0.0);
-        }
-    ";
-    let output = typecheck(source);
-    for expected_symbol in ["hew_option_unwrap_str", "hew_result_unwrap_or_f64"] {
-        assert!(
-            output.errors.iter().any(|err| {
-                err.kind == TypeErrorKind::InvalidOperation && err.message.contains(expected_symbol)
-            }),
-            "expected fail-closed diagnostic mentioning {expected_symbol}; got: {:#?}",
-            output.errors
-        );
-        assert!(
-            !has_rewrite(&output, expected_symbol),
-            "unsupported {expected_symbol} must not record a rewrite; got: {:#?}",
-            output.method_call_rewrites
-        );
-    }
-}
-
-#[test]
-fn option_result_unsupported_calling_conventions_fail_closed() {
-    let source = r"
-        fn option_bool(opt: Option<bool>) {
-            let _: bool = opt.unwrap();
-        }
-
-        fn result_bool(r: Result<bool, string>) {
-            let _: bool = r.unwrap();
-        }
-    ";
-    let output = typecheck(source);
-    for expected_symbol in ["hew_option_unwrap_bool", "hew_result_unwrap_bool"] {
-        assert!(
-            output.errors.iter().any(|err| {
-                err.kind == TypeErrorKind::InvalidOperation
-                    && err.message.contains(expected_symbol)
-            }),
-            "expected unsupported calling-convention diagnostic mentioning {expected_symbol}; got: {:#?}",
-            output.errors
-        );
-        assert!(
-            !has_rewrite(&output, expected_symbol),
-            "unsupported {expected_symbol} must not record a rewrite; got: {:#?}",
-            output.method_call_rewrites
-        );
-    }
+    assert!(
+        output
+            .method_call_rewrites
+            .values()
+            .all(|rewrite| !matches!(rewrite, MethodCallRewrite::RewriteToFunction { .. })),
+        "Option/Result methods must not lower to string runtime symbols: {:#?}",
+        output.method_call_rewrites
+    );
 }
 
 #[test]
@@ -138,7 +84,7 @@ fn existing_option_result_module_helpers_still_typecheck() {
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "existing std::option/std::result helper functions should still typecheck; got: {:#?}",
+        "module-level Option/Result helpers should continue to typecheck; got: {:#?}",
         output.errors
     );
 }

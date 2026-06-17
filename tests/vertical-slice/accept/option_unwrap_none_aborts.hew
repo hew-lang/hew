@@ -1,0 +1,5 @@
+fn main() {
+    let opt: Option<i64> = None;
+    let v = opt.unwrap();
+    println(v);
+}

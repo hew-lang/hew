@@ -1,0 +1,7 @@
+fn main() {
+    let some: Option<string> = Some("hi");
+    let none: Option<string> = None;
+    let a = some.unwrap();
+    let b = none.unwrap_or("fb");
+    println(f"{a}-{b}");
+}

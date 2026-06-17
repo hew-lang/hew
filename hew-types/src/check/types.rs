@@ -1226,6 +1226,18 @@ pub enum MethodCallReceiverKind {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionResultMethod {
+    OptionIsSome,
+    OptionIsNone,
+    OptionUnwrap,
+    OptionUnwrapOr,
+    ResultIsOk,
+    ResultIsErr,
+    ResultUnwrap,
+    ResultUnwrapOr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodCallRewrite {
     /// Rewrite a receiver-based method call to a runtime function and inject
@@ -1299,6 +1311,12 @@ pub enum MethodCallRewrite {
         op: MathGenericOp,
     },
     DeferToLowering,
+    /// Checker-authoritative lowering for builtin `Option<T>` / `Result<T, E>`
+    /// receiver methods. HIR consumes this closed marker by synthesising a
+    /// generic-enum `match`, so no Option/Result runtime symbol is involved.
+    BuiltinOptionResult {
+        method: OptionResultMethod,
+    },
     /// Checker-authoritative `CancellationToken.is_cancelled()` intrinsic.
     ///
     /// HIR/MIR consume this structured marker without re-checking the

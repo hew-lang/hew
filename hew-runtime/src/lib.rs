@@ -434,11 +434,9 @@ pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
 pub mod mem;
-pub mod option;
 pub mod print;
 pub mod random;
 pub mod rc;
-pub mod result;
 pub mod string;
 pub mod trait_object;
 pub mod vec;
@@ -457,7 +455,6 @@ pub mod parse_error_slot;
 
 pub mod internal;
 mod send_ptr;
-mod tagged_union;
 mod trap_code;
 // On WASM, provide shims for runtime functions used by codegen but not
 // applicable to WASM (no threads, no native timer support).

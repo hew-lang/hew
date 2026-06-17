@@ -942,10 +942,6 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::ObserveScrape
         | F::ObserveSeries
         | F::ObserveBarrier
-        | F::OptionIsNone
-        | F::OptionIsSome
-        | F::OptionUnwrap(_)
-        | F::OptionUnwrapOr(_)
         | F::RcNew
         | F::RecvHalfRecv
         | F::RecvHalfTryRecv
@@ -959,10 +955,6 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::ReplyChannelNew
         | F::ReplyPayloadFree
         | F::ReplyWait
-        | F::ResultIsErr
-        | F::ResultIsOk
-        | F::ResultUnwrap(_)
-        | F::ResultUnwrapOr(_)
         | F::SelectFirst
         | F::SendHalfSend
         | F::SendHalfTrySend
@@ -21419,71 +21411,6 @@ fn lower_call_runtime_abi(
     let i8_ty = fn_ctx.ctx.i8_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     match call.family() {
-        F::OptionIsSome | F::OptionIsNone => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (option), got {}",
-                    args.len()
-                )));
-            }
-            let Place::Local(option_local) = args[0] else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): option arg must be a local enum slot, got {:?}",
-                    args[0]
-                )));
-            };
-            let option_ty = fn_ctx.local_tys.get(&option_local).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): option local {option_local} has no resolved type"
-                ))
-            })?;
-            if !matches!(
-                option_ty,
-                ResolvedTy::Named {
-                    name,
-                    args,
-                    ..
-                } if name == "Option" && args.len() == 1
-            ) {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): option arg local {option_local} has type {option_ty:?}, not Option<T>"
-                )));
-            }
-            let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(option_local))?;
-            let BasicTypeEnum::IntType(tag_int_ty) = tag_ty else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): Option<T> tag projection resolved to non-integer type {tag_ty:?}"
-                )));
-            };
-            let tag = fn_ctx
-                .builder
-                .build_load(tag_int_ty, tag_ptr, &format!("{symbol}_tag"))
-                .llvm_ctx_with(|| format!("{symbol} tag load"))?
-                .into_int_value();
-            let expected_tag = if symbol == "hew_option_is_some" {
-                tag_int_ty.const_zero()
-            } else {
-                tag_int_ty.const_int(1, false)
-            };
-            let predicate = fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    tag,
-                    expected_tag,
-                    &format!("{symbol}_pred"),
-                )
-                .llvm_ctx_with(|| format!("{symbol} tag compare"))?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                let store_val = zext_bool_i1_to_dest(fn_ctx, predicate, dest_ty, symbol)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, store_val)
-                    .llvm_ctx_with(|| format!("{symbol} store"))?;
-            }
-            let _ = (i32_ty, i64_ty, i8_ty, ptr_ty);
-        }
         F::DuplexPair => {
             if args.len() != 4 {
                 return Err(CodegenError::FailClosed(format!(
@@ -23217,7 +23144,7 @@ fn lower_call_runtime_abi(
         // count: `nanos`/`micros`/`millis`/`secs`/`mins`/`hours`/`abs` produce
         // an `i64` stored straight into the dest; `is_zero` produces the C `i32`
         // boolean, compared `!= 0` to an `i1` and zero-extended into the `i8`
-        // bool dest (mirrors the `hew_option_is_*` predicate store).
+        // bool dest (mirrors predicate stores for i1-to-bool slots).
         F::DurationNanos
         | F::DurationMicros
         | F::DurationMillis
@@ -24129,8 +24056,6 @@ fn lower_call_runtime_abi(
         | F::MetricVecRegister
         | F::MetricVecWith
         | F::NodeLookup
-        | F::OptionUnwrap(_)
-        | F::OptionUnwrapOr(_)
         | F::RcNew
         | F::RecvHalfRecv
         | F::RecvHalfTryRecv
@@ -24141,10 +24066,6 @@ fn lower_call_runtime_abi(
         | F::ReplyChannelNew
         | F::ReplyPayloadFree
         | F::ReplyWait
-        | F::ResultIsErr
-        | F::ResultIsOk
-        | F::ResultUnwrap(_)
-        | F::ResultUnwrapOr(_)
         | F::SelectFirst
         | F::SendHalfSend
         | F::SendHalfTrySend

@@ -1792,6 +1792,12 @@ run_accept_expect_status "generic_enum_option_none" 99
 run_accept_expect_status "stdlib_option_none" 99
 run_accept_expect_status "stdlib_option_some" 42
 run_accept_expect_status "stdlib_option_predicates" 0
+run_accept_expect_stdout "option_record_unwrap"
+run_accept_expect_stdout "option_string_unwrap_or"
+run_accept_expect_stdout "result_record_is_ok_unwrap"
+run_accept_expect_stdout "result_unwrap_or_f64"
+run_accept_expect_stdout "option_result_scalar_regression"
+run_accept_expect_status "option_unwrap_none_aborts" 132
 
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower
 # under wasm32-unknown-unknown. The fix is pure checker-boundary type recording

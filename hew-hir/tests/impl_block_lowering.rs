@@ -483,11 +483,11 @@ fn declarative_ffi_inherent_impl_on_builtin_nominal_is_skipped_without_diagnosti
     let output = lower(
         r#"
         impl<T> Option<T> {
-            #[extern_symbol(hew_option_is_some)]
+            #[extern_symbol(hew_test_option_is_some)]
             fn is_some(opt: Option<T>) -> bool {
                 panic("declarative FFI body reached without rewrite")
             }
-            #[extern_symbol("hew_option_unwrap_{T}")]
+            #[extern_symbol("hew_test_option_unwrap_{T}")]
             fn unwrap(opt: Option<T>) -> T {
                 panic("declarative FFI body reached without rewrite")
             }
@@ -529,7 +529,7 @@ fn mixed_ffi_and_real_body_inherent_impl_on_builtin_nominal_stays_fail_closed() 
     let output = lower(
         r#"
         impl<T> Option<T> {
-            #[extern_symbol(hew_option_is_some)]
+            #[extern_symbol(hew_test_option_is_some)]
             fn is_some(opt: Option<T>) -> bool {
                 panic("declarative FFI body reached without rewrite")
             }

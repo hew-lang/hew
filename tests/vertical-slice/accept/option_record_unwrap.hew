@@ -1,0 +1,7 @@
+type Point { x: i64; y: i64; }
+
+fn main() {
+    let p: Option<Point> = Some(Point { x: 3, y: 4 });
+    let q = p.unwrap();
+    println(q.x + q.y);
+}

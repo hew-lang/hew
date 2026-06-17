@@ -74,7 +74,7 @@ pub(super) enum RecordCloneAdmissibility {
     Admissible,
     /// The record (or a transitive field) contains an opaque handle; fail closed.
     OpaqueField { opaque_name: String },
-    /// The record has un-substituted generic type parameters; NYI for this lane.
+    /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
     /// The named type is not a clone-eligible record kind (actor, machine, enum).
     NotARecord,
@@ -2537,7 +2537,7 @@ impl Checker {
     /// - `OpaqueField { opaque_name }`: the record (or a transitively reachable
     ///   field) contains an opaque handle — fail closed with a named diagnostic.
     /// - `GenericRecord`: the record has un-substituted generic type parameters
-    ///   — out of scope for this lane; fail closed with an NYI diagnostic.
+    ///   — not yet supported; fail closed with an NYI diagnostic.
     /// - `NotARecord`: not a clone-eligible named type (actor, machine, enum,
     ///   etc.) — fall through to `UndefinedMethod`.
     ///
@@ -2557,7 +2557,7 @@ impl Checker {
         if !matches!(type_def.kind, Record | Struct) {
             return RecordCloneAdmissibility::NotARecord;
         }
-        // Generic records (un-substituted type params) are out of scope for this lane.
+        // Generic records (un-substituted type params) are not yet supported.
         // The caller passes the `type_args` from the `Ty::Named`; if the type has
         // declared params but the call-site args are still unresolved vars, reject.
         if !type_def.type_params.is_empty() && type_args.iter().any(|a| matches!(a, Ty::Var(_))) {
@@ -4419,7 +4419,7 @@ impl Checker {
                     } else if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                     {
                         // Eligible but not Copy: layout-managed semantics
-                        // (clone/drop) are out of scope for this lane.  The
+                        // (clone/drop) are not yet supported here.  The
                         // historical `_layout` fail-closed diagnostic is the
                         // closest substitute and names the would-be symbol.
                         self.report_error(

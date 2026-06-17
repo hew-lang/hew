@@ -17,12 +17,12 @@
 axis = "tsan"
 reason = "The Linux TSan lane links the prebuilt uninstrumented std (-Zbuild-std is broken upstream for this configuration; -Cunsafe-allow-abi-mismatch=sanitizer). TSan therefore cannot observe synchronization inside std (futex-based Condvar/Mutex slow-path/scoped-join edges) and is proven to report races on correctly synchronized code: a minimal probe with no Hew code and no custom allocator produces 11 race reports under the lane's exact flags. All 15 reported hew-runtime sites were individually verified: every racing pair is protected by the same std mutex or a source-verified handoff chain whose edge TSan cannot see. No real race was found. Race coverage for this release rests on the green full ASan suite (1832/1832, leak phase clean)."
 tracking = "https://github.com/hew-lang/hew/issues/1825"
-commit = "8f023417191572918c00533b0e42faf5cc1709da"
+commit = "d3ebbad7cb857380bd10a4bf30884e2b4f26f10e"
 expires = "2026-09-10"
 
 [[waiver]]
 axis = "miri"
 reason = "No Miri lane exists for the FFI-heavy runtime in this cycle; the unsafe surface is covered by the ASan hard gate (green, never waived), MallocScribble leak oracles, and the per-site TSan triage above."
 tracking = "https://github.com/hew-lang/hew/issues/1826"
-commit = "8f023417191572918c00533b0e42faf5cc1709da"
+commit = "d3ebbad7cb857380bd10a4bf30884e2b4f26f10e"
 expires = "2026-09-10"

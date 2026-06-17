@@ -65,7 +65,7 @@
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
-.PHONY: fuzz-corpus fuzz-smoke
+.PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -252,6 +252,30 @@ fuzz-smoke: fuzz-corpus
 		cargo +nightly fuzz run "$$target" -- -max_total_time=$(FUZZ_SMOKE_SECONDS) || rc=$$?; \
 	done; \
 	exit $$rc
+
+# Fuzz-to-run completeness oracle.
+#
+# Default (CI) mode: regressions only — vertical-slice/accept + tests/fuzz-oracle/regressions.
+# Deterministic, bounded, suitable for the merge queue.
+#
+# Full mode (manual): also scans the raw cargo-fuzz corpus (nondeterministic; not in CI).
+#   make fuzz-oracle FUZZ_ORACLE_FULL=1
+#
+# Prereqs mirror test-vertical-slice: libhew.a must be fresh so native links
+# do not test against stale runtime/stdlib archives.
+FUZZ_ORACLE_FULL ?=
+fuzz-oracle: hew runtime stdlib check-libhew-fresh
+	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
+		python3 scripts/fuzz/run-oracle.py --full; \
+	else \
+		python3 scripts/fuzz/run-oracle.py; \
+	fi
+
+# Oracle self-tests: three independently-failable checks that prove the
+# harness has teeth (flags real crashes) and honours the ratchet contract
+# (unexpected-pass and unexpected-fail both fail closed).
+fuzz-oracle-selftest: hew runtime stdlib check-libhew-fresh
+	bash scripts/fuzz/oracle-selftest.sh
 
 bootstrap: install-hooks
 

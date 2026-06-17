@@ -100,6 +100,24 @@ impl RuntimeInner {
         }
     }
 
+    /// Test-only constructor minting a runtime that carries an explicit id.
+    ///
+    /// Production [`RuntimeInner::new`] hardcodes [`RuntimeId::DEFAULT`] because
+    /// single-runtime AOT/JIT programs have exactly one runtime; minting a
+    /// `RuntimeId > DEFAULT` in production is the M4 multi-runtime milestone.
+    /// This `#[cfg(test)]` constructor lets the multi-runtime trap tests stand
+    /// up a second worker-less `RuntimeInner` carrying e.g. `RuntimeId(1)`, so
+    /// the fail-closed nets in [`enter_actor_runtime`] and the scheduler wake
+    /// path can be *observed* firing for a foreign-runtime resolution rather
+    /// than passing vacuously
+    /// (`static-classification-vacuates-refcount-and-sanitizer`).
+    #[cfg(test)]
+    pub(crate) fn new_with_id_for_test(scheduler: Scheduler, id: RuntimeId) -> Self {
+        let mut inner = Self::new(scheduler);
+        inner.id = id;
+        inner
+    }
+
     /// This runtime's identity.
     ///
     /// The actor spawn path stamps every actor with its spawning runtime's id
@@ -308,14 +326,27 @@ pub(crate) unsafe fn enter(rt: &RuntimeInner) -> EnterGuard {
     EnterGuard { prev }
 }
 
-/// Enter the runtime that owns `actor`, falling back to the current default.
+/// Enter the runtime that owns `actor`, with a fail-closed trap on a
+/// multi-runtime skew.
 ///
 /// This is the single choke point off-dispatch producers will call when they
 /// already have an actor pointer but no worker-thread `enter()` binding. Actors
 /// spawned by this runtime carry a non-owning pointer to their owning
 /// [`RuntimeInner`], sourced from the same `rt_current()` read that stamps
-/// `runtime_id`. Legacy/test actors may carry null, and null preserves the
-/// current single-runtime behaviour by entering [`rt_default`] instead.
+/// `runtime_id` (`build_spawned_actor`). Legacy/test actors may carry null.
+///
+/// # Posture (`no-fail-open-fallback-after-authority`)
+///
+/// The `Option` return and the M2 single-runtime [`rt_default`] fallback are
+/// kept **only** for `runtime_id == RuntimeId::DEFAULT` — the legitimate
+/// legacy/test/off-dispatch readers of the one default runtime. The moment an
+/// actor carries `runtime_id != DEFAULT` and would resolve through the default
+/// (the skew/contradiction branch: a non-null actor with a null `runtime`
+/// stamp, which spawn makes impossible), this **traps** rather than silently
+/// binding the default or returning `None`. Returning `None` would not be safe:
+/// the producer would proceed on the bare `rt_current()` default, re-opening
+/// the same silent-default hazard. Outright deletion of the fallback is M4; this
+/// lane instruments it (assert-net first), it does not delete it.
 ///
 /// # Safety
 ///
@@ -324,26 +355,80 @@ pub(crate) unsafe fn enter(rt: &RuntimeInner) -> EnterGuard {
 /// valid because `RuntimeInner` owns/outlives its actors and cleanup drops the
 /// runtime only after actors/workers are drained. No ownership or refcount is
 /// taken, so this avoids a runtime→actor→runtime cycle.
-#[allow(
-    dead_code,
-    reason = "Stage 1 installs the choke point; Stage 2 producer cutovers call it"
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Stage 2 slice 1 installs + tests the choke point and its fail-closed trap; the off-dispatch producer cutovers (timer/reactor/teardown, slices 2-4) make it reachable in non-test builds"
+    )
 )]
 #[must_use]
 pub(crate) unsafe fn enter_actor_runtime(
     actor: *const crate::actor::HewActor,
 ) -> Option<EnterGuard> {
     let rt = if actor.is_null() {
+        // Branch (A) — genuinely actor-less caller. No actor carries a
+        // `runtime_id` the resolved runtime could contradict, so the M2
+        // single-runtime default fallback is correct and is kept. Stage-2
+        // producers always hold an actor pointer at the cutover, so this arm is
+        // unreachable from them.
         rt_default()?
     } else {
         // SAFETY: caller guarantees a non-null actor pointer is live for this
         // read; the field is an immutable spawn-time stamp.
         let actor_rt = unsafe { (*actor).runtime };
+        // SAFETY: as above — `runtime_id` is an immutable spawn-time stamp on the
+        // same live actor.
+        let actor_id = unsafe { (*actor).runtime_id };
         if actor_rt.is_null() {
-            rt_default()?
+            // Branch (B) — non-null actor with a null owning-runtime stamp.
+            //
+            // A single-runtime actor (`runtime_id == DEFAULT`) legitimately
+            // carries a null stamp: legacy/test actors and the off-dispatch
+            // readers resolve the installed default. That M2 fallback stays.
+            //
+            // A multi-runtime actor (`runtime_id != DEFAULT`) with a null stamp
+            // is a skew CONTRADICTION: spawn stamps `runtime` and `runtime_id`
+            // from the SAME `rt_current()` read, so a non-DEFAULT id can never
+            // pair with a null stamp unless an invariant is broken. Silently
+            // entering the default would re-open the hazard the stamp closes, so
+            // it TRAPS.
+            assert!(
+                actor_id == RuntimeId::DEFAULT,
+                "hew-runtime: enter_actor_runtime: actor stamped runtime_id {} carries a \
+                 null owning-runtime pointer; spawn stamps `runtime` and `runtime_id` from \
+                 the same runtime, so a non-default id with no stamp is corruption — \
+                 refusing to silently bind the default runtime",
+                actor_id.as_u64(),
+            );
+            let fallback = rt_default()?;
+            // The resolved default must own this actor. Single-runtime both ids
+            // are DEFAULT and this holds; a mismatch means the default slot does
+            // not own the actor, so fail closed rather than bind it.
+            assert!(
+                fallback.runtime_id() == actor_id,
+                "hew-runtime: enter_actor_runtime: default runtime id {} does not match \
+                 actor runtime_id {}; refusing to bind a foreign runtime",
+                fallback.runtime_id().as_u64(),
+                actor_id.as_u64(),
+            );
+            fallback
         } else {
+            // Owning branch — the actor carries its owning runtime. The stamp's
+            // id must equal the actor's `runtime_id` (the by-construction skew
+            // invariant); a mismatch is a corrupted stamp, so fail closed rather
+            // than enter a runtime the actor does not claim.
             // SAFETY: the actor's non-owning runtime pointer outlives the actor
             // by the RuntimeInner owns/outlives actors contract documented above.
-            unsafe { &*actor_rt }
+            let owner = unsafe { &*actor_rt };
+            assert!(
+                owner.runtime_id() == actor_id,
+                "hew-runtime: enter_actor_runtime: owning-runtime stamp id {} disagrees with \
+                 actor runtime_id {} (skew); refusing to bind a mismatched runtime",
+                owner.runtime_id().as_u64(),
+                actor_id.as_u64(),
+            );
+            owner
         }
     };
 

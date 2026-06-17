@@ -819,6 +819,15 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 # `rx.close()` in the caller compiled and double-closed the channel at runtime.
 run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
+# Accept + run: user records named `Sender` and `Receiver` are not builtin
+# channel handles. They must keep ordinary actor-send treatment and emit xnode
+# codecs instead of being skipped by bare short name.
+run_accept_expect_stdout "actor_channel_shadow_sender_codec"
+grep -q '__hew_serialize_Sender' \
+  "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
+grep -q '__hew_serialize_Receiver' \
+  "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
+
 # Accept + run: a single-argument actor receive handler whose ONLY parameter is
 # a process-local pid payload (`LocalPid<T>`). `echo.hear(this)` passes the
 # pinger's own pid as the sole message arg; the handler routes an `ack` back

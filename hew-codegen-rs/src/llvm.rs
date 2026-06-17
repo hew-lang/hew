@@ -4207,24 +4207,29 @@ fn resolved_ty_references_machine(ty: &ResolvedTy, machine_short_names: &HashSet
 
 /// True when `ty` is — or transitively carries through generic args, tuples,
 /// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
-/// Dispatched on the typed builtin discriminant with a short-name fallback
-/// (import-use sites carry module-qualified spellings like
-/// `channel.Receiver`). Record/enum FIELD recursion is deliberately absent:
-/// an aggregate hiding a handle still reaches the serializer walk and fails
-/// closed there at compile time — never a miscompile.
+///
+/// Dispatched on the typed `builtin` discriminant ALONE — NOT the bare source
+/// name. The checker lets a user source type shadow a builtin name, resolving
+/// it as a user type with `builtin: None`; matching that user `record Sender`
+/// / `record Receiver` by short name would make the cross-node codec seeder
+/// silently skip its wire codec. A real channel handle always carries its
+/// `builtin` discriminator, including module-qualified spellings like
+/// `channel.Receiver`.
+///
+/// This predicate has a coupled HIR mirror in `hew-hir::lower` that also drives
+/// the actor-send consume decision; the two must stay identical so HIR
+/// ownership and codegen codec classification agree.
+///
+/// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
+/// handle still reaches the serializer walk and fails closed there at compile
+/// time — never a miscompile.
 fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
+        ResolvedTy::Named { args, builtin, .. } => {
             matches!(
                 builtin,
                 Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
-            ) || matches!(short_name(name), "Sender" | "Receiver")
-                || args.iter().any(resolved_ty_contains_channel_handle)
+            ) || args.iter().any(resolved_ty_contains_channel_handle)
         }
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
@@ -4260,12 +4265,6 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 /// (`builtin-discriminator-survives-source-shadow`), propagated round-trip-total
 /// from `Ty::Named.builtin`; a real handle always carries it, so a bare-name
 /// fallback is both unnecessary and unsafe.
-///
-/// NOTE: the sibling `resolved_ty_contains_channel_handle` (and its HIR mirror
-/// in `hew-hir::lower`) still carry a bare-name `Sender`/`Receiver` fallback and
-/// share this latent over-match. They are NOT tightened here: the codegen and
-/// HIR channel predicates must move together to keep the `dedup-semantic-
-/// boundary` invariant, so they are tracked for a coordinated follow-up.
 ///
 /// Record/enum FIELD recursion is deliberately absent for the same reason as
 /// the channel predicate: an aggregate hiding a handle still reaches the
@@ -42058,6 +42057,100 @@ mod tests {
         ResolvedTy::Pointer {
             is_mutable: false,
             pointee: Box::new(ty),
+        }
+    }
+
+    /// The cross-node codec seeder skips an actor handler's `msg_type`/reply
+    /// when `resolved_ty_contains_channel_handle` reports it carries a
+    /// process-local channel handle. That predicate MUST dispatch on the typed
+    /// `builtin` discriminant alone — never the bare source name.
+    ///
+    /// The checker lets a user source type shadow a builtin name, resolving it
+    /// with `builtin: None`. A serializable `record Sender { .. }` / `record
+    /// Receiver { .. }` used as a single-arg actor message passes the
+    /// Serializable checker; if the predicate matched it by short name the
+    /// seeder would silently skip its codec and drop the payload at a
+    /// distributed boundary. A real handle always carries its `builtin`
+    /// discriminator and must still match so a purely-local program keeps its
+    /// non-serializable codec skipped.
+    #[test]
+    fn channel_handle_skip_gates_on_builtin_discriminant_not_shadowed_name() {
+        use hew_types::BuiltinType;
+
+        fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: name.to_string(),
+                args: vec![named_record_ty("Inner")],
+                builtin: Some(kind),
+                is_opaque: false,
+            }
+        }
+
+        fn user_generic_over(inner: ResolvedTy) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: "Envelope".to_string(),
+                args: vec![inner],
+                builtin: None,
+                is_opaque: false,
+            }
+        }
+
+        for shadow in ["Sender", "Receiver"] {
+            let user_ty = named_record_ty(shadow);
+            assert!(
+                !resolved_ty_contains_channel_handle(&user_ty),
+                "user type `{shadow}` (builtin: None) must not be matched as a \
+                 channel handle: matching by bare name silently skips its \
+                 cross-node codec"
+            );
+            assert!(
+                !resolved_ty_contains_channel_handle(&named_record_ty(&format!(
+                    "channel.{shadow}"
+                ))),
+                "module-qualified user `{shadow}` is still builtin: None"
+            );
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
+                vec![ResolvedTy::I64, user_ty.clone(),]
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&user_generic_over(
+                user_ty.clone()
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Array(
+                Box::new(user_ty.clone()),
+                2
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
+                Box::new(user_ty)
+            )));
+        }
+
+        assert!(!resolved_ty_contains_channel_handle(&named_record_ty(
+            "Message"
+        )));
+
+        for (name, kind) in [
+            ("Sender", BuiltinType::Sender),
+            ("Receiver", BuiltinType::Receiver),
+        ] {
+            let handle = builtin_handle(name, kind);
+            assert!(
+                resolved_ty_contains_channel_handle(&handle),
+                "builtin `{name}` (builtin: Some(_)) must still be matched so a \
+                 purely-local program keeps its non-serializable codec skipped"
+            );
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
+                vec![ResolvedTy::I64, handle.clone(),]
+            )));
+            assert!(resolved_ty_contains_channel_handle(&user_generic_over(
+                handle.clone()
+            )));
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Array(
+                Box::new(handle.clone()),
+                2
+            )));
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
+                Box::new(handle)
+            )));
         }
     }
 

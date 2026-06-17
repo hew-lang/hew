@@ -4629,11 +4629,13 @@ struct LowerCtx {
 /// True when `ty` is — or transitively carries through generic args, tuples,
 /// arrays, or slices — a channel handle (`Sender<T>` / `Receiver<T>`).
 ///
-/// This mirrors `resolved_ty_contains_channel_handle` in
-/// `hew-codegen-rs/src/llvm.rs`, which drives the xnode-codec skip for
-/// handle-bearing message types. Both predicates must stay in sync:
-/// a type the codegen predicate marks as handle-bearing must also be marked
-/// by this one so HIR's consume decision and codegen's codec decision agree
+/// This mirrors `resolved_ty_contains_channel_handle` in `hew-codegen-rs`, which
+/// drives the xnode-codec skip for handle-bearing message types. Both
+/// predicates dispatch on the typed `builtin` discriminant alone — never the
+/// bare source name — so a user `record Sender` / `record Receiver` resolved
+/// with `builtin: None` keeps its normal actor-send and codec treatment. A type
+/// the codegen predicate marks as handle-bearing must also be marked by this
+/// one so HIR's consume decision and codegen's codec decision agree
 /// (`dedup-semantic-boundary` LESSONS invariant).
 ///
 /// Record/enum FIELD recursion is deliberately absent: an aggregate hiding a
@@ -4641,23 +4643,10 @@ struct LowerCtx {
 /// not need to recurse into struct fields here.
 fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
+        ResolvedTy::Named { args, builtin, .. } => {
             matches!(
                 builtin,
                 Some(hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)
-            ) || matches!(
-                name.rsplit("::")
-                    .next()
-                    .unwrap_or(name.as_str())
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(name.as_str()),
-                "Sender" | "Receiver"
             ) || args.iter().any(resolved_ty_contains_channel_handle)
         }
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_channel_handle),
@@ -24984,6 +24973,15 @@ mod tests {
         &function.body
     }
 
+    fn named_record_ty(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
     fn checker_fact_named<'a>(
         facts: impl Iterator<Item = &'a ClosureCaptureFact>,
         name: &str,
@@ -25071,6 +25069,89 @@ mod tests {
             ValueClass::AffineResource,
             "LocalPid<Worker> must resolve through the builtin type marker registry"
         );
+    }
+
+    /// HIR's recursive channel-handle predicate is the consume-decision mirror
+    /// of codegen's xnode-codec-skip predicate. It must dispatch on the typed
+    /// `builtin` discriminant alone so user `record Sender` / `record Receiver`
+    /// messages keep ordinary actor-send treatment while real builtin handles
+    /// still transfer ownership across actor sends.
+    #[test]
+    fn channel_handle_consume_gate_uses_builtin_discriminant_not_shadowed_name() {
+        fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: name.to_string(),
+                args: vec![named_record_ty("Inner")],
+                builtin: Some(kind),
+                is_opaque: false,
+            }
+        }
+
+        fn user_generic_over(inner: ResolvedTy) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: "Envelope".to_string(),
+                args: vec![inner],
+                builtin: None,
+                is_opaque: false,
+            }
+        }
+
+        for shadow in ["Sender", "Receiver"] {
+            let user_ty = named_record_ty(shadow);
+            assert!(
+                !resolved_ty_contains_channel_handle(&user_ty),
+                "user type `{shadow}` (builtin: None) must not be consumed as a \
+                 channel-handle transfer"
+            );
+            assert!(
+                !resolved_ty_contains_channel_handle(&named_record_ty(&format!(
+                    "channel.{shadow}"
+                ))),
+                "module-qualified user `{shadow}` is still builtin: None"
+            );
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
+                vec![ResolvedTy::I64, user_ty.clone(),]
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&user_generic_over(
+                user_ty.clone()
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Array(
+                Box::new(user_ty.clone()),
+                2
+            )));
+            assert!(!resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
+                Box::new(user_ty)
+            )));
+        }
+
+        assert!(!resolved_ty_contains_channel_handle(&named_record_ty(
+            "Message"
+        )));
+
+        for (name, kind) in [
+            ("Sender", BuiltinType::Sender),
+            ("Receiver", BuiltinType::Receiver),
+        ] {
+            let handle = builtin_handle(name, kind);
+            assert!(
+                resolved_ty_contains_channel_handle(&handle),
+                "builtin `{name}` (builtin: Some(_)) must still be consumed as \
+                 a channel-handle transfer"
+            );
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Tuple(
+                vec![ResolvedTy::I64, handle.clone(),]
+            )));
+            assert!(resolved_ty_contains_channel_handle(&user_generic_over(
+                handle.clone()
+            )));
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Array(
+                Box::new(handle.clone()),
+                2
+            )));
+            assert!(resolved_ty_contains_channel_handle(&ResolvedTy::Slice(
+                Box::new(handle)
+            )));
+        }
     }
 
     #[test]

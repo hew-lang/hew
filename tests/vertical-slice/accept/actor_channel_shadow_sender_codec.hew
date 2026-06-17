@@ -1,0 +1,43 @@
+// Accept: user records named `Sender` and `Receiver` are ordinary serializable
+// actor-message payloads, not builtin channel handles.
+//
+// This pins the builtin-discriminant gate shared by HIR and codegen. The HIR
+// actor-send consume decision must not treat these user records as channel
+// handle transfers, and the cross-node codec seeder must emit their codecs
+// rather than silently skipping them by bare name.
+record Sender {
+    x: i64,
+}
+
+record Receiver {
+    y: i64,
+}
+
+actor Sink {
+    var total: i64;
+
+    receive fn accept_sender(msg: Sender) {
+        total = total + msg.x;
+        println(f"sender shadow {msg.x}");
+    }
+
+    receive fn accept_receiver(msg: Receiver) {
+        total = total + msg.y;
+        println(f"receiver shadow {msg.y}");
+    }
+
+    receive fn sum() -> i64 {
+        total
+    }
+}
+
+fn main() {
+    let sink = spawn Sink(total: 0);
+    sink.accept_sender(Sender { x: 20 });
+    sink.accept_receiver(Receiver { y: 22 });
+    let sum = await sink.sum();
+    match sum {
+        Ok(v) => println(f"sum {v}"),
+        Err(_) => println("sum failed"),
+    }
+}

@@ -1571,6 +1571,49 @@ run_accept_expect_status "vec_range_slice_full" 3
 # Exit 3 = length of the result.
 run_accept_expect_status "vec_range_slice_inclusive" 3
 
+# HashMap/Vec owned projection gates: scalar/string projections still compile
+# and run with exact values; managed aggregate projections fail closed at check.
+run_accept_expect_stdout "hashmap_values_scalar"
+run_accept_expect_stdout "hashmap_values_string"
+run_accept_expect_stdout "vec_scalar_range_slice"
+run_accept_expect_stdout "vec_string_range_slice"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
+  'HashMap<i64, User>.values()` is not yet supported: projecting from a map with value type `User` into an owned `Vec` is not lowered' \
+  "hashmap_values_managed_record"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
+  1 \
+  "hashmap_values_managed_record"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
+  'HashMap<i64, Vec<i64>>.keys()` is not yet supported: projecting from a map with value type `Vec<i64>` into an owned `Vec` is not lowered' \
+  "hashmap_keys_managed_record"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
+  1 \
+  "hashmap_keys_managed_record"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \
+  'Vec<Point> range-slice (xs[a..b]) is not yet supported' \
+  "vec_record_range_slice"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \
+  1 \
+  "vec_record_range_slice"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_enum_range_slice.hew" \
+  'Vec<Colour> range-slice (xs[a..b]) is not yet supported' \
+  "vec_enum_range_slice"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/vec_enum_range_slice.hew" \
+  1 \
+  "vec_enum_range_slice"
+
 # ---------------------------------------------------------------------------
 # vec-generic-index — scalar `xs[i]` on Vec<T> for any supported element type
 # ---------------------------------------------------------------------------

@@ -1,0 +1,12 @@
+fn main() {
+    let values: HashMap<i64, i64> = HashMap::new();
+    values.insert(1, 10);
+    values.insert(2, 20);
+    values.insert(3, 12);
+
+    var total = 0;
+    for value in values.values() {
+        total = total + value;
+    }
+    println(total);
+}

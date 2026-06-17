@@ -1,0 +1,8 @@
+fn main() {
+    let values: HashMap<i64, Vec<i64>> = HashMap::new();
+    let xs: Vec<i64> = Vec::new();
+    xs.push(42);
+    values.insert(1, xs);
+    let projected = values.keys();
+    println(projected.len());
+}

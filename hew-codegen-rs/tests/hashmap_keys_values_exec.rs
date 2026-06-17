@@ -107,6 +107,29 @@ fn run_hew_source_exit_code(repo: &Path, stem: &str, source: &str) -> i32 {
     })
 }
 
+fn check_hew_source(repo: &Path, stem: &str, source: &str) -> (i32, String) {
+    let dir = std::env::temp_dir().join(format!(
+        "hew-hashmap-kv-check-{}-{stem}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp source dir");
+    let path = dir.join(format!("{stem}.hew"));
+    std::fs::write(&path, source).expect("write temp Hew source");
+
+    let mut cmd = hew_command(repo);
+    cmd.arg("check").arg(&path);
+    let output = hew_testutil::run_command_bounded(
+        &mut cmd,
+        format!("hew check {}", path.display()),
+        Duration::from_secs(20),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    (output.status.code().unwrap_or(125), text)
+}
+
 /// Grounding oracle: `HashMap<string, i64>.values()` iterated with `for`,
 /// sum = 10+20+12 = 42.  Exit code encodes the return value of main.
 #[test]
@@ -155,24 +178,16 @@ fn hashmap_keys_len_is_map_size() {
     assert_eq!(code, 3, "keys() len oracle: expected exit 3, got {code}");
 }
 
-/// Regression: `values().get(i)` on a `HashMap<i64, Point>` where `Point` is a
-/// Copy record must return correct field values — not abort with a dangling
-/// layout pointer.
-///
-/// Previously `hew_hashmap_values_layout` built `HewTypeLayout` as a stack
-/// local and passed its address to `hew_vec_new_with_layout`, which aliased the
-/// pointer without copying.  After returning, the vec's `layout` field pointed
-/// into the destroyed frame → any layout-aware op (`.get()` calls
-/// `validate_bitcopy_layout_operation`, which reads `align`) triggered
-/// `PANIC: HewTypeLayout align must be a non-zero power of two`.
-///
-/// Oracle uses `x + y = 30`, which fits in a byte (exit codes are mod-256).
+/// `values()` on a Copy-record value is not an admitted surface today: the
+/// projection would produce an owned `Vec<Point>` whose element descriptor is
+/// not seeded by the current lowering path. The checker must reject it instead
+/// of letting execution reach a layout/runtime abort.
 #[test]
-fn hashmap_values_get_layout_path_copy_record_returns_correct_fields() {
+fn hashmap_values_copy_record_rejected_at_check() {
     let repo = repo_root();
-    let code = run_hew_source_exit_code(
+    let (code, stderr) = check_hew_source(
         &repo,
-        "hashmap_values_get_layout",
+        "hashmap_values_copy_record_reject",
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
@@ -185,24 +200,24 @@ fn main() -> i64 {
 "#,
     );
     assert_eq!(
-        code, 30,
-        "values().get(0) on Copy-record value: expected exit 30 (x=10+y=20), got {code}"
+        code, 1,
+        "values() on Copy-record value must fail at check time; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("HashMap<i64, Point>.values()` is not yet supported"),
+        "diagnostic must name the unsupported values() projection; stderr:\n{stderr}"
     );
 }
 
-/// Regression: `keys().get(i)` on a `HashMap<Point, i64>` where `Point` is a
-/// Copy-record key type must return correct field values.
-///
-/// Mirrors the values() regression above; both `hew_hashmap_keys_layout` and
-/// `hew_hashmap_values_layout` had the same stack-local layout pointer bug.
-///
-/// Oracle uses `x + y = 10`, which fits in a byte (exit codes are mod-256).
+/// `keys()` on a Copy-record key is likewise fail-closed: the projection would
+/// produce an owned `Vec<Point>`, so the checker rejects it until the managed /
+/// layout-backed projection path exists end-to-end.
 #[test]
-fn hashmap_keys_get_layout_path_copy_record_returns_correct_fields() {
+fn hashmap_keys_copy_record_rejected_at_check() {
     let repo = repo_root();
-    let code = run_hew_source_exit_code(
+    let (code, stderr) = check_hew_source(
         &repo,
-        "hashmap_keys_get_layout",
+        "hashmap_keys_copy_record_reject",
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
@@ -215,8 +230,12 @@ fn main() -> i64 {
 "#,
     );
     assert_eq!(
-        code, 10,
-        "keys().get(0) on Copy-record key: expected exit 10 (x=3+y=7), got {code}"
+        code, 1,
+        "keys() on Copy-record key must fail at check time; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("HashMap<Point, i64>.keys()` is not yet supported"),
+        "diagnostic must name the unsupported keys() projection; stderr:\n{stderr}"
     );
 }
 

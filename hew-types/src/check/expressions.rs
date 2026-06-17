@@ -3414,19 +3414,24 @@ impl Checker {
         }
     }
 
-    /// Fail-closed gate for `==`/`!=`/ordering comparisons on record-like
-    /// named value types (`type` structs and `record` declarations).
+    /// Fail-closed gate for comparisons whose structural lowering is not
+    /// implemented.
     ///
-    /// WHY: structural record equality is spec'd as a v0.5+ feature but has
-    /// no HIR/MIR/codegen lowering — without this gate the comparison
-    /// reaches codegen as `IntCmp` on a record operand and dies with an
+    /// Records remain fully gated. Enums split by payload shape:
+    /// fieldless enums are tag values and may use `==`/`!=`; payload-bearing
+    /// enums need structural equality (tag plus per-variant payload) and are
+    /// rejected at the checker until that lowering exists.
+    ///
+    /// WHY: structural aggregate equality is spec'd as a v0.5+ feature but
+    /// has no HIR/MIR/codegen lowering — without this gate the comparison
+    /// reaches codegen as `IntCmp` on an aggregate operand and dies with an
     /// unspanned codegen-front rejection (`E_NOT_YET_IMPLEMENTED:
     /// fail-closed: IntCmp lhs is not an integer`), leaking from the wrong
     /// layer. LESSONS `boundary-fail-closed`.
-    /// WHEN: obsolete once structural record equality lands.
+    /// WHEN: obsolete once structural record/payload-enum equality lands.
     /// WHAT: the real solution lowers `==`/`!=` on records to field-wise
-    /// comparison (mirroring the layout hash/eq-thunk path); ordering would
-    /// additionally need a spec'd ordering semantics for records.
+    /// comparison, and on payload enums to tag dispatch plus payload compares;
+    /// ordering would additionally need a spec'd ordering semantics.
     fn reject_record_comparison(
         &mut self,
         op: BinaryOp,
@@ -3435,15 +3440,37 @@ impl Checker {
         left_span: &Span,
         right_span: &Span,
     ) {
-        let record_name = [left_resolved, right_resolved].into_iter().find_map(|ty| {
+        enum UnsupportedComparison {
+            Record(String),
+            PayloadEnum(String),
+            EnumOrdering(String),
+        }
+
+        let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
             let Ty::Named { name, .. } = ty else {
                 return None;
             };
             let type_def = self.type_defs.get(name)?;
-            matches!(type_def.kind, TypeDefKind::Struct | TypeDefKind::Record)
-                .then(|| ty.user_facing())
+            match type_def.kind {
+                TypeDefKind::Struct | TypeDefKind::Record => {
+                    Some(UnsupportedComparison::Record(ty.user_facing().to_string()))
+                }
+                TypeDefKind::Enum => {
+                    let type_name = ty.user_facing().to_string();
+                    let has_payload_variant = type_def
+                        .variants
+                        .values()
+                        .any(|variant| !matches!(variant, VariantDef::Unit));
+                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                        has_payload_variant.then_some(UnsupportedComparison::PayloadEnum(type_name))
+                    } else {
+                        Some(UnsupportedComparison::EnumOrdering(type_name))
+                    }
+                }
+                TypeDefKind::Actor | TypeDefKind::Machine => None,
+            }
         });
-        let Some(type_name) = record_name else {
+        let Some(unsupported) = unsupported else {
             return;
         };
         // Span the whole comparison, not just one operand.
@@ -3451,21 +3478,36 @@ impl Checker {
             start: left_span.start,
             end: right_span.end,
         };
-        let (message, suggestion) = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-            (
+        let (message, suggestion) = match unsupported {
+            UnsupportedComparison::Record(type_name) => {
+                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                    (
+                        format!(
+                            "`{op}` on record type `{type_name}` is not yet implemented; \
+                             structural record equality is a planned feature"
+                        ),
+                        "compare individual fields until structural record equality lands \
+                         (e.g. `a.x == b.x && a.y == b.y`)"
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        format!("`{op}` is not supported for record type `{type_name}`"),
+                        format!("compare an individual field instead (e.g. `a.x {op} b.x`)"),
+                    )
+                }
+            }
+            UnsupportedComparison::PayloadEnum(type_name) => (
                 format!(
-                    "`{op}` on record type `{type_name}` is not yet implemented; \
-                     structural record equality is a planned feature"
+                    "`{op}` on enum `{type_name}` with payload variants is not supported; \
+                     match on it instead"
                 ),
-                "compare individual fields until structural record equality lands \
-                 (e.g. `a.x == b.x && a.y == b.y`)"
-                    .to_string(),
-            )
-        } else {
-            (
-                format!("`{op}` is not supported for record type `{type_name}`"),
-                format!("compare an individual field instead (e.g. `a.x {op} b.x`)"),
-            )
+                "match on the enum and compare payload fields in the relevant arms".to_string(),
+            ),
+            UnsupportedComparison::EnumOrdering(type_name) => (
+                format!("`{op}` is not supported for enum `{type_name}`"),
+                "match on the enum and compare an explicit value in each arm".to_string(),
+            ),
         };
         self.report_error_with_suggestions(
             TypeErrorKind::InvalidOperation,

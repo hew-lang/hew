@@ -302,6 +302,14 @@ fn run_colour_match_let_fixture_executes() {
     assert_eq!(stdout, expected, "run_colour_match_let stdout mismatch");
 }
 
+/// End-to-end signal for `==` / `!=` on fieldless enum values. Runs
+/// `examples/enums/run_colour_eq.hew` and verifies both equality and
+/// inequality branches compare the enum discriminant tags correctly.
+#[test]
+fn run_colour_eq_fixture_executes() {
+    run_enum_fixture_executes("run_colour_eq");
+}
+
 /// End-to-end signal for tuple-payload variant construction and match
 /// destructuring. Runs the in-tree `hew` binary on
 /// `examples/enums/run_shape_tuple_ctor.hew` and diffs stdout against the

@@ -1,0 +1,10 @@
+enum Shape {
+    Circle(i64);
+    Empty;
+}
+
+fn main() {
+    let a = Circle(1);
+    let b = Circle(1);
+    let _ = a == b;
+}

@@ -227,6 +227,10 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/static_trait_dispatch_missing_super_impl.hew" \
   "not its declared supertrait" \
   "static_trait_dispatch_missing_super_impl"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/payload_enum_equality.hew" \
+  "payload variants is not supported" \
+  "payload_enum_equality"
 run_accept_expect_stdout "static_trait_dispatch_inline_supertrait"
 run_accept_expect_stdout "static_trait_dispatch_intermediate_inline_supertrait"
 

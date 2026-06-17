@@ -1247,19 +1247,57 @@ fn ty_contains_heap_owning_inner(
 /// Layout lookup keys mirror `ty_contains_heap_owning` / `register_enum_layouts`:
 /// bare name (or `short_name`) for non-generic, `mangle(short, args)` for generic.
 /// Cycle-safe via a visited set keyed on record/enum layout names.
+///
+/// ## Identity discriminator vs. name fallback
+///
+/// The `is_opaque` discriminator is stamped by `lower_type` and is the primary
+/// signal. But a `ResolvedTy` can reach a consumer WITHOUT it — e.g. a binding
+/// type recorded for a local whose `Named` carries `is_opaque: false` even
+/// though it names an `#[opaque]` decl. For those un-stamped `Named`s,
+/// [`ty_contains_unclonable_opaque_with_names`] consults the module's
+/// `#[opaque]` decl-name set as a fallback, ordered AFTER record/enum-layout
+/// resolution exactly like `state_clone::classify_named`: a user record/enum
+/// that merely shares a short name with an opaque handle recurses through its
+/// own fields (and is admitted when clean) instead of being mis-flagged. The
+/// zero-argument [`ty_contains_unclonable_opaque`] keeps the discriminator-only
+/// behaviour for callers that have no name set.
 #[must_use]
 pub fn ty_contains_unclonable_opaque(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> bool {
-    ty_contains_unclonable_opaque_inner(ty, record_layouts, enum_layouts, &mut HashSet::new())
+    ty_contains_unclonable_opaque_inner(ty, record_layouts, enum_layouts, &[], &mut HashSet::new())
+}
+
+/// Like [`ty_contains_unclonable_opaque`] but also fails closed on a `Named`
+/// that reaches MIR without the `is_opaque` identity discriminator yet names an
+/// `#[opaque]` decl in `opaque_handle_names` (the module's opaque decl-name
+/// set). The name fallback fires ONLY for a `Named` that resolves to no user
+/// record/enum layout, mirroring the record-layouts-first ordering of
+/// `state_clone::classify_named`, so a `#[copy]` value record sharing a short
+/// name with an opaque handle is not mis-flagged.
+#[must_use]
+pub fn ty_contains_unclonable_opaque_with_names(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+) -> bool {
+    ty_contains_unclonable_opaque_inner(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        &mut HashSet::new(),
+    )
 }
 
 fn ty_contains_unclonable_opaque_inner(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
     visited: &mut HashSet<String>,
 ) -> bool {
     match ty {
@@ -1276,22 +1314,29 @@ fn ty_contains_unclonable_opaque_inner(
             // 2. Type arguments (generic containers: Vec<T>, Option<T>,
             //    Result<T, E>, HashMap<K, V>, user generic record/enum).
             if args.iter().any(|arg| {
-                ty_contains_unclonable_opaque_inner(arg, record_layouts, enum_layouts, visited)
+                ty_contains_unclonable_opaque_inner(
+                    arg,
+                    record_layouts,
+                    enum_layouts,
+                    opaque_handle_names,
+                    visited,
+                )
             }) {
                 return true;
             }
             let short = short_name(name);
             // 3. A user record under this name — recurse into its fields.
-            if let Some(record) = record_layouts
+            let record_match = record_layouts
                 .iter()
-                .find(|r| r.name == *name || short_name(&r.name) == short)
-            {
+                .find(|r| r.name == *name || short_name(&r.name) == short);
+            if let Some(record) = record_match {
                 if visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
                         ty_contains_unclonable_opaque_inner(
                             ft,
                             record_layouts,
                             enum_layouts,
+                            opaque_handle_names,
                             visited,
                         )
                     });
@@ -1313,6 +1358,7 @@ fn ty_contains_unclonable_opaque_inner(
                                 ft,
                                 record_layouts,
                                 enum_layouts,
+                                opaque_handle_names,
                                 visited,
                             )
                         })
@@ -1323,13 +1369,71 @@ fn ty_contains_unclonable_opaque_inner(
                     }
                 }
             }
+            // 5. Name fallback — a `Named` that reaches MIR WITHOUT the
+            //    `is_opaque` discriminator (step 1) yet names an `#[opaque]`
+            //    decl. Fires ONLY when the name resolved to no user record/enum
+            //    layout (steps 3/4), mirroring `state_clone::classify_named`'s
+            //    record-layouts-first ordering so a `#[copy]` value record
+            //    sharing a short name with an opaque handle is not mis-flagged.
+            //    Empty for the discriminator-only `ty_contains_unclonable_opaque`
+            //    entry point, so its behaviour is unchanged.
+            //
+            //    QUALIFIED-NAME GUARD (security, UAF/double-free): the layout
+            //    lookups in steps 3/4 match by SHORT name — `record_match` accepts
+            //    a short-name hit, and `find_enum_layout` shortens the spine before
+            //    mangling — so a QUALIFIED opaque handle whose discriminator was
+            //    cleared (`json.Value` / `a.Wrapper<i64>`, `is_opaque: false`)
+            //    would otherwise be "resolved" by a clean user record OR generic
+            //    enum that merely shares its short name (`Value` / `Wrapper$$i64`,
+            //    a DIFFERENT module's type) — suppressing this fallback and
+            //    admitting the handle into a flat-copied generator env
+            //    (shallow-aliasing the caller's handle → double-free /
+            //    use-after-free at teardown).
+            //
+            //    A short-name-only match is NEVER a resolution for a qualified
+            //    name — record OR enum, generic OR not (closing the whole class,
+            //    not one instance). Only an EXACT (qualified) layout-name match
+            //    proves the type IS that user layout. Record/enum layouts are
+            //    keyed by short/mangled name, so the exact-match clauses below are
+            //    the genuine-identity test; everything else falls through to the
+            //    opaque-set check. A real qualified generic enum NOT in the opaque
+            //    set is still admitted (the fallback only flags names in the set);
+            //    a qualified opaque IN the set fails closed. An UNqualified name
+            //    keeps the prior exact-or-short behaviour, so the same-short
+            //    value-record negative control still admits.
+            let name_is_qualified = name.contains('.');
+            let resolved_to_user_layout = if name_is_qualified {
+                record_match.is_some_and(|r| r.name == *name)
+                    || enum_found.is_some_and(|e| e.name == *name)
+            } else {
+                record_match.is_some() || enum_found.is_some()
+            };
+            if !resolved_to_user_layout
+                && opaque_handle_names
+                    .iter()
+                    .any(|n| n == name || short_name(n) == short)
+            {
+                return true;
+            }
             false
         }
-        ResolvedTy::Tuple(elems) => elems
-            .iter()
-            .any(|e| ty_contains_unclonable_opaque_inner(e, record_layouts, enum_layouts, visited)),
+        ResolvedTy::Tuple(elems) => elems.iter().any(|e| {
+            ty_contains_unclonable_opaque_inner(
+                e,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )
+        }),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            ty_contains_unclonable_opaque_inner(inner, record_layouts, enum_layouts, visited)
+            ty_contains_unclonable_opaque_inner(
+                inner,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )
         }
         _ => false,
     }
@@ -2177,17 +2281,31 @@ pub enum Terminator {
     /// Declared here so the borrow-liveness check has a place to look.
     Yield { value: Place, next: u32 },
     /// Generator construction at a `gen fn` / `gen { }` call site. Codegen
-    /// emits `hew_gen_ctx_create(<&body_fn>, null, 0)` and stores the returned
-    /// `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed place),
-    /// then branches to `next`. `body_fn` is the deterministic
+    /// emits `hew_gen_ctx_create(<&body_fn>, env_ptr, env_size)` and stores the
+    /// returned `*mut HewGenCtx` handle into `dest` (a `Generator<Y, R>`-typed
+    /// place), then branches to `next`. `body_fn` is the deterministic
     /// `__hew_gen_body_<owner>_<id>` name minted by `lower_gen_block`; codegen
     /// resolves its address via `get_function`. Carried explicitly (rather than
     /// through `Terminator::Call`) because the body-fn pointer is not a `Place`
     /// and the construction is self-describing without a call-site side table.
+    ///
+    /// `env` is the stack `Place` holding the `RecordInit`'d capture-env
+    /// record, or `None` for a capture-free generator (`env_ptr`/`env_size`
+    /// are then null/0). The generator body's free variables — a `gen fn`'s
+    /// formal parameters and a `gen { }`'s captured outer locals — live in
+    /// this record, in `HirGenCapture` order. The runtime deep-copies
+    /// `env_size` bytes of the record into the generator thread
+    /// (`hew_gen_ctx_create`), so the body reads them back through `Local(0)`
+    /// (the body-arg copy) via `ClosureEnvFieldLoad`. Only no-drop capture
+    /// field classes (`BitCopy` scalars, pids) are materialised today; owned
+    /// fields (string/aggregate) fail closed at the construction site because
+    /// the thread runtime's flat byte-copy would alias their heap and risk a
+    /// double-free / UAF without a per-field clone + env-drop protocol.
     MakeGenerator {
         dest: Place,
         body_fn: String,
         next: u32,
+        env: Option<Place>,
     },
     /// Lambda-actor construction at an `actor |params| { body }` spawn
     /// site. Codegen emits `hew_lambda_actor_new(mailbox_capacity, shape,
@@ -5448,6 +5566,200 @@ mod heap_owning_tests {
         }];
         let user_value = ResolvedTy::named_user("Value", vec![]);
         assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
+    }
+
+    // ── ty_contains_unclonable_opaque_with_names (name fallback for a `Named`
+    //    that reaches MIR without the `is_opaque` discriminator) ──────────────
+
+    #[test]
+    fn name_fallback_flags_unstamped_opaque_named() {
+        // A captured local's binding type can name an `#[opaque]` decl while
+        // carrying `is_opaque: false` (the discriminator is not stamped on every
+        // synthesised `Named`). The discriminator-only entry point therefore
+        // MISSES it (would shallow-copy the handle) — the name fallback catches
+        // it from the module's opaque decl-name set.
+        let unstamped = ResolvedTy::named_user("Dq", vec![]);
+        let names = vec!["Dq".to_string()];
+        assert!(
+            !ty_contains_unclonable_opaque(&unstamped, &[], &[]),
+            "discriminator-only path keys on identity, so an un-stamped Named is missed"
+        );
+        assert!(
+            ty_contains_unclonable_opaque_with_names(&unstamped, &[], &[], &names),
+            "name fallback flags an un-stamped Named whose name is an opaque decl"
+        );
+    }
+
+    #[test]
+    fn name_fallback_does_not_misflag_same_named_record() {
+        // Collision guard: a `#[copy]` value record that merely SHARES a short
+        // name with an opaque decl must recurse through its own (clean) fields
+        // and stay admissible. The name fallback is ordered AFTER record-layout
+        // resolution, mirroring `state_clone::classify_named`, so the record
+        // wins and the bare-name match never fires.
+        let records = vec![RecordLayout {
+            name: "Dq".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        let user_record = ResolvedTy::named_user("Dq", vec![]);
+        let names = vec!["Dq".to_string()];
+        assert!(
+            !ty_contains_unclonable_opaque_with_names(&user_record, &records, &[], &names),
+            "a user record sharing a short name with an opaque decl is not mis-flagged"
+        );
+    }
+
+    #[test]
+    fn name_fallback_flags_qualified_opaque_shadowed_by_same_short_record() {
+        // Security regression (UAF / double-free): a QUALIFIED opaque handle
+        // whose `is_opaque` discriminator was cleared on the way to MIR
+        // (`json.Value`, `is_opaque: false`) must STILL fail closed even when a
+        // clean `#[copy]` user record shares its SHORT name (`Value`). The
+        // record-layout lookup matches by short name, so the bare-short record
+        // resolves first and — under the prior ordering — SUPPRESSED the opaque
+        // name-fallback, admitting the qualified handle into the flat-copied
+        // generator env (shallow-aliasing the caller's handle → double-free /
+        // use-after-free at generator teardown). The gate must distinguish a
+        // qualified opaque shadowed by a same-short layout (REJECT) from a plain
+        // same-short value record (ADMIT): a short-name-only layout match must
+        // NOT suppress the fallback for a qualified name; only an EXACT
+        // (qualified) layout-name match resolves the type to a user layout.
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        // Qualified, discriminator-cleared opaque handle (`is_opaque: false`),
+        // exactly the shape a captured local's binding type reaches MIR with.
+        let qualified_opaque = ResolvedTy::named_user("json.Value", vec![]);
+
+        // Opaque decl-name set carries the QUALIFIED (use-site) form.
+        let qualified_names = vec!["json.Value".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &records,
+                &[],
+                &qualified_names
+            ),
+            "a qualified opaque handle must fail closed even when a clean user \
+             record shares its short name (the same-short collision must not \
+             suppress the opaque name-fallback)"
+        );
+
+        // ...and when the opaque decl-name set carries the SHORT (decl) form.
+        let short_names = vec!["Value".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &records,
+                &[],
+                &short_names
+            ),
+            "a qualified opaque handle must also fail closed when the opaque \
+             decl-name set carries the bare short name"
+        );
+
+        // Negative control preserved: the same-short value record itself,
+        // referenced UNqualified, stays admissible — the exact-name record
+        // resolves it, so the fallback never fires.
+        let user_record = ResolvedTy::named_user("Value", vec![]);
+        assert!(
+            !ty_contains_unclonable_opaque_with_names(
+                &user_record,
+                &records,
+                &[],
+                &qualified_names
+            ),
+            "an unqualified same-short value record must NOT be mis-flagged"
+        );
+    }
+
+    #[test]
+    fn name_fallback_flags_qualified_opaque_generic_shadowed_by_same_short_enum() {
+        // Security regression, GENERIC-ENUM variant (UAF / double-free): a
+        // QUALIFIED generic opaque handle whose `is_opaque` discriminator was
+        // cleared on the way to MIR (`a.Wrapper<i64>`, `is_opaque: false`) must
+        // STILL fail closed even when a clean same-short GENERIC ENUM layout
+        // (`Wrapper$$i64`, no opaque payload — a different module's type) exists.
+        //
+        // `find_enum_layout` resolves `a.Wrapper<i64>` to the bare-key
+        // `Wrapper$$i64` by SHORT name (it shortens the spine before mangling),
+        // so the prior gate — which treated ANY generic-enum structural match as
+        // a resolved user layout via `!args.is_empty()` — marked the type
+        // resolved, suppressed the opaque name-fallback, and admitted the
+        // qualified handle into the flat-copied generator env (shallow-aliasing
+        // the caller's handle → double-free / use-after-free at teardown).
+        //
+        // A short-name-only structural match is NOT a resolution for a qualified
+        // name: only an EXACT (qualified) layout-name match may suppress the
+        // fallback. The clean `i64` payload means neither the arg-recursion nor
+        // the variant-recursion rejects — proving it is the STEP-5 fallback that
+        // must fire, not an incidental nested-opaque hit.
+        let clean_same_short_enum = EnumLayout {
+            name: hew_hir::mangle("Wrapper", &[ResolvedTy::I64]),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            }],
+            is_indirect: false,
+        };
+        let enums = vec![clean_same_short_enum];
+
+        // Qualified, discriminator-cleared generic opaque handle — the shape a
+        // captured local's binding type reaches MIR with.
+        let qualified_opaque = ResolvedTy::named_user("a.Wrapper", vec![ResolvedTy::I64]);
+
+        // Opaque decl-name set carries the QUALIFIED (use-site) form...
+        let qualified_names = vec!["a.Wrapper".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &[],
+                &enums,
+                &qualified_names
+            ),
+            "a qualified generic opaque handle must fail closed even when a clean \
+             same-short generic enum layout exists (the structural same-short \
+             match must not suppress the opaque name-fallback)"
+        );
+
+        // ...and when the opaque decl-name set carries the bare SHORT name.
+        let short_names = vec!["Wrapper".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &short_names),
+            "a qualified generic opaque handle must also fail closed when the \
+             opaque decl-name set carries the bare short name"
+        );
+
+        // Negative control: the SAME generic-enum shape, but NOT in the opaque
+        // set, still ADMITS. The fallback only flags names IN the opaque set, so
+        // requiring an EXACT match (dropping the `!args.is_empty()` escape) does
+        // not over-reject a genuine generic enum capture.
+        assert!(
+            !ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &[]),
+            "a genuine generic enum (not in the opaque set) must still be admitted"
+        );
+    }
+
+    #[test]
+    fn name_fallback_flags_opaque_nested_in_bitcopy_record() {
+        // The transitive case the generator-env gate actually faces: a record
+        // whose field is an un-stamped opaque handle. The record itself has no
+        // layout-entry opacity signal — the field resolves through the name
+        // fallback during the record-field recursion.
+        let records = vec![RecordLayout {
+            name: "Pair".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Dq", vec![]), ResolvedTy::I64],
+        }];
+        let pair = ResolvedTy::named_user("Pair", vec![]);
+        let names = vec!["Dq".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(&pair, &records, &[], &names),
+            "an un-stamped opaque field inside a record fails closed via the name fallback"
+        );
+        // Empty name-set ⇒ discriminator-only ⇒ the hidden opaque is missed.
+        assert!(!ty_contains_unclonable_opaque(&pair, &records, &[]));
     }
 
     // ── Qualified-payload layout-key symmetry (C1) ──────────────────────────

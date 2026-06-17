@@ -105,6 +105,7 @@ fn gen_block_with_two_yields_lowers_to_typed_hir() {
         body,
         yield_ty,
         return_ty,
+        captures: _,
     } = &init.kind
     else {
         panic!("expected GenBlock initializer, got {:?}", init.kind);
@@ -144,6 +145,7 @@ fn gen_block_with_string_yield_and_i64_return_lowers_types() {
         body,
         yield_ty,
         return_ty,
+        captures: _,
     } = &init.kind
     else {
         panic!("expected GenBlock initializer, got {:?}", init.kind);
@@ -212,6 +214,7 @@ fn gen_fn_lowers_to_generator_returning_fn_with_genblock_body() {
         body,
         yield_ty,
         return_ty,
+        captures: _,
     } = &tail.kind
     else {
         panic!("expected GenBlock tail, got {:?}", tail.kind);
@@ -314,6 +317,7 @@ fn actor_receive_gen_fn_yield_lowers_through_genblock() {
         body,
         yield_ty,
         return_ty,
+        captures: _,
     } = &tail.kind
     else {
         panic!("expected GenBlock tail, got {:?}", tail.kind);

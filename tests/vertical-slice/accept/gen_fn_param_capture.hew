@@ -1,0 +1,27 @@
+// Accept + run: a `gen fn` whose body reads its own formal parameter `n`.
+//
+// Regression fixture for the never-completed generator free-variable
+// lowering. `n` is a free variable of the generator body (its only binding
+// site is the enclosing parameter scope), so it travels through the runtime
+// env channel (`hew_gen_ctx_create` deep-copies the env into the body thread)
+// and is read back in the body via a closure-env field load. Before the fix
+// the body read of `n` lowered to an unresolved place and failed closed at
+// MIR check. Prints each yielded value, then the running total — exercising
+// both the per-yield parameter read and a cross-yield-live consumer
+// accumulator.
+gen fn counter(n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    var total = 0;
+    for x in counter(3) {
+        println(x);
+        total = total + x;
+    }
+    println(total);
+}

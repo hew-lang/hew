@@ -1,0 +1,22 @@
+// Accept + run: a `gen { }` block that captures two outer locals.
+//
+// Regression fixture for the never-completed generator free-variable
+// lowering. `base` and `count` are free variables of the gen-block body,
+// captured from the enclosing frame through the runtime env channel. Before
+// the fix a captured outer local read in a gen body lowered to an unresolved
+// place and failed closed at MIR check. `count` is read in the loop bound and
+// `base` in the yielded value, so both captures are materialised into the env
+// record in source/first-reference order.
+fn main() {
+    let base = 10;
+    let count = 3;
+    for v in gen {
+        var i = 0;
+        while i < count {
+            yield base + i;
+            i = i + 1;
+        }
+    } {
+        println(v);
+    }
+}

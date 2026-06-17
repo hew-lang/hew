@@ -470,7 +470,33 @@ impl Verifier {
                 body,
                 yield_ty,
                 return_ty,
+                captures,
             } => {
+                // Each gen capture must reference a binding that exists in the
+                // resolved HIR, and no binding may appear twice (the env field
+                // layout is keyed by binding — duplicates would collide). Mirrors
+                // the closure/lambda capture verification above.
+                let mut seen_captures = std::collections::HashSet::new();
+                for capture in captures {
+                    if !self.bindings.contains(&capture.binding) {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::DanglingRef {
+                                resolved: ResolvedRef::Binding(capture.binding),
+                            },
+                            expr.span.clone(),
+                            "generator capture references a binding not declared in resolved HIR",
+                        ));
+                    }
+                    if !seen_captures.insert(capture.binding) {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::DuplicateBindingId {
+                                id: capture.binding,
+                            },
+                            expr.span.clone(),
+                            "generator capture list contains the same binding more than once",
+                        ));
+                    }
+                }
                 match &expr.ty {
                     ResolvedTy::Named { name, args, .. }
                         if name == "Generator" && args.len() == 2 =>

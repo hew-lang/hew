@@ -1398,10 +1398,21 @@ pub enum HirExprKind {
     /// The checker owns `Generator<Yield, Return>` inference. HIR carries the
     /// lowered body plus the extracted yield/return parameters so MIR can later
     /// build the generator state machine without re-inferring the signature.
+    ///
+    /// `captures` lists the body's free variables — for a `gen fn` these are
+    /// the generator's own formal parameters; for a `gen { }` block they are
+    /// the captured outer locals. Both are bindings that live in the enclosing
+    /// MIR frame and must be threaded into the synthesised generator-body
+    /// function through the runtime env channel (`hew_gen_ctx_create`'s
+    /// `body_arg`). Empty for a capture-free generator. This is the
+    /// substrate-independent "which variables are free" front-half; where the
+    /// env physically lives (thread body-arg today, coro frame later) is the
+    /// MIR/codegen tail.
     GenBlock {
         body: HirBlock,
         yield_ty: ResolvedTy,
         return_ty: ResolvedTy,
+        captures: Vec<HirGenCapture>,
     },
     /// `yield` inside a generator body.
     ///
@@ -2267,6 +2278,29 @@ pub struct HirClosureCapture {
     /// non-`Sync` `BorrowMut` capture needs an auto-lock slot when the
     /// follow-on auto-lock consumer enables lock injection.
     pub is_sync: bool,
+}
+
+/// One free variable of a generator body that must be threaded into the
+/// synthesised generator-body function through the runtime env channel.
+///
+/// For a `gen fn` these are the generator's own formal parameters; for a
+/// `gen { }` block they are the captured outer locals. Both reduce to the
+/// same thing: a binding that lives in the enclosing MIR frame and is read
+/// inside the generator body. MIR boxes these into an env record passed to
+/// `hew_gen_ctx_create` (deep-copied into the body thread) and resolves the
+/// body-side reads through `ClosureEnvFieldLoad`. Mirrors `HirLambdaCapture`
+/// but carries the resolved field type (no Weak/self-recursion case — a
+/// generator has no self-handle).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirGenCapture {
+    /// The captured binding's id in the enclosing HIR scope.
+    pub binding: BindingId,
+    /// Surface name used at the capture site (diagnostics + dump).
+    pub name: String,
+    /// Fully-resolved type of the captured binding, used to size the env
+    /// field. The MIR slot type is the authority; this is the HIR view
+    /// recorded for verification and dump parity.
+    pub ty: ResolvedTy,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

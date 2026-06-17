@@ -600,6 +600,7 @@ fn actor_handler_generator_receive_fn_lowers_to_generator_body() {
             body: gen_inner,
             yield_ty: ResolvedTy::I64,
             return_ty: ResolvedTy::Unit,
+            captures: Vec::new(),
         },
         span: 0..0,
     };

@@ -39,14 +39,14 @@ use crate::monomorph::{
 };
 use crate::node::{
     HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn, HirActorStateGuard, HirBinding,
-    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn, HirItem,
-    HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind,
+    HirBlock, HirCaptureKind, HirClosureCapture, HirExpr, HirExprKind, HirField, HirFn,
+    HirGenCapture, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
+    HirLifecycleHookKind, HirLiteral, HirMachineDecl, HirMachineEvent, HirMachineState,
+    HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule,
+    HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -8032,11 +8032,17 @@ impl LowerCtx {
     ) -> (HirBlock, ResolvedTy) {
         let yield_ty = source_return_ty;
         let gen_return_ty = ResolvedTy::Unit;
+        // Snapshot the enclosing scope (param scope on top) BEFORE lowering the
+        // body so the body's own `let`/`var` bindings are excluded and only the
+        // gen-fn's formal parameters (and any enclosing locals) are capture
+        // candidates. See `collect_gen_captures`.
+        let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
         let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
             ctx.lower_block(&func.body, &gen_return_ty)
         });
         self.generator_yield_tys.pop();
+        let captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
 
         let generator_ty = ResolvedTy::Named {
             name: "Generator".to_string(),
@@ -8054,6 +8060,7 @@ impl LowerCtx {
                 body: gen_body,
                 yield_ty,
                 return_ty: gen_return_ty,
+                captures,
             },
             span: span.clone(),
         };
@@ -9249,6 +9256,18 @@ impl LowerCtx {
                 body: gen_body,
                 yield_ty,
                 return_ty: gen_return_ty,
+                // DROP-TODO(receive-gen-captures): the actor receive-gen handler
+                // form needs BOTH its formal params AND its actor state fields
+                // threaded into the gen body. Params would ride the same env
+                // channel `gen fn`/`gen {}` now use, but state fields resolve by
+                // name through `current_actor_state_fields` (an `ActorStateFieldLoad`
+                // path the synthesised gen-body builder does not yet inherit), so a
+                // naive capture of a state field would mis-route. Left empty here:
+                // a parameterized/stateful `receive gen fn` body still fail-closes
+                // on the free-var read exactly as before (no regression) until the
+                // state-field propagation lands. Tracked alongside the gen
+                // params/captures lane.
+                captures: Vec::new(),
             },
             span: span.clone(),
         };
@@ -12923,6 +12942,51 @@ impl LowerCtx {
             .collect()
     }
 
+    /// Compute the free-variable capture set of a generator body.
+    ///
+    /// A generator body lowers into a synthesised `__hew_gen_body_*` function
+    /// whose only window onto the enclosing frame is the runtime env channel
+    /// (`hew_gen_ctx_create`'s deep-copied `body_arg`). Every binding the body
+    /// reads that is NOT defined within the body itself must travel through
+    /// that env:
+    ///   - for a `gen fn`, these are the generator's own formal parameters
+    ///     (the param scope is the immediate enclosing scope);
+    ///   - for a `gen { }` block, these are the captured outer locals.
+    ///
+    /// `outer_bindings` MUST be snapshotted via `visible_outer_bindings()`
+    /// BEFORE the body's own scope is pushed, so a body-local `let`/`var`
+    /// (whose binding id is minted inside `lower_block`) is correctly excluded
+    /// — only enclosing-frame bindings are candidates. The walk reuses the
+    /// general-closure capture walker; order is source order with
+    /// first-reference dedup, which fixes the env field layout that MIR's
+    /// `lower_gen_block` mirrors when it builds the env record + registers each
+    /// `capture_env_sources` entry at the matching field offset.
+    ///
+    /// This is the substrate-independent front-half: WHICH variables are free
+    /// is identical whether the body later runs on the thread runtime (env is
+    /// the body-arg copy) or a future coroutine frame (env is spilled into the
+    /// frame). Only the MIR/codegen tail chooses where the env lives.
+    fn collect_gen_captures(
+        body: &HirBlock,
+        outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+    ) -> Vec<HirGenCapture> {
+        let mut seen: HashSet<BindingId> = HashSet::new();
+        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
+        collect_general_closure_captures_walk_block(body, outer_bindings, &mut seen, &mut ordered);
+        ordered
+            .into_iter()
+            .filter_map(|(binding, name, _span)| {
+                outer_bindings
+                    .get(&binding)
+                    .map(|(_, ty, _)| HirGenCapture {
+                        binding,
+                        name,
+                        ty: ty.clone(),
+                    })
+            })
+            .collect()
+    }
+
     fn lower_gen_block(
         &mut self,
         body: &Block,
@@ -12983,16 +13047,22 @@ impl LowerCtx {
             }
         };
 
+        // Snapshot the enclosing scope BEFORE lowering the body so the
+        // gen-block's own `let`/`var` bindings are excluded and only captured
+        // outer locals are candidates. See `collect_gen_captures`.
+        let outer_bindings = self.visible_outer_bindings();
         self.generator_yield_tys.push(yield_ty.clone());
         let lowered_body = self
             .with_current_return_type(return_ty.clone(), |ctx| ctx.lower_block(body, &return_ty));
         self.generator_yield_tys.pop();
+        let captures = Self::collect_gen_captures(&lowered_body, &outer_bindings);
 
         (
             HirExprKind::GenBlock {
                 body: lowered_body,
                 yield_ty,
                 return_ty,
+                captures,
             },
             gen_ty,
         )

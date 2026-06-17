@@ -1250,6 +1250,29 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/yield_outside_gen.hew" >"
 fi
 grep -q 'outside of generator' "${reject_output}"
 
+# Accept + run: generator bodies that read FREE VARIABLES — a `gen fn`'s formal
+# parameter and a `gen { }` block's captured outer locals. Both travel through
+# the runtime env channel (`hew_gen_ctx_create` deep-copies the env into the
+# body thread). These compile to native binaries and run end-to-end, pinning
+# the parameter-read repro (`counter(3)`) and the outer-local capture repro so
+# the never-completed free-variable lowering cannot silently regress.
+# Capture-free generators are covered by the gen_block check fixtures above and
+# by tests/hew/generator_param_capture_test.hew.
+run_accept_expect_stdout "gen_fn_param_capture"
+run_accept_expect_stdout "gen_block_capture_outer"
+
+# Reject: a generator that captures an `#[opaque]` runtime handle as a free
+# variable must fail closed. An opaque handle classifies as `BitCopy`
+# (pointer-width, no drop), so the capture gate's `BitCopy` check alone would
+# admit it — but `hew_gen_ctx_create` flat-`memcpy`s the env across the body
+# thread, and shallow-copying an opaque handle aliases the caller's handle
+# (use-after-free / double-free at teardown). The gate rejects any value
+# transitively containing an opaque handle, not only non-`BitCopy` heap owners.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_opaque_handle.hew" \
+  "capture of opaque/owned value" \
+  "gen_fn_capture_opaque_handle"
+
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate
 # ---------------------------------------------------------------------------

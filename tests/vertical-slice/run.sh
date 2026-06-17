@@ -103,6 +103,23 @@ expect_check_fail_contains() {
   grep -qF -- "${expected_substr}" "${reject_output}"
 }
 
+expect_check_fail_error_count() {
+  local fixture_path="$1"
+  local expected_count="$2"
+  local label="$3"
+  if "${HEW}" check "${fixture_path}" >"${reject_output}" 2>&1; then
+    echo "expected ${label} to fail closed under hew check" >&2
+    exit 1
+  fi
+  local actual_count
+  actual_count="$(grep -Ec '^[^:]+:[0-9]+:[0-9]+: error:' "${reject_output}" || true)"
+  if [[ "${actual_count}" -ne "${expected_count}" ]]; then
+    echo "expected ${label} to emit ${expected_count} error(s), got ${actual_count}" >&2
+    cat "${reject_output}" >&2
+    exit 1
+  fi
+}
+
 # Compile a fixture to a native binary (no memory cap — the LLVM codegen +
 # clang/ld.lld link pipeline mmaps the multi-hundred-MB `libhew.a` and needs
 # well over 1 GB of address space), then run ONLY the produced binary under a
@@ -660,6 +677,40 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_symbol.hew" 
   exit 1
 fi
 grep -q 'undefined variable' "${reject_output}"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/cascade_error_binary_operand.hew" \
+  1 \
+  "cascade_error_binary_operand"
+grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot apply `+`' "${reject_output}"; then
+  echo "cascade_error_binary_operand emitted a downstream binary-op diagnostic" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/cascade_error_index_object.hew" \
+  1 \
+  "cascade_error_index_object"
+grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot index into `<error>`' "${reject_output}"; then
+  echo "cascade_error_index_object emitted a downstream index diagnostic" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/real_binary_type_error_preserved.hew" \
+  1 \
+  "real_binary_type_error_preserved"
+grep -qF 'cannot apply `+` to `string` and `i64`' "${reject_output}"
+
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/real_index_type_error_preserved.hew" \
+  1 \
+  "real_index_type_error_preserved"
+grep -qF 'cannot index into `i64`' "${reject_output}"
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
   echo "expected use-after-consume fixture to fail" >&2

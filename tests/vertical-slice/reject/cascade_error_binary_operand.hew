@@ -1,0 +1,3 @@
+fn main() {
+    let _z = undefined_var + 1;
+}

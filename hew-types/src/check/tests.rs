@@ -669,6 +669,61 @@ fn vec_owned_record_push_routes_to_owned_abi() {
 }
 
 #[test]
+fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
+    let output = check_source(
+        r"
+        type Wrap<T> { v: T }
+        type Pair<A, B> { a: A, b: B }
+        type Point { x: i64, y: i64 }
+        type Holder<T> { value: T }
+
+        fn main() {
+            var wraps: Vec<Wrap<i64>> = [];
+            wraps.push(Wrap { v: 1 });
+            wraps.set(0, Wrap { v: 2 });
+            let _wg = wraps.get(0);
+            let _wi = wraps[0];
+            let _wp = wraps.pop();
+
+            var pairs: Vec<Pair<i64, i64>> = [];
+            pairs.push(Pair { a: 3, b: 4 });
+
+            var holders: Vec<Holder<Point>> = [];
+            holders.push(Holder { value: Point { x: 5, y: 6 } });
+
+            var nested: Vec<Wrap<Wrap<i64>>> = [];
+            nested.push(Wrap { v: Wrap { v: 7 } });
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "concrete generic BitCopy record Vec operations must type-check: {:#?}",
+        output.errors
+    );
+
+    for method in ["push", "get", "set", "pop"] {
+        assert!(
+            output.resolved_calls.values().any(|call| {
+                call.method_name == method
+                    && call.target.symbol_name == format!("hew_vec_{method}_layout")
+            }),
+            "Vec<Wrap<i64>> {method} must route to the Plain layout ABI, got: {:#?}",
+            output.resolved_calls
+        );
+    }
+    assert!(
+        output
+            .resolved_calls
+            .values()
+            .all(|call| !call.target.symbol_name.ends_with("_owned")),
+        "BitCopy generic records must not route to owned Vec ABI: {:#?}",
+        output.resolved_calls
+    );
+}
+
+#[test]
 fn vec_local_pid_push_routes_to_pointer_abi() {
     // Regression: `Vec<LocalPid<T>>` is a collection of pointer-shaped actor
     // handles. The constructor lowers `hew_vec_new_ptr` (null layout) in

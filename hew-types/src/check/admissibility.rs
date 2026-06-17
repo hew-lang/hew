@@ -42,13 +42,32 @@ pub(crate) fn primitive_copy_layout(
         Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
         // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
-        Ty::Named { name, .. } => {
+        Ty::Named { name, args, .. } => {
             // Try direct lookup first, then strip module prefix (mirrors lookup_type_def).
             let type_def = type_defs.get(name.as_str()).or_else(|| {
                 name.split_once('.')
                     .and_then(|(_, local)| type_defs.get(local))
             })?;
-            compute_copy_record_layout(type_def, type_defs)
+            if args.is_empty() {
+                compute_copy_record_layout(type_def, type_defs)
+            } else {
+                if type_def.type_params.len() != args.len() {
+                    return None;
+                }
+                let subst: HashMap<String, Ty> = type_def
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(param, arg)| (param.clone(), arg.clone()))
+                    .collect();
+                let mut instantiated = type_def.clone();
+                instantiated.fields = type_def
+                    .fields
+                    .iter()
+                    .map(|(field, ty)| (field.clone(), ty.substitute_named_params_parallel(&subst)))
+                    .collect();
+                compute_copy_record_layout(&instantiated, type_defs)
+            }
         }
         _ => None,
     }
@@ -1059,6 +1078,11 @@ impl Checker {
             .map(|(p, a)| (p.clone(), a.clone()))
             .collect();
         ty.substitute_named_params_parallel(&map)
+    }
+
+    pub(super) fn vec_element_has_copy_layout(&self, elem_ty: &Ty) -> bool {
+        self.registry.implements_marker(elem_ty, MarkerTrait::Copy)
+            || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
     }
 
     pub(super) fn vec_element_contains_structural_array(
@@ -2557,6 +2581,12 @@ mod tests {
         }
     }
 
+    fn make_generic_record(name: &str, params: Vec<&str>, fields: Vec<(&str, Ty)>) -> TypeDef {
+        let mut td = make_record(name, fields);
+        td.type_params = params.into_iter().map(str::to_string).collect();
+        td
+    }
+
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
@@ -2625,6 +2655,107 @@ mod tests {
     fn primitive_copy_layout_string_returns_none() {
         // String is heap-managed; not a fixed-layout Copy type.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn primitive_copy_layout_substitutes_generic_record_args() {
+        let type_defs = HashMap::from([
+            (
+                "Wrap".to_string(),
+                make_generic_record(
+                    "Wrap",
+                    vec!["T"],
+                    vec![(
+                        "v",
+                        Ty::Named {
+                            name: "T".to_string(),
+                            args: vec![],
+                            builtin: None,
+                        },
+                    )],
+                ),
+            ),
+            (
+                "Pair".to_string(),
+                make_generic_record(
+                    "Pair",
+                    vec!["A", "B"],
+                    vec![
+                        (
+                            "a",
+                            Ty::Named {
+                                name: "A".to_string(),
+                                args: vec![],
+                                builtin: None,
+                            },
+                        ),
+                        (
+                            "b",
+                            Ty::Named {
+                                name: "B".to_string(),
+                                args: vec![],
+                                builtin: None,
+                            },
+                        ),
+                    ],
+                ),
+            ),
+            (
+                "Point".to_string(),
+                make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
+            ),
+            (
+                "Holder".to_string(),
+                make_generic_record(
+                    "Holder",
+                    vec!["T"],
+                    vec![(
+                        "value",
+                        Ty::Named {
+                            name: "T".to_string(),
+                            args: vec![],
+                            builtin: None,
+                        },
+                    )],
+                ),
+            ),
+        ]);
+
+        let wrap_i64 = Ty::Named {
+            name: "Wrap".to_string(),
+            args: vec![Ty::I64],
+            builtin: None,
+        };
+        let pair_i64 = Ty::Named {
+            name: "Pair".to_string(),
+            args: vec![Ty::I64, Ty::I64],
+            builtin: None,
+        };
+        let holder_point = Ty::Named {
+            name: "Holder".to_string(),
+            args: vec![Ty::Named {
+                name: "Point".to_string(),
+                args: vec![],
+                builtin: None,
+            }],
+            builtin: None,
+        };
+        let nested_wrap = Ty::Named {
+            name: "Wrap".to_string(),
+            args: vec![wrap_i64.clone()],
+            builtin: None,
+        };
+
+        assert_eq!(primitive_copy_layout(&wrap_i64, &type_defs), Some((8, 8)));
+        assert_eq!(primitive_copy_layout(&pair_i64, &type_defs), Some((16, 8)));
+        assert_eq!(
+            primitive_copy_layout(&holder_point, &type_defs),
+            Some((16, 8))
+        );
+        assert_eq!(
+            primitive_copy_layout(&nested_wrap, &type_defs),
+            Some((8, 8))
+        );
     }
 
     #[test]

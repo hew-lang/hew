@@ -36,17 +36,31 @@ fn hew_bin(repo: &Path) -> PathBuf {
     target_dir(repo).join("debug").join("hew")
 }
 
+fn ensure_hew_cli(repo: &Path) {
+    static BUILT: OnceLock<()> = OnceLock::new();
+    BUILT.get_or_init(|| {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .current_dir(repo)
+            .args(["build", "--quiet", "-p", "hew-cli", "--bin", "hew"])
+            .status()
+            .expect("spawn cargo build -p hew-cli --bin hew");
+        assert!(
+            status.success(),
+            "cargo build -p hew-cli --bin hew failed: {status:?}"
+        );
+        assert!(
+            hew_bin(repo).exists(),
+            "hew binary missing after build: {}",
+            hew_bin(repo).display()
+        );
+    });
+}
+
 fn hew_command(repo: &Path) -> Command {
+    ensure_hew_cli(repo);
     let bin = hew_bin(repo);
-    if bin.exists() {
-        return Command::new(bin);
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut command = Command::new(cargo);
-    command
-        .current_dir(repo)
-        .args(["run", "--quiet", "-p", "hew-cli", "--bin", "hew", "--"]);
-    command
+    Command::new(bin)
 }
 
 fn ensure_hew_runtime_lib(repo: &Path) {
@@ -107,18 +121,9 @@ fn run_hew_source_exit_code(repo: &Path, stem: &str, source: &str) -> i32 {
     })
 }
 
-fn check_hew_source(repo: &Path, stem: &str, source: &str) -> (i32, String) {
-    let dir = std::env::temp_dir().join(format!(
-        "hew-hashmap-kv-check-{}-{stem}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp source dir");
-    let path = dir.join(format!("{stem}.hew"));
-    std::fs::write(&path, source).expect("write temp Hew source");
-
+fn check_hew_file(repo: &Path, path: &Path) -> (i32, String) {
     let mut cmd = hew_command(repo);
-    cmd.arg("check").arg(&path);
+    cmd.arg("check").arg(path);
     let output = hew_testutil::run_command_bounded(
         &mut cmd,
         format!("hew check {}", path.display()),
@@ -128,6 +133,18 @@ fn check_hew_source(repo: &Path, stem: &str, source: &str) -> (i32, String) {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     (output.status.code().unwrap_or(125), text)
+}
+
+fn assert_single_check_error_with_exact_diagnostic(output: &str, expected: &str) {
+    let error_count = output.matches(": error:").count();
+    assert_eq!(
+        error_count, 1,
+        "expected exactly one checker error, got {error_count}; output:\n{output}"
+    );
+    assert!(
+        output.contains(expected),
+        "expected exact diagnostic:\n{expected}\n\noutput:\n{output}"
+    );
 }
 
 /// Grounding oracle: `HashMap<string, i64>.values()` iterated with `for`,
@@ -178,16 +195,24 @@ fn hashmap_keys_len_is_map_size() {
     assert_eq!(code, 3, "keys() len oracle: expected exit 3, got {code}");
 }
 
-/// `values()` on a Copy-record value is not an admitted surface today: the
-/// projection would produce an owned `Vec<Point>` whose element descriptor is
-/// not seeded by the current lowering path. The checker must reject it instead
-/// of letting execution reach a layout/runtime abort.
+/// Regression: `values().get(i)` on a `HashMap<i64, Point>` where `Point` is a
+/// Copy-record value type must return correct field values through the layout
+/// pointer.
+///
+/// Previously `hew_hashmap_values_layout` built `HewTypeLayout` as a stack
+/// local and passed its address to `hew_vec_new_with_layout`, which aliased the
+/// pointer without copying.  After returning, the vec's `layout` field pointed
+/// into the destroyed frame -> any layout-aware op (`.get()` calls
+/// `validate_bitcopy_layout_operation`, which reads `align`) triggered
+/// `PANIC: HewTypeLayout align must be a non-zero power of two`.
+///
+/// Oracle uses `x + y = 30`, which fits in a byte (exit codes are mod-256).
 #[test]
-fn hashmap_values_copy_record_rejected_at_check() {
+fn hashmap_values_get_layout_path_copy_record_returns_correct_fields() {
     let repo = repo_root();
-    let (code, stderr) = check_hew_source(
+    let code = run_hew_source_exit_code(
         &repo,
-        "hashmap_values_copy_record_reject",
+        "hashmap_values_get_layout",
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
@@ -200,24 +225,24 @@ fn main() -> i64 {
 "#,
     );
     assert_eq!(
-        code, 1,
-        "values() on Copy-record value must fail at check time; stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("HashMap<i64, Point>.values()` is not yet supported"),
-        "diagnostic must name the unsupported values() projection; stderr:\n{stderr}"
+        code, 30,
+        "values().get(0) on Copy-record value: expected exit 30 (x=10+y=20), got {code}"
     );
 }
 
-/// `keys()` on a Copy-record key is likewise fail-closed: the projection would
-/// produce an owned `Vec<Point>`, so the checker rejects it until the managed /
-/// layout-backed projection path exists end-to-end.
+/// Regression: `keys().get(i)` on a `HashMap<Point, i64>` where `Point` is a
+/// Copy-record key type must return correct field values.
+///
+/// Mirrors the values() regression above; both `hew_hashmap_keys_layout` and
+/// `hew_hashmap_values_layout` had the same stack-local layout pointer bug.
+///
+/// Oracle uses `x + y = 10`, which fits in a byte (exit codes are mod-256).
 #[test]
-fn hashmap_keys_copy_record_rejected_at_check() {
+fn hashmap_keys_get_layout_path_copy_record_returns_correct_fields() {
     let repo = repo_root();
-    let (code, stderr) = check_hew_source(
+    let code = run_hew_source_exit_code(
         &repo,
-        "hashmap_keys_copy_record_reject",
+        "hashmap_keys_get_layout",
         r#"record Point { x: i64, y: i64 }
 
 fn main() -> i64 {
@@ -230,12 +255,53 @@ fn main() -> i64 {
 "#,
     );
     assert_eq!(
-        code, 1,
-        "keys() on Copy-record key must fail at check time; stderr:\n{stderr}"
+        code, 10,
+        "keys().get(0) on Copy-record key: expected exit 10 (x=3+y=7), got {code}"
     );
-    assert!(
-        stderr.contains("HashMap<Point, i64>.keys()` is not yet supported"),
-        "diagnostic must name the unsupported keys() projection; stderr:\n{stderr}"
+}
+
+#[test]
+fn hashmap_values_heap_bearing_record_rejected_with_one_exact_diagnostic() {
+    let repo = repo_root();
+    let fixture = repo.join("tests/vertical-slice/reject/hashmap_values_managed_record.hew");
+    let (code, output) = check_hew_file(&repo, &fixture);
+    assert_eq!(
+        code, 1,
+        "heap-bearing values() projection must fail at check time; output:\n{output}"
+    );
+    assert_single_check_error_with_exact_diagnostic(
+        &output,
+        "`HashMap<i64, User>.values()` is not yet supported: projecting from a map with value type `User` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
+    );
+}
+
+#[test]
+fn hashmap_keys_heap_bearing_value_rejected_with_one_exact_diagnostic() {
+    let repo = repo_root();
+    let fixture = repo.join("tests/vertical-slice/reject/hashmap_keys_managed_record.hew");
+    let (code, output) = check_hew_file(&repo, &fixture);
+    assert_eq!(
+        code, 1,
+        "keys() projection with heap-bearing map value must fail at check time; output:\n{output}"
+    );
+    assert_single_check_error_with_exact_diagnostic(
+        &output,
+        "`HashMap<i64, Vec<i64>>.keys()` is not yet supported: projecting from a map with value type `Vec<i64>` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
+    );
+}
+
+#[test]
+fn hashmap_keys_bytes_rejected_by_key_branch_with_one_exact_diagnostic() {
+    let repo = repo_root();
+    let fixture = repo.join("tests/vertical-slice/reject/hashmap_keys_bytes.hew");
+    let (code, output) = check_hew_file(&repo, &fixture);
+    assert_eq!(
+        code, 1,
+        "bytes keys() projection must fail at check time; output:\n{output}"
+    );
+    assert_single_check_error_with_exact_diagnostic(
+        &output,
+        "`HashMap<bytes, i64>.keys()` is not yet supported: projecting key type `bytes` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
     );
 }
 

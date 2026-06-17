@@ -1,0 +1,4 @@
+fn project(values: HashMap<bytes, i64>) {
+    let projected = values.keys();
+    println(projected.len());
+}

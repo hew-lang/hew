@@ -22,7 +22,7 @@ hew-types = { path = "../hew-types" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde_json.workspace = true
-dashmap = "6"
+dashmap = "6.2.1"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

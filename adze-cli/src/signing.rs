@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use rand::RngExt as _;
 use sha2::{Digest, Sha256};
 
 /// Errors from key management and signing operations.
@@ -58,9 +59,10 @@ impl KeyPair {
     /// Generate a new random Ed25519 keypair.
     #[must_use]
     pub fn generate() -> Self {
-        let mut rng = rand_core::OsRng;
+        let mut secret = [0u8; 32];
+        rand::rng().fill(&mut secret);
         Self {
-            signing: SigningKey::generate(&mut rng),
+            signing: SigningKey::from_bytes(&secret),
         }
     }
 

@@ -1,0 +1,16 @@
+// Vertical-slice: `clone` on a record with an owned string field produces
+// an independent copy. Mutating the original's field after clone must not
+// affect the clone.
+
+type Label {
+    text: string,
+    rank: i64,
+}
+
+fn main() -> i64 {
+    let a = Label { text: "hello", rank: 7 };
+    let b = a.clone();
+    println(b.text);
+    println(b.rank);
+    0
+}

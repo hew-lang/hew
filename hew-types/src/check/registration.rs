@@ -1774,6 +1774,13 @@ impl Checker {
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
             self.resource_types.insert(td.name.clone());
         }
+        // Track user-declared `#[opaque]` types so `record_clone_admissibility`
+        // can detect opaque fields transitively. The module_registry only
+        // carries opaque types imported via `use module::*`; user-declared
+        // opaques in the same file are NOT registered there.
+        if td.is_opaque {
+            self.user_opaque_type_names.insert(td.name.clone());
+        }
 
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,

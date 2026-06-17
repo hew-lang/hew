@@ -2132,6 +2132,12 @@ pub struct Checker {
     pub(super) fn_sigs: HashMap<String, FnSig>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
+    /// Names of every user-declared `#[opaque]` type in this module.
+    /// Populated by `register_type_decl` whenever `td.is_opaque` is true.
+    /// Consumed by `record_clone_admissibility` to detect opaque fields in
+    /// record types the user attempts to clone — these are ALWAYS non-cloneable
+    /// because a shallow copy aliases the runtime handle.
+    pub(super) user_opaque_type_names: HashSet<String>,
     /// `#[wire]` struct type names that carry the binary msgpack codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
     /// — which lower to the `__hew_serialize_*` / `__hew_deserialize_*` thunks —
@@ -2719,6 +2725,7 @@ impl Checker {
             fn_sigs: HashMap::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),
+            user_opaque_type_names: HashSet::new(),
             wire_struct_types: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,

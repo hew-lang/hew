@@ -2606,8 +2606,10 @@ impl Checker {
     ) -> Option<String> {
         match ty {
             Ty::Named { name, args, .. } => {
-                // Direct opaque handle?
-                if self.canonical_owned_handle_type_name(name).is_some() {
+                // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
+                if self.canonical_owned_handle_type_name(name).is_some()
+                    || self.user_opaque_type_names.contains(name.as_str())
+                {
                     return Some(name.clone());
                 }
                 // Recurse into type args.

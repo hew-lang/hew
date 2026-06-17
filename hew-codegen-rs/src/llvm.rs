@@ -4246,20 +4246,33 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 /// the `RemotePid` boundary with a named diagnostic. A same-node send transfers
 /// the pid by value (the mailbox deep-copies the pointer/word), so the
 /// cross-node codec is never exercised; seeding one would fail the WHOLE
-/// compile for a purely local program. Dispatched on the typed builtin
-/// discriminant with a short-name fallback (import-use sites can carry
-/// module-qualified spellings), exactly like the channel-handle predicate.
-/// Record/enum FIELD recursion is deliberately absent for the same reason: an
-/// aggregate hiding a handle still reaches the serializer walk and fails closed
-/// there at compile time — never a miscompile.
+/// compile for a purely local program.
+///
+/// Dispatched on the typed `builtin` discriminant ALONE — NOT the bare source
+/// name. The checker lets a user source type shadow a builtin name, resolving
+/// it as a user type with `builtin: None` (`hew-types`
+/// `check::resolution::resolve_type_expr_tracking_holes`). A serializable
+/// `record Pid { .. }` / `record Actor { .. }` used as a single-arg actor
+/// message passes the Serializable checker; matching it here by short name
+/// would make the cross-node codec seeder SILENTLY SKIP its `msg_type`,
+/// dropping the payload at a distributed boundary (silent data loss). The
+/// `builtin` discriminator is the load-bearing identity
+/// (`builtin-discriminator-survives-source-shadow`), propagated round-trip-total
+/// from `Ty::Named.builtin`; a real handle always carries it, so a bare-name
+/// fallback is both unnecessary and unsafe.
+///
+/// NOTE: the sibling `resolved_ty_contains_channel_handle` (and its HIR mirror
+/// in `hew-hir::lower`) still carry a bare-name `Sender`/`Receiver` fallback and
+/// share this latent over-match. They are NOT tightened here: the codegen and
+/// HIR channel predicates must move together to keep the `dedup-semantic-
+/// boundary` invariant, so they are tracked for a coordinated follow-up.
+///
+/// Record/enum FIELD recursion is deliberately absent for the same reason as
+/// the channel predicate: an aggregate hiding a handle still reaches the
+/// serializer walk and fails closed there at compile time — never a miscompile.
 fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
     match ty {
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin,
-            ..
-        } => {
+        ResolvedTy::Named { args, builtin, .. } => {
             matches!(
                 builtin,
                 Some(
@@ -4269,9 +4282,6 @@ fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
                         | hew_types::BuiltinType::ActorRef
                         | hew_types::BuiltinType::Actor
                 )
-            ) || matches!(
-                short_name(name),
-                "Pid" | "LocalPid" | "RemotePid" | "ActorRef" | "Actor"
             ) || args.iter().any(resolved_ty_contains_actor_handle)
         }
         ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_actor_handle),
@@ -42042,6 +42052,98 @@ mod tests {
         ResolvedTy::Pointer {
             is_mutable: false,
             pointee: Box::new(ty),
+        }
+    }
+
+    /// The cross-node codec seeder skips an actor handler's `msg_type`/reply
+    /// when `resolved_ty_contains_actor_handle` reports it carries a
+    /// process-local actor-pid/handle. That predicate MUST dispatch on the
+    /// typed `builtin` discriminant alone — never the bare source name.
+    ///
+    /// The checker lets a user source type shadow a builtin name, resolving it
+    /// with `builtin: None`. A serializable `record Pid { .. }` / `record Actor
+    /// { .. }` used as a single-arg actor message passes the Serializable
+    /// checker; if the predicate matched it by short name the seeder would
+    /// SILENTLY SKIP its codec and drop the payload at a distributed boundary
+    /// (the `builtin-discriminator-survives-source-shadow` fail-open). A real
+    /// handle always carries its `builtin` discriminator and must still match so
+    /// a purely-local program keeps its non-serializable codec skipped.
+    #[test]
+    fn actor_handle_skip_gates_on_builtin_discriminant_not_shadowed_name() {
+        use hew_types::BuiltinType;
+
+        // A builtin-stamped actor-handle named type with an inner type arg.
+        fn builtin_handle(name: &str, kind: BuiltinType) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: name.to_string(),
+                args: vec![named_record_ty("Inner")],
+                builtin: Some(kind),
+                is_opaque: false,
+            }
+        }
+        // A non-handle user generic carrying `inner` in its type args.
+        fn user_generic_over(inner: ResolvedTy) -> ResolvedTy {
+            ResolvedTy::Named {
+                name: "Envelope".to_string(),
+                args: vec![inner],
+                builtin: None,
+                is_opaque: false,
+            }
+        }
+
+        // Shadow case (the fail-open): a user type sharing an actor-handle short
+        // name but carrying `builtin: None` must NOT be treated as a handle —
+        // directly, module-qualified, behind a tuple, or behind a generic arg —
+        // so its cross-node codec is still emitted (never silently skipped).
+        for shadow in ["Pid", "LocalPid", "RemotePid", "ActorRef", "Actor"] {
+            let user_ty = named_record_ty(shadow);
+            assert!(
+                !resolved_ty_contains_actor_handle(&user_ty),
+                "user type `{shadow}` (builtin: None) must not be matched as an \
+                 actor handle: matching by bare name silently skips its \
+                 cross-node codec (drop-at-distributed-boundary)"
+            );
+            assert!(
+                !resolved_ty_contains_actor_handle(&named_record_ty(&format!("mymod.{shadow}"))),
+                "module-qualified user `{shadow}` is still builtin: None"
+            );
+            assert!(!resolved_ty_contains_actor_handle(&ResolvedTy::Tuple(
+                vec![ResolvedTy::I64, user_ty.clone(),]
+            )));
+            assert!(!resolved_ty_contains_actor_handle(&user_generic_over(
+                user_ty
+            )));
+        }
+
+        // A plain serializable user record with no handle short name at all is
+        // likewise never matched.
+        assert!(!resolved_ty_contains_actor_handle(&named_record_ty(
+            "Message"
+        )));
+
+        // Real builtin handles (preserve the original codec skip): every member
+        // of the actor-pid family carrying its `builtin` discriminator must
+        // match — directly, behind a tuple, and behind a non-handle generic arg.
+        for (name, kind) in [
+            ("Pid", BuiltinType::Pid),
+            ("LocalPid", BuiltinType::LocalPid),
+            ("RemotePid", BuiltinType::RemotePid),
+            ("ActorRef", BuiltinType::ActorRef),
+            ("Actor", BuiltinType::Actor),
+        ] {
+            let handle = builtin_handle(name, kind);
+            assert!(
+                resolved_ty_contains_actor_handle(&handle),
+                "builtin `{name}` (builtin: Some(_)) must still be matched so a \
+                 purely-local program keeps its non-serializable codec skipped"
+            );
+            assert!(resolved_ty_contains_actor_handle(&ResolvedTy::Tuple(vec![
+                ResolvedTy::I64,
+                handle.clone(),
+            ])));
+            assert!(resolved_ty_contains_actor_handle(&user_generic_over(
+                handle
+            )));
         }
     }
 

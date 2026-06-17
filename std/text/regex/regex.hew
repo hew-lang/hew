@@ -259,13 +259,18 @@ impl CaptureMatchesMethods for CaptureMatches {
 /// ```
 pub fn new(pattern: string) -> Pattern {
     unsafe {
-        hew_regex_new(pattern)
+        let re = hew_regex_new(pattern);
+        if !hew_regex_is_valid(re) {
+            panic(f"regex.new: invalid pattern: {pattern}");
+        }
+        re
     }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_regex_new(pattern: string) -> Pattern;
+    fn hew_regex_is_valid(re: Pattern) -> bool;
     fn hew_regex_is_match(re: Pattern, input: string) -> bool;
     fn hew_regex_find(re: Pattern, input: string) -> string;
     fn hew_regex_replace(re: Pattern, input: string, replacement: string) -> string;

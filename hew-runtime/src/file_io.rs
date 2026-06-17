@@ -28,20 +28,36 @@ use std::ffi::{c_char, CStr, CString};
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     if path.is_null() {
+        let msg = "hew_file_read: invalid path string";
+        crate::set_last_error(msg);
+        set_last_error_with_errno(msg.into(), 22);
         return std::ptr::null_mut();
     }
     // SAFETY: caller guarantees `path` is a valid, NUL-terminated C string.
     let c_path = unsafe { CStr::from_ptr(path) };
     let Ok(rust_path) = c_path.to_str() else {
+        let msg = "hew_file_read: invalid path string";
+        crate::set_last_error(msg);
+        set_last_error_with_errno(msg.into(), 22);
         return std::ptr::null_mut();
     };
-    let Ok(contents) = std::fs::read_to_string(rust_path) else {
-        return std::ptr::null_mut();
+    let contents = match std::fs::read_to_string(rust_path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            let msg = format!("hew_file_read: {error}");
+            set_last_error_with_errno(msg, error.raw_os_error().unwrap_or(22));
+            return std::ptr::null_mut();
+        }
     };
     // Reject files with interior NUL bytes (can't represent as C string).
     if contents.contains('\0') {
+        let msg = "hew_file_read: contents contain interior NUL byte";
+        crate::set_last_error(msg);
+        set_last_error_with_errno(msg.into(), 22);
         return std::ptr::null_mut();
     }
+    crate::hew_clear_error();
+    let _ = crate::stream_error::take_last_error();
     str_to_malloc(&contents)
 }
 
@@ -597,6 +613,8 @@ mod tests {
         // SAFETY: null is the value under test; the function handles it gracefully.
         let ptr = unsafe { hew_file_read(std::ptr::null()) };
         assert!(ptr.is_null());
+        assert_ne!(crate::stream_error::take_last_errno(), 0);
+        let _ = crate::stream_error::take_last_error();
     }
 
     #[test]
@@ -605,6 +623,11 @@ mod tests {
         // SAFETY: p is a valid NUL-terminated C string.
         let ptr = unsafe { hew_file_read(p.as_ptr()) };
         assert!(ptr.is_null());
+        assert_ne!(crate::stream_error::take_last_errno(), 0);
+        let err = crate::stream_error::take_last_error();
+        assert!(err
+            .as_deref()
+            .is_some_and(|message| message.contains("hew_file_read")));
     }
 
     #[test]
@@ -613,6 +636,23 @@ mod tests {
         // SAFETY: bad is a valid NUL-terminated C string (non-UTF-8 is handled).
         let ptr = unsafe { hew_file_read(bad.as_ptr()) };
         assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn read_invalid_utf8_contents_returns_null_and_sets_errno() {
+        let dir = test_dir("read_invalid_utf8_contents");
+        let file = dir.join("invalid_utf8.txt");
+        std::fs::write(&file, [0xFF, 0xFE, b'a', b'\n']).unwrap();
+        let p = cpath(&file);
+
+        // SAFETY: p is a valid NUL-terminated C string pointing to a file whose
+        // contents are intentionally invalid UTF-8.
+        let ptr = unsafe { hew_file_read(p.as_ptr()) };
+
+        assert!(ptr.is_null());
+        assert_ne!(crate::stream_error::hew_stream_last_errno(), 0);
+        let _ = crate::stream_error::take_last_error();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -----------------------------------------------------------------------

@@ -37,6 +37,12 @@ pub unsafe extern "C" fn hew_regex_new(pattern: *const c_char) -> *mut HewRegex 
     }
 }
 
+/// Return true if `re` is a non-null regex handle.
+#[no_mangle]
+pub extern "C" fn hew_regex_is_valid(re: *const HewRegex) -> bool {
+    !re.is_null()
+}
+
 /// Test whether `text` matches the compiled regex.
 ///
 /// Returns `true` if the text matches, `false` otherwise.
@@ -777,6 +783,7 @@ mod tests {
     fn test_regex_null_safety() {
         // SAFETY: Testing null pointer handling.
         assert!(unsafe { hew_regex_new(std::ptr::null()) }.is_null());
+        assert!(!hew_regex_is_valid(std::ptr::null()));
         assert!(
             // SAFETY: Testing null pointer handling.
             !unsafe { hew_regex_is_match(std::ptr::null(), std::ptr::null()) },

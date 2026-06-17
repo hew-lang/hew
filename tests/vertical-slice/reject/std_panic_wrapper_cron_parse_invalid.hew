@@ -1,0 +1,8 @@
+import std::time::cron;
+
+fn main() -> i64 {
+    let expr = cron.parse("nope");
+    let next = expr.next(0);
+    expr.free();
+    next
+}

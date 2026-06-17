@@ -34,6 +34,10 @@ pub fn args_count() -> i64 {
 /// let first_arg = os.args(1);
 /// ```
 pub fn args(index: i64) -> string {
+    let count = args_count();
+    if index < 0 || index >= count {
+        panic(f"os.args: index {index} out of range for {count} argument(s)");
+    }
     unsafe {
         hew_args_get(index as i32)
     }

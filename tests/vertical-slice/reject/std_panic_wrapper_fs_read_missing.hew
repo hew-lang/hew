@@ -1,0 +1,6 @@
+import std::fs;
+
+fn main() -> i64 {
+    let contents = fs.read("tests/vertical-slice/reject/std_panic_wrapper_missing_file.txt");
+    contents.len()
+}

@@ -211,6 +211,11 @@ def _classify_build_failure(combined_output: str) -> str:
         return "build-ice"
     if _contains_any(combined_output, _NYI_MARKERS):
         return "nyi-codegen"
+    # Linker "undefined symbol: main" → this is a library file (no entry point),
+    # not a runnable program.  Classify as frontend-reject so library fixtures
+    # (checked with `hew check` only, not `hew build`) are not spurious failures.
+    if "undefined symbol: main" in combined_output:
+        return "frontend-reject"
     # Non-zero without known markers: treat as build-ice (fail-closed).
     return "build-ice"
 
@@ -329,8 +334,20 @@ def _classify_run(
     output_capped: bool,
     expected_stdout: Optional[str],
     expected_exit: Optional[int],
+    strict_exit: bool = True,
 ) -> tuple[str, str]:
-    """Return (classification, detail) for a completed binary run."""
+    """Return (classification, detail) for a completed binary run.
+
+    strict_exit=True (default, regression corpus): require exit 0 OR the
+    explicit // EXIT: annotation value.  A non-zero exit with no annotation is
+    a runtime-abort failure.
+
+    strict_exit=False (vertical-slice/accept): only classify as failure for
+    definitive structural failures (signal, PANIC/abort marker, timeout,
+    output-cap, wrong EXPECT output).  A non-zero exit without annotations and
+    without any abort marker is accepted as clean — these programs intentionally
+    exit with codes like 42 as their correctness signal.
+    """
     if timed_out:
         return "timeout", "wall-clock exceeded"
 
@@ -349,14 +366,25 @@ def _classify_run(
 
     combined = stdout + stderr
 
-    # Non-zero with Hew/Rust abort markers → runtime-abort.
+    # Non-zero with Hew/Rust abort markers → runtime-abort (always, both modes).
     if rc != 0 and _contains_any(combined, _RUNTIME_ABORT_MARKERS):
         return "runtime-abort", _clip(combined)
 
-    # Check expected exit code if annotated.
-    target_exit = expected_exit if expected_exit is not None else 0
-    if rc != target_exit:
-        return "runtime-abort", f"exit {rc}, expected {target_exit}; {_clip(combined)}"
+    if strict_exit:
+        # Regression corpus mode: require exit 0 OR explicit // EXIT: annotation.
+        target_exit = expected_exit if expected_exit is not None else 0
+        if rc != target_exit:
+            return (
+                "runtime-abort",
+                f"exit {rc}, expected {target_exit}; {_clip(combined)}",
+            )
+    else:
+        # Vertical-slice mode: only check exit if explicitly annotated.
+        if expected_exit is not None and rc != expected_exit:
+            return (
+                "runtime-abort",
+                f"exit {rc}, expected {expected_exit}; {_clip(combined)}",
+            )
 
     # Check expected stdout if annotated.
     if expected_stdout is not None:
@@ -380,8 +408,15 @@ def process_candidate(
     output_cap: int,
     hew_std: Optional[str],
     workdir: Path,
+    strict_exit: bool = True,
 ) -> Verdict:
-    """Run the full pipeline for one candidate .hew file."""
+    """Run the full pipeline for one candidate .hew file.
+
+    strict_exit=True: classify non-zero exit (without // EXIT:) as runtime-abort.
+    strict_exit=False: only flag signal/panic/NYI/timeout — unannotated non-zero
+    exit is clean (used for vertical-slice accept files that intentionally exit
+    with codes like 42 as their correctness signal).
+    """
     # Read source for annotation extraction.
     try:
         source_text = src.read_text(encoding="utf-8", errors="replace")
@@ -419,6 +454,7 @@ def process_candidate(
             output_capped,
             expected_stdout,
             expected_exit,
+            strict_exit=strict_exit,
         )
         return Verdict(src, cls, detail)
     finally:
@@ -613,6 +649,7 @@ def main() -> int:
             files: list[Path],
             label: str,
             apply_ratchet: bool,
+            strict_exit: bool = True,
         ) -> None:
             if not files:
                 return
@@ -625,6 +662,7 @@ def main() -> int:
                     output_cap=args.output_cap,
                     hew_std=hew_std,
                     workdir=workdir,
+                    strict_exit=strict_exit,
                 )
                 stats.record(verdict)
                 all_verdicts.append(verdict)
@@ -641,18 +679,30 @@ def main() -> int:
         # Source 1: cargo-fuzz corpus (full mode only, no ratchet).
         _process_group(fuzz_corpus, "cargo-fuzz corpus", apply_ratchet=False)
 
-        # Source 2: vertical-slice accept fixtures (ratchet: must all pass).
-        _process_group(vertical_slice, "vertical-slice/accept", apply_ratchet=True)
+        # Source 2: vertical-slice accept fixtures.
+        # strict_exit=False: these programs intentionally exit with specific
+        # non-zero codes (42, 7, 134, etc.) as their correctness signal; the
+        # oracle only fails them on structural failures (signal/PANIC/NYI/ICE/
+        # timeout/output-cap).  Exit-code correctness is already pinned by
+        # tests/vertical-slice/run.sh — we only add the build+run dimension here.
+        _process_group(
+            vertical_slice,
+            "vertical-slice/accept",
+            apply_ratchet=True,
+            strict_exit=False,
+        )
 
-        # Source 3: regression corpus (ratchet enforced).
+        # Source 3: regression corpus (ratchet enforced, strict exit required).
         _process_group(regressions, "fuzz-oracle/regressions", apply_ratchet=True)
 
     # Validate expected-failures completeness: entries listed but not found in
-    # the regressions corpus → report as unexpected-pass (the file was removed
-    # without clearing the entry, which is a ratchet violation).
-    regression_names = {p.name for p in regressions}
+    # ANY candidate source (regressions + vertical-slice) → unexpected-pass (the
+    # file was removed without clearing the entry — a ratchet violation).
+    all_candidate_names = {p.name for p in regressions} | {
+        p.name for p in vertical_slice
+    }
     for name in sorted(expected_failure_names):
-        if name not in regression_names:
+        if name not in all_candidate_names:
             ghost = Verdict(
                 regressions_dir / name,
                 "clean",  # "passed" in the sense of not being present
